@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "fabricrl"
+version = "0.0.1"
+description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with research-friendly features"
+authors = ["Costa Huang <costa.huang@outlook.com>"]
+packages = [{ include = "fabricrl" }]
+keywords = ["reinforcement", "machine", "learning", "research"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.8,<3.10"
+lightning = "^2.0"
+torch = "^2.0"
+gymnasium = "^0.28"
+moviepy = "^1.0.3"
+pygame = "2.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^2.20.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
