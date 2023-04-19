@@ -15,6 +15,9 @@ torch = "^2.0"
 gymnasium = "^0.28"
 moviepy = "^1.0.3"
 pygame = "2.1.0"
+tensordict = "^0.1.0"
+jsonargparse = "^4.20.1"
+fastapi = ">=0.80"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
