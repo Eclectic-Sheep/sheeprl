@@ -2,31 +2,18 @@ from typing import Union
 
 import torch
 from tensordict import TensorDict
-from torch import Size, Tensor
+from torch import Size, Tensor, DeviceObjType
 
 
 class ReplayBuffer:
-    """Replay buffer used in off-policy algorithms like SAC/TD3.
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device:
-    :param n_envs: Number of parallel environments
-    :param optimize_memory_usage: Enable a memory efficient variant
-        of the replay buffer which reduces by almost a factor two the memory used,
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-        and https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
-    """
-
-    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[torch.device, str] = "cpu"):
-        """_summary_
+    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[DeviceObjType, str] = "cpu"):
+        """Replay buffer used in off-policy algorithms like SAC/TD3.
+        The replay buffer internally uses a TensorDict
 
         Args:
-            buffer_size (int): _description_
-            n_envs (int, optional): _description_. Defaults to 1.
-            device (Union[torch.device, str], optional): _description_. Defaults to "cpu".
+            buffer_size (int): The buffer size.
+            n_envs (int, optional): The number of environments. Defaults to 1.
+            device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
         """
         self._buffer_size = buffer_size
         self._n_envs = n_envs
@@ -58,7 +45,7 @@ class ReplayBuffer:
         return self.buffer.shape
 
     @property
-    def device(self) -> torch.device:
+    def device(self) -> DeviceObjType:
         return self._device
 
     def __len__(self) -> int:

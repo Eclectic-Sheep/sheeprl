@@ -32,7 +32,7 @@ import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.pytorch import LightningModule
-from tensordict import TensorDict
+from tensordict import TensorDict, make_tensordict
 from torch import Tensor
 from torch.distributions import Categorical
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
@@ -457,7 +457,7 @@ def main(args: argparse.Namespace):
 
     # Get the first environment observation and start the optimization
     next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)  # [N_envs, N_obs]
-    next_done = torch.zeros(args.num_envs, device=device, dtype=torch.bool)  # [N_envs]
+    next_done = torch.zeros(args.num_envs, device=device)  # [N_envs]
     for update in range(1, num_updates + 1):
         # Learning rate annealing
         if args.anneal_lr:
@@ -479,10 +479,11 @@ def main(args: argparse.Namespace):
 
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy())
-            step_data["rewards"] = torch.tensor(reward, device=device)  # [N_envs, N_rew]
+            next_obs = torch.tensor(next_obs)
+            next_done = torch.logical_or(torch.tensor(done), torch.tensor(truncated)).float()  # [N_envs, 1]
 
-            done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
-            next_obs, next_done = torch.tensor(next_obs, device=device), done.to(device)
+            # Save reward for the last (observation, action) pair
+            step_data["rewards"] = torch.tensor(reward, device=device)  # [N_envs, N_rew]
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -517,22 +518,20 @@ def main(args: argparse.Namespace):
             args.gamma,
             args.gae_lambda,
         )
+
+        # Add returns and advantages to the buffer
         rb["returns"] = returns.float()
         rb["advantages"] = advantages.float()
 
         # Flatten the batch
-        local_data = rb.buffer.view(math.prod(rb.shape))
+        local_data = rb.buffer.view(-1)
 
         if args.share_data:
             # Gather all the tensors from all the world and reshape them
-            gathered_data = fabric.all_gather(local_data)
-            for k, v in gathered_data.items():
-                if k == "obs":
-                    gathered_data[k] = v.reshape((-1,) + envs.single_observation_space.shape)
-                elif k == "actions":
-                    gathered_data[k] = v.reshape((-1,) + envs.single_action_space.shape)
-                else:
-                    gathered_data[k] = v.reshape(-1)
+            gathered_data = fabric.all_gather(
+                local_data.to_dict()
+            )  # Fabric does not work with TensorDict: I'll open them a PR!
+            gathered_data = make_tensordict(gathered_data).view(-1)
         else:
             gathered_data = local_data
 
