@@ -26,7 +26,19 @@ tensorboard = "^2.12.2"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
+mypy = "^1.2.0"
+black = "^23.3.0"
+isort = "^5.12.0"
+autoflake = "^2.1.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.mypy]
+disallow_untyped_defs = true
+show_error_codes = true
+no_implicit_optional = true
+warn_return_any = true
+ignore_missing_imports = true
