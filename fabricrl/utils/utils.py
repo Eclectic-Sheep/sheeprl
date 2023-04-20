@@ -58,6 +58,13 @@ def get_obs_shape(
         raise NotImplementedError(f"{observation_space} observation space is not supported")
 
 
+def linear_annealing(optimizer: torch.optim.Optimizer, update: int, num_updates: int, initial_lr: float):
+    frac = 1.0 - (update - 1.0) / num_updates
+    lrnow = frac * initial_lr
+    for pg in optimizer.param_groups:
+        pg["lr"] = lrnow
+
+
 def layer_init(
     layer: torch.nn.Module,
     std: float = math.sqrt(2),
