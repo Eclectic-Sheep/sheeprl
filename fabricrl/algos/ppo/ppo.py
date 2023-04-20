@@ -41,6 +41,7 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.data.buffers import ReplayBuffer
+from lightning.fabric.fabric import _is_using_cli
 
 
 def parse_args():
@@ -403,8 +404,11 @@ def main(args: argparse.Namespace):
     )
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger, devices=2, strategy="ddp")
-    fabric.launch()
+    if not _is_using_cli():
+        fabric = Fabric(loggers=logger, devices=1, accelerator="cpu")
+        fabric.launch()
+    else:
+        fabric = Fabric(loggers=logger)
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -533,7 +537,7 @@ def main(args: argparse.Namespace):
         # Flatten the batch
         local_data = rb.buffer.view(-1)
 
-        if args.share_data:
+        if args.share_data and fabric.world_size > 1:
             # Gather all the tensors from all the world and reshape them
             gathered_data = fabric.all_gather(
                 local_data.to_dict()
