@@ -1,12 +1,14 @@
+import typing
 from typing import Union
 
 import torch
 from tensordict import TensorDict
-from torch import Size, Tensor, DeviceObjType
+from tensordict.tensordict import TensorDictBase
+from torch import Size, Tensor, device
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[DeviceObjType, str] = "cpu"):
+    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[device, str] = "cpu"):
         """Replay buffer used in off-policy algorithms like SAC/TD3.
         The replay buffer internally uses a TensorDict
 
@@ -25,7 +27,7 @@ class ReplayBuffer:
         self._full = False
 
     @property
-    def buffer(self) -> TensorDict:
+    def buffer(self) -> TensorDictBase:
         return self._buf
 
     @property
@@ -45,22 +47,34 @@ class ReplayBuffer:
         return self.buffer.shape
 
     @property
-    def device(self) -> DeviceObjType:
+    def device(self) -> device:
         return self._device
 
     def __len__(self) -> int:
         return self.buffer_size
 
-    def add(self, data: TensorDict) -> None:
-        """Add another Tensordict to the buffer.
+    @typing.overload
+    def add(self, data: "ReplayBuffer") -> None:
+        ...
+
+    @typing.overload
+    def add(self, data: TensorDictBase) -> None:
+        ...
+
+    def add(self, data: Union["ReplayBuffer", TensorDictBase]) -> None:
+        """Add data to the buffer.
 
         Args:
-            data (TensorDict): data to add.
+            data: data to add.
 
         Raises:
-            RuntimeError: the number of dimensions (the batch_size of the TensorDict) must be 2:
+            RuntimeError: the number of dimensions (the batch_size of the TensorDictBase) must be 2:
             one for the number of environments and one for the sequence length.
         """
+        if isinstance(data, ReplayBuffer):
+            data = data.buffer
+        elif not isinstance(data, TensorDictBase):
+            raise TypeError("`data` must be a TensorDictBase or a fabricrl.data.ReplayBuffer")
         if len(data.shape) != 2:
             raise RuntimeError(
                 "`data` must have 2 batch dimensions: [sequence_length, n_envs, d1, ..., dn]. "
@@ -81,7 +95,7 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int) -> TensorDict:
+    def sample(self, batch_size: int) -> TensorDictBase:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
@@ -92,7 +106,7 @@ class ReplayBuffer:
             batch_size (int): batch_size (int): Number of element to sample
 
         Returns:
-            TensorDict: the sampled TensorDict, cloned
+            TensorDictBase: the sampled TensorDictBase, cloned
         """
         if batch_size <= 0:
             raise ValueError("Batch size must be greater than 0")
@@ -108,8 +122,8 @@ class ReplayBuffer:
             batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size, self.n_envs), device=self.device)
         return self._get_samples(batch_idxes)
 
-    def _get_samples(self, batch_idxes: Tensor) -> TensorDict:
-        buf = torch.gather(self._buf, dim=0, index=batch_idxes).clone()
+    def _get_samples(self, batch_idxes: Tensor) -> TensorDictBase:
+        buf: TensorDictBase = torch.gather(self._buf, dim=0, index=batch_idxes).clone()
         buf["next_obs"] = self._buf["observations"][
             (batch_idxes + 1) % self._buffer_size, torch.arange(self.n_envs, device=self.device)
         ].clone()
