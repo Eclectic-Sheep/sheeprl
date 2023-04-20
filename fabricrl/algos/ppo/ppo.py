@@ -404,11 +404,9 @@ def main(args: argparse.Namespace):
     )
 
     # Initialize Fabric
+    fabric = Fabric(loggers=logger)
     if not _is_using_cli():
-        fabric = Fabric(loggers=logger, devices=1, accelerator="cpu")
         fabric.launch()
-    else:
-        fabric = Fabric(loggers=logger)
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
