@@ -456,9 +456,11 @@ def main(args: argparse.Namespace):
     single_global_rollout = int(args.num_envs * args.num_steps * world_size)
     num_updates = args.total_timesteps // single_global_rollout
 
-    # Get the first environment observation and start the optimization
-    next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)  # [N_envs, N_obs]
-    next_done = torch.zeros(args.num_envs, 1, device=device)  # [N_envs, 1]
+    with device:
+        # Get the first environment observation and start the optimization
+        next_obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+        next_done = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
+
     for update in range(1, num_updates + 1):
         # Learning rate annealing
         if args.anneal_lr:
@@ -480,13 +482,15 @@ def main(args: argparse.Namespace):
 
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
-            next_obs = torch.tensor(next_obs)
-            next_done = (
-                torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
-            )  # [N_envs, 1]
 
-            # Save reward for the last (observation, action) pair
-            step_data["rewards"] = torch.tensor(reward, device=device).view(args.num_envs, -1)  # [N_envs, 1]
+            with device:
+                next_obs = torch.tensor(next_obs)
+                next_done = (
+                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
+                )  # [N_envs, 1]
+
+                # Save reward for the last (observation, action) pair
+                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
