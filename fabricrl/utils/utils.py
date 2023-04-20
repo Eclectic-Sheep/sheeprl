@@ -1,6 +1,8 @@
+import math
 from typing import Dict, Tuple, Union
 
 import numpy as np
+import torch
 from gymnasium import spaces
 
 
@@ -54,3 +56,15 @@ def get_obs_shape(
 
     else:
         raise NotImplementedError(f"{observation_space} observation space is not supported")
+
+
+def layer_init(
+    layer: torch.nn.Module,
+    std: float = math.sqrt(2),
+    bias_const: float = 0.0,
+    ortho_init: bool = True,
+):
+    if ortho_init:
+        torch.nn.init.orthogonal_(layer.weight, std)
+        torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
