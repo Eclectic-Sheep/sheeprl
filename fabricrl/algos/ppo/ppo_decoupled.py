@@ -303,7 +303,7 @@ def trainer(
                 if args.share_data:
                     sampler.sampler.set_epoch(epoch)
                 for batch_idxes in sampler:
-                    loss = agent.training_step({k: v[batch_idxes].to(device) for k, v in data.items()})
+                    loss = agent.training_step(data[batch_idxes])
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)

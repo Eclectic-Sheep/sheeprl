@@ -53,6 +53,25 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self.buffer_size
 
+    def set_episodes_end(self) -> None:
+        """Automatically sets where the episodes end.
+
+        The `episodes_end` represents where an episode has ended due to a done/truncation or
+        because a predefined number of steps has been reached.
+        By default the `episodes_end` property is set given the `done` flag, setting its last
+        step to 1. This is useful for sequential sampling.
+
+        Raises:
+            RuntimeError: the `dones` key is not found
+        """
+        if "dones" in self.buffer.keys():
+            self["episodes_end"] = self["dones"].clone()
+            self["episodes_end"][-1] = 1.0
+        else:
+            raise RuntimeError(
+                "`episodes_ends` cannot be set from `dones`. Try to set them manually with `rb.episodes_end = ...`"
+            )
+
     @typing.overload
     def add(self, data: "ReplayBuffer") -> None:
         ...
