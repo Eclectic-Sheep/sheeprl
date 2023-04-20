@@ -2,7 +2,11 @@
 name = "fabricrl"
 version = "0.0.1"
 description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with research-friendly features"
-authors = ["Costa Huang <costa.huang@outlook.com>"]
+authors = [
+    "Federico Belotti <federico.belotti@orobix.com>",
+    "Davide Angioni <davide.angioni@orobix.com>",
+    "Refik Can Malli <refikcan.malli@orobix.com>",
+]
 packages = [{ include = "fabricrl" }]
 keywords = ["reinforcement", "machine", "learning", "research"]
 license = "MIT"

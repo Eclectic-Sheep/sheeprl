@@ -264,7 +264,7 @@ class PPOLightningAgent(LightningModule):
 
     def get_action(self, x: Tensor, action: Tensor = None) -> Tuple[Tensor, Tensor, Tensor]:
         logits = self.actor(x)
-        distribution = Categorical(logits=logits)
+        distribution = Categorical(logits=logits.unsqueeze(-2))
         if action is None:
             action = distribution.sample()
         return action, distribution.log_prob(action), distribution.entropy()
@@ -297,7 +297,7 @@ class PPOLightningAgent(LightningModule):
         gamma: float,
         gae_lambda: float,
     ) -> Tuple[Tensor, Tensor]:
-        next_value = self.get_value(next_obs).reshape(1, -1)
+        next_value = self.get_value(next_obs)
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
         for t in reversed(range(num_steps)):
@@ -403,7 +403,8 @@ def main(args: argparse.Namespace):
     )
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, devices=2, strategy="ddp")
+    fabric.launch()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -457,7 +458,7 @@ def main(args: argparse.Namespace):
 
     # Get the first environment observation and start the optimization
     next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)  # [N_envs, N_obs]
-    next_done = torch.zeros(args.num_envs, device=device)  # [N_envs]
+    next_done = torch.zeros(args.num_envs, 1, device=device)  # [N_envs, 1]
     for update in range(1, num_updates + 1):
         # Learning rate annealing
         if args.anneal_lr:
@@ -478,12 +479,14 @@ def main(args: argparse.Namespace):
             step_data["observations"] = next_obs
 
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy())
+            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
             next_obs = torch.tensor(next_obs)
-            next_done = torch.logical_or(torch.tensor(done), torch.tensor(truncated)).float()  # [N_envs, 1]
+            next_done = (
+                torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
+            )  # [N_envs, 1]
 
             # Save reward for the last (observation, action) pair
-            step_data["rewards"] = torch.tensor(reward, device=device)  # [N_envs, N_rew]
+            step_data["rewards"] = torch.tensor(reward, device=device).view(args.num_envs, -1)  # [N_envs, 1]
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -510,7 +513,7 @@ def main(args: argparse.Namespace):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         returns, advantages = agent.estimate_returns_and_advantages(
             rb["rewards"],
-            rb["values"].squeeze(-1),
+            rb["values"],
             rb["dones"],
             next_obs,
             next_done,

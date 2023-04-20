@@ -18,8 +18,6 @@ def value_loss(
     clip_vloss: bool,
     vf_coef: float,
 ) -> Tensor:
-    new_values = new_values.view(-1)
-    old_values = old_values.view(-1)
     if not clip_vloss:
         values_pred = new_values
     else:
