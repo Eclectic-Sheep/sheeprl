@@ -201,6 +201,8 @@ class RecurrentPPOAgent(LightningModule):
             ortho_init=ortho_init,
         )
         self.actor_rnn = torch.nn.GRU(input_size=self.hidden_size, hidden_size=self.hidden_size, batch_first=False)
+        if ortho_init:
+            self._orthogonal_init_rnn(self.actor_rnn)
         self.actor = torch.nn.Sequential(
             layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
             act_fun,
@@ -213,6 +215,8 @@ class RecurrentPPOAgent(LightningModule):
             ortho_init=ortho_init,
         )
         self.critic_rnn = torch.nn.GRU(input_size=self.hidden_size, hidden_size=self.hidden_size, batch_first=False)
+        if ortho_init:
+            self._orthogonal_init_rnn(self.critic_rnn)
         self.critic = torch.nn.Sequential(
             layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
             act_fun,
@@ -232,6 +236,17 @@ class RecurrentPPOAgent(LightningModule):
     @initial_states.setter
     def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
         self._initial_states = value
+
+    def _orthogonal_init_rnn(self, rnn: torch.nn.RNNBase) -> None:
+        # https://github.com/vwxyzjn/cleanrl/issues/358
+        for name, param in rnn.named_parameters():
+            if "bias" in name:
+                torch.nn.init.constant_(param, 0)
+            elif "weight" in name:
+                torch.nn.init.orthogonal_(param[:128], 1.0)
+                torch.nn.init.orthogonal_(param[128 : 128 * 2], 1.0)
+                torch.nn.init.orthogonal_(param[128 * 2 : 128 * 3], 1.0)
+                torch.nn.init.orthogonal_(param[128 * 3 :], 1.0)
 
     def get_action(self, x: Tensor, action: Tensor = None) -> Tuple[Tensor, Tensor, Tensor]:
         """Get action given the extracted feaures randomly.
