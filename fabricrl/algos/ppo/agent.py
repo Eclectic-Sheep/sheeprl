@@ -292,6 +292,7 @@ class RecurrentPPOAgent(LightningModule):
 
         Args:
             obs (Tensor): observations collected
+            done (Tensor): dones flag collected
             action (Tensor, optional): actions played given the observations. If None, actions
                 are sampled from a categorical distribution.
                 Defaults to None.
@@ -345,10 +346,11 @@ class RecurrentPPOAgent(LightningModule):
 
         Args:
             obs (Tensor): observations collected
+            done (Tensor): dones flag collected
             action (Tensor, optional): actions played given the observations. If None, actions
                 are sampled from a categorical distribution.
                 Defaults to None.
-            state (Tensor, optional): the recurrent states.
+            state (Tuple[Tensor, Tensor], optional): the recurrent states.
                 Defaults to None.
 
         Returns:
@@ -414,7 +416,7 @@ class RecurrentPPOAgent(LightningModule):
 
         Returns:
             computed loss
-            new recurrent state
+            new recurrent state for both the actor and the critic
         """
         # Get actions and values given the current observations
         _, newlogprob, entropy, newvalue, state = self(
