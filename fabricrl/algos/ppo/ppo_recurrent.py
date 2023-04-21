@@ -77,8 +77,9 @@ def train(
     for _ in range(args.update_epochs):
         for seq_idxes in seq_sampler:
             sampler = BatchSampler(seq_idxes, batch_size=args.per_rank_batch_size, drop_last=False)
-            state = data[seq_idxes]["states"][:1]
-            sequence_loss = 0
+            with fabric.device:
+                sequence_loss = torch.zeros(1)
+                state = torch.zeros(1, args.num_envs, agent.hidden_size)
             for batch_idxes in sampler:
                 loss, state = agent.training_step(data[batch_idxes], state)
                 sequence_loss = sequence_loss + loss
@@ -156,7 +157,6 @@ def main(args: argparse.Namespace):
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
         next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
-        state = torch.zeros(1, args.num_envs, agent.hidden_size)
 
     for update in range(1, num_updates + 1):
         # Learning rate annealing
@@ -164,6 +164,7 @@ def main(args: argparse.Namespace):
             linear_annealing(optimizer, update, num_updates, args.learning_rate)
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
+        state = torch.zeros(1, args.num_envs, agent.hidden_size, device=device)
         for _ in range(0, args.num_steps):
             global_step += args.num_envs * world_size
 
