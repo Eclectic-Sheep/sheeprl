@@ -60,6 +60,14 @@ def parse_args():
         const=True,
         help="whether to capture videos of the agent performances (check out `videos` folder)",
     )
+    parser.add_argument(
+        "--mask-vel",
+        type=lambda x: bool(strtobool(x)),
+        default=False,
+        nargs="?",
+        const=True,
+        help="whether to mask velocities",
+    )
 
     # PPO arguments
     parser.add_argument("--total-timesteps", type=int, default=2**16, help="total timesteps of the experiments")

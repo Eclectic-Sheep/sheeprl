@@ -43,7 +43,7 @@ from fabricrl.utils.utils import linear_annealing
 
 @torch.no_grad()
 def test(agent: "PPOAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test")()
+    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel)()
     step = 0
     done = False
     cumulative_rew = 0
@@ -118,7 +118,7 @@ def main(args: argparse.Namespace):
     envs = gym.vector.SyncVectorEnv(
         [
             make_env(
-                args.env_id, args.seed + rank * args.num_envs + i, rank, args.capture_video, logger.log_dir, "train"
+                args.env_id, args.seed + rank * args.num_envs + i, rank, args.capture_video, logger.log_dir, "train", mask_velocities=args.mask_vel
             )
             for i in range(args.num_envs)
         ]
