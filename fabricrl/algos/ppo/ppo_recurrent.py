@@ -20,8 +20,8 @@ Run it with:
 import argparse
 import os
 import time
+import warnings
 from datetime import datetime
-from typing import Dict
 
 import gymnasium as gym
 import torch
@@ -30,15 +30,12 @@ from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
-from torch import Tensor
-from torch.utils.data import BatchSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.agent import RecurrentPPOAgent
 from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.data.sampler import SequenceSampler
 from fabricrl.utils.utils import linear_annealing
 
 
@@ -70,30 +67,23 @@ def train(
     fabric: Fabric,
     agent: RecurrentPPOAgent,
     optimizer: torch.optim.Optimizer,
-    data: Dict[str, Tensor],
+    data: TensorDict,
     global_step: int,
     args: argparse.Namespace,
 ):
-    seq_sampler = SequenceSampler(data)
-
     for _ in range(args.update_epochs):
-        for seq_idxes in seq_sampler:
-            sampler = BatchSampler(seq_idxes, batch_size=args.per_rank_batch_size, drop_last=False)
-            with fabric.device:
-                sequence_loss = torch.zeros(1)
-                state = torch.zeros(1, args.num_envs, agent.hidden_size)
-            for batch_idxes in sampler:
-                loss, state = agent.training_step(data[batch_idxes], state)
-                sequence_loss = sequence_loss + loss
-            optimizer.zero_grad(set_to_none=True)
-            fabric.backward(sequence_loss)
-            fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
-            optimizer.step()
+        loss, _ = agent.training_step(data, state=agent.initial_states)
+        optimizer.zero_grad(set_to_none=True)
+        fabric.backward(loss)
+        fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+        optimizer.step()
         agent.on_train_epoch_end(global_step)
 
 
 def main(args: argparse.Namespace):
-    args.num_envs = 1
+    if args.share_data:
+        warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
+
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "fabric_logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
@@ -144,7 +134,7 @@ def main(args: argparse.Namespace):
         ortho_init=args.ortho_init,
         normalize_advantages=args.normalize_advantages,
     )
-    optimizer = agent.configure_optimizers(lr=args.learning_rate)
+    optimizer = agent.configure_optimizers(lr=args.learning_rate, eps=1e-5)
     agent, optimizer = fabric.setup(agent, optimizer)
 
     # Player metrics
@@ -165,6 +155,10 @@ def main(args: argparse.Namespace):
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
         next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
+        state = (
+            torch.zeros(1, args.num_envs, agent.hidden_size, device=device),
+            torch.zeros(1, args.num_envs, agent.hidden_size, device=device),
+        )
 
     for update in range(1, num_updates + 1):
         # Learning rate annealing
@@ -172,20 +166,22 @@ def main(args: argparse.Namespace):
             linear_annealing(optimizer, update, num_updates, args.learning_rate)
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
-        state = torch.zeros(1, args.num_envs, agent.hidden_size, device=device)
+        initial_states = (state[0].clone(), state[1].clone())
         for _ in range(0, args.num_steps):
             global_step += args.num_envs * world_size
 
-            # Sample an action given the observation received by the environment
             with torch.no_grad():
-                action, logprob, _, value, next_state = agent.get_action_and_value(next_obs, state=state)
+                # Sample an action given the observation received by the environment
+                action, logprob, _, value, state = agent.get_action_and_value(next_obs, state=state)
+
+                # Reset recurrent states
+                state = tuple([(1.0 - next_done) * s for s in state])
 
             step_data["dones"] = next_done
             step_data["values"] = value
             step_data["actions"] = action
             step_data["logprobs"] = logprob
             step_data["observations"] = next_obs
-            step_data["states"] = state
 
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
@@ -193,19 +189,11 @@ def main(args: argparse.Namespace):
             with device:
                 next_obs = torch.tensor(next_obs).unsqueeze(0)
                 next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated))
-                    .view(args.num_envs, -1)
-                    .float()
-                    .unsqueeze(0)
+                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(1, args.num_envs, 1).float()
                 )  # [1, N_envs, 1]
 
                 # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, 1]
-
-                if next_done.bool().item():
-                    state = torch.zeros(1, args.num_envs, agent.hidden_size, device=device)
-                else:
-                    state = next_state
+                step_data["rewards"] = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, N_rews]
 
             # Append data to buffer
             rb.add(step_data)
@@ -247,7 +235,6 @@ def main(args: argparse.Namespace):
         rb["advantages"] = advantages.float()
 
         # Flatten the batch
-        rb.set_episodes_end()
         local_data = rb.buffer
 
         if args.share_data and fabric.world_size > 1:
@@ -260,6 +247,7 @@ def main(args: argparse.Namespace):
             gathered_data = local_data
 
         # Train the agent
+        agent.initial_states = initial_states
         train(fabric, agent, optimizer, gathered_data, global_step, args)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 

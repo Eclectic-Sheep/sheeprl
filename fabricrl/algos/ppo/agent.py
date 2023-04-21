@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import gymnasium as gym
 import torch
@@ -196,18 +196,11 @@ class RecurrentPPOAgent(LightningModule):
         self.clip_coef = clip_coef
         self.clip_vloss = clip_vloss
         self.normalize_advantages = normalize_advantages
-        self.fc = layer_init(
+        self.actor_fc = layer_init(
             torch.nn.Linear(math.prod(envs.single_observation_space.shape), self.hidden_size),
             ortho_init=ortho_init,
         )
-        self.rnn = torch.nn.GRU(input_size=self.hidden_size, hidden_size=self.hidden_size, batch_first=False)
-        self.critic = torch.nn.Sequential(
-            layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
-            act_fun,
-            layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
-            act_fun,
-            layer_init(torch.nn.Linear(64, 1), std=1.0, ortho_init=ortho_init),
-        )
+        self.actor_rnn = torch.nn.GRU(input_size=self.hidden_size, hidden_size=self.hidden_size, batch_first=False)
         self.actor = torch.nn.Sequential(
             layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
             act_fun,
@@ -215,9 +208,30 @@ class RecurrentPPOAgent(LightningModule):
             act_fun,
             layer_init(torch.nn.Linear(64, envs.single_action_space.n), std=0.01, ortho_init=ortho_init),
         )
+        self.critic_fc = layer_init(
+            torch.nn.Linear(math.prod(envs.single_observation_space.shape), self.hidden_size),
+            ortho_init=ortho_init,
+        )
+        self.critic_rnn = torch.nn.GRU(input_size=self.hidden_size, hidden_size=self.hidden_size, batch_first=False)
+        self.critic = torch.nn.Sequential(
+            layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
+            act_fun,
+            layer_init(torch.nn.Linear(64, 64), ortho_init=ortho_init),
+            act_fun,
+            layer_init(torch.nn.Linear(64, 1), std=1.0, ortho_init=ortho_init),
+        )
         self.avg_pg_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
+        self._initial_states: Optional[Tuple[Tensor, Tensor]] = None
+
+    @property
+    def initial_states(self) -> Optional[Tuple[Tensor, Tensor]]:
+        return self._initial_states
+
+    @initial_states.setter
+    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
+        self._initial_states = value
 
     def get_action(self, x: Tensor, action: Tensor = None) -> Tuple[Tensor, Tensor, Tensor]:
         """Get action given the extracted feaures randomly.
@@ -250,8 +264,8 @@ class RecurrentPPOAgent(LightningModule):
             sampled action
             new recurrent state
         """
-        x = self.fc(obs)
-        x, state = self.rnn(x, state)
+        x = self.actor_fc(obs)
+        x, state = self.actor_rnn(x, state)
         logits = self.actor(x)
         probs = F.softmax(logits, dim=-1)
         return torch.argmax(probs, dim=-1), state
@@ -268,8 +282,8 @@ class RecurrentPPOAgent(LightningModule):
         return self.critic(x)
 
     def get_action_and_value(
-        self, obs: Tensor, action: Tensor = None, state: Tensor = None
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        self, obs: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
+    ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Compute actions, log-probabilities, distribution entropy and critic values.
 
         This model forward computes actions, related log-probabilities, entropy distribution
@@ -289,17 +303,22 @@ class RecurrentPPOAgent(LightningModule):
             log-probabilites of the actions
             entropy of the distribution
             critic value
-            next recurrent state
+            next recurrent state for both the actor and the critic
         """
-        x = self.fc(obs)
-        x, state = self.rnn(x, state)
-        action, log_prob, entropy = self.get_action(x, action)
-        value = self.get_value(x)
-        return action, log_prob, entropy, value, state
+        actor_state, critic_state = state
+
+        x_actor = self.actor_fc(obs)
+        x_actor, actor_state = self.actor_rnn(x_actor, actor_state)
+        action, log_prob, entropy = self.get_action(x_actor, action)
+
+        x_critic = self.critic_fc(obs)
+        x_critic, critic_state = self.critic_rnn(x_critic, critic_state)
+        value = self.get_value(x_critic)
+        return action, log_prob, entropy, value, (actor_state, critic_state)
 
     def forward(
-        self, obs: Tensor, action: Tensor = None, state: Tensor = None
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        self, obs: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
+    ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Forward method of the LightningModule.
 
         This model forward computes actions, related log-probabilities, entropy distribution
@@ -319,7 +338,7 @@ class RecurrentPPOAgent(LightningModule):
             log-probabilites of the actions
             entropy of the distribution
             critic value
-            next recurrent state
+            next recurrent states for both the actor and the critic
         """
         return self.get_action_and_value(obs, action, state)
 
@@ -334,7 +353,7 @@ class RecurrentPPOAgent(LightningModule):
         num_steps: int,
         gamma: float,
         gae_lambda: float,
-        state: Tensor,
+        state: Tuple[Tensor, Tensor],
     ) -> Tuple[Tensor, Tensor]:
         """Compute returns and advantages following https://arxiv.org/abs/1506.02438
 
@@ -347,7 +366,7 @@ class RecurrentPPOAgent(LightningModule):
             num_steps (int): the number of steps played
             gamma (float): discout factor
             gae_lambda (float): lambda for GAE estimation
-            state (Tensor): recurrent state
+            state (Tuple[Tensor, Tensor]): recurrent state for both the actor and critic
 
         Returns:
             estimated returns
@@ -368,12 +387,12 @@ class RecurrentPPOAgent(LightningModule):
         returns = advantages + values
         return returns, advantages
 
-    def training_step(self, batch: TensorDict, state: Tensor) -> Tuple[Tensor, Tensor]:
+    def training_step(self, batch: TensorDict, state: Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         """Single training step over a batch of data.
 
         Args:
             batch (TensorDict): the batch to optimize from
-            state (Tensor): recurrent state
+            state (Tuple[Tensor, Tensor]): recurrent state for both the actor and critic
 
         Returns:
             computed loss
@@ -440,7 +459,4 @@ class RecurrentPPOAgent(LightningModule):
         Returns:
             the optimizer
         """
-        eps = optimizer_kwargs.pop("eps", None)
-        if eps is None:
-            eps = 1e-4
-        return Adam(self.parameters(), **optimizer_kwargs, eps=eps)
+        return Adam(self.parameters(), **optimizer_kwargs)
