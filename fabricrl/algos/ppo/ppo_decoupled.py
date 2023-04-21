@@ -47,7 +47,9 @@ from fabricrl.utils.utils import linear_annealing
 def player(args, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "fabric_decoupled_logs", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join(
+            "logs", "fabric_decoupled_logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+        ),
         name=run_name,
     )
     log_dir = logger.log_dir

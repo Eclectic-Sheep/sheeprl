@@ -21,15 +21,11 @@ class SequenceSampler(Sampler[int]):
                 "or if the `data_source` comes from a fabricrl.data.buffers.ReplayBuffer, then call "
                 "`rb.set_episodes_end()`."
             )
-        if len(data_source.shape) != 1:
-            raise ValueError(f"The batch size of the TensorDict must be single dimension, found {data_source.shape}")
         self._data_source = data_source
         episodes_ends = self._data_source["episodes_end"].view(-1).nonzero().flatten().tolist()
         if episodes_ends[0] != 0:
             episodes_ends.insert(0, 0)
-        self._sequences_ranges = [
-            range(episodes_ends[i] + int(i != 0), episodes_ends[i + 1] + 1) for i in range(len(episodes_ends) - 1)
-        ]
+        self._sequences_ranges = [range(episodes_ends[i], episodes_ends[i + 1]) for i in range(len(episodes_ends) - 1)]
 
     def __iter__(self) -> Iterator[int]:
         for sequence in self._sequences_ranges:
