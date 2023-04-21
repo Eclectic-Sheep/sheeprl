@@ -144,7 +144,7 @@ def main(args: argparse.Namespace):
         ortho_init=args.ortho_init,
         normalize_advantages=args.normalize_advantages,
     )
-    optimizer = agent.configure_optimizers(args.learning_rate)
+    optimizer = agent.configure_optimizers(lr=args.learning_rate)
     agent, optimizer = fabric.setup(agent, optimizer)
 
     # Player metrics
