@@ -307,20 +307,30 @@ class RecurrentPPOAgent(LightningModule):
         """
         actor_state, critic_state = state
 
+        # If no done is found, then we can run through all the sequence.
+        # https://github.com/Stable-Baselines-Team/stable-baselines3-contrib/blob/master/sb3_contrib/common/recurrent/policies.py#L22
+        run_through_all = False
+        if torch.all(done == 0.0):
+            run_through_all = True
+
         x_actor = self.actor_fc(obs)
-        actor_hidden = []
-        for ah, d in zip(x_actor, done):
-            ah, actor_state = self.actor_rnn(ah.unsqueeze(0), (1.0 - d).view(1, -1, 1) * actor_state)
-            actor_hidden += [ah]
-        actor_hidden = torch.cat(actor_hidden)
+        if run_through_all:
+            actor_hidden, actor_state = self.actor_rnn(x_actor, actor_state)
+        else:
+            actor_hidden = torch.empty_like(x_actor)
+            for i, (ah, d) in enumerate(zip(x_actor, done)):
+                ah, actor_state = self.actor_rnn(ah.unsqueeze(0), (1.0 - d).view(1, -1, 1) * actor_state)
+                actor_hidden[i] = ah
         action, log_prob, entropy = self.get_action(actor_hidden, action)
 
         x_critic = self.critic_fc(obs)
-        critic_hidden = []
-        for ch, d in zip(x_actor, done):
-            ch, critic_state = self.actor_rnn(ch.unsqueeze(0), (1.0 - d).view(1, -1, 1) * critic_state)
-            critic_hidden += [ch]
-        critic_hidden = torch.cat(critic_hidden)
+        if run_through_all:
+            critic_hidden, critic_state = self.critic_rnn(x_critic, critic_state)
+        else:
+            critic_hidden = torch.empty_like(x_critic)
+            for i, (ch, d) in enumerate(zip(x_actor, done)):
+                ch, critic_state = self.actor_rnn(ch.unsqueeze(0), (1.0 - d).view(1, -1, 1) * critic_state)
+                critic_hidden[i] = ch
         value = self.get_value(x_critic)
         return action, log_prob, entropy, value, (actor_state, critic_state)
 
