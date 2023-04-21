@@ -29,7 +29,7 @@ import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
-from tensordict import TensorDict, make_tensordict
+from tensordict import TensorDict
 from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.agent import RecurrentPPOAgent
@@ -48,7 +48,7 @@ def test(agent: "RecurrentPPOAgent", device: torch.device, logger: SummaryWriter
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device).unsqueeze(0)
-    state = torch.zeros(1, 64, device=device)
+    state = torch.zeros(1, agent.hidden_size, device=device)
     while not done:
         # Act greedly through the environment
         action, state = agent.get_greedy_action(next_obs, state)
@@ -172,10 +172,7 @@ def main(args: argparse.Namespace):
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                action, logprob, _, value, state = agent.get_action_and_value(next_obs, state=state)
-
-                # Reset recurrent states
-                state = tuple([(1.0 - next_done) * s for s in state])
+                action, logprob, _, value, state = agent.get_action_and_value(next_obs, next_done, state=state)
 
             step_data["dones"] = next_done
             step_data["values"] = value
@@ -234,21 +231,12 @@ def main(args: argparse.Namespace):
         rb["returns"] = returns.float()
         rb["advantages"] = advantages.float()
 
-        # Flatten the batch
+        # Get the training data as a TensorDict
         local_data = rb.buffer
-
-        if args.share_data and fabric.world_size > 1:
-            # Gather all the tensors from all the world and reshape them
-            gathered_data = fabric.all_gather(
-                local_data.to_dict()
-            )  # Fabric does not work with TensorDict: I'll open them a PR!
-            gathered_data = make_tensordict(gathered_data).view(-1)
-        else:
-            gathered_data = local_data
 
         # Train the agent
         agent.initial_states = initial_states
-        train(fabric, agent, optimizer, gathered_data, global_step, args)
+        train(fabric, agent, optimizer, local_data, global_step, args)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()

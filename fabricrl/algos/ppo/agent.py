@@ -282,7 +282,7 @@ class RecurrentPPOAgent(LightningModule):
         return self.critic(x)
 
     def get_action_and_value(
-        self, obs: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
+        self, obs: Tensor, done: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
     ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Compute actions, log-probabilities, distribution entropy and critic values.
 
@@ -308,16 +308,24 @@ class RecurrentPPOAgent(LightningModule):
         actor_state, critic_state = state
 
         x_actor = self.actor_fc(obs)
-        x_actor, actor_state = self.actor_rnn(x_actor, actor_state)
-        action, log_prob, entropy = self.get_action(x_actor, action)
+        actor_hidden = []
+        for ah, d in zip(x_actor, done):
+            ah, actor_state = self.actor_rnn(ah.unsqueeze(0), (1.0 - d).view(1, -1, 1) * actor_state)
+            actor_hidden += [ah]
+        actor_hidden = torch.cat(actor_hidden)
+        action, log_prob, entropy = self.get_action(actor_hidden, action)
 
         x_critic = self.critic_fc(obs)
-        x_critic, critic_state = self.critic_rnn(x_critic, critic_state)
+        critic_hidden = []
+        for ch, d in zip(x_actor, done):
+            ch, critic_state = self.actor_rnn(ch.unsqueeze(0), (1.0 - d).view(1, -1, 1) * critic_state)
+            critic_hidden += [ch]
+        critic_hidden = torch.cat(critic_hidden)
         value = self.get_value(x_critic)
         return action, log_prob, entropy, value, (actor_state, critic_state)
 
     def forward(
-        self, obs: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
+        self, obs: Tensor, done: Tensor, action: Tensor = None, state: Tuple[Tensor, Tensor] = (None, None)
     ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Forward method of the LightningModule.
 
@@ -340,7 +348,7 @@ class RecurrentPPOAgent(LightningModule):
             critic value
             next recurrent states for both the actor and the critic
         """
-        return self.get_action_and_value(obs, action, state)
+        return self.get_action_and_value(obs, done, action, state)
 
     @torch.no_grad()
     def estimate_returns_and_advantages(
@@ -372,7 +380,7 @@ class RecurrentPPOAgent(LightningModule):
             estimated returns
             estimated advantages
         """
-        _, _, _, next_value, _ = self.get_action_and_value(next_obs, state=state)
+        _, _, _, next_value, _ = self.get_action_and_value(next_obs, next_done, state=state)
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
         for t in reversed(range(num_steps)):
@@ -399,7 +407,9 @@ class RecurrentPPOAgent(LightningModule):
             new recurrent state
         """
         # Get actions and values given the current observations
-        _, newlogprob, entropy, newvalue, state = self(batch["observations"], batch["actions"].long(), state)
+        _, newlogprob, entropy, newvalue, state = self(
+            batch["observations"], batch["dones"], batch["actions"].long(), state
+        )
         logratio = newlogprob - batch["logprobs"]
         ratio = logratio.exp()
 
