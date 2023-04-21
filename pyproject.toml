@@ -42,3 +42,117 @@ show_error_codes = true
 no_implicit_optional = true
 warn_return_any = true
 ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+# Enable Pyflakes `E` and `F` codes by default.
+select = [
+    "E", "W",  # see: https://pypi.org/project/pycodestyle
+    "F",  # see: https://pypi.org/project/pyflakes
+]
+ignore = [
+    "E731",  # Do not assign a lambda expression, use a def
+]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".git",
+    "docs",
+    "_notebooks"
+]
+ignore-init-module-imports = true
+
+# Black formatting
+[tool.black]
+line_length = 120
+include = '\.pyi?$'
+exclude = '''
+/(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+'''
+
+# iSort
+[tool.isort]
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+line_length = 120
+multi_line_output = 3
+include_trailing_comma = true
+skip_gitignore = true
+
+# Pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "--strict-markers --disable-pytest-warnings"
+markers = [
+    "benchmark: mark test as a benchmark",
+]
+
+# Pytest coverage
+[tool.coverage.run]
+omit = []
+
+[tool.prettier]
+tab_width = 2
+
+[tool.interrogate]
+ignore_init_method = true
+ignore_init_module = false
+ignore_magic = false
+ignore_semiprivate = false
+ignore_private = false
+ignore_module = true
+ignore_property_decorators = false
+fail_under = 95
+verbose = 2
+omit_covered_files = false
+quiet = false
+whitelist_regex = []
+color = true
+exclude = ["notebooks"]
+ignore_regex = [ "^get$", "^mock_.*", ".*BaseClass.*"]
+
+[tool.mypy]
+# -> Level 1# custom settings
+show_error_codes = true
+ignore_missing_imports = true
+plugins = "numpy.typing.mypy_plugin"
+# suggested settings# # https://mypy.readthedocs.io/en/stable/existing_code.html?highlight=no_implicit_optional#introduce-stricter-options
+# Start off with these
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# this is for reusing same variable with different types
+allow_redefinition = true
+
+# -> Level 2# Getting these passing should be easy
+strict_equality = true
+strict_concatenate = true
+# Strongly recommend enabling this one as soon as you can
+check_untyped_defs = true
+
+# -> Level 3# These shouldn't be too much additional work, but may be tricky to get passing if you use a lot of untyped libraries
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
+disallow_any_generics = false
+disallow_any_unimported = false
+# These next few are various gradations of forcing use of type annotationsdisallow_untyped_calls = false
+disallow_incomplete_defs = false
+disallow_untyped_defs = false
+
+# -> Level 4# This one isn't too hard to get passing, but return on investment is lower
+no_implicit_reexport = false
+# This one can be tricky to get passing if you use a lot of untyped libraries
+warn_return_any = false
