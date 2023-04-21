@@ -72,12 +72,17 @@ def train(
     args: argparse.Namespace,
 ):
     for _ in range(args.update_epochs):
-        loss, _ = agent.training_step(data, state=agent.initial_states)
-        optimizer.zero_grad(set_to_none=True)
-        fabric.backward(loss)
-        fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
-        optimizer.step()
-        agent.on_train_epoch_end(global_step)
+        env_idxes = torch.randperm(args.num_envs)
+        env_idxes_batches = torch.tensor_split(env_idxes, args.envs_batch_size)
+        for env_idxes_batch in env_idxes_batches:
+            loss, _ = agent.training_step(
+                data[:, env_idxes_batch], state=(s[:, env_idxes_batch] for s in agent.initial_states)
+            )
+            optimizer.zero_grad(set_to_none=True)
+            fabric.backward(loss)
+            fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+            optimizer.step()
+            agent.on_train_epoch_end(global_step)
 
 
 def main(args: argparse.Namespace):

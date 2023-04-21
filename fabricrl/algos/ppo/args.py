@@ -36,7 +36,7 @@ def parse_args():
     )
 
     # Distributed arguments
-    parser.add_argument("--num-envs", type=int, default=2, help="the number of parallel game environments")
+    parser.add_argument("--num-envs", type=int, default=4, help="the number of parallel game environments")
     parser.add_argument(
         "--share-data",
         type=lambda x: bool(strtobool(x)),
@@ -49,6 +49,7 @@ def parse_args():
 
     # Environment arguments
     parser.add_argument("--env-id", type=str, default="CartPole-v1", help="the id of the environment")
+    parser.add_argument("--total-timesteps", type=int, default=2**16, help="total timesteps of the experiments")
     parser.add_argument(
         "--num-steps", type=int, default=128, help="the number of steps to run in each environment per policy rollout"
     )
@@ -70,7 +71,6 @@ def parse_args():
     )
 
     # PPO arguments
-    parser.add_argument("--total-timesteps", type=int, default=2**16, help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="the learning rate of the optimizer")
     parser.add_argument(
         "--anneal-lr",
@@ -85,6 +85,12 @@ def parse_args():
         "--gae-lambda", type=float, default=0.95, help="the lambda for the general advantage estimation"
     )
     parser.add_argument("--update-epochs", type=int, default=10, help="the K epochs to update the policy")
+    parser.add_argument(
+        "--envs-batch-size",
+        type=int,
+        default=2,
+        help="the number of environments to be batched during a single PPO epoch",
+    )
     parser.add_argument(
         "--activation-function",
         type=str,
