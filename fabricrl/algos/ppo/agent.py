@@ -8,6 +8,7 @@ from lightning.pytorch import LightningModule
 from tensordict import TensorDict
 from torch import Tensor
 from torch.distributions import Categorical
+from torch.optim import Adam, Optimizer
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -219,33 +220,108 @@ class RecurrentPPOAgent(LightningModule):
         self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
 
     def get_action(self, x: Tensor, action: Tensor = None) -> Tuple[Tensor, Tensor, Tensor]:
+        """Get action given the extracted feaures randomly.
+
+        Args:
+            x (Tensor): features extracted from the observations
+            action (Tensor, optional): action to compute the log-probabilites from. If None, then
+                actions are sampled from a categorical distribution.
+                Defaults to None.
+
+        Returns:
+            sampled action
+            log-probabilities of the sampled action
+            entropy distribution
+        """
         logits = self.actor(x)
         distribution = Categorical(logits=logits.unsqueeze(-2))
         if action is None:
             action = distribution.sample()
         return action, distribution.log_prob(action), distribution.entropy()
 
-    def get_greedy_action(self, x: Tensor, state: Tensor) -> Tuple[Tensor, Tensor]:
-        x = self.fc(x)
+    def get_greedy_action(self, obs: Tensor, state: Tensor) -> Tuple[Tensor, Tensor]:
+        """Get action given the observation greedily.
+
+        Args:
+            obs (Tensor): input observation
+            state (Tensor): recurrent state
+
+        Returns:
+            sampled action
+            new recurrent state
+        """
+        x = self.fc(obs)
         x, state = self.rnn(x, state)
         logits = self.actor(x)
         probs = F.softmax(logits, dim=-1)
         return torch.argmax(probs, dim=-1), state
 
     def get_value(self, x: Tensor) -> Tensor:
+        """Get critic value given the input features.
+
+        Args:
+            x (Tensor): input features.
+
+        Returns:
+            critic value
+        """
         return self.critic(x)
 
     def get_action_and_value(
-        self, x: Tensor, action: Tensor = None, state: Tensor = None
+        self, obs: Tensor, action: Tensor = None, state: Tensor = None
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        x = self.fc(x)
+        """Compute actions, log-probabilities, distribution entropy and critic values.
+
+        This model forward computes actions, related log-probabilities, entropy distribution
+        and the critic values given the observations received as input. If `action` is None,
+        then the actions are sampled from a categorical distribution.
+
+        Args:
+            obs (Tensor): observations collected
+            action (Tensor, optional): actions played given the observations. If None, actions
+                are sampled from a categorical distribution.
+                Defaults to None.
+            state (Tensor, optional): the recurrent states.
+                Defaults to None.
+
+        Returns:
+            sampled actions if `action` is None, themselves otherwise
+            log-probabilites of the actions
+            entropy of the distribution
+            critic value
+            next recurrent state
+        """
+        x = self.fc(obs)
         x, state = self.rnn(x, state)
         action, log_prob, entropy = self.get_action(x, action)
         value = self.get_value(x)
         return action, log_prob, entropy, value, state
 
-    def forward(self, x: Tensor, action: Tensor = None, state: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        return self.get_action_and_value(x, action, state)
+    def forward(
+        self, obs: Tensor, action: Tensor = None, state: Tensor = None
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Forward method of the LightningModule.
+
+        This model forward computes actions, related log-probabilities, entropy distribution
+        and the critic values given the observations received as input. If `action` is None,
+        then the actions are sampled from a categorical distribution.
+
+        Args:
+            obs (Tensor): observations collected
+            action (Tensor, optional): actions played given the observations. If None, actions
+                are sampled from a categorical distribution.
+                Defaults to None.
+            state (Tensor, optional): the recurrent states.
+                Defaults to None.
+
+        Returns:
+            sampled actions if `action` is None, themselves otherwise
+            log-probabilites of the actions
+            entropy of the distribution
+            critic value
+            next recurrent state
+        """
+        return self.get_action_and_value(obs, action, state)
 
     @torch.no_grad()
     def estimate_returns_and_advantages(
@@ -260,6 +336,23 @@ class RecurrentPPOAgent(LightningModule):
         gae_lambda: float,
         state: Tensor,
     ) -> Tuple[Tensor, Tensor]:
+        """Compute returns and advantages following https://arxiv.org/abs/1506.02438
+
+        Args:
+            rewards (Tensor): all rewards collected from the last rollout
+            values (Tensor): all values collected from the last rollout
+            dones (Tensor): all dones collected from the last rollout
+            next_obs (Tensor): next observation
+            next_done (Tensor): next done
+            num_steps (int): the number of steps played
+            gamma (float): discout factor
+            gae_lambda (float): lambda for GAE estimation
+            state (Tensor): recurrent state
+
+        Returns:
+            estimated returns
+            estimated advantages
+        """
         _, _, _, next_value, _ = self.get_action_and_value(next_obs, state=state)
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
@@ -275,7 +368,17 @@ class RecurrentPPOAgent(LightningModule):
         returns = advantages + values
         return returns, advantages
 
-    def training_step(self, batch: Dict[str, Tensor], state):
+    def training_step(self, batch: TensorDict, state: Tensor) -> Tuple[Tensor, Tensor]:
+        """Single training step over a batch of data.
+
+        Args:
+            batch (TensorDict): the batch to optimize from
+            state (Tensor): recurrent state
+
+        Returns:
+            computed loss
+            new recurrent state
+        """
         # Get actions and values given the current observations
         _, newlogprob, entropy, newvalue, state = self(batch["observations"], batch["actions"].long(), state)
         logratio = newlogprob - batch["logprobs"]
@@ -310,7 +413,11 @@ class RecurrentPPOAgent(LightningModule):
         return pg_loss + ent_loss + v_loss, state
 
     def on_train_epoch_end(self, global_step: int) -> None:
-        # Log metrics and reset their internal state
+        """Log metrics and reset them to their initial state.
+
+        Args:
+            global_step (int): the global optimization step
+        """
         self.logger.log_metrics(
             {
                 "Loss/policy_loss": self.avg_pg_loss.compute(),
@@ -322,9 +429,18 @@ class RecurrentPPOAgent(LightningModule):
         self.reset_metrics()
 
     def reset_metrics(self):
+        """Reset metrics state"""
         self.avg_pg_loss.reset()
         self.avg_value_loss.reset()
         self.avg_ent_loss.reset()
 
-    def configure_optimizers(self, lr: float):
-        return torch.optim.Adam(self.parameters(), lr=lr, eps=1e-4)
+    def configure_optimizers(self, **optimizer_kwargs) -> Optimizer:
+        """Configure the optimizers.
+
+        Returns:
+            the optimizer
+        """
+        eps = optimizer_kwargs.pop("eps", None)
+        if eps is None:
+            eps = 1e-4
+        return Adam(self.parameters(), **optimizer_kwargs, eps=eps)

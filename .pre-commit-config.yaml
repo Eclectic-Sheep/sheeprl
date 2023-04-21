@@ -7,7 +7,7 @@ repos:
         types: [yaml]
 
   - repo: https://github.com/myint/autoflake
-    rev: v2.0.2
+    rev: v2.1.1
     hooks:
       - id: autoflake
         name: Remove unused variables and imports
@@ -23,7 +23,7 @@ repos:
             "--ignore-init-module-imports",
           ]
         files: \.py$
-    
+
   - repo: https://github.com/PyCQA/isort
     rev: 5.12.0
     hooks:
@@ -35,24 +35,25 @@ repos:
         files: \.py$
 
   - repo: https://github.com/psf/black
-    rev: 23.1.0
+    rev: 23.3.0
     hooks:
       - id: black
         name: (black) Format Python code
         args: [--config=pyproject.toml]
         language: python
         types: [python]
+
       - id: black-jupyter
         name: (black-jupyter) Format jupyter notebooks
         args: [--config=pyproject.toml]
         language: python
         types: [jupyter]
-  
-  - repo: https://github.com/econchick/interrogate
-    rev: 1.5.0
-    hooks:
-      - id: interrogate
-        name: (interrogate) docstring coverage
-        language: python
-        types: [python]
-        pass_filenames: false
+
+  # - repo: https://github.com/econchick/interrogate
+  #   rev: 1.5.0
+  #   hooks:
+  #     - id: interrogate
+  #       name: (interrogate) docstring coverage
+  #       language: python
+  #       types: [python]
+  #       pass_filenames: false

@@ -36,29 +36,19 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 
-[tool.mypy]
-disallow_untyped_defs = true
-show_error_codes = true
-no_implicit_optional = true
-warn_return_any = true
-ignore_missing_imports = true
-
 [tool.ruff]
 line-length = 120
 # Enable Pyflakes `E` and `F` codes by default.
 select = [
-    "E", "W",  # see: https://pypi.org/project/pycodestyle
-    "F",  # see: https://pypi.org/project/pyflakes
+    "E",
+    "W", # see: https://pypi.org/project/pycodestyle
+    "F", # see: https://pypi.org/project/pyflakes
 ]
 ignore = [
-    "E731",  # Do not assign a lambda expression, use a def
+    "E731", # Do not assign a lambda expression, use a def
 ]
 # Exclude a variety of commonly ignored directories.
-exclude = [
-    ".git",
-    "docs",
-    "_notebooks"
-]
+exclude = [".git", "docs", "_notebooks"]
 ignore-init-module-imports = true
 
 # Black formatting
@@ -95,9 +85,7 @@ skip_gitignore = true
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "--strict-markers --disable-pytest-warnings"
-markers = [
-    "benchmark: mark test as a benchmark",
-]
+markers = ["benchmark: mark test as a benchmark"]
 
 # Pytest coverage
 [tool.coverage.run]
@@ -121,7 +109,7 @@ quiet = false
 whitelist_regex = []
 color = true
 exclude = ["notebooks"]
-ignore_regex = [ "^get$", "^mock_.*", ".*BaseClass.*"]
+ignore_regex = ["^get$", "^mock_.*", ".*BaseClass.*"]
 
 [tool.mypy]
 # -> Level 1# custom settings

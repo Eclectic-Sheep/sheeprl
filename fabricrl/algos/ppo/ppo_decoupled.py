@@ -46,6 +46,7 @@ from fabricrl.utils.utils import linear_annealing
 @torch.no_grad()
 def player(args, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
+
     logger = TensorBoardLogger(
         root_dir=os.path.join(
             "logs", "fabric_decoupled_logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
@@ -68,7 +69,10 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train", mask_velocities=args.mask_vel) for i in range(args.num_envs)]
+        [
+            make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train", mask_velocities=args.mask_vel)
+            for i in range(args.num_envs)
+        ]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 

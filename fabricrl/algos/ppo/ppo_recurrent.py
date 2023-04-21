@@ -31,7 +31,7 @@ from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from torch import Tensor
-from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
+from torch.utils.data import BatchSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.agent import RecurrentPPOAgent
@@ -44,7 +44,9 @@ from fabricrl.utils.utils import linear_annealing
 
 @torch.no_grad()
 def test(agent: "RecurrentPPOAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel)()
+    env = make_env(
+        args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel
+    )()
     step = 0
     done = False
     cumulative_rew = 0
@@ -118,7 +120,13 @@ def main(args: argparse.Namespace):
     envs = gym.vector.SyncVectorEnv(
         [
             make_env(
-                args.env_id, args.seed + rank * args.num_envs + i, rank, args.capture_video, logger.log_dir, "train", mask_velocities=args.mask_vel
+                args.env_id,
+                args.seed + rank * args.num_envs + i,
+                rank,
+                args.capture_video,
+                logger.log_dir,
+                "train",
+                mask_velocities=args.mask_vel,
             )
             for i in range(args.num_envs)
         ]

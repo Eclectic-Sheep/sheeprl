@@ -1,6 +1,5 @@
 from typing import Iterator
 
-import torch
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data import Sampler
 

@@ -1,11 +1,20 @@
 import os
 from typing import Optional
-from fabricrl.envs.wrappers import MaskVelocityWrapper
 
 import gymnasium as gym
 
+from fabricrl.envs.wrappers import MaskVelocityWrapper
 
-def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: Optional[str] = None, prefix: str = "", mask_velocities: bool = False):
+
+def make_env(
+    env_id: str,
+    seed: int,
+    idx: int,
+    capture_video: bool,
+    run_name: Optional[str] = None,
+    prefix: str = "",
+    mask_velocities: bool = False,
+):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         if mask_velocities:
