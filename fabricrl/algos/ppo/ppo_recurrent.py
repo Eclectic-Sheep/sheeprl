@@ -91,7 +91,7 @@ def main(args: argparse.Namespace):
 
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "fabric_logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
 

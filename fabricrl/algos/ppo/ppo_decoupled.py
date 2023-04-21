@@ -48,9 +48,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
     logger = TensorBoardLogger(
-        root_dir=os.path.join(
-            "logs", "fabric_decoupled_logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
-        ),
+        root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
     log_dir = logger.log_dir
