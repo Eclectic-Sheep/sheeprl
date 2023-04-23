@@ -156,14 +156,14 @@ class PPOAgent(LightningModule):
             t_steps = conditional_arange(num_steps, dones.view(-1)).view(-1, 1)
         else:
             raise ValueError(f"Shape must be 2 or 3 dimensional, got {rewards.shape}")
-        gt = (gamma * gae_lambda) ** t_steps
+        gt = torch.pow(gamma * gae_lambda, t_steps.view_as(dones))
         next_values = torch.roll(values, -1, dims=0)
         next_values[-1] = next_value
         next_dones = torch.roll(dones, -1, dims=0)
         next_dones[-1] = next_done
         deltas = rewards + gamma * next_values * (1 - next_dones) - values
         cs = torch.flipud(deltas * gt).cumsum(dim=0)
-        acc = torch.cummax(torch.where(torch.flipud(dones.bool()), cs, 0), 0)[0]
+        acc = torch.cummax(torch.flipud(dones) * cs, 0)[0]
         acc[0] = 0
         dones[-1] = 0
         adv = torch.flipud(cs - acc) / gt
@@ -521,19 +521,16 @@ class RecurrentPPOAgent(LightningModule):
             t_steps = conditional_arange(num_steps, dones.view(-1)).view(-1, 1)
         else:
             raise ValueError(f"Shape must be 2 or 3 dimensional, got {rewards.shape}")
-        gt = (gamma * gae_lambda) ** t_steps
+        gt = torch.pow(gamma * gae_lambda, t_steps.view_as(dones))
         next_values = torch.roll(values, -1, dims=0)
         next_values[-1] = next_value
         next_dones = torch.roll(dones, -1, dims=0)
         next_dones[-1] = next_done
         deltas = rewards + gamma * next_values * (1 - next_dones) - values
         cs = torch.flipud(deltas * gt).cumsum(dim=0)
-        acc = torch.cummax(torch.where(torch.flipud(dones.bool()), cs, 0), 0)[0]
+        acc = torch.cummax(torch.flipud(dones) * cs, 0)[0]
         acc[0] = 0
         dones[-1] = 0
-        # mask = dones.nonzero(as_tuple=True)
-        # adv = torch.flipud(cs - acc) / gt
-        # adv[mask] = deltas[mask] + gamma * gae_lambda * adv[mask[0] + 1, mask[1]]
         adv = torch.flipud(cs - acc) / gt
         adv = adv + dones * (deltas + gamma * gae_lambda * adv.roll(-1, 0))
         return adv + values, adv

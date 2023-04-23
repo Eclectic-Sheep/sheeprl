@@ -81,6 +81,6 @@ def layer_init(
 def conditional_arange(n: int, mask: Tensor) -> Tensor:
     rolled_mask = torch.roll(mask, 1, 0)
     rolled_mask[0] = 0
-    cs = (torch.ones(n, device=mask.device) * (1 - rolled_mask)).cumsum(dim=0)
-    acc = torch.cummax(torch.where(rolled_mask.bool(), cs, 0), 0)[0]
+    cs = (torch.ones(n) * (1 - rolled_mask)).cumsum(dim=0)
+    acc = torch.cummax(rolled_mask * cs, 0)[0]
     return cs - torch.where(acc > 0, acc - 1, 0) - 1
