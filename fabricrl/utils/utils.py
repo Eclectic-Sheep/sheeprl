@@ -4,6 +4,7 @@ from typing import Dict, Tuple, Union
 import numpy as np
 import torch
 from gymnasium import spaces
+from torch import Tensor
 
 
 def get_action_dim(action_space: spaces.Space) -> int:
@@ -75,3 +76,11 @@ def layer_init(
         torch.nn.init.orthogonal_(layer.weight, std)
         torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
+
+def conditional_arange(n: int, mask: Tensor) -> Tensor:
+    rolled_mask = torch.roll(mask, 1, 0)
+    rolled_mask[0] = 0
+    cs = (torch.ones(n, device=mask.device) * (1 - rolled_mask)).cumsum(dim=0)
+    acc = torch.cummax(torch.where(rolled_mask.bool(), cs, 0), 0)[0]
+    return cs - torch.where(acc > 0, acc - 1, 0) - 1

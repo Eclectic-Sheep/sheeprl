@@ -220,7 +220,7 @@ def main(args: argparse.Namespace):
         ep_len_avg.reset()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        returns, advantages = agent.estimate_returns_and_advantages(
+        returns, advantages = agent.fast_estimate_returns_and_advantages(
             rb["rewards"], rb["values"], rb["dones"], next_obs, next_done, args.num_steps, args.gamma, args.gae_lambda
         )
 

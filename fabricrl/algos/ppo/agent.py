@@ -12,7 +12,7 @@ from torch.optim import Adam, Optimizer
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.utils.utils import layer_init
+from fabricrl.utils.utils import conditional_arange, layer_init
 
 
 class PPOAgent(LightningModule):
@@ -113,6 +113,62 @@ class PPOAgent(LightningModule):
             advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
         returns = advantages + values
         return returns, advantages
+
+    @torch.no_grad()
+    def fast_estimate_returns_and_advantages(
+        self,
+        rewards: Tensor,
+        values: Tensor,
+        dones: Tensor,
+        next_obs: Tensor,
+        next_done: Tensor,
+        num_steps: int,
+        gamma: float,
+        gae_lambda: float,
+    ):
+        """Compute returns and advantages following https://arxiv.org/abs/1506.02438
+
+        Args:
+            rewards (Tensor): all rewards collected from the last rollout
+            values (Tensor): all values collected from the last rollout
+            dones (Tensor): all dones collected from the last rollout
+            next_obs (Tensor): next observation
+            next_done (Tensor): next done
+            num_steps (int): the number of steps played
+            gamma (float): discout factor
+            gae_lambda (float): lambda for GAE estimation
+            state (Tuple[Tensor, Tensor]): recurrent state for both the actor and critic
+
+        Returns:
+            estimated returns
+            estimated advantages
+        """
+        next_value = self.get_value(next_obs)
+        if len(rewards.shape) == 3:
+            t_steps = torch.cat(
+                [
+                    conditional_arange(num_steps, dones[:, dim, :].view(-1)).view(-1, 1)
+                    for dim in range(rewards.shape[1])
+                ],
+                dim=1,
+            ).unsqueeze(-1)
+        elif len(rewards.shape) == 2:
+            t_steps = conditional_arange(num_steps, dones.view(-1)).view(-1, 1)
+        else:
+            raise ValueError(f"Shape must be 2 or 3 dimensional, got {rewards.shape}")
+        gt = (gamma * gae_lambda) ** t_steps
+        next_values = torch.roll(values, -1, dims=0)
+        next_values[-1] = next_value
+        next_dones = torch.roll(dones, -1, dims=0)
+        next_dones[-1] = next_done
+        deltas = rewards + gamma * next_values * (1 - next_dones) - values
+        cs = torch.flipud(deltas * gt).cumsum(dim=0)
+        acc = torch.cummax(torch.where(torch.flipud(dones.bool()), cs, 0), 0)[0]
+        acc[0] = 0
+        dones[-1] = 0
+        adv = torch.flipud(cs - acc) / gt
+        adv = adv + dones * (deltas + gamma * gae_lambda * adv.roll(-1, 0))
+        return adv + values, adv
 
     def training_step(self, batch: Dict[str, Tensor]):
         # Get actions and values given the current observations
@@ -421,6 +477,66 @@ class RecurrentPPOAgent(LightningModule):
             advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
         returns = advantages + values
         return returns, advantages
+
+    @torch.no_grad()
+    def fast_estimate_returns_and_advantages(
+        self,
+        rewards: Tensor,
+        values: Tensor,
+        dones: Tensor,
+        next_obs: Tensor,
+        next_done: Tensor,
+        num_steps: int,
+        gamma: float,
+        gae_lambda: float,
+        state: Tuple[Tensor, Tensor],
+    ):
+        """Compute returns and advantages following https://arxiv.org/abs/1506.02438
+
+        Args:
+            rewards (Tensor): all rewards collected from the last rollout
+            values (Tensor): all values collected from the last rollout
+            dones (Tensor): all dones collected from the last rollout
+            next_obs (Tensor): next observation
+            next_done (Tensor): next done
+            num_steps (int): the number of steps played
+            gamma (float): discout factor
+            gae_lambda (float): lambda for GAE estimation
+            state (Tuple[Tensor, Tensor]): recurrent state for both the actor and critic
+
+        Returns:
+            estimated returns
+            estimated advantages
+        """
+        _, _, _, next_value, _ = self.get_action_and_value(next_obs, next_done, state=state)
+        if len(rewards.shape) == 3:
+            t_steps = torch.cat(
+                [
+                    conditional_arange(num_steps, dones[:, dim, :].view(-1)).view(-1, 1)
+                    for dim in range(rewards.shape[1])
+                ],
+                dim=1,
+            ).unsqueeze(-1)
+        elif len(rewards.shape) == 2:
+            t_steps = conditional_arange(num_steps, dones.view(-1)).view(-1, 1)
+        else:
+            raise ValueError(f"Shape must be 2 or 3 dimensional, got {rewards.shape}")
+        gt = (gamma * gae_lambda) ** t_steps
+        next_values = torch.roll(values, -1, dims=0)
+        next_values[-1] = next_value
+        next_dones = torch.roll(dones, -1, dims=0)
+        next_dones[-1] = next_done
+        deltas = rewards + gamma * next_values * (1 - next_dones) - values
+        cs = torch.flipud(deltas * gt).cumsum(dim=0)
+        acc = torch.cummax(torch.where(torch.flipud(dones.bool()), cs, 0), 0)[0]
+        acc[0] = 0
+        dones[-1] = 0
+        # mask = dones.nonzero(as_tuple=True)
+        # adv = torch.flipud(cs - acc) / gt
+        # adv[mask] = deltas[mask] + gamma * gae_lambda * adv[mask[0] + 1, mask[1]]
+        adv = torch.flipud(cs - acc) / gt
+        adv = adv + dones * (deltas + gamma * gae_lambda * adv.roll(-1, 0))
+        return adv + values, adv
 
     def training_step(self, batch: TensorDict, state: Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         """Single training step over a batch of data.
