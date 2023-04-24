@@ -87,33 +87,6 @@ class PPOAgent(LightningModule):
     def forward(self, x: Tensor, action: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         return self.get_action_and_value(x, action)
 
-    @torch.no_grad()
-    def estimate_returns_and_advantages(
-        self,
-        rewards: Tensor,
-        values: Tensor,
-        dones: Tensor,
-        next_obs: Tensor,
-        next_done: Tensor,
-        num_steps: int,
-        gamma: float,
-        gae_lambda: float,
-    ) -> Tuple[Tensor, Tensor]:
-        next_value = self.get_value(next_obs)
-        advantages = torch.zeros_like(rewards)
-        lastgaelam = 0
-        for t in reversed(range(num_steps)):
-            if t == num_steps - 1:
-                nextnonterminal = torch.logical_not(next_done)
-                nextvalues = next_value
-            else:
-                nextnonterminal = torch.logical_not(dones[t + 1])
-                nextvalues = values[t + 1]
-            delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-            advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-        returns = advantages + values
-        return returns, advantages
-
     def training_step(self, batch: Dict[str, Tensor]):
         # Get actions and values given the current observations
         _, newlogprob, entropy, newvalue = self(batch["observations"], batch["actions"].long())
@@ -376,51 +349,6 @@ class RecurrentPPOAgent(LightningModule):
             next recurrent states for both the actor and the critic
         """
         return self.get_action_and_value(obs, done, action, state)
-
-    @torch.no_grad()
-    def estimate_returns_and_advantages(
-        self,
-        rewards: Tensor,
-        values: Tensor,
-        dones: Tensor,
-        next_obs: Tensor,
-        next_done: Tensor,
-        num_steps: int,
-        gamma: float,
-        gae_lambda: float,
-        state: Tuple[Tensor, Tensor],
-    ) -> Tuple[Tensor, Tensor]:
-        """Compute returns and advantages following https://arxiv.org/abs/1506.02438
-
-        Args:
-            rewards (Tensor): all rewards collected from the last rollout
-            values (Tensor): all values collected from the last rollout
-            dones (Tensor): all dones collected from the last rollout
-            next_obs (Tensor): next observation
-            next_done (Tensor): next done
-            num_steps (int): the number of steps played
-            gamma (float): discout factor
-            gae_lambda (float): lambda for GAE estimation
-            state (Tuple[Tensor, Tensor]): recurrent state for both the actor and critic
-
-        Returns:
-            estimated returns
-            estimated advantages
-        """
-        _, _, _, next_value, _ = self.get_action_and_value(next_obs, next_done, state=state)
-        advantages = torch.zeros_like(rewards)
-        lastgaelam = 0
-        for t in reversed(range(num_steps)):
-            if t == num_steps - 1:
-                nextnonterminal = torch.logical_not(next_done)
-                nextvalues = next_value
-            else:
-                nextnonterminal = torch.logical_not(dones[t + 1])
-                nextvalues = values[t + 1]
-            delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-            advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-        returns = advantages + values
-        return returns, advantages
 
     def training_step(self, batch: TensorDict, state: Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         """Single training step over a batch of data.

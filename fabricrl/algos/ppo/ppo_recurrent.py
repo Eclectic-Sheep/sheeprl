@@ -36,7 +36,7 @@ from fabricrl.algos.ppo.agent import RecurrentPPOAgent
 from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.utils.utils import linear_annealing
+from fabricrl.utils.utils import estimate_returns_and_advantages, linear_annealing
 
 
 @torch.no_grad()
@@ -220,17 +220,18 @@ def main(args: argparse.Namespace):
         ep_len_avg.reset()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        returns, advantages = agent.estimate_returns_and_advantages(
-            rb["rewards"],
-            rb["values"],
-            rb["dones"],
-            next_obs,
-            next_done,
-            args.num_steps,
-            args.gamma,
-            args.gae_lambda,
-            state,
-        )
+        with torch.no_grad():
+            _, _, _, next_value, _ = agent.get_action_and_value(next_obs, next_done, state=state)
+            returns, advantages = estimate_returns_and_advantages(
+                rb["rewards"],
+                rb["values"],
+                rb["dones"],
+                next_value,
+                next_done,
+                args.num_steps,
+                args.gamma,
+                args.gae_lambda,
+            )
 
         # Add returns and advantages to the buffer
         rb["returns"] = returns.float()
