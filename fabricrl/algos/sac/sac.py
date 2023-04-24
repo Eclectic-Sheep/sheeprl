@@ -7,7 +7,6 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 import torchmetrics
 from lightning.fabric import Fabric
@@ -16,11 +15,34 @@ from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
+from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACAgent
 from fabricrl.algos.sac.args import parse_args
+from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.data.buffers import ReplayBuffer
+
+
+@torch.no_grad()
+def test(agent: "SACAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
+    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=False)()
+    step = 0
+    done = False
+    cumulative_rew = 0
+    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
+    while not done:
+        # Act greedly through the environment
+        action = agent.get_greedy_action(next_obs)
+
+        # Single environment step
+        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
+        done = done or truncated
+        cumulative_rew += reward
+        next_obs = torch.tensor(next_obs, device=device)
+        step += 1
+    logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
+    env.close()
 
 
 def train(
@@ -33,56 +55,42 @@ def train(
     global_step: int,
     args: argparse.Namespace,
 ):
-    if global_step > args.learning_starts:
-        alpha = agent.log_alpha.exp().item()
-        with torch.no_grad():
-            next_state_actions, next_state_log_pi, _ = agent.actor.get_action(data["next_observations"])
-            qf_next_target = agent.qf_target(data["next_observations"], next_state_actions)
-            min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - alpha * next_state_log_pi
-            next_qf_value = data["rewards"] + (~data["dones"]) * args.gamma * (min_qf_next_target)
+    # Update the soft-critic
+    qf_loss = critic_loss(
+        agent,
+        data["observations"],
+        data["next_observations"],
+        data["actions"],
+        data["rewards"],
+        data["dones"],
+        args.gamma,
+    )
+    qf_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(qf_loss)
+    qf_optimizer.step()
 
-        qf_values = agent.qf(data["observations"], data["actions"])
-        qf_loss = (
-            1
-            / agent.num_critics
-            * sum(
-                F.mse_loss(qf_values[..., qf_value_idx].unsqueeze(-1), next_qf_value)
-                for qf_value_idx in range(agent.num_critics)
-            )
-        )
+    # Update the actor
+    actor_loss, log_pi = policy_loss(agent, data["observations"])
+    actor_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(actor_loss)
+    actor_optimizer.step()
 
-        qf_optimizer.zero_grad()
-        fabric.backward(qf_loss)
-        qf_optimizer.step()
+    # Update the entropy value
+    alpha_loss = entropy_loss(agent, log_pi)
+    alpha_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(alpha_loss)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    alpha_optimizer.step()
 
-        if global_step % args.policy_frequency == 0:  # TD-3 Delayed update support
-            for _ in range(args.policy_frequency):
-                pi, log_pi, _ = agent.actor.get_action(data["observations"])
-                qf_pi = agent.qf(data["observations"], pi)
-                min_qf_pi = torch.min(qf_pi, dim=-1, keepdim=True)[0]
-                actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
+    # Log metrics
+    agent.on_train_epoch_end(global_step)
 
-                actor_optimizer.zero_grad()
-                fabric.backward(actor_loss)
-                actor_optimizer.step()
-
-                with torch.no_grad():
-                    _, log_pi, _ = agent.actor.get_action(data["observations"])
-                alpha_loss = (-agent.log_alpha * (log_pi + agent.target_entropy)).mean()
-
-                alpha_optimizer.zero_grad()
-                fabric.backward(alpha_loss)
-                agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-                alpha_optimizer.step()
-
-        # update the target networks
-        if global_step % args.target_network_frequency == 0:
-            agent.qf_target_ema()
+    # Update the target networks with EMA
+    if global_step % args.target_network_frequency == 0:
+        agent.qf_target_ema()
 
 
 def main(args: argparse.Namespace):
-    args.num_envs = 4
-
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
@@ -90,11 +98,10 @@ def main(args: argparse.Namespace):
     )
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger, devices=2)
+    fabric = Fabric(loggers=logger)
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
-    fabric.world_size
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -123,7 +130,7 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = SACAgent(envs, num_critics=2, tau=args.tau)
+    agent = fabric.setup_module(SACAgent(envs, num_critics=2, tau=args.tau, nan_strategy="ignore"))
     agent.qf = fabric.setup_module(agent.qf)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer = fabric.setup_optimizers(optim.Adam(agent.qf.parameters(), lr=args.q_lr))
@@ -139,7 +146,7 @@ def main(args: argparse.Namespace):
     rb = ReplayBuffer(args.buffer_size, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
-    time.time()
+    start_time = time.time()
     with device:
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
@@ -183,7 +190,6 @@ def main(args: argparse.Namespace):
                     real_next_obs[idx] = final_obs
 
         with device:
-            obs = torch.tensor(obs)
             next_obs = torch.tensor(real_next_obs)
             actions = torch.tensor(actions).view(args.num_envs, -1)
             rewards = torch.tensor(rewards).view(args.num_envs, -1).float()  # [N_envs, 1]
@@ -200,9 +206,14 @@ def main(args: argparse.Namespace):
         obs = next_obs
 
         # Train the agent
-        data = rb.sample(args.batch_size)
-        train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, data, global_step, args)
+        if global_step > args.learning_starts:
+            data = rb.sample(args.batch_size)
+            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, data, global_step, args)
+        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+
     envs.close()
+    if fabric.is_global_zero:
+        test(agent.module, device, fabric.logger.experiment, args)
 
 
 if __name__ == "__main__":

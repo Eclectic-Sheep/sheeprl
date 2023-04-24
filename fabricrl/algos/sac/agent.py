@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 from torch import Tensor
+from torchmetrics import MeanMetric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -60,6 +61,13 @@ class Actor(LightningModule):
         log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
         return mean, log_std
 
+    def get_greedy_action(self, obs: Tensor) -> Tensor:
+        x = F.relu(self.fc1(obs))
+        x = F.relu(self.fc2(x))
+        mean = self.fc_mean(x)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+        return mean
+
     def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         mean, log_std = self.forward(obs)
         std = log_std.exp()
@@ -87,7 +95,9 @@ class Actor(LightningModule):
 
 
 class SACAgent(LightningModule):
-    def __init__(self, envs: gym.vector.SyncVectorEnv, num_critics: int = 2, tau: float = 0.005) -> None:
+    def __init__(
+        self, envs: gym.vector.SyncVectorEnv, num_critics: int = 2, tau: float = 0.005, **torchmetrics_kwargs
+    ) -> None:
         super().__init__()
 
         # Actor and critics
@@ -101,10 +111,14 @@ class SACAgent(LightningModule):
         # Automatic entropy tuning
         self._target_entropy = -torch.prod(torch.tensor(envs.single_action_space.shape).to(self.device))
         self._log_alpha = torch.nn.Parameter(torch.zeros(1, device=self.device), requires_grad=True)
-        self._alpha = self._log_alpha.exp().item()
 
         # EMA tau
         self._tau = tau
+
+        # Metrics
+        self.avg_pg_loss = MeanMetric(**torchmetrics_kwargs)
+        self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
+        self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
 
     @property
     def num_critics(self) -> int:
@@ -136,7 +150,7 @@ class SACAgent(LightningModule):
 
     @property
     def alpha(self) -> float:
-        return self._alpha
+        return self._log_alpha.exp().item()
 
     @property
     def target_entropy(self) -> Tensor:
@@ -149,9 +163,29 @@ class SACAgent(LightningModule):
     def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         return self.actor.get_action(obs)
 
+    def get_greedy_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        return self.actor.get_greedy_action(obs)
+
     def get_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return self.qf.forward(obs, action)
 
     def qf_target_ema(self) -> None:
         for param, target_param in zip(self.qf.parameters(), self.qf_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+
+    def on_train_epoch_end(self, global_step: int) -> None:
+        # Log metrics and reset their internal state
+        self.logger.log_metrics(
+            {
+                "Loss/policy_loss": self.avg_pg_loss.compute(),
+                "Loss/value_loss": self.avg_value_loss.compute(),
+                "Loss/entropy_loss": self.avg_ent_loss.compute(),
+            },
+            global_step,
+        )
+        self.reset_metrics()
+
+    def reset_metrics(self):
+        self.avg_pg_loss.reset()
+        self.avg_value_loss.reset()
+        self.avg_ent_loss.reset()
