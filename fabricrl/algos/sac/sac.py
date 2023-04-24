@@ -72,6 +72,7 @@ def train(
 
                 alpha_optimizer.zero_grad()
                 fabric.backward(alpha_loss)
+                agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
                 alpha_optimizer.step()
 
         # update the target networks
@@ -89,7 +90,7 @@ def main(args: argparse.Namespace):
     )
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, devices=2)
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -122,7 +123,9 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent: SACAgent = fabric.setup_module(SACAgent(envs, num_critics=2, tau=args.tau))
+    agent = SACAgent(envs, num_critics=2, tau=args.tau)
+    agent.qf = fabric.setup_module(agent.qf)
+    agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer = fabric.setup_optimizers(optim.Adam(agent.qf.parameters(), lr=args.q_lr))
     actor_optimizer = fabric.setup_optimizers(optim.Adam(list(agent.actor.parameters()), lr=args.policy_lr))
     alpha_optimizer = optim.Adam([agent.log_alpha], lr=args.q_lr)

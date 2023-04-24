@@ -114,24 +114,36 @@ class SACAgent(LightningModule):
     def qf(self) -> SoftQNetwork:
         return self._qf
 
+    @qf.setter
+    def qf(self, v) -> None:
+        self._qf = v
+
     @property
     def actor(self) -> Actor:
         return self._actor
 
+    @actor.setter
+    def actor(self, v) -> None:
+        self._actor = v
+
     @property
     def qf_target(self) -> SoftQNetwork:
         return self._qf_target
+
+    @qf_target.setter
+    def qf_target(self, v) -> None:
+        self._qf_target = v
 
     @property
     def alpha(self) -> float:
         return self._alpha
 
     @property
-    def target_entropy(self) -> float:
+    def target_entropy(self) -> Tensor:
         return self._target_entropy
 
     @property
-    def log_alpha(self) -> float:
+    def log_alpha(self) -> Tensor:
         return self._log_alpha
 
     def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
