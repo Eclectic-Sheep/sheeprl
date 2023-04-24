@@ -95,7 +95,7 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int) -> TensorDictBase:
+    def sample(self, batch_size: int, sample_next_obs: bool = False) -> TensorDictBase:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
@@ -104,6 +104,8 @@ class ReplayBuffer:
 
         Args:
             batch_size (int): batch_size (int): Number of element to sample
+            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+                Defaults to False.
 
         Returns:
             TensorDictBase: the sampled TensorDictBase, cloned
@@ -119,14 +121,15 @@ class ReplayBuffer:
                 torch.randint(1, self._buffer_size, size=(batch_size, self.n_envs), device=self.device) + self._pos
             ) % self._buffer_size
         else:
-            batch_idxes = torch.randint(0, self._pos, size=(batch_size, self.n_envs), device=self.device)
-        return self._get_samples(batch_idxes)
+            batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size, self.n_envs), device=self.device)
+        return self._get_samples(batch_idxes, sample_next_obs=sample_next_obs)
 
-    def _get_samples(self, batch_idxes: Tensor) -> TensorDictBase:
+    def _get_samples(self, batch_idxes: Tensor, sample_next_obs: bool = False) -> TensorDictBase:
         buf: TensorDictBase = torch.gather(self._buf, dim=0, index=batch_idxes).clone()
-        buf["next_obs"] = self._buf["observations"][
-            (batch_idxes + 1) % self._buffer_size, torch.arange(self.n_envs, device=self.device)
-        ].clone()
+        if sample_next_obs:
+            buf["next_observations"] = self._buf["observations"][
+                (batch_idxes + 1) % self._buffer_size, torch.arange(self.n_envs, device=self.device)
+            ].clone()
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
