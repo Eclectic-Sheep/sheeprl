@@ -119,7 +119,7 @@ class ReplayBuffer:
                 torch.randint(1, self._buffer_size, size=(batch_size, self.n_envs), device=self.device) + self._pos
             ) % self._buffer_size
         else:
-            batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size, self.n_envs), device=self.device)
+            batch_idxes = torch.randint(0, self._pos, size=(batch_size, self.n_envs), device=self.device)
         return self._get_samples(batch_idxes)
 
     def _get_samples(self, batch_idxes: Tensor) -> TensorDictBase:
