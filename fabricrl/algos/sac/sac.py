@@ -12,7 +12,7 @@ import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
-from tensordict import TensorDict
+from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
 from torch.utils.tensorboard import SummaryWriter
@@ -143,15 +143,21 @@ def main(args: argparse.Namespace):
         ep_len_avg = torchmetrics.MeanMetric()
 
     # Local data
-    rb = ReplayBuffer(args.buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(args.buffer_size // int(args.num_envs * fabric.world_size), args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
+    # Global variables
     start_time = time.time()
+    num_updates = args.total_timesteps // int(args.num_envs * fabric.world_size)
+    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
+    if args.learning_starts <= 1:
+        args.learning_starts = 2
+
     with device:
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
 
-    for global_step in range(args.total_timesteps):
+    for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         # or play randomly
         if global_step < args.learning_starts:
@@ -207,8 +213,10 @@ def main(args: argparse.Namespace):
 
         # Train the agent
         if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, data, global_step, args)
+            local_data = rb.sample(args.batch_size // (fabric.world_size * args.num_envs))
+            gathered_data = fabric.all_gather(local_data.to_dict())
+            gathered_data = make_tensordict(gathered_data).view(-1)
+            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()

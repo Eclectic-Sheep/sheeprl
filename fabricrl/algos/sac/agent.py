@@ -24,7 +24,7 @@ class SoftQNetwork(LightningModule):
         self.fc3 = nn.Linear(256, num_critics)
 
     def forward(self, obs: Tensor, action: Tensor) -> Tensor:
-        x = torch.cat([obs, action], 2)
+        x = torch.cat([obs, action], -1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -46,10 +46,12 @@ class Actor(LightningModule):
 
         # Action rescaling buffers
         self.register_buffer(
-            "action_scale", torch.tensor((envs.action_space.high - envs.action_space.low) / 2.0, dtype=torch.float32)
+            "action_scale",
+            torch.tensor((envs.single_action_space.high - envs.single_action_space.low) / 2.0, dtype=torch.float32),
         )
         self.register_buffer(
-            "action_bias", torch.tensor((envs.action_space.high + envs.action_space.low) / 2.0, dtype=torch.float32)
+            "action_bias",
+            torch.tensor((envs.single_action_space.high + envs.single_action_space.low) / 2.0, dtype=torch.float32),
         )
 
     def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
