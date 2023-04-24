@@ -1,5 +1,4 @@
-"""Based on: Soft Actor-Critic Algorithms and Applications
-https://arxiv.org/abs/1812.05905
+"""Based on "Soft Actor-Critic Algorithms and Applications": https://arxiv.org/abs/1812.05905
 """
 
 from typing import Tuple
@@ -19,7 +18,7 @@ def policy_loss(agent: SACAgent, obs: Tensor) -> Tuple[Tensor, Tensor]:
     # Eq. 7
     actor_loss = ((agent.alpha * log_pi) - min_qf_pi).mean()
 
-    # Update metric
+    # Update actor metric
     agent.avg_pg_loss(actor_loss)
     return actor_loss, log_pi.detach()
 
@@ -38,7 +37,7 @@ def critic_loss(
         next_state_actions, next_state_log_pi, _ = agent.actor.get_action(next_obs)
         qf_next_target = agent.qf_target(next_obs, next_state_actions)
         min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - agent.alpha * next_state_log_pi
-        next_qf_value = rewards + (~dones) * gamma * (min_qf_next_target)
+        next_qf_value = rewards + (~dones) * gamma * min_qf_next_target
 
     # Get q-values for the current observations and actions
     qf_values = agent.qf(obs, actions)
