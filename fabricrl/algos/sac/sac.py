@@ -68,18 +68,20 @@ def train(
     fabric.backward(qf_loss)
     qf_optimizer.step()
 
-    # Update the actor
-    actor_loss, log_pi = policy_loss(agent, data["observations"])
-    actor_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(actor_loss)
-    actor_optimizer.step()
+    if global_step % args.policy_frequency == 0:  # TD-3 delayed update
+        for _ in range(args.policy_frequency):  # Compensate for the delay by doing 'policy_frequency' updates
+            # Update the actor
+            actor_loss, log_pi = policy_loss(agent, data["observations"])
+            actor_optimizer.zero_grad(set_to_none=True)
+            fabric.backward(actor_loss)
+            actor_optimizer.step()
 
-    # Update the entropy value
-    alpha_loss = entropy_loss(agent, log_pi)
-    alpha_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-    alpha_optimizer.step()
+            # Update the entropy value
+            alpha_loss = entropy_loss(agent, log_pi)
+            alpha_optimizer.zero_grad(set_to_none=True)
+            fabric.backward(alpha_loss)
+            agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+            alpha_optimizer.step()
 
     # Log metrics
     agent.on_train_epoch_end(global_step)
@@ -132,9 +134,11 @@ def main(args: argparse.Namespace):
     agent = fabric.setup_module(SACAgent(envs, num_critics=2, tau=args.tau, nan_strategy="ignore"))
     agent.qf = fabric.setup_module(agent.qf)
     agent.actor = fabric.setup_module(agent.actor)
-    qf_optimizer = fabric.setup_optimizers(optim.Adam(agent.qf.parameters(), lr=args.q_lr))
-    actor_optimizer = fabric.setup_optimizers(optim.Adam(list(agent.actor.parameters()), lr=args.policy_lr))
-    alpha_optimizer = optim.Adam([agent.log_alpha], lr=args.q_lr)
+    qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
+        optim.Adam(agent.qf.parameters(), lr=args.q_lr),
+        optim.Adam(agent.actor.parameters(), lr=args.policy_lr),
+        optim.Adam([agent.log_alpha], lr=args.alpha_lr),
+    )
 
     # Player metrics
     with device:
@@ -158,13 +162,9 @@ def main(args: argparse.Namespace):
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
-        # or play randomly
-        if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            with torch.no_grad():
-                actions, _, _ = agent.actor.get_action(obs)
-                actions = actions.cpu().numpy()
+        with torch.no_grad():
+            actions, _, _ = agent.actor.get_action(obs)
+            actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
@@ -212,10 +212,11 @@ def main(args: argparse.Namespace):
 
         # Train the agent
         if global_step > args.learning_starts:
-            local_data = rb.sample(args.batch_size // (fabric.world_size * args.num_envs))
-            gathered_data = fabric.all_gather(local_data.to_dict())
-            gathered_data = make_tensordict(gathered_data).view(-1)
-            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
+            for _ in range(args.gradient_steps):
+                local_data = rb.sample(args.batch_size // (fabric.world_size * args.num_envs))
+                gathered_data = fabric.all_gather(local_data.to_dict())
+                gathered_data = make_tensordict(gathered_data).view(-1)
+                train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
