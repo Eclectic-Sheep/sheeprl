@@ -85,6 +85,7 @@ class Actor(LightningModule):
         action = y_t * self.action_scale + self.action_bias
 
         # Change of variable for probability distributions
+        # Eq. 26 of https://arxiv.org/abs/1812.05905
         log_prob = normal.log_prob(x_t)
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
 
@@ -171,20 +172,24 @@ class SACAgent(LightningModule):
     def get_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return self.qf.forward(obs, action)
 
+    def get_target_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
+        return self.qf_target.forward(obs, action)
+
+    @torch.no_grad()
     def qf_target_ema(self) -> None:
         for param, target_param in zip(self.qf.parameters(), self.qf_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
 
     def on_train_epoch_end(self, global_step: int) -> None:
         # Log metrics and reset their internal state
-        self.logger.log_metrics(
-            {
-                "Loss/policy_loss": self.avg_pg_loss.compute(),
-                "Loss/value_loss": self.avg_value_loss.compute(),
-                "Loss/entropy_loss": self.avg_ent_loss.compute(),
-            },
-            global_step,
-        )
+        metric_dict = {"Loss/value_loss": self.avg_value_loss.compute()}
+        pg_loss = self.avg_pg_loss.compute()
+        if not pg_loss.isnan():
+            metric_dict["Loss/policy_loss"] = pg_loss
+        ent_loss = self.avg_ent_loss.compute()
+        if not ent_loss.isnan():
+            metric_dict["Loss/entropy_loss"] = ent_loss
+        self.logger.log_metrics(metric_dict, global_step)
         self.reset_metrics()
 
     def reset_metrics(self):
