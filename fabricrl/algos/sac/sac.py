@@ -198,7 +198,7 @@ def main(args: argparse.Namespace):
             next_obs = torch.tensor(real_next_obs)
             actions = torch.tensor(actions).view(args.num_envs, -1)
             rewards = torch.tensor(rewards).view(args.num_envs, -1).float()  # [N_envs, 1]
-            dones = torch.tensor(dones).view(args.num_envs, -1)
+            dones = torch.tensor(dones).view(args.num_envs, -1).float()
 
         step_data["dones"] = dones
         step_data["actions"] = actions

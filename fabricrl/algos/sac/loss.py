@@ -37,7 +37,7 @@ def critic_loss(
         next_state_actions, next_state_log_pi, _ = agent.get_action(next_obs)
         qf_next_target = agent.get_target_q_values(next_obs, next_state_actions)
         min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - agent.alpha * next_state_log_pi
-        next_qf_value = rewards + (~dones) * gamma * min_qf_next_target
+        next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
 
     # Get q-values for the current observations and actions
     qf_values = agent.get_q_values(obs, actions)
