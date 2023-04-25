@@ -11,8 +11,8 @@ from fabricrl.algos.sac.agent import SACAgent
 
 
 def policy_loss(agent: SACAgent, obs: Tensor) -> Tuple[Tensor, Tensor]:
-    pi, log_pi, _ = agent.actor.get_action(obs)
-    qf_pi = agent.qf(obs, pi)
+    pi, log_pi, _ = agent.get_action(obs)
+    qf_pi = agent.get_q_values(obs, pi)
     min_qf_pi = torch.min(qf_pi, dim=-1, keepdim=True)[0]
 
     # Eq. 7
@@ -34,13 +34,13 @@ def critic_loss(
 ) -> Tensor:
     # Get q-values for the next observations and actions, estimated by the target q-functions
     with torch.no_grad():
-        next_state_actions, next_state_log_pi, _ = agent.actor.get_action(next_obs)
-        qf_next_target = agent.qf_target(next_obs, next_state_actions)
+        next_state_actions, next_state_log_pi, _ = agent.get_action(next_obs)
+        qf_next_target = agent.get_target_q_values(next_obs, next_state_actions)
         min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - agent.alpha * next_state_log_pi
         next_qf_value = rewards + (~dones) * gamma * min_qf_next_target
 
     # Get q-values for the current observations and actions
-    qf_values = agent.qf(obs, actions)
+    qf_values = agent.get_q_values(obs, actions)
 
     # Eq. 5
     qf_loss = (
