@@ -99,7 +99,12 @@ class Actor(LightningModule):
 
 class SACAgent(LightningModule):
     def __init__(
-        self, envs: gym.vector.SyncVectorEnv, num_critics: int = 2, tau: float = 0.005, **torchmetrics_kwargs
+        self,
+        envs: gym.vector.SyncVectorEnv,
+        num_critics: int = 2,
+        alpha: float = 1.0,
+        tau: float = 0.005,
+        **torchmetrics_kwargs
     ) -> None:
         super().__init__()
 
@@ -113,7 +118,7 @@ class SACAgent(LightningModule):
 
         # Automatic entropy tuning
         self._target_entropy = -torch.prod(torch.tensor(envs.single_action_space.shape).to(self.device))
-        self._log_alpha = torch.nn.Parameter(torch.zeros(1, device=self.device), requires_grad=True)
+        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=self.device)), requires_grad=True)
 
         # EMA tau
         self._tau = tau

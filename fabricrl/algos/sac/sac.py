@@ -131,7 +131,7 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, tau=args.tau, nan_strategy="ignore"))
+    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
     agent.qf = fabric.setup_module(agent.qf)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(

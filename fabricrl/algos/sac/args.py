@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--buffer-size", type=int, default=int(1e6), help="the replay memory buffer size")
     parser.add_argument("--gamma", type=float, default=0.99, help="the discount factor gamma")
     parser.add_argument("--tau", type=float, default=0.005, help="target smoothing coefficient (default: 0.005)")
-    parser.add_argument("--alpha", type=float, default=0.0, help="Entropy regularization coefficient.")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Entropy regularization coefficient.")
     parser.add_argument("--batch-size", type=int, default=256, help="the batch size of sample from the reply memory")
     parser.add_argument("--learning-starts", type=int, default=5e3, help="timestep to start learning")
     parser.add_argument(
