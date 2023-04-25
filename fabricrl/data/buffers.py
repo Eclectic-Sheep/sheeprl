@@ -77,13 +77,11 @@ class ReplayBuffer:
             raise TypeError("`data` must be a TensorDictBase or a fabricrl.data.ReplayBuffer")
         if len(data.shape) != 2:
             raise RuntimeError(
-                "`data` must have 2 batch dimensions: [sequence_length, n_envs, d1, ..., dn]. "
+                "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
                 "`sequence_length` and `n_envs` should be 1. Shape is: {}".format(data.shape)
             )
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if self._pos == 0 and next_pos == 0:
-            next_pos = data_len
         if next_pos < self._pos:
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
