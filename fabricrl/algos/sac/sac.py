@@ -135,9 +135,9 @@ def main(args: argparse.Namespace):
     agent.qf = fabric.setup_module(agent.qf)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qf.parameters(), lr=args.q_lr),
-        optim.Adam(agent.actor.parameters(), lr=args.policy_lr),
-        optim.Adam([agent.log_alpha], lr=args.alpha_lr),
+        optim.Adam(agent.qf.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
+        optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
+        optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
     )
 
     # Player metrics
