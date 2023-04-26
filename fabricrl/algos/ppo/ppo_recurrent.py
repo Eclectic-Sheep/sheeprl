@@ -77,7 +77,7 @@ def train(
         env_idxes_batches = torch.tensor_split(env_idxes, args.envs_batch_size)
         for env_idxes_batch in env_idxes_batches:
             loss, _ = agent.training_step(
-                data[:, env_idxes_batch], state=(s[:, env_idxes_batch] for s in agent.initial_states)
+                data[:, env_idxes_batch], state=tuple([s[:, env_idxes_batch] for s in agent.initial_states])
             )
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
@@ -161,10 +161,7 @@ def main(args: argparse.Namespace):
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
         next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
-        state = (
-            torch.zeros(1, args.num_envs, agent.hidden_size, device=device),
-            torch.zeros(1, args.num_envs, agent.hidden_size, device=device),
-        )
+        state = agent.initial_states
 
     for update in range(1, num_updates + 1):
         # Learning rate annealing

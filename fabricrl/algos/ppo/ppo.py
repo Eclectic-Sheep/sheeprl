@@ -147,7 +147,7 @@ def main(args: argparse.Namespace):
     agent, optimizer = fabric.setup(agent, optimizer)
 
     # Player metrics
-    with torch.device:
+    with fabric.device:
         rew_avg = torchmetrics.MeanMetric()
         ep_len_avg = torchmetrics.MeanMetric()
 

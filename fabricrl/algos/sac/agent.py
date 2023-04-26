@@ -190,7 +190,7 @@ class SACAgent(LightningModule):
     def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         return self.actor.get_action(obs)
 
-    def get_greedy_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def get_greedy_action(self, obs: Tensor) -> Tensor:
         return self.actor.get_greedy_action(obs)
 
     def get_ith_q_value(self, obs: Tensor, action: Tensor, critic_idx: int) -> Tensor:
