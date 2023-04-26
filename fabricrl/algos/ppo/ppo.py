@@ -25,25 +25,38 @@ from typing import Dict
 
 import gymnasium as gym
 import torch
+import torch.nn as nn
 import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
+from tensordict.nn import TensorDictModule
 from torch import Tensor
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
+from fabricrl.algos.ppo.actor import Actor
 from fabricrl.algos.ppo.agent import PPOAgent
 from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
+from fabricrl.models.feature import MLPExtractor
+from fabricrl.policy.policy import CategoricalPolicy
 from fabricrl.utils.utils import linear_annealing
 
 
 @torch.no_grad()
-def test(agent: "PPOAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test")()
+def test(
+    agent: "PPOAgent",
+    device: torch.device,
+    logger: SummaryWriter,
+    args: argparse.Namespace,
+):
+    """Test the agent in the environment."""
+    env = make_env(
+        args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test"
+    )()
     step = 0
     done = False
     cumulative_rew = 0
@@ -70,20 +83,27 @@ def train(
     global_step: int,
     args: argparse.Namespace,
 ):
+    """Train the agent on the data collected from the environment."""
     indexes = list(range(data["observations"].shape[0]))
     if args.share_data:
         sampler = DistributedSampler(
-            indexes, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True, seed=args.seed
+            indexes,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=args.seed,
         )
     else:
         sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
+    sampler = BatchSampler(
+        sampler, batch_size=args.per_rank_batch_size, drop_last=False
+    )
 
     for epoch in range(args.update_epochs):
         if args.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
-            loss = agent.training_step({k: v[batch_idxes] for k, v in data.items()})
+            loss = agent.training_step(data[batch_idxes])
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
             fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
@@ -92,9 +112,12 @@ def train(
 
 
 def main(args: argparse.Namespace):
+    """Main function to run the PPO algorithm."""
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "fabric_logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join(
+            "logs", "fabric_logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+        ),
         name=run_name,
     )
 
@@ -111,24 +134,52 @@ def main(args: argparse.Namespace):
     # Log hyperparameters
     fabric.logger.experiment.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
         [
             make_env(
-                args.env_id, args.seed + rank * args.num_envs + i, rank, args.capture_video, logger.log_dir, "train"
+                args.env_id,
+                args.seed + rank * args.num_envs + i,
+                rank,
+                args.capture_video,
+                logger.log_dir,
+                "train",
             )
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    assert isinstance(
+        envs.single_action_space, gym.spaces.Discrete
+    ), "only discrete action space is supported"
 
+    feature_extractor = TensorDictModule(
+        MLPExtractor(envs.single_observation_space.shape, (256, 256)),
+        in_keys=["observations"],
+        out_keys=["features"],
+    )
+
+    actor = Actor(
+        TensorDictModule(
+            nn.Identity(), in_keys=["features"], out_keys=["actor_features"]
+        ),
+        policy=CategoricalPolicy(
+            feature_extractor.module.output_dim, [envs.single_action_space.n]
+        ),
+    )
+    critic = TensorDictModule(
+        torch.nn.Linear(feature_extractor.module.output_dim, 1),
+        in_keys=["features"],
+        out_keys=["values"],
+    )
     # Define the agent and the optimizer and setup them with Fabric
     agent: PPOAgent = PPOAgent(
-        envs,
-        act_fun=args.activation_function,
+        feature_extractor=feature_extractor,
+        actor=actor,
+        critic=critic,
         vf_coef=args.vf_coef,
         ent_coef=args.ent_coef,
         clip_coef=args.clip_coef,
@@ -146,6 +197,7 @@ def main(args: argparse.Namespace):
     # Local data
     rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
+    step_data["greedy"] = torch.ones(args.num_envs, 1, device=device) * False
 
     # Global variables
     global_step = 0
@@ -155,8 +207,10 @@ def main(args: argparse.Namespace):
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
-        next_done = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
+        step_data["observations"] = torch.tensor(
+            envs.reset(seed=args.seed)[0]
+        )  # [N_envs, N_obs]
+        step_data["dones"] = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         # Learning rate annealing
@@ -169,28 +223,32 @@ def main(args: argparse.Namespace):
 
             # Sample an action given the observation received by the environment
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                step_data = agent.get_action_and_value(step_data)
+                logprob = agent.actor.policy.get_logprob(step_data["actions"])
 
-            step_data["dones"] = next_done
-            step_data["values"] = value
-            step_data["actions"] = action
             step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
 
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            next_obs, reward, done, truncated, info = envs.step(
+                step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)
+            )
 
             with device:
-                next_obs = torch.tensor(next_obs)
-                next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
+                # Save reward for the last (observation, action) pair
+                step_data["rewards"] = torch.tensor(reward).view(
+                    args.num_envs, -1
                 )  # [N_envs, 1]
 
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+                # Append data to buffer
+                rb.add(step_data.unsqueeze(0))
 
-            # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
+                # Update the observation
+                step_data["observations"] = torch.tensor(next_obs)
+                step_data["dones"] = (
+                    torch.logical_or(torch.tensor(done), torch.tensor(truncated))
+                    .view(args.num_envs, -1)
+                    .float()
+                )  # [N_envs, 1]
 
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
@@ -213,7 +271,13 @@ def main(args: argparse.Namespace):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         returns, advantages = agent.estimate_returns_and_advantages(
-            rb["rewards"], rb["values"], rb["dones"], next_obs, next_done, args.num_steps, args.gamma, args.gae_lambda
+            rb["rewards"],
+            rb["values"],
+            rb["dones"],
+            step_data,
+            args.num_steps,
+            args.gamma,
+            args.gae_lambda,
         )
 
         # Add returns and advantages to the buffer
@@ -234,7 +298,11 @@ def main(args: argparse.Namespace):
 
         # Train the agent
         train(fabric, agent, optimizer, gathered_data, global_step, args)
-        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+        fabric.log(
+            "Time/step_per_second",
+            int(global_step / (time.time() - start_time)),
+            global_step,
+        )
 
     envs.close()
     if fabric.is_global_zero:
