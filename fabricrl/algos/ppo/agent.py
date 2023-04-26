@@ -77,18 +77,18 @@ class PPOAgent(LightningModule):
         returns = advantages + values
         return returns, advantages
 
-    def training_step(self, batch: TensorDict):
+    def training_step(self, old_batch: TensorDict):
         # Get actions and values given the current observations
-        old_batch = deepcopy(batch)
-        batch = self(batch)
+        new_batch = deepcopy(old_batch)
+        new_batch = self(new_batch)
         actions_prob = self.actor.policy.actions_prob
         new_logprobs = self.actor.policy.get_logprob(old_batch["actions"])
         entropy = torch.sum(torch.stack([actions_prob[i].entropy() for i in range(len(actions_prob))], dim=-1))
-        logratio = torch.sum(new_logprobs - old_batch["logprobs"])
+        logratio = new_logprobs - old_batch["logprobs"]
         ratio = logratio.exp()
 
         # Policy loss
-        advantages = batch["advantages"]
+        advantages = new_batch["advantages"]
         if self.normalize_advantages:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -96,9 +96,9 @@ class PPOAgent(LightningModule):
 
         # Value loss
         v_loss = value_loss(
-            batch["values"],
+            new_batch["values"],
             old_batch["values"],
-            batch["returns"],
+            new_batch["returns"],
             self.clip_coef,
             self.clip_vloss,
             self.vf_coef,
