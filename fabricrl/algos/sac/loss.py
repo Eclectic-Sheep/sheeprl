@@ -23,33 +23,14 @@ def policy_loss(agent: SACAgent, obs: Tensor) -> Tuple[Tensor, Tensor]:
     return actor_loss, log_pi.detach()
 
 
-def critic_loss(
-    agent: SACAgent,
-    obs: Tensor,
-    next_obs: Tensor,
-    actions: Tensor,
-    rewards: Tensor,
-    dones: Tensor,
-    gamma: float,
-) -> Tensor:
-    # Get q-values for the next observations and actions, estimated by the target q-functions
-    with torch.no_grad():
-        next_state_actions, next_state_log_pi, _ = agent.get_action(next_obs)
-        qf_next_target = agent.get_target_q_values(next_obs, next_state_actions)
-        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - agent.alpha * next_state_log_pi
-        next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
-
+def critic_loss(agent: SACAgent, obs: Tensor, actions: Tensor, next_qf_value: Tensor) -> Tensor:
     # Get q-values for the current observations and actions
     qf_values = agent.get_q_values(obs, actions)
 
     # Eq. 5
-    qf_loss = (
-        1
-        / agent.num_critics
-        * sum(
-            F.mse_loss(qf_values[..., qf_value_idx].unsqueeze(-1), next_qf_value)
-            for qf_value_idx in range(agent.num_critics)
-        )
+    qf_loss = sum(
+        F.mse_loss(qf_values[..., qf_value_idx].unsqueeze(-1), next_qf_value)
+        for qf_value_idx in range(agent.num_critics)
     )
 
     # Update critic metric

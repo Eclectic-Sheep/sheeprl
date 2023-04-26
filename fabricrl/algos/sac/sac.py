@@ -54,16 +54,16 @@ def train(
     global_step: int,
     args: argparse.Namespace,
 ):
-    # Update the soft-critic
-    qf_loss = critic_loss(
-        agent,
-        data["observations"],
+    # Get next_obs target q-values
+    next_target_qf_value = agent.get_next_target_q_value(
         data["next_observations"],
-        data["actions"],
         data["rewards"],
         data["dones"],
         args.gamma,
     )
+
+    # Update the soft-critic
+    qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value)
     qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
@@ -88,7 +88,7 @@ def train(
 
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
-        agent.qf_target_ema()
+        agent.qfs_target_ema()
 
 
 def main(args: argparse.Namespace):
@@ -132,10 +132,10 @@ def main(args: argparse.Namespace):
 
     # Define the agent and the optimizer and setup them with Fabric
     agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
-    agent.qf = fabric.setup_module(agent.qf)
+    agent.qfs = fabric.setup_module(agent.qfs)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qf.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
+        optim.Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
         optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
         optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
     )
