@@ -213,7 +213,7 @@ def main(args: argparse.Namespace):
         # Train the agent
         if global_step > args.learning_starts:
             for _ in range(args.gradient_steps):
-                local_data = rb.sample(args.batch_size // (fabric.world_size * args.num_envs))
+                local_data = rb.sample(args.batch_size // fabric.world_size)
                 gathered_data = fabric.all_gather(local_data.to_dict())
                 gathered_data = make_tensordict(gathered_data).view(-1)
                 train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
