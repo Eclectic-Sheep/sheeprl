@@ -3,10 +3,22 @@ from typing import Optional
 
 import gymnasium as gym
 
+from fabricrl.envs.wrappers import MaskVelocityWrapper
 
-def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: Optional[str] = None, prefix: str = ""):
+
+def make_env(
+    env_id: str,
+    seed: int,
+    idx: int,
+    capture_video: bool,
+    run_name: Optional[str] = None,
+    prefix: str = "",
+    mask_velocities: bool = False,
+):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
+        if mask_velocities:
+            env = MaskVelocityWrapper(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
             if idx == 0 and run_name is not None:

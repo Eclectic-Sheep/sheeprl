@@ -91,24 +91,20 @@ class PPOAgent(LightningModule):
                 nextnonterminal = torch.logical_not(dones[t + 1])
                 nextvalues = values[t + 1]
             delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-            advantages[t] = lastgaelam = (
-                delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-            )
+            advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
         returns = advantages + values
         return returns, advantages
 
     def training_step(self, batch: TensorDict[str, Tensor]):
         """Training step"""
+
+    def training_step(self, batch: Dict[str, Tensor]):
         # Get actions and values given the current observations
         old_batch = deepcopy(batch)
         batch = self(batch)
         actions_prob = self.actor.policy.actions_prob
         new_logprobs = self.actor.policy.get_logprob(old_batch["actions"])
-        entropy = torch.sum(
-            torch.stack(
-                [actions_prob[i].entropy() for i in range(len(actions_prob))], dim=-1
-            )
-        )
+        entropy = torch.sum(torch.stack([actions_prob[i].entropy() for i in range(len(actions_prob))], dim=-1))
         logratio = torch.sum(new_logprobs - old_batch["logprobs"])
         ratio = logratio.exp()
 

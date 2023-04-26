@@ -40,14 +40,15 @@ from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.ppo import PPOAgent, test
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.utils.utils import linear_annealing
+from fabricrl.utils.utils import estimate_returns_and_advantages, linear_annealing
 
 
 @torch.no_grad()
 def player(args, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
+
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "fabric_decoupled_logs", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
     log_dir = logger.log_dir
@@ -66,7 +67,10 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train") for i in range(args.num_envs)]
+        [
+            make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train", mask_velocities=args.mask_vel)
+            for i in range(args.num_envs)
+        ]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -173,9 +177,17 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         ep_len_avg.reset()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        returns, advantages = agent.estimate_returns_and_advantages(
-            rb["rewards"], rb["values"], rb["dones"], next_obs, next_done, args.num_steps, args.gamma, args.gae_lambda
-        )
+        with torch.no_grad():
+            returns, advantages = estimate_returns_and_advantages(
+                rb["rewards"],
+                rb["values"],
+                rb["dones"],
+                agent.get_value(next_obs),
+                next_done,
+                args.num_steps,
+                args.gamma,
+                args.gae_lambda,
+            )
 
         # Add returns and advantages to the buffer
         rb["returns"] = returns.float()
@@ -233,7 +245,7 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, 0, False, None)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -248,7 +260,7 @@ def trainer(
         normalize_advantages=args.normalize_advantages,
         process_group=optimization_pg,
     )
-    optimizer = agent.configure_optimizers(args.learning_rate)
+    optimizer = agent.configure_optimizers(lr=args.learning_rate)
     agent, optimizer = fabric.setup(agent, optimizer)
 
     # Send weights to rank-0, a.k.a. the player
@@ -303,7 +315,7 @@ def trainer(
                 if args.share_data:
                     sampler.sampler.set_epoch(epoch)
                 for batch_idxes in sampler:
-                    loss = agent.training_step({k: v[batch_idxes].to(device) for k, v in data.items()})
+                    loss = agent.training_step(data[batch_idxes])
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
