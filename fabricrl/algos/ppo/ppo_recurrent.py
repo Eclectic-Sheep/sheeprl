@@ -30,6 +30,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict
+from tensordict.tensordict import TensorDictBase
 from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.agent import RecurrentPPOAgent
@@ -67,7 +68,7 @@ def train(
     fabric: Fabric,
     agent: RecurrentPPOAgent,
     optimizer: torch.optim.Optimizer,
-    data: TensorDict,
+    data: TensorDictBase,
     global_step: int,
     args: argparse.Namespace,
 ):
