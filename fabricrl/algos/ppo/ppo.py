@@ -58,16 +58,19 @@ def test(
     step = 0
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
+    input_tensordict = TensorDict(
+        {"observations": torch.tensor(env.reset(seed=args.seed))}, batch_size=1, device=device
+    )
+    input_tensordict["greedy"] = torch.ones(1, 1) * True
     while not done:
         # Act greedly through the environment
-        action = agent.get_greedy_action(next_obs)
+        action = agent.get_greedy_action(input_tensordict)
 
         # Single environment step
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
         done = done or truncated
         cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=device)
+        input_tensordict["observations"] = torch.tensor(next_obs, device=device)
         step += 1
     logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
     env.close()
@@ -208,12 +211,10 @@ def main(args: argparse.Namespace):
 
             # Sample an action given the observation received by the environment
             with torch.no_grad():
-                step_data = agent.get_action_and_value(step_data)
+                step_data = agent(step_data)
                 logprob = agent.actor.policy.get_logprob(step_data["actions"])
 
             step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
-
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(
                 step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)

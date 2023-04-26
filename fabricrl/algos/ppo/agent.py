@@ -43,30 +43,12 @@ class PPOAgent(LightningModule):
         self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
 
-    def get_action(self, x: TensorDict) -> Tensor:
-        """Get action from the actor network"""
-        self.feature_extractor(x)
-        self.actor(x)
-        return x
-
-    def get_greedy_action(self, x: TensorDict) -> Tensor:
-        """Get greedy action from the actor network"""
-        return self.get_action(x)
-
-    def get_value(self, x: Tensor) -> Tensor:
-        """Get value from the critic network"""
-        return self.critic(x)
-
-    def get_action_and_value(self, x: TensorDict) -> Tuple[Tensor, Tensor]:
-        """Get action and value from the actor and critic networks"""
-        self.feature_extractor(x)
-        self.get_action(x)
-        self.get_value(x)
-        return x
-
     def forward(self, x: TensorDict) -> Tuple[Tensor, Tensor]:
         """Get action and value from the actor and critic networks"""
-        return self.get_action_and_value(x)
+        self.feature_extractor(x)
+        self.actor(x)
+        self.critic(x)
+        return x
 
     @torch.no_grad()
     def estimate_returns_and_advantages(
@@ -80,7 +62,7 @@ class PPOAgent(LightningModule):
         gae_lambda: float,
     ) -> Tuple[Tensor, Tensor]:
         """Estimate returns and advantages using GAE."""
-        self.get_value(next_step_data)
+        self.critic(next_step_data)
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
         for t in reversed(range(num_steps)):
@@ -95,10 +77,7 @@ class PPOAgent(LightningModule):
         returns = advantages + values
         return returns, advantages
 
-    def training_step(self, batch: TensorDict[str, Tensor]):
-        """Training step"""
-
-    def training_step(self, batch: Dict[str, Tensor]):
+    def training_step(self, batch: TensorDict):
         # Get actions and values given the current observations
         old_batch = deepcopy(batch)
         batch = self(batch)
