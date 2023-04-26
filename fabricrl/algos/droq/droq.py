@@ -14,34 +14,14 @@ from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
-from torch.utils.tensorboard import SummaryWriter
 
+from fabricrl.algos.droq.loss import critic_loss, policy_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACAgent
 from fabricrl.algos.sac.args import parse_args
-from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
+from fabricrl.algos.sac.loss import entropy_loss
+from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
-
-
-@torch.no_grad()
-def test(agent: "SACAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=False)()
-    step = 0
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
-    while not done:
-        # Act greedly through the environment
-        action = agent.get_greedy_action(next_obs)
-
-        # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
-        done = done or truncated
-        cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=device)
-        step += 1
-    logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
-    env.close()
 
 
 def train(
@@ -54,19 +34,24 @@ def train(
     global_step: int,
     args: argparse.Namespace,
 ):
-    # Get next_obs target q-values
-    next_target_qf_value = agent.get_next_target_q_value(
-        data["next_observations"],
-        data["rewards"],
-        data["dones"],
-        args.gamma,
-    )
+    for _ in range(args.gradient_steps):
+        # Get next_obs target q-values
+        next_target_qf_value = agent.get_next_target_q_value(
+            data["next_observations"],
+            data["rewards"],
+            data["dones"],
+            args.gamma,
+        )
 
-    # Update the soft-critic
-    qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value)
-    qf_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(qf_loss)
-    qf_optimizer.step()
+        for qf_value_idx in range(agent.num_critics):
+            # Update the soft-critic
+            qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value, qf_value_idx)
+            qf_optimizer.zero_grad(set_to_none=True)
+            fabric.backward(qf_loss)
+            qf_optimizer.step()
+
+            # Update the target networks with EMA
+            agent.qfs_target_ema()
 
     if global_step % args.policy_frequency == 0:  # TD-3 delayed update
         for _ in range(args.policy_frequency):  # Compensate for the delay by doing 'policy_frequency' updates
@@ -86,15 +71,11 @@ def train(
     # Log metrics
     agent.on_train_epoch_end(global_step)
 
-    # Update the target networks with EMA
-    if global_step % args.target_network_frequency == 0:
-        agent.qfs_target_ema()
-
 
 def main(args: argparse.Namespace):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join("logs", "droq", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
 
@@ -131,7 +112,9 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
+    agent = fabric.setup_module(
+        SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau, dropout=0.01, layer_norm=True)
+    )
     agent.qfs = fabric.setup_module(agent.qfs)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
@@ -212,11 +195,10 @@ def main(args: argparse.Namespace):
 
         # Train the agent
         if global_step > args.learning_starts:
-            for _ in range(args.gradient_steps):
-                local_data = rb.sample(args.batch_size // fabric.world_size)
-                gathered_data = fabric.all_gather(local_data.to_dict())
-                gathered_data = make_tensordict(gathered_data).view(-1)
-                train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
+            local_data = rb.sample(args.batch_size // fabric.world_size)
+            gathered_data = fabric.all_gather(local_data.to_dict())
+            gathered_data = make_tensordict(gathered_data).view(-1)
+            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
