@@ -24,7 +24,7 @@ from fabricrl.data.buffers import ReplayBuffer
 
 
 @torch.no_grad()
-def test(agent: "SACAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
+def test(agent: SACAgent, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
     env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=False)()
     step = 0
     done = False
@@ -68,27 +68,25 @@ def train(
     fabric.backward(qf_loss)
     qf_optimizer.step()
 
-    if global_step % args.policy_frequency == 0:  # TD-3 delayed update
-        for _ in range(args.policy_frequency):  # Compensate for the delay by doing 'policy_frequency' updates
-            # Update the actor
-            actor_loss, log_pi = policy_loss(agent, data["observations"])
-            actor_optimizer.zero_grad(set_to_none=True)
-            fabric.backward(actor_loss)
-            actor_optimizer.step()
-
-            # Update the entropy value
-            alpha_loss = entropy_loss(agent, log_pi)
-            alpha_optimizer.zero_grad(set_to_none=True)
-            fabric.backward(alpha_loss)
-            agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-            alpha_optimizer.step()
-
-    # Log metrics
-    agent.on_train_epoch_end(global_step)
-
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
         agent.qfs_target_ema()
+
+    # Update the actor
+    actor_loss, log_pi = policy_loss(agent, data["observations"])
+    actor_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(actor_loss)
+    actor_optimizer.step()
+
+    # Update the entropy value
+    alpha_loss = entropy_loss(agent, log_pi)
+    alpha_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(alpha_loss)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    alpha_optimizer.step()
+
+    # Log metrics
+    agent.on_train_epoch_end(global_step)
 
 
 def main(args: argparse.Namespace):

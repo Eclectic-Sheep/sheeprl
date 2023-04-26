@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import gymnasium as gym
 import torch
@@ -200,10 +200,13 @@ class RecurrentPPOAgent(LightningModule):
         self.avg_pg_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
-        self._initial_states: Optional[Tuple[Tensor, Tensor]] = None
+        self._initial_states: Tuple[Tensor, Tensor] = (
+            torch.zeros(1, envs.num_envs, 64),
+            torch.zeros(1, envs.num_envs, 64),
+        )
 
     @property
-    def initial_states(self) -> Optional[Tuple[Tensor, Tensor]]:
+    def initial_states(self) -> Tuple[Tensor, Tensor]:
         return self._initial_states
 
     @initial_states.setter
