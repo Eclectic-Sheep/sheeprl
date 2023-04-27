@@ -40,10 +40,6 @@ def parse_args():
     parser.add_argument(
         "--alpha-lr", type=float, default=3e-2, help="the learning rate of the entropy coefficient parameter optimizer"
     )
-    parser.add_argument("--policy-frequency", type=int, default=1, help="the frequency of training policy (delayed)")
-    parser.add_argument(
-        "--target-network-frequency", type=int, default=1, help="the frequency of updates for the target nerworks"
-    )
     parser.add_argument(
         "--gradient-steps", type=int, default=20, help="the number of gradient steps per each environment interaction"
     )

@@ -53,20 +53,18 @@ def train(
             # Update the target networks with EMA
             agent.qfs_target_ema()
 
-    if global_step % args.policy_frequency == 0:  # TD-3 delayed update
-        for _ in range(args.policy_frequency):  # Compensate for the delay by doing 'policy_frequency' updates
-            # Update the actor
-            actor_loss, log_pi = policy_loss(agent, data["observations"])
-            actor_optimizer.zero_grad(set_to_none=True)
-            fabric.backward(actor_loss)
-            actor_optimizer.step()
+    # Update the actor
+    actor_loss, log_pi = policy_loss(agent, data["observations"])
+    actor_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(actor_loss)
+    actor_optimizer.step()
 
-            # Update the entropy value
-            alpha_loss = entropy_loss(agent, log_pi)
-            alpha_optimizer.zero_grad(set_to_none=True)
-            fabric.backward(alpha_loss)
-            agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-            alpha_optimizer.step()
+    # Update the entropy value
+    alpha_loss = entropy_loss(agent, log_pi)
+    alpha_optimizer.zero_grad(set_to_none=True)
+    fabric.backward(alpha_loss)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    alpha_optimizer.step()
 
     # Log metrics
     agent.on_train_epoch_end(global_step)
