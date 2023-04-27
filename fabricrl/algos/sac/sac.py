@@ -7,7 +7,6 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.optim as optim
 import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
@@ -15,7 +14,7 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
-from torch.optim import Optimizer
+from torch.optim import Adam, Optimizer
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACAgent
@@ -112,9 +111,9 @@ def main(args: argparse.Namespace):
     agent.qfs = fabric.setup_module(agent.qfs)
     agent.actor = fabric.setup_module(agent.actor)
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
     )
 
     # Player metrics
