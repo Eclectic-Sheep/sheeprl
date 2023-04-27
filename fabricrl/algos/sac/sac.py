@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -11,6 +12,7 @@ import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -32,6 +34,7 @@ def train(
     data: TensorDictBase,
     global_step: int,
     args: argparse.Namespace,
+    group: Optional[CollectibleGroup] = None,
 ):
     # Get next_obs target q-values
     next_target_qf_value = agent.get_next_target_q_value(
@@ -61,11 +64,8 @@ def train(
     alpha_loss = entropy_loss(agent, log_pi)
     alpha_optimizer.zero_grad(set_to_none=True)
     fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
     alpha_optimizer.step()
-
-    # Log metrics
-    agent.on_train_epoch_end(global_step)
 
 
 def main(args: argparse.Namespace):
@@ -194,6 +194,7 @@ def main(args: argparse.Namespace):
                 gathered_data = fabric.all_gather(local_data.to_dict())
                 gathered_data = make_tensordict(gathered_data).view(-1)
                 train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
+            agent.on_train_epoch_end(global_step)
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
