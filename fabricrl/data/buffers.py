@@ -77,13 +77,11 @@ class ReplayBuffer:
             raise TypeError("`data` must be a TensorDictBase or a fabricrl.data.ReplayBuffer")
         if len(data.shape) != 2:
             raise RuntimeError(
-                "`data` must have 2 batch dimensions: [sequence_length, n_envs, d1, ..., dn]. "
+                "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
                 "`sequence_length` and `n_envs` should be 1. Shape is: {}".format(data.shape)
             )
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if self._pos == 0 and next_pos == 0:
-            next_pos = data_len
         if next_pos < self._pos:
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
@@ -95,7 +93,7 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int) -> TensorDictBase:
+    def sample(self, batch_size: int, sample_next_obs: bool = False, clone: bool = False) -> TensorDictBase:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
@@ -104,9 +102,12 @@ class ReplayBuffer:
 
         Args:
             batch_size (int): batch_size (int): Number of element to sample
+            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+                Defaults to False.
+            clone (bool): whether to clone the sampled TensorDict
 
         Returns:
-            TensorDictBase: the sampled TensorDictBase, cloned
+            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [batch_size, 1]
         """
         if batch_size <= 0:
             raise ValueError("Batch size must be greater than 0")
@@ -116,17 +117,20 @@ class ReplayBuffer:
         # (we use only one array to store `obs` and `next_obs`)
         if self._full:
             batch_idxes = (
-                torch.randint(1, self._buffer_size, size=(batch_size, self.n_envs), device=self.device) + self._pos
+                torch.randint(1, self._buffer_size, size=(batch_size,), device=self.device) + self._pos
             ) % self._buffer_size
         else:
-            batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size, self.n_envs), device=self.device)
-        return self._get_samples(batch_idxes)
+            batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size,), device=self.device)
+        sample = self._get_samples(batch_idxes, sample_next_obs=sample_next_obs).unsqueeze(-1)
+        if clone:
+            return sample.clone()
+        return sample
 
-    def _get_samples(self, batch_idxes: Tensor) -> TensorDictBase:
-        buf: TensorDictBase = torch.gather(self._buf, dim=0, index=batch_idxes).clone()
-        buf["next_obs"] = self._buf["observations"][
-            (batch_idxes + 1) % self._buffer_size, torch.arange(self.n_envs, device=self.device)
-        ].clone()
+    def _get_samples(self, batch_idxes: Tensor, sample_next_obs: bool = False) -> TensorDictBase:
+        env_idxes = torch.randint(0, self.n_envs, size=(len(batch_idxes),))
+        buf = self._buf[batch_idxes, env_idxes]
+        if sample_next_obs:
+            buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
@@ -135,4 +139,4 @@ class ReplayBuffer:
         return self._buf.get(key)
 
     def __setitem__(self, key: str, t: Tensor) -> None:
-        self.buffer.set(key, t)
+        self.buffer.set(key, t, inplace=True)

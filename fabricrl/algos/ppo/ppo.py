@@ -21,7 +21,6 @@ import argparse
 import os
 import time
 from datetime import datetime
-from typing import Dict
 
 import gymnasium as gym
 import torch
@@ -32,7 +31,7 @@ from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from tensordict.nn import TensorDictModule
-from torch import Tensor
+from tensordict.tensordict import TensorDictBase
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
@@ -80,7 +79,7 @@ def train(
     fabric: Fabric,
     agent: PPOAgent,
     optimizer: torch.optim.Optimizer,
-    data: Dict[str, Tensor],
+    data: TensorDictBase,
     global_step: int,
     args: argparse.Namespace,
 ):
@@ -181,8 +180,9 @@ def main(args: argparse.Namespace):
     agent, optimizer = fabric.setup(agent, optimizer)
 
     # Player metrics
-    rew_avg = torchmetrics.MeanMetric().to(device)
-    ep_len_avg = torchmetrics.MeanMetric().to(device)
+    with fabric.device:
+        rew_avg = torchmetrics.MeanMetric()
+        ep_len_avg = torchmetrics.MeanMetric()
 
     # Local data
     rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)

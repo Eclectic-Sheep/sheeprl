@@ -43,12 +43,16 @@ class PPOAgent(LightningModule):
         self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
         self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
 
-    def forward(self, x: TensorDict) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self,
+        x: TensorDict,
+    ) -> Tuple[Tensor, Tensor]:
         """Get action and value from the actor and critic networks"""
+        tensordict_out = TensorDict({}, batch_size=x.batch_size, device=x.device)
         self.feature_extractor(x)
-        self.actor(x)
-        self.critic(x)
-        return x
+        self.actor(x, tensordict_out=tensordict_out)
+        self.critic(x, tensordict_out=tensordict_out)
+        return tensordict_out
 
     @torch.no_grad()
     def estimate_returns_and_advantages(

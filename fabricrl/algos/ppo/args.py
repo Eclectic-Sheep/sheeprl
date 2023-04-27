@@ -29,10 +29,10 @@ def parse_args():
     parser.add_argument(
         "--torch-deterministic",
         type=lambda x: bool(strtobool(x)),
-        default=True,
+        default=False,
         nargs="?",
         const=True,
-        help="if toggled, `torch.backends.cudnn.deterministic=False`",
+        help="if toggled, `torch.backends.cudnn.deterministic=True`",
     )
 
     # Distributed arguments

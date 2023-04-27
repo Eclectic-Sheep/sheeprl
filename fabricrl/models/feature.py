@@ -140,16 +140,10 @@ class MLPExtractor(BaseFeatureExtractor):
         super().__init__(input_dim)
         self._hidden_sizes = hidden_sizes
         self._ortho_init = ortho_init
-        self.output_dim = (
-            hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
-        )
-        self.features = create_mlp(
-            input_dim=input_dim, hidden_sizes=hidden_sizes, activation_fn=activation_fn
-        )
+        self.output_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
+        self.features = create_mlp(input_dim=input_dim, hidden_sizes=hidden_sizes, activation_fn=activation_fn)
         if self._ortho_init:
-            self.features.apply(
-                partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0))
-            )
+            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     @property
     def hidden_sizes(self) -> Sequence[int]:
@@ -236,12 +230,8 @@ class RecurrentExtractor(MLPExtractor):
             ortho_init=ortho_init,
             activation_fn=activation_fn,
         )
-        self._rnn_input_dim = (
-            hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
-        )
-        self._rnn_hidden_dim = (
-            rnn_hidden_dim if rnn_hidden_dim is not None else self._rnn_input_dim
-        )
+        self._rnn_input_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
+        self._rnn_hidden_dim = rnn_hidden_dim if rnn_hidden_dim is not None else self._rnn_input_dim
         self._rnn_num_layers = rnn_num_layers
         self._rnn_batch_first = rnn_batch_first
         self.rnn = rnn_net(
@@ -314,9 +304,7 @@ class RecurrentExtractor(MLPExtractor):
         self.rnn.flatten_parameters()
         if lengths is not None:
             out, hx = self.rnn(
-                pack_padded_sequence(
-                    feat, lengths, batch_first=False, enforce_sorted=False
-                ),
+                pack_padded_sequence(feat, lengths, batch_first=False, enforce_sorted=False),
                 state,
             )
             out, _ = pad_packed_sequence(out, batch_first=False)
@@ -377,9 +365,7 @@ class LSTMExtractor(RecurrentExtractor):
         activation_fn: Optional[Type[nn.Module]] = None,
     ):
         if rnn_net is not nn.LSTM:
-            raise ValueError(
-                "rnn_net must be an instance of torch.nn.LSTM with LSTMExtractor"
-            )
+            raise ValueError("rnn_net must be an instance of torch.nn.LSTM with LSTMExtractor")
         super().__init__(
             input_dim,
             rnn_net=rnn_net,
@@ -417,9 +403,7 @@ class LSTMExtractor(RecurrentExtractor):
         self.rnn.flatten_parameters()
         if lengths is not None:
             out, (hx, cx) = self.rnn(
-                pack_padded_sequence(
-                    feat, lengths, batch_first=False, enforce_sorted=False
-                ),
+                pack_padded_sequence(feat, lengths, batch_first=False, enforce_sorted=False),
                 state[:2] if state is not None else state,
             )
             out, _ = pad_packed_sequence(out, batch_first=False)
@@ -445,17 +429,9 @@ class ConvExtractor(BaseFeatureExtractor):
         self.layer_type: Type[nn.Module]
         self._channel_outs = channel_outs
         self.activation_fn = activation_fn or nn.ReLU()
-        self.kernel_size = (
-            kernel_size
-            if isinstance(kernel_size, Sequence)
-            else (kernel_size,) * len(channel_outs)
-        )
-        self.stride = (
-            stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
-        )
-        self.padding = (
-            padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
-        )
+        self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
+        self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
+        self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
 
     def build_cnn(self, channel_in, **kwargs) -> torch.nn.Module:
         """Create an CNN backbone consisting of nn.Conv2d followed by an activation function."""
@@ -511,17 +487,9 @@ class CNNExtractor(ConvExtractor):
         self.layer_type: Type[nn.Module] = nn.Conv2d
         self._channel_outs = channel_outs
         self.activation_fn = activation_fn or nn.ReLU()
-        self.kernel_size = (
-            kernel_size
-            if isinstance(kernel_size, Sequence)
-            else (kernel_size,) * len(channel_outs)
-        )
-        self.stride = (
-            stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
-        )
-        self.padding = (
-            padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
-        )
+        self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
+        self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
+        self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
         self.cnn = self.build_cnn(channel_in=input_dim[0], **kwargs)
         self.embedding_shape = self.cnn(torch.zeros(*input_dim)).shape
 
@@ -536,9 +504,7 @@ class CNNExtractor(ConvExtractor):
         )
 
         if self._ortho_init:
-            self.features.apply(
-                partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0))
-            )
+            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     def forward(self, observations: torch.Tensor, **kwargs) -> torch.Tensor:
         """Extract features from input.
@@ -551,6 +517,7 @@ class CNNExtractor(ConvExtractor):
         """
         feat = self.cnn(observations)
         feat = feat.flatten(start_dim=1)
+        print(kwargs)
         return self.features(feat)
 
 
@@ -588,25 +555,15 @@ class DeCNNExtractor(ConvExtractor):
         self.layer_type: type[nn.Module] = nn.ConvTranspose2d
         self._channel_outs = channel_outs
         self.activation_fn = activation_fn or nn.ReLU()
-        self.kernel_size = (
-            kernel_size
-            if isinstance(kernel_size, Sequence)
-            else (kernel_size,) * len(channel_outs)
-        )
-        self.stride = (
-            stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
-        )
-        self.padding = (
-            padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
-        )
+        self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
+        self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
+        self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
         self.de_cnn = self.build_cnn(channel_in=mlp_output_dim, **kwargs)
 
         self.output_dim = self.de_cnn(torch.zeros(1, mlp_output_dim, 1, 1)).shape
 
         if self._ortho_init:
-            self.features.apply(
-                partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0))
-            )
+            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     def forward(self, embedding: torch.Tensor, **kwargs) -> torch.Tensor:
         """Forward pass through the network.
