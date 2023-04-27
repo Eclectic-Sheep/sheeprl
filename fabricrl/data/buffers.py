@@ -130,9 +130,7 @@ class ReplayBuffer:
         env_idxes = torch.randint(0, self.n_envs, size=(len(batch_idxes),))
         buf = self._buf[batch_idxes, env_idxes]
         if sample_next_obs:
-            buf["next_observations"] = self._buf["observations"][
-                (batch_idxes + 1) % self._buffer_size, env_idxes, torch.arange(self.n_envs, device=self.device)
-            ]
+            buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
