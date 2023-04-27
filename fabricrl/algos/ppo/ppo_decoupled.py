@@ -1,18 +1,4 @@
 """
-Proximal Policy Optimization (PPO) - Accelerated with Lightning Fabric
-
-Author: Federico Belotti @belerico
-Adapted from https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
-Based on the paper: https://arxiv.org/abs/1707.06347
-
-Requirements:
-- gymnasium[box2d]>=0.27.1
-- moviepy
-- lightning
-- torchmetrics
-- tensorboard
-
-
 Run it with:
     lightning run model --devices=2 train_fabric_decoupled.py
 """
@@ -51,7 +37,6 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
-    log_dir = logger.log_dir
 
     # Initialize Fabric object
     fabric = Fabric(loggers=logger, accelerator="cuda" if args.player_on_gpu else "cpu")
@@ -68,7 +53,15 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
         [
-            make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train", mask_velocities=args.mask_vel)
+            make_env(
+                args.env_id,
+                args.seed + i,
+                0,
+                args.capture_video,
+                logger.log_dir,
+                "train",
+                mask_velocities=args.mask_vel,
+            )
             for i in range(args.num_envs)
         ]
     )
@@ -95,8 +88,9 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
     # Player metrics
-    rew_avg = MeanMetric(sync_on_compute=False).to(device)
-    ep_len_avg = MeanMetric(sync_on_compute=False).to(device)
+    with device:
+        rew_avg = MeanMetric(sync_on_compute=False)
+        ep_len_avg = MeanMetric(sync_on_compute=False)
 
     # Local data
     rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
@@ -130,7 +124,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         next_done = torch.zeros(args.num_envs, 1).to(device)
 
     for _ in range(1, num_updates + 1):
-        for step in range(0, args.num_steps):
+        for _ in range(0, args.num_steps):
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment

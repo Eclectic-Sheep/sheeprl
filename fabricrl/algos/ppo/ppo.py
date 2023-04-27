@@ -31,36 +31,12 @@ from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.agent import PPOAgent
 from fabricrl.algos.ppo.args import parse_args
-from fabricrl.algos.ppo.utils import make_env
+from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.utils import estimate_returns_and_advantages, linear_annealing
-
-
-@torch.no_grad()
-def test(agent: "PPOAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(
-        args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel
-    )()
-    step = 0
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
-    while not done:
-        # Act greedly through the environment
-        action = agent.get_greedy_action(next_obs)
-
-        # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
-        done = done or truncated
-        cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=device)
-        step += 1
-    logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
-    env.close()
 
 
 def train(

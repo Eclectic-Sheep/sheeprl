@@ -41,7 +41,7 @@ from fabricrl.utils.utils import estimate_returns_and_advantages, linear_anneali
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOAgent", device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
+def test(agent: RecurrentPPOAgent, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
     env = make_env(
         args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel
     )()
