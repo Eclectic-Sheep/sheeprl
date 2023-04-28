@@ -6,15 +6,13 @@ import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lightning.pytorch import LightningModule
 from torch import Tensor
-from torchmetrics import MeanMetric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
 
 
-class SoftQNetwork(LightningModule):
+class Critic(nn.Module):
     def __init__(
         self, envs: gym.vector.SyncVectorEnv, num_critics: int = 1, dropout: float = 0.0, layer_norm: bool = False
     ):
@@ -45,11 +43,8 @@ class SoftQNetwork(LightningModule):
         return x
 
 
-class Actor(LightningModule):
-    def __init__(
-        self,
-        envs: gym.vector.SyncVectorEnv,
-    ):
+class Actor(nn.Module):
+    def __init__(self, envs: gym.vector.SyncVectorEnv):
         super().__init__()
         act_space = prod(envs.single_action_space.shape)
         obs_space = prod(envs.single_observation_space.shape)
@@ -110,7 +105,7 @@ class Actor(LightningModule):
         return action, log_prob, mean
 
 
-class SACAgent(LightningModule):
+class SACAgent:
     def __init__(
         self,
         envs: gym.vector.SyncVectorEnv,
@@ -119,7 +114,6 @@ class SACAgent(LightningModule):
         tau: float = 0.005,
         dropout: float = 0.0,
         layer_norm: bool = False,
-        **torchmetrics_kwargs
     ) -> None:
         super().__init__()
 
@@ -127,7 +121,7 @@ class SACAgent(LightningModule):
         self._num_critics = num_critics
         self._actor = Actor(envs)
         self._qfs = nn.ModuleList(
-            [SoftQNetwork(envs, num_critics=1, dropout=dropout, layer_norm=layer_norm) for _ in range(num_critics)]
+            [Critic(envs, num_critics=1, dropout=dropout, layer_norm=layer_norm) for _ in range(num_critics)]
         )
         self._qfs_target = copy.deepcopy(self.qfs)
         for p in self._qfs_target.parameters():
@@ -140,17 +134,12 @@ class SACAgent(LightningModule):
         # EMA tau
         self._tau = tau
 
-        # Metrics
-        self.avg_pg_loss = MeanMetric(**torchmetrics_kwargs)
-        self.avg_value_loss = MeanMetric(**torchmetrics_kwargs)
-        self.avg_ent_loss = MeanMetric(**torchmetrics_kwargs)
-
     @property
     def num_critics(self) -> int:
         return self._num_critics
 
     @property
-    def qfs(self) -> nn.ModuleList:
+    def qfs(self) -> nn.Module:
         return self._qfs
 
     @qfs.setter
@@ -166,7 +155,7 @@ class SACAgent(LightningModule):
         self._actor = v
 
     @property
-    def qfs_target(self) -> nn.ModuleList:
+    def qfs_target(self) -> nn.Module:
         return self._qfs_target
 
     @qfs_target.setter
@@ -216,20 +205,3 @@ class SACAgent(LightningModule):
     def qfs_target_ema(self) -> None:
         for param, target_param in zip(self.qfs.parameters(), self.qfs_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
-
-    def on_train_epoch_end(self, global_step: int) -> None:
-        # Log metrics and reset their internal state
-        metric_dict = {"Loss/value_loss": self.avg_value_loss.compute()}
-        pg_loss = self.avg_pg_loss.compute()
-        if not pg_loss.isnan():
-            metric_dict["Loss/policy_loss"] = pg_loss
-        ent_loss = self.avg_ent_loss.compute()
-        if not ent_loss.isnan():
-            metric_dict["Loss/entropy_loss"] = ent_loss
-        self.logger.log_metrics(metric_dict, global_step)
-        self.reset_metrics()
-
-    def reset_metrics(self):
-        self.avg_pg_loss.reset()
-        self.avg_value_loss.reset()
-        self.avg_ent_loss.reset()

@@ -17,9 +17,6 @@ def policy_loss(agent: SACAgent, obs: Tensor) -> Tuple[Tensor, Tensor]:
 
     # Eq. 7
     actor_loss = ((agent.alpha * log_pi) - min_qf_pi).mean()
-
-    # Update actor metric
-    agent.avg_pg_loss(actor_loss)
     return actor_loss, log_pi.detach()
 
 
@@ -32,16 +29,10 @@ def critic_loss(agent: SACAgent, obs: Tensor, actions: Tensor, next_qf_value: Te
         F.mse_loss(qf_values[..., qf_value_idx].unsqueeze(-1), next_qf_value)
         for qf_value_idx in range(agent.num_critics)
     )
-
-    # Update critic metric
-    agent.avg_value_loss(qf_loss)
     return qf_loss
 
 
 def entropy_loss(agent: SACAgent, log_pi: Tensor) -> Tensor:
     # Eq. 17
     alpha_loss = (-agent.log_alpha * (log_pi + agent.target_entropy)).mean()
-
-    # Update entropy metric
-    agent.avg_ent_loss(alpha_loss)
     return alpha_loss
