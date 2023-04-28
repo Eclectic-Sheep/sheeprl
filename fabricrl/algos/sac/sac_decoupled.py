@@ -207,15 +207,7 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(
-        SACAgent(
-            envs,
-            num_critics=2,
-            alpha=args.alpha,
-            tau=args.tau,
-            process_group=optimization_pg,
-        )
-    )
+    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
     agent.qfs = fabric.setup_module(agent.qfs)
     agent.actor = fabric.setup_module(agent.actor)
 
@@ -236,9 +228,9 @@ def trainer(
     with fabric.device:
         aggregator = MetricAggregator(
             {
-                "Loss/value_loss": MeanMetric(group=optimization_pg),
-                "Loss/policy_loss": MeanMetric(group=optimization_pg),
-                "Loss/alpha_loss": MeanMetric(group=optimization_pg),
+                "Loss/value_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/policy_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/alpha_loss": MeanMetric(process_group=optimization_pg),
             }
         )
 
@@ -270,6 +262,7 @@ def trainer(
 
         # Send updated weights to the player
         metrics = aggregator.compute()
+        aggregator.reset()
         if global_rank == 1:
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
@@ -277,7 +270,6 @@ def trainer(
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
             )
-        aggregator.reset()
 
 
 def main(args: argparse.Namespace):

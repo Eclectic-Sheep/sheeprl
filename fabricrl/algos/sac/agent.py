@@ -6,6 +6,7 @@ import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from lightning import LightningModule
 from torch import Tensor
 
 LOG_STD_MAX = 2
@@ -105,7 +106,7 @@ class Actor(nn.Module):
         return action, log_prob, mean
 
 
-class SACAgent:
+class SACAgent(LightningModule):
     def __init__(
         self,
         envs: gym.vector.SyncVectorEnv,
