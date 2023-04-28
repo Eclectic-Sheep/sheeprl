@@ -33,14 +33,17 @@ from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
+from torch.distributions import Categorical
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import parse_args
-from fabricrl.algos.ppo.ppo import PPOAgent, test
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.utils.utils import gae, linear_annealing
+from fabricrl.models.models import MLP
+from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 
 @torch.no_grad()
@@ -75,24 +78,28 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Define the agent
-    agent: PPOAgent = PPOAgent(
-        envs,
-        act_fun=args.activation_function,
-        vf_coef=args.vf_coef,
-        ent_coef=args.ent_coef,
-        clip_coef=args.clip_coef,
-        clip_vloss=args.clip_vloss,
-        ortho_init=args.ortho_init,
-        normalize_advantages=args.normalize_advantages,
+    actor = MLP(
+        input_shape=envs.single_observation_space.shape,
+        hidden_sizes=(64, 64, envs.single_action_space.n),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
     ).to(device)
+    critic = MLP(
+        input_shape=envs.single_observation_space.shape,
+        hidden_sizes=(64, 64, 1),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
+    ).to(device)
+
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), device=device
+        torch.nn.utils.convert_parameters.parameters_to_vector(list(actor.parameters()) + list(critic.parameters())),
+        device=device,
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+    torch.nn.utils.convert_parameters.vector_to_parameters(
+        flattened_parameters, list(actor.parameters()) + list(critic.parameters())
+    )
 
     # Player metrics
     rew_avg = MeanMetric(sync_on_compute=False).to(device)
@@ -134,8 +141,15 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment
-            action, logprob, _, value = agent.get_action_and_value(next_obs)
+            actions_logits = actor(next_obs)
+            policy = Categorical(logits=actions_logits.unsqueeze(-2))
+            action = policy.sample()
+            logprob = policy.log_prob(action)
 
+            # Compute the value of the current observation
+            value = critic(next_obs)
+
+            # Store the current step data
             step_data["dones"] = next_done
             step_data["values"] = value
             step_data["actions"] = action
@@ -182,7 +196,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
                 rb["rewards"],
                 rb["values"],
                 rb["dones"],
-                agent.get_value(next_obs),
+                critic(next_obs),
                 next_done,
                 args.num_steps,
                 args.gamma,
@@ -215,7 +229,9 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
-        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+        torch.nn.utils.convert_parameters.vector_to_parameters(
+            flattened_parameters, list(actor.parameters()) + list(critic.parameters())
+        )
 
         fabric.log_dict(metrics[0], global_step)
         fabric.log_dict({"Time/step_per_second": int(global_step / (time.time() - start_time))}, global_step)
@@ -225,7 +241,6 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     else:
         world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
-    test(agent, device, fabric.logger.experiment, args)
 
 
 def trainer(
@@ -238,6 +253,16 @@ def trainer(
     group_rank = global_rank - 1
     group_world_size = world_collective.world_size - 1
 
+    # Loggers
+    aggregator = MetricAggregator(
+        {
+            "Loss/policy_loss": MeanMetric(sync_on_compute=False),
+            "Loss/value_loss": MeanMetric(sync_on_compute=False),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=False),
+            "Loss/total_loss": MeanMetric(sync_on_compute=False),
+        }
+    )
+
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), accelerator="cuda" if args.cuda else "cpu")
     device = fabric.device
@@ -249,24 +274,30 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent: PPOAgent = PPOAgent(
-        envs,
-        act_fun=args.activation_function,
-        vf_coef=args.vf_coef,
-        ent_coef=args.ent_coef,
-        clip_coef=args.clip_coef,
-        clip_vloss=args.clip_vloss,
-        ortho_init=args.ortho_init,
-        normalize_advantages=args.normalize_advantages,
-        process_group=optimization_pg,
+    # Define the agent
+    actor = MLP(
+        input_shape=envs.single_observation_space.shape,
+        hidden_sizes=(64, 64, envs.single_action_space.n),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
     )
-    optimizer = agent.configure_optimizers(lr=args.learning_rate)
-    agent, optimizer = fabric.setup(agent, optimizer)
+    critic = MLP(
+        input_shape=envs.single_observation_space.shape,
+        hidden_sizes=(64, 64, 1),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
+    )
+
+    optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
+    actor = fabric.setup_module(actor)
+    critic = fabric.setup_module(critic)
+    optimizer = fabric.setup_optimizers(optimizer)
 
     # Send weights to rank-0, a.k.a. the player
     if global_rank == 1:
         player_trainer_collective.broadcast(
-            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
+            torch.nn.utils.convert_parameters.parameters_to_vector(
+                list(actor.parameters()) + list(critic.parameters())
+            ),
+            src=1,
         )
 
     # Receive maximum number of updates from the player
@@ -310,33 +341,62 @@ def trainer(
 
         # The Join context is needed because there can be the possibility
         # that some ranks receive less data
-        with Join([agent._forward_module]) if not args.share_data else nullcontext():
+        with Join([actor._forward_module]) if not args.share_data else nullcontext():
             for epoch in range(args.update_epochs):
                 if args.share_data:
                     sampler.sampler.set_epoch(epoch)
                 for batch_idxes in sampler:
-                    loss = agent.training_step(data[batch_idxes])
+                    batch = data[batch_idxes]
+                    actions_logits = actor(batch["observations"])
+                    new_values = critic(batch["observations"])
+
+                    policy = Categorical(logits=actions_logits.unsqueeze(-2))
+                    if args.normalize_advantages:
+                        batch["advantages"] = normalize_tensor(batch["advantages"])
+
+                    pg_loss = policy_loss(policy, batch, args.clip_coef)
+
+                    # Value loss
+                    v_loss = value_loss(
+                        new_values,
+                        batch["values"],
+                        batch["returns"],
+                        args.clip_coef,
+                        args.clip_vloss,
+                    )
+
+                    # Entropy loss
+                    entropy = policy.entropy()
+                    ent_loss = entropy_loss(entropy)
+
+                    loss = (
+                        -pg_loss + args.vf_coef * v_loss - args.ent_coef * ent_loss
+                    )  # Equation (9) in the paper, changed of sign since we minimize
+
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
-                    fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+                    fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
+                    fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
                     optimizer.step()
 
         # Sync metrics
-        avg_pg_loss = agent.avg_pg_loss.compute()
-        avg_value_loss = agent.avg_value_loss.compute()
-        avg_ent_loss = agent.avg_ent_loss.compute()
-        agent.reset_metrics()
+        # Update metrics
+        aggregator.update("Loss/policy_loss", pg_loss.detach())
+        aggregator.update("Loss/value_loss", v_loss.detach())
+        aggregator.update("Loss/entropy_loss", ent_loss.detach())
+        aggregator.update("Loss/total_loss", loss.detach())
 
         # Send updated weights to the player
         if global_rank == 1:
-            metrics["Loss/policy_loss"] = avg_pg_loss
-            metrics["Loss/value_loss"] = avg_value_loss
-            metrics["Loss/entropy_loss"] = avg_ent_loss
+            metrics = aggregator.compute()
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
-                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
+                torch.nn.utils.convert_parameters.parameters_to_vector(
+                    list(actor.parameters()) + list(critic.parameters())
+                ),
+                src=1,
             )
 
 
