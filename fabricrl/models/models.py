@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Optional, Sequence, Tuple, Type, Union
 
 import numpy as np
 import torch
@@ -9,29 +9,27 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from fabricrl.utils.model import create_mlp, per_layer_ortho_init_weights
 
 
-class BaseFeatureExtractor(nn.Module):
-    """Base feature extractor. Every child class must set the `self.features` attribute.
+class BaseModule(nn.Module):
+    """Base feature extractor. Every child class must set the `self.mlp_model` attribute.
 
     Args:
-        input_dim (int): observations dimension.
+        input_shape (int): observations dimension.
     """
 
-    def __init__(self, input_dim: Sequence[int]):
+    def __init__(self, input_shape: Sequence[int]):
         super().__init__()
-        self._input_dim = input_dim
+        self._input_shape = input_shape
         self._output_dim: Union[int, Sequence[int]]
-        self._input_names: List[str] = ["observations"]
-        self._output_names: List[str] = ["features"]
-        self.features: torch.nn.Module
+        self.mlp_model: torch.nn.Module
         self._num_recurrent_states: int = 0
 
     @property
-    def input_dim(self) -> Sequence[int]:
+    def input_shape(self) -> Sequence[int]:
         """Get the input dimension.
         Returns:
             the input dimension.
         """
-        return self._input_dim
+        return self._input_shape
 
     @property
     def output_dim(self) -> int:
@@ -44,18 +42,6 @@ class BaseFeatureExtractor(nn.Module):
     def output_dim(self, value) -> None:
         """Set the output dimension."""
         self._output_dim = value
-
-    @property
-    def input_names(self) -> List[str]:
-        """Get the input names.
-        Returns:
-            the input names."""
-        return self._input_names
-
-    @property
-    def output_names(self) -> List[str]:
-        """Get the output names."""
-        return self._output_names
 
     @property
     def num_recurrent_states(self) -> int:
@@ -75,18 +61,18 @@ class BaseFeatureExtractor(nn.Module):
         raise NotImplementedError()
 
 
-class IdentityExtractor(BaseFeatureExtractor):
-    """Identity feature extractor simply returns what it has received as input. It sets `self.features` as a
+class Identity(BaseModule):
+    """Identity feature extractor simply returns what it has received as input. It sets `self.mlp_model` as a
     `torch.nn.Identiy`.
 
     Args:
-        input_dim (int): the input dimension.
+        input_shape (int): the input dimension.
     """
 
-    def __init__(self, input_dim: Sequence[int]):
-        super().__init__(input_dim)
-        self.output_dim = np.prod(input_dim)
-        self.features = nn.Identity()
+    def __init__(self, input_shape: Sequence[int]):
+        super().__init__(input_shape)
+        self.output_dim = np.prod(input_shape)
+        self.mlp_model = nn.Identity()
 
     def forward(self, observations: torch.Tensor, **kwargs) -> torch.Tensor:
         """Forward pass of the network.
@@ -97,17 +83,17 @@ class IdentityExtractor(BaseFeatureExtractor):
         Returns:
             torch.Tensor: the features.
         """
-        return self.features(observations)
+        return self.mlp_model(observations)
 
 
-class MLPExtractor(BaseFeatureExtractor):
+class MLP(BaseModule):
     """Extract features with an MLP. The MLP is created using `twirl.utility.model.create_mlp` and
     cuold be empty.
 
     Args:
-        input_dim (int): the observations dimension.
+        input_shape (int): the observations dimension.
         hidden_sizes (Sequence[int]): a sequence of integers (possibly empty), which specifies the hidden dimensions
-            of the MLP. If an empty sequence is passed, then `self.features` will simply be a `torch.nn.Identity`.
+            of the MLP. If an empty sequence is passed, then `self.mlp_model` will simply be a `torch.nn.Identity`.
             Defaults to tuple().
         ortho_init (bool, optional): whether to apply the orthogonal initialization.
             Defaults to False.
@@ -115,35 +101,38 @@ class MLPExtractor(BaseFeatureExtractor):
             Defaults to nn.ReLU.
 
     Examples:
-        >>> MLPExtractor((8, ), [64, 32])
+        >>> MLP((8, ), [64, 32], (nn.ReLU(), nn.ReLU()))
         MLPExtractor(
-            (features): Sequential(
+            (mlp_model): Sequential(
                 (0): Linear(in_features=8, out_features=64, bias=True)
                 (1): ReLU()
                 (2): Linear(in_features=64, out_features=32, bias=True)
                 (3): ReLU()
             )
         )
-        >>> MLPExtractor((8, ), tuple())
+        >>> MLP((8, ), tuple())
         MLPExtractor(
-            (features): Identity()
+            (mlp_model): Identity()
         )
     """
 
     def __init__(
         self,
-        input_dim: Sequence[int],
+        input_shape: Sequence[int],
         hidden_sizes: Sequence[int] = tuple(),
+        activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity(),
         ortho_init: bool = False,
-        activation_fn: Optional[Type[nn.Module]] = None,
     ):
-        super().__init__(input_dim)
+        super().__init__(input_shape)
         self._hidden_sizes = hidden_sizes
         self._ortho_init = ortho_init
-        self.output_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
-        self.features = create_mlp(input_dim=input_dim, hidden_sizes=hidden_sizes, activation_fn=activation_fn)
+        self.output_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_shape)
+        activation_fn = activation_fn if isinstance(activation_fn, Sequence) else (activation_fn,) * len(hidden_sizes)
+        self.mlp_model = create_mlp(
+            input_dim=np.prod(input_shape), hidden_sizes=hidden_sizes, activation_fn=activation_fn
+        )
         if self._ortho_init:
-            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
+            self.mlp_model.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     @property
     def hidden_sizes(self) -> Sequence[int]:
@@ -172,15 +161,15 @@ class MLPExtractor(BaseFeatureExtractor):
         Returns:
             torch.Tensor: the extracted features.
         """
-        return self.features(observations)
+        return self.mlp_model(observations)
 
 
-class RecurrentExtractor(MLPExtractor):
+class Recurrent(MLP):
     """Extract features first with an MLP, the applies a recurrent (RNN/GRU) module on the extracted features.
     The MLP is created using `twirl.utility.model.create_mlp` and could be empty.
 
     Args:
-        input_dim (int): the observations dimension.
+        input_shape (int): the observations dimension.
         rnn_hidden_dim (Optional[int], optional): the RNN hidden dimension.
             If it is None, then it will be set as the last hidden dimension of the MLP; if there is no MLP,
             then it will be set as the input dimension.
@@ -190,7 +179,7 @@ class RecurrentExtractor(MLPExtractor):
             T is the sequence length and D is feature dimension.
             Defaults to False.
         hidden_sizes (Sequence[int]): a sequence of integers (possibly empty), which specifies the hidden dimensions
-            of the MLP. If an empty sequence is passed, then `self.features` will simply be a `torch.nn.Identity`.
+            of the MLP. If an empty sequence is passed, then `self.mlp_model` will simply be a `torch.nn.Identity`.
             Defaults to tuple().
         ortho_init (bool, optional): whether to apply the orthogonal initialization.
             Defaults to False.
@@ -198,39 +187,39 @@ class RecurrentExtractor(MLPExtractor):
             Defaults to nn.ReLU.
 
     Examples:
-        >>> RecurrentExtractor((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=[32])
+        >>> Recurrent((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=[32], activation_fn=(nn.ReLU(),))
         RecurrentExtractor(
-            (features): Sequential(
+            (mlp_model): Sequential(
                 (0): Linear(in_features=8, out_features=32, bias=True)
                 (1): ReLU()
             )
             (rnn): RNN(32, 32)
         )
-        >>> RecurrentExtractor((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=tuple())
+        >>> Recurrent((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=tuple())
         RecurrentExtractor(
-            (features): Identity()
+            (mlp_model): Identity()
             (rnn): RNN(8, 32)
         )
     """
 
     def __init__(
         self,
-        input_dim: Sequence[int],
+        input_shape: Sequence[int],
         rnn_net: nn.Module = nn.RNN,
         rnn_hidden_dim: Optional[int] = None,
         rnn_num_layers: int = 1,
         rnn_batch_first: bool = False,
         hidden_sizes: Sequence[int] = tuple(),
+        activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity(),
         ortho_init: bool = False,
-        activation_fn: Optional[Type[nn.Module]] = None,
     ):
         super().__init__(
-            input_dim,
+            input_shape,
             hidden_sizes=hidden_sizes,
             ortho_init=ortho_init,
             activation_fn=activation_fn,
         )
-        self._rnn_input_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_dim)
+        self._rnn_input_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else np.prod(input_shape)
         self._rnn_hidden_dim = rnn_hidden_dim if rnn_hidden_dim is not None else self._rnn_input_dim
         self._rnn_num_layers = rnn_num_layers
         self._rnn_batch_first = rnn_batch_first
@@ -284,10 +273,10 @@ class RecurrentExtractor(MLPExtractor):
         self,
         observations: torch.Tensor,
         state: Optional[Tuple[torch.Tensor, ...]] = None,
-        lengths: Optional[List[int]] = None,
+        lengths: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
-        """Extract features with an RNN model.
+        """Apply an RNN model.
 
         Args:
             observations (torch.Tensor): the input tensor.
@@ -297,9 +286,9 @@ class RecurrentExtractor(MLPExtractor):
                 Defaults to None.
 
         Returns:
-            the extracted features and the next rnn state.
+            the extracted output and the next rnn state.
         """
-        feat = self.features(observations)
+        feat = self.mlp_model(observations)
         state = state[0] if state is not None else state
         self.rnn.flatten_parameters()
         if lengths is not None:
@@ -315,12 +304,12 @@ class RecurrentExtractor(MLPExtractor):
         return out, hx
 
 
-class LSTMExtractor(RecurrentExtractor):
+class LSTM(Recurrent):
     """Extract features first with an MLP, the applies an LSTM module on the extracted features.
     The MLP is created using `twirl.utility.model.create_mlp` and could be empty.
 
     Args:
-        input_dim (int): the observations dimension.
+        input_shape (int): the observations dimension.
         rnn_hidden_dim (Optional[int], optional): the LSTM hidden dimension.
             If it is None, then it will be set as the last hidden dimension of the MLP; if there is no MLP,
             then it will be set as the input dimension.
@@ -330,7 +319,7 @@ class LSTMExtractor(RecurrentExtractor):
             where B is the batch size, T is the sequence length and D is feature dimension.
             Defaults to False.
         hidden_sizes (Sequence[int]): a sequence of integers (possibly empty), which specifies the hidden dimensions
-            of the MLP. If an empty sequence is passed, then `self.features` will simply be a `torch.nn.Identity`.
+            of the MLP. If an empty sequence is passed, then `self.mlp_model` will simply be a `torch.nn.Identity`.
             Defaults to tuple().
         ortho_init (bool, optional): whether to apply the orthogonal initialization.
             Defaults to False.
@@ -338,7 +327,7 @@ class LSTMExtractor(RecurrentExtractor):
             Defaults to nn.ReLU.
 
     Examples:
-        >>> LSTMExtractor((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=(32,))
+        >>> LSTM((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=(32,))
         LSTMExtractor(
             (features): Sequential(
                 (0): Linear(in_features=8, out_features=32, bias=True)
@@ -346,7 +335,7 @@ class LSTMExtractor(RecurrentExtractor):
             )
             (lstm): LSTM(32, 32)
         )
-        >>> LSTMExtractor((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=tuple())
+        >>> LSTM((8, ), rnn_hidden_dim=32, rnn_num_layers=1, hidden_sizes=tuple())
         LSTMExtractor(
             (features): Identity()
             (lstm): LSTM(8, 32)
@@ -355,19 +344,19 @@ class LSTMExtractor(RecurrentExtractor):
 
     def __init__(
         self,
-        input_dim: Sequence[int],
+        input_shape: Sequence[int],
         rnn_net: nn.Module = nn.LSTM,
         rnn_hidden_dim: Optional[int] = None,
         rnn_num_layers: int = 1,
         rnn_batch_first: bool = False,
         hidden_sizes: Sequence[int] = tuple(),
         ortho_init: bool = False,
-        activation_fn: Optional[Type[nn.Module]] = None,
+        activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity(),
     ):
         if rnn_net is not nn.LSTM:
-            raise ValueError("rnn_net must be an instance of torch.nn.LSTM with LSTMExtractor")
+            raise ValueError("rnn_net must be an instance of torch.nn.LSTM with LSTM")
         super().__init__(
-            input_dim,
+            input_shape,
             rnn_net=rnn_net,
             rnn_hidden_dim=rnn_hidden_dim,
             rnn_num_layers=rnn_num_layers,
@@ -384,7 +373,7 @@ class LSTMExtractor(RecurrentExtractor):
         self,
         observations: torch.Tensor,
         state: Optional[Tuple[torch.Tensor, ...]] = None,
-        lengths: Optional[List[int]] = None,
+        lengths: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Extract features with an LSTM model.
@@ -399,7 +388,7 @@ class LSTMExtractor(RecurrentExtractor):
         Returns:
             Tuple[torch.Tensor, Tuple[torch.Tensor]]: the extracted features and the next lstm state.
         """
-        feat = self.features(observations)
+        feat = self.mlp_model(observations)
         self.rnn.flatten_parameters()
         if lengths is not None:
             out, (hx, cx) = self.rnn(
@@ -414,21 +403,24 @@ class LSTMExtractor(RecurrentExtractor):
         return out, (hx, cx)
 
 
-class ConvExtractor(BaseFeatureExtractor):
+class ConvModule(BaseModule):
     def __init__(
         self,
-        input_dim: Tuple[int, int, int],
+        input_shape: Sequence[int, ...],
         channel_outs: Sequence[int] = tuple(),
-        activation_fn: Optional[Type[nn.Module]] = None,
+        cnn_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity,
         kernel_size: Union[int, Sequence[int]] = 3,
         stride: Union[int, Sequence[int]] = 1,
         padding: Union[int, Sequence[int]] = 0,
         **kwargs
     ):
-        super().__init__(input_dim=input_dim)
+        super().__init__(input_shape=input_shape)
         self.layer_type: Type[nn.Module]
         self._channel_outs = channel_outs
-        self.activation_fn = activation_fn or nn.ReLU()
+
+        self.cnn_activation_fn = (
+            cnn_activation_fn if isinstance(cnn_activation_fn, Sequence) else (cnn_activation_fn,) * len(channel_outs)
+        )
         self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
         self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
         self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
@@ -445,20 +437,20 @@ class ConvExtractor(BaseFeatureExtractor):
                     padding=self.padding[0],
                     **kwargs
                 ),
-                self.activation_fn,
+                self.self.cnn_activation_fn[0],
             ]
-            for dim_i in range(len(self._channel_outs) - 1):
+            for dim_i in range(1, len(self._channel_outs)):
                 layers.append(
                     self.layer_type(
+                        self._channel_outs[dim_i - 1],
                         self._channel_outs[dim_i],
-                        self._channel_outs[dim_i + 1],
-                        kernel_size=self.kernel_size[dim_i + 1],
-                        stride=self.stride[dim_i + 1],
-                        padding=self.padding[dim_i + 1],
+                        kernel_size=self.kernel_size[dim_i],
+                        stride=self.stride[dim_i],
+                        padding=self.padding[dim_i],
                         **kwargs
                     )
                 )
-                layers.append(self.activation_fn)
+                layers.append(self.cnn_activation_fn[dim_i])
             cnn = nn.Sequential(*layers)
         else:
             cnn = nn.Identity()
@@ -468,43 +460,50 @@ class ConvExtractor(BaseFeatureExtractor):
         raise NotImplementedError
 
 
-class CNNExtractor(ConvExtractor):
+class CNN(ConvModule):
     """Extract features first with a CNN, then applies an MLP on the extracted features."""
 
     def __init__(
         self,
-        input_dim: Tuple[int, int, int],
+        input_shape: Tuple[int, int, int],
         channel_outs: Sequence[int] = tuple(),
         hidden_sizes: Sequence[int] = tuple(),
-        ortho_init: bool = False,
-        activation_fn: Optional[Type[nn.Module]] = None,
+        mlp_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity,
+        cnn_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity,
         kernel_size: Union[int, Sequence[int]] = 3,
         stride: Union[int, Sequence[int]] = 1,
         padding: Union[int, Sequence[int]] = 0,
-        **kwargs
+        ortho_init: bool = False,
+        **cnn_kwargs
     ):
-        super().__init__(input_dim=input_dim)
-        self.layer_type: Type[nn.Module] = nn.Conv2d
-        self._channel_outs = channel_outs
-        self.activation_fn = activation_fn or nn.ReLU()
-        self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
-        self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
-        self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
-        self.cnn = self.build_cnn(channel_in=input_dim[0], **kwargs)
-        self.embedding_shape = self.cnn(torch.zeros(*input_dim)).shape
+        super().__init__(
+            input_shape=input_shape,
+            channel_outs=channel_outs,
+            cnn_activation_fn=cnn_activation_fn,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            **cnn_kwargs
+        )
 
-        mlp_input_dim = self.cnn(torch.zeros(*input_dim)).numel()
+        self.cnn = self.build_cnn(channel_in=input_shape[0], **cnn_kwargs)
+        self.embedding_shape = self.cnn(torch.zeros(*input_shape)).shape
+
+        mlp_input_dim = self.cnn(torch.zeros(*input_shape)).numel()
+        mlp_activation_fn = (
+            mlp_activation_fn if isinstance(mlp_activation_fn, Sequence) else (mlp_activation_fn,) * len(hidden_sizes)
+        )
         self._hidden_sizes = hidden_sizes
         self._ortho_init = ortho_init
         self.output_dim = hidden_sizes[-1] if len(hidden_sizes) > 0 else mlp_input_dim
-        self.features = create_mlp(
+        self.mlp_model = create_mlp(
             input_dim=mlp_input_dim,
             hidden_sizes=hidden_sizes,
-            activation_fn=activation_fn,
+            activation_fn=mlp_activation_fn,
         )
 
         if self._ortho_init:
-            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
+            self.mlp_model.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     def forward(self, observations: torch.Tensor, **kwargs) -> torch.Tensor:
         """Extract features from input.
@@ -517,53 +516,61 @@ class CNNExtractor(ConvExtractor):
         """
         feat = self.cnn(observations)
         feat = feat.flatten(start_dim=1)
-        print(kwargs)
-        return self.features(feat)
+        return self.mlp_model(feat)
 
 
-class DeCNNExtractor(ConvExtractor):
+class DeCNN(ConvModule):
     """Extract features first with a CNN, then applies an MLP on the extracted features."""
 
     def __init__(
         self,
-        input_dim: int,
+        input_shape: Sequence[int],
         channel_outs: Sequence[int] = tuple(),
         hidden_sizes: Sequence[int] = tuple(),
         ortho_init: bool = False,
-        activation_fn: Optional[Type[nn.Module]] = None,
+        mlp_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity(),
+        cnn_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity(),
         kernel_size: Union[int, Sequence[int]] = 3,
         stride: Union[int, Sequence[int]] = 1,
         padding: Union[int, Sequence[int]] = 0,
-        **kwargs
+        **cnn_kwargs
     ):
         super().__init__(
-            input_dim=input_dim,
-            hidden_sizes=hidden_sizes,
-            ortho_init=ortho_init,
-            activation_fn=activation_fn,
+            input_shape=input_shape,
+            channel_outs=channel_outs,
+            cnn_activation_fn=cnn_activation_fn,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            **cnn_kwargs
         )
 
         self._hidden_sizes = hidden_sizes
         self._ortho_init = ortho_init
-        self.features = create_mlp(
-            input_dim=self.input_dim,
-            hidden_sizes=hidden_sizes,
-            activation_fn=activation_fn,
+        mlp_activation_fn = (
+            mlp_activation_fn if isinstance(mlp_activation_fn, Sequence) else (mlp_activation_fn,) * len(hidden_sizes)
         )
-        mlp_output_dim = self.features(torch.zeros(1, self.input_dim)).shape[1]
+        self.mlp_model = create_mlp(
+            input_dim=np.prod(self.input_shape),
+            hidden_sizes=hidden_sizes,
+            activation_fn=mlp_activation_fn,
+        )
+        mlp_output_dim = self.mlp_model(torch.zeros(1, np.prod(self.input_shape))).shape[1]
 
         self.layer_type: type[nn.Module] = nn.ConvTranspose2d
         self._channel_outs = channel_outs
-        self.activation_fn = activation_fn or nn.ReLU()
+        self.activation_fn = (
+            cnn_activation_fn if isinstance(cnn_activation_fn, Sequence) else (cnn_activation_fn,) * len(channel_outs)
+        )
         self.kernel_size = kernel_size if isinstance(kernel_size, Sequence) else (kernel_size,) * len(channel_outs)
         self.stride = stride if isinstance(stride, Sequence) else (stride,) * len(channel_outs)
         self.padding = padding if isinstance(padding, Sequence) else (padding,) * len(channel_outs)
-        self.de_cnn = self.build_cnn(channel_in=mlp_output_dim, **kwargs)
+        self.de_cnn = self.build_cnn(channel_in=mlp_output_dim, **cnn_kwargs)
 
         self.output_dim = self.de_cnn(torch.zeros(1, mlp_output_dim, 1, 1)).shape
 
         if self._ortho_init:
-            self.features.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
+            self.mlp_model.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
 
     def forward(self, embedding: torch.Tensor, **kwargs) -> torch.Tensor:
         """Forward pass through the network.
@@ -574,6 +581,6 @@ class DeCNNExtractor(ConvExtractor):
         Returns:
             torch.Tensor: Decoded embedding.
         """
-        feat = self.features(embedding)
+        feat = self.mlp_model(embedding)
         feat = feat.unsqueeze(-1).unsqueeze(-1)
         return self.de_cnn(feat)
