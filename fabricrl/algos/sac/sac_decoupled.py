@@ -11,7 +11,6 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import torch
-import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -21,6 +20,7 @@ from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
+from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACAgent
@@ -28,6 +28,7 @@ from fabricrl.algos.sac.args import parse_args
 from fabricrl.algos.sac.sac import train
 from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
+from fabricrl.utils.metric import MetricAggregator
 
 
 @torch.no_grad()
@@ -81,10 +82,15 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
     player_trainer_collective.broadcast(flattened_parameters, src=1)
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
-    # Player metrics
+    # Metrics
     with device:
-        rew_avg = torchmetrics.MeanMetric(sync_on_compute=False)
-        ep_len_avg = torchmetrics.MeanMetric(sync_on_compute=False)
+        aggregator = MetricAggregator(
+            {
+                "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
+                "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
+                "Time/step_per_second": MeanMetric(sync_on_compute=False),
+            }
+        )
 
     # Local data
     rb = ReplayBuffer(args.buffer_size // args.num_envs, args.num_envs, device=device)
@@ -115,18 +121,8 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
                     fabric.print(
                         f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
-                    rew_avg(agent_final_info["episode"]["r"][0])
-                    ep_len_avg(agent_final_info["episode"]["l"][0])
-
-        # Sync the metrics
-        rew_avg_reduced = rew_avg.compute()
-        if not rew_avg_reduced.isnan():
-            fabric.log("Rewards/rew_avg", rew_avg_reduced, global_step)
-        ep_len_avg_reduced = ep_len_avg.compute()
-        if not ep_len_avg_reduced.isnan():
-            fabric.log("Game/ep_len_avg", ep_len_avg_reduced, global_step)
-        rew_avg.reset()
-        ep_len_avg.reset()
+                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
+                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Save the real next observation
         real_next_obs = next_obs.copy()
@@ -168,7 +164,9 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
             torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
             fabric.log_dict(metrics[0], global_step)
-        fabric.log_dict({"Time/step_per_second": int(global_step / (time.time() - start_time))}, global_step)
+        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.reset()
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
@@ -196,7 +194,7 @@ def trainer(
     )
     """
     global_rank = world_collective.rank
-    group_rank = global_rank - 1
+    global_rank - 1
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))  # accelerator="cuda" if args.cuda else "cpu"
@@ -234,6 +232,16 @@ def trainer(
             torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
         )
 
+    # Metrics
+    with fabric.device:
+        aggregator = MetricAggregator(
+            {
+                "Loss/value_loss": MeanMetric(group=optimization_pg),
+                "Loss/policy_loss": MeanMetric(group=optimization_pg),
+                "Loss/alpha_loss": MeanMetric(group=optimization_pg),
+            }
+        )
+
     # Start training
     global_step = 0
     while True:
@@ -246,10 +254,6 @@ def trainer(
                 return
             data = make_tensordict(data, device=device)
 
-            # Metrics dict to be sent to the player
-            if group_rank == 0:
-                metrics = {}
-
             train(
                 fabric,
                 agent,
@@ -257,29 +261,23 @@ def trainer(
                 qf_optimizer,
                 alpha_optimizer,
                 data,
+                aggregator,
                 global_step,
                 args,
                 group=optimization_pg,
             )
             global_step += 1
 
-        # Sync metrics
-        avg_pg_loss = agent.avg_pg_loss.compute()
-        avg_value_loss = agent.avg_value_loss.compute()
-        avg_ent_loss = agent.avg_ent_loss.compute()
-        agent.reset_metrics()
-
         # Send updated weights to the player
+        metrics = aggregator.compute()
         if global_rank == 1:
-            metrics["Loss/policy_loss"] = avg_pg_loss
-            metrics["Loss/value_loss"] = avg_value_loss
-            metrics["Loss/entropy_loss"] = avg_ent_loss
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
             )
+        aggregator.reset()
 
 
 def main(args: argparse.Namespace):
