@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -9,6 +10,7 @@ import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
@@ -33,6 +35,7 @@ def train(
     aggregator: MetricAggregator,
     global_step: int,
     args: argparse.Namespace,
+    group: Optional[CollectibleGroup] = None,
 ):
     # Get next_obs target q-values
     next_target_qf_value = agent.get_next_target_q_value(
@@ -64,7 +67,7 @@ def train(
     alpha_loss = entropy_loss(agent, log_pi)
     alpha_optimizer.zero_grad(set_to_none=True)
     fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
     alpha_optimizer.step()
     aggregator.update("Loss/alpha_loss", alpha_loss)
 

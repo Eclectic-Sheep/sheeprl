@@ -11,7 +11,6 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.optim as optim
 import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
@@ -21,57 +20,14 @@ from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
-from torch.optim import Optimizer
+from torch.optim import Adam
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACAgent
 from fabricrl.algos.sac.args import parse_args
-from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
+from fabricrl.algos.sac.sac import train
 from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
-
-
-def train(
-    fabric: Fabric,
-    agent: SACAgent,
-    actor_optimizer: Optimizer,
-    qf_optimizer: Optimizer,
-    alpha_optimizer: Optimizer,
-    data: TensorDictBase,
-    global_step: int,
-    args: argparse.Namespace,
-    optimization_pg: CollectibleGroup,
-):
-    # Get next_obs target q-values
-    next_target_qf_value = agent.get_next_target_q_value(
-        data["next_observations"],
-        data["rewards"],
-        data["dones"],
-        args.gamma,
-    )
-
-    # Update the soft-critic
-    qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value)
-    qf_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(qf_loss)
-    qf_optimizer.step()
-
-    # Update the target networks with EMA
-    if global_step % args.target_network_frequency == 0:
-        agent.qfs_target_ema()
-
-    # Update the actor
-    actor_loss, log_pi = policy_loss(agent, data["observations"])
-    actor_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(actor_loss)
-    actor_optimizer.step()
-
-    # Update the entropy value
-    alpha_loss = entropy_loss(agent, log_pi)
-    alpha_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=optimization_pg)
-    alpha_optimizer.step()
 
 
 @torch.no_grad()
@@ -267,9 +223,9 @@ def trainer(
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
     )
 
     # Send weights to rank-0, a.k.a. the player
@@ -295,7 +251,15 @@ def trainer(
                 metrics = {}
 
             train(
-                fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, data, global_step, args, optimization_pg
+                fabric,
+                agent,
+                actor_optimizer,
+                qf_optimizer,
+                alpha_optimizer,
+                data,
+                global_step,
+                args,
+                group=optimization_pg,
             )
             global_step += 1
 
