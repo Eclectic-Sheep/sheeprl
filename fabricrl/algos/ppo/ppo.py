@@ -1,17 +1,9 @@
 """
 Proximal Policy Optimization (PPO) - Accelerated with Lightning Fabric
 
-Author: Federico Belotti @belerico
+Author: Federico Belotti, Davide Angioni and Refik Can Malli
 Adapted from https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
 Based on the paper: https://arxiv.org/abs/1707.06347
-
-Requirements:
-- gymnasium[box2d]>=0.27.1
-- moviepy
-- lightning
-- torchmetrics
-- tensorboard
-
 
 Run it with:
     lightning run model --accelerator=cpu --strategy=ddp --devices=2 train_fabric.py
@@ -24,67 +16,36 @@ from datetime import datetime
 
 import gymnasium as gym
 import torch
-import torch.nn as nn
 import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
-from tensordict.nn import TensorDictModule
 from tensordict.tensordict import TensorDictBase
+from torch.distributions import Categorical
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torch.utils.tensorboard import SummaryWriter
+from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.actor import Actor
-from fabricrl.algos.ppo.agent import PPOAgent
 from fabricrl.algos.ppo.args import parse_args
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.models.feature import MLPExtractor
-from fabricrl.policy.policy import CategoricalPolicy
-from fabricrl.utils.utils import linear_annealing
-
-
-@torch.no_grad()
-def test(
-    agent: "PPOAgent",
-    device: torch.device,
-    logger: SummaryWriter,
-    args: argparse.Namespace,
-):
-    """Test the agent in the environment."""
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test")()
-    step = 0
-    done = False
-    cumulative_rew = 0
-    input_tensordict = TensorDict(
-        {"observations": torch.tensor(env.reset(seed=args.seed))}, batch_size=1, device=device
-    )
-    input_tensordict["greedy"] = torch.ones(1, 1) * True
-    while not done:
-        # Act greedly through the environment
-        action = agent.get_greedy_action(input_tensordict)
-
-        # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
-        done = done or truncated
-        cumulative_rew += reward
-        input_tensordict["observations"] = torch.tensor(next_obs, device=device)
-        step += 1
-    logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
-    env.close()
+from fabricrl.models.models import MLP
+from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 
 def train(
     fabric: Fabric,
-    agent: PPOAgent,
+    actor: torch.nn.Module,
+    critic: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
-    global_step: int,
+    aggregator: MetricAggregator,
     args: argparse.Namespace,
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(data["observations"].shape[0]))
+    indexes = list(range(data.batch_size[0]))
     if args.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -101,12 +62,44 @@ def train(
         if args.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
-            loss = agent.training_step(data[batch_idxes])
+            batch = data[batch_idxes]
+            actions_logits = actor(batch["observations"])
+            new_values = critic(batch["observations"])
+
+            policy = Categorical(logits=actions_logits.unsqueeze(-2))
+            if args.normalize_advantages:
+                batch["advantages"] = normalize_tensor(batch["advantages"])
+
+            pg_loss = policy_loss(policy, batch, args.clip_coef)
+
+            # Value loss
+            v_loss = value_loss(
+                new_values,
+                batch["values"],
+                batch["returns"],
+                args.clip_coef,
+                args.clip_vloss,
+            )
+
+            # Entropy loss
+            entropy = policy.entropy()
+            ent_loss = entropy_loss(entropy)
+
+            loss = (
+                -pg_loss + args.vf_coef * v_loss - args.ent_coef * ent_loss
+            )  # Equation (9) in the paper, changed of sign since we minimize
+
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
-            fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+            fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
+            fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
             optimizer.step()
-        agent.on_train_epoch_end(global_step)
+
+            # Update metrics
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
+            aggregator.update("Loss/entropy_loss", ent_loss.detach())
+            aggregator.update("Loss/total_loss", loss.detach())
 
 
 def main(args: argparse.Namespace):
@@ -149,35 +142,33 @@ def main(args: argparse.Namespace):
         ]
     )
 
-    feature_extractor = TensorDictModule(
-        MLPExtractor(envs.single_observation_space.shape, (256, 256)),
-        in_keys=["observations"],
-        out_keys=["features"],
+    # Loggers
+    aggregator = MetricAggregator(
+        {
+            "Loss/policy_loss": MeanMetric(sync_on_compute=False),
+            "Loss/value_loss": MeanMetric(sync_on_compute=False),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=False),
+            "Loss/total_loss": MeanMetric(sync_on_compute=False),
+        }
     )
 
-    actor = Actor(
-        TensorDictModule(nn.Identity(), in_keys=["features"], out_keys=["actor_features"]),
-        policy=CategoricalPolicy(feature_extractor.module.output_dim, [envs.single_action_space.n]),
+    # Create the actor and critic models
+    actor = MLP(
+        envs.single_observation_space.shape,
+        (64, 64, envs.single_action_space.n),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
     )
-    critic = TensorDictModule(
-        torch.nn.Linear(feature_extractor.module.output_dim, 1),
-        in_keys=["features"],
-        out_keys=["values"],
+    critic = MLP(
+        envs.single_observation_space.shape,
+        (64, 64, 1),
+        activation_fn=(torch.nn.ReLU(), torch.nn.ReLU(), torch.nn.Identity()),
     )
+
     # Define the agent and the optimizer and setup them with Fabric
-    agent: PPOAgent = PPOAgent(
-        feature_extractor=feature_extractor,
-        actor=actor,
-        critic=critic,
-        vf_coef=args.vf_coef,
-        ent_coef=args.ent_coef,
-        clip_coef=args.clip_coef,
-        clip_vloss=args.clip_vloss,
-        ortho_init=args.ortho_init,
-        normalize_advantages=args.normalize_advantages,
-    )
-    optimizer = agent.configure_optimizers(lr=args.learning_rate)
-    agent, optimizer = fabric.setup(agent, optimizer)
+    optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
+    actor = fabric.setup_module(actor)
+    critic = fabric.setup_module(critic)
+    optimizer = fabric.setup_optimizers(optimizer)
 
     # Player metrics
     with fabric.device:
@@ -187,7 +178,6 @@ def main(args: argparse.Namespace):
     # Local data
     rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
-    step_data["greedy"] = torch.ones(args.num_envs, 1, device=device) * False
 
     # Global variables
     global_step = 0
@@ -197,8 +187,8 @@ def main(args: argparse.Namespace):
 
     with device:
         # Get the first environment observation and start the optimization
-        step_data["observations"] = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
-        step_data["dones"] = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
+        next_obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+        next_done = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         # Learning rate annealing
@@ -211,10 +201,19 @@ def main(args: argparse.Namespace):
 
             # Sample an action given the observation received by the environment
             with torch.no_grad():
-                step_data = agent(step_data)
-                logprob = agent.actor.policy.get_logprob(step_data["actions"])
+                action_logits = actor(next_obs)
+                policy = Categorical(logits=action_logits.unsqueeze(-2))
+                action = policy.sample()
+                logprob = policy.log_prob(action)
+                value = critic(next_obs)
 
+            # Update the step data
+            step_data["dones"] = next_done
+            step_data["values"] = value
+            step_data["actions"] = action
             step_data["logprobs"] = logprob
+            step_data["observations"] = next_obs
+
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(
                 step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)
@@ -228,8 +227,8 @@ def main(args: argparse.Namespace):
                 rb.add(step_data.unsqueeze(0))
 
                 # Update the observation
-                step_data["observations"] = torch.tensor(next_obs)
-                step_data["dones"] = (
+                next_obs = torch.tensor(next_obs)
+                next_done = (
                     torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
                 )  # [N_envs, 1]
 
@@ -253,11 +252,14 @@ def main(args: argparse.Namespace):
         ep_len_avg.reset()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        returns, advantages = agent.estimate_returns_and_advantages(
+        with torch.no_grad():
+            next_values = critic(next_obs)
+        returns, advantages = gae(
             rb["rewards"],
             rb["values"],
             rb["dones"],
-            step_data,
+            next_values,
+            next_done,
             args.num_steps,
             args.gamma,
             args.gae_lambda,
@@ -280,16 +282,16 @@ def main(args: argparse.Namespace):
             gathered_data = local_data
 
         # Train the agent
-        train(fabric, agent, optimizer, gathered_data, global_step, args)
+        train(fabric, actor, critic, optimizer, gathered_data, aggregator, args)
         fabric.log(
             "Time/step_per_second",
             int(global_step / (time.time() - start_time)),
             global_step,
         )
+        metrics_dict = aggregator.compute()
+        fabric.log_dict(metrics_dict, global_step)
 
     envs.close()
-    if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
 
 
 if __name__ == "__main__":

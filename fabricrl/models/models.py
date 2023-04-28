@@ -406,7 +406,7 @@ class LSTM(Recurrent):
 class ConvModule(BaseModule):
     def __init__(
         self,
-        input_shape: Sequence[int, ...],
+        input_shape: Sequence[int],
         channel_outs: Sequence[int] = tuple(),
         cnn_activation_fn: Union[nn.Module, Sequence[nn.Module]] = nn.Identity,
         kernel_size: Union[int, Sequence[int]] = 3,

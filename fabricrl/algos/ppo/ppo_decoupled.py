@@ -40,7 +40,7 @@ from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.ppo import PPOAgent, test
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.data import ReplayBuffer
-from fabricrl.utils.utils import estimate_returns_and_advantages, linear_annealing
+from fabricrl.utils.utils import gae, linear_annealing
 
 
 @torch.no_grad()
@@ -178,7 +178,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            returns, advantages = estimate_returns_and_advantages(
+            returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
                 rb["dones"],
