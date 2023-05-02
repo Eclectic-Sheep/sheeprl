@@ -4,7 +4,7 @@ from tensordict.tensordict import TensorDict
 from torch import Tensor
 
 
-def policy_loss(dist: torch.distributions.Distribution, batch: TensorDict, clip_coef: float) -> torch.Tensor:
+def policy_loss(dist: torch.distributions.Distribution, batch: TensorDict, clip_coef: float) -> Tensor:
     """Compute the policy loss for a batch of data, as described in equation (7) of the paper.
 
     - Compute the logprobs using the updated model for the actions taken.

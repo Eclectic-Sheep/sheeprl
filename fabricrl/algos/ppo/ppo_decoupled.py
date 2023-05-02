@@ -332,6 +332,7 @@ def trainer(
                     if args.normalize_advantages:
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
+                    # Policy loss
                     pg_loss = policy_loss(dist, batch, args.clip_coef)
 
                     # Value loss
