@@ -18,8 +18,9 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import parse_args
 from fabricrl.algos.ppo.loss import policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env, test
+from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
