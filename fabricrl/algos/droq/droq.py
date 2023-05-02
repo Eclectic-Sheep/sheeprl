@@ -32,7 +32,6 @@ def train(
     alpha_optimizer: Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    global_step: int,
     args: argparse.Namespace,
 ):
     for _ in range(args.gradient_steps):
@@ -195,17 +194,7 @@ def main(args: argparse.Namespace):
             local_data = rb.sample(args.batch_size // fabric.world_size)
             gathered_data = fabric.all_gather(local_data.to_dict())
             gathered_data = make_tensordict(gathered_data).view(-1)
-            train(
-                fabric,
-                agent,
-                actor_optimizer,
-                qf_optimizer,
-                alpha_optimizer,
-                gathered_data,
-                aggregator,
-                global_step,
-                args,
-            )
+            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, aggregator, args)
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
