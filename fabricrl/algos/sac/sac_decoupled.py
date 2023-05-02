@@ -31,7 +31,7 @@ from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def player(args: argparse.Namespace, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
@@ -180,19 +180,6 @@ def trainer(
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
 ):
-    """
-    # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
-    agent.qfs = fabric.setup_module(agent.qfs)
-    agent.actor = fabric.setup_module(agent.actor)
-
-    # Optimizers
-    qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
-    )
-    """
     global_rank = world_collective.rank
     global_rank - 1
 
