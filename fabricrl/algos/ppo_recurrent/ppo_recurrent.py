@@ -124,6 +124,7 @@ def main(args: argparse.Namespace):
 
     # Define the agent and the optimizer and setup them with Fabric
     agent = fabric.setup_module(RecurrentPPOAgent(envs))
+    print(agent)
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.learning_rate, eps=1e-4))
 
     # Metrics
