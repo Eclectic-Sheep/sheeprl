@@ -181,7 +181,7 @@ def main(args: argparse.Namespace):
         for _ in range(0, args.num_steps):
             global_step += args.num_envs * world_size
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 # Sample an action given the observation received by the environment
                 action_logits = actor.module(next_obs)
                 dist = Categorical(logits=action_logits.unsqueeze(-2))
@@ -226,7 +226,7 @@ def main(args: argparse.Namespace):
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
+        with torch.inference_mode():
             next_values = critic(next_obs)
             returns, advantages = gae(
                 rb["rewards"],

@@ -202,7 +202,7 @@ def main(args: argparse.Namespace):
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
+        with torch.inference_mode():
             next_value, _ = agent.module.get_values(next_obs, next_done, critic_state=state[1])
             returns, advantages = gae(
                 rb["rewards"],

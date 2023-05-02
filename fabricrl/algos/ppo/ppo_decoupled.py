@@ -171,18 +171,17 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
             rb.add(step_data.unsqueeze(0))
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
-            next_values = critic(next_obs)
-            returns, advantages = gae(
-                rb["rewards"],
-                rb["values"],
-                rb["dones"],
-                next_values,
-                next_done,
-                args.num_steps,
-                args.gamma,
-                args.gae_lambda,
-            )
+        next_values = critic(next_obs)
+        returns, advantages = gae(
+            rb["rewards"],
+            rb["values"],
+            rb["dones"],
+            next_values,
+            next_done,
+            args.num_steps,
+            args.gamma,
+            args.gae_lambda,
+        )
 
         # Add returns and advantages to the buffer
         rb["returns"] = returns.float()

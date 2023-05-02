@@ -86,7 +86,7 @@ def conditional_arange(n: int, mask: Tensor) -> Tensor:
     return cs - torch.where(acc > 0, acc - 1, 0) - 1
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def gae(
     rewards: Tensor,
     values: Tensor,
@@ -128,7 +128,7 @@ def gae(
     return returns, advantages
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def vectorized_gae(
     rewards: Tensor,
     values: Tensor,
