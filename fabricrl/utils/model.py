@@ -1,66 +1,58 @@
-from typing import Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 
-import torch
 from torch import nn
 
-
-def create_mlp(
-    input_dim: int,
-    hidden_sizes: Sequence[int],
-    activation_fn: Sequence[nn.Module],
-) -> torch.nn.Module:
-    """Create an MLP backbone consisting of MultiLayer-Perceptrons followed by an activation function
-
-    Args:
-        input_dim (int): the input dimension.
-        hidden_sizes (Sequence[int]): a sequence of integers (possibly empty), which specifies the hidden dimensions
-            of the MLP.
-        activation_fn (Sequence[nn.Module]): the activation function between linear layers.
-
-    Returns:
-        torch.nn.Module: the MLP model as a `torch.nn.Sequential`
-    """
-    if len(hidden_sizes) > 0:
-        layers = [nn.Linear(input_dim, hidden_sizes[0]), activation_fn[0] or nn.Identity()]
-        for dim_i in range(1, len(hidden_sizes)):
-            layers.append(nn.Linear(hidden_sizes[dim_i - 1], hidden_sizes[dim_i]))
-            layers.append(activation_fn[dim_i] or nn.Identity())
-        mlp = nn.Sequential(*layers)
-    else:
-        mlp = nn.Identity()
-    return mlp
+ModuleType = Type[nn.Module]
+ArgsType = Union[Tuple[Any, ...], Dict[Any, Any], Sequence[Tuple[Any, ...]], Sequence[Dict[Any, Any]]]
 
 
-def per_layer_ortho_init_weights(module: torch.nn.Module, gain: float = 1.0, bias: float = 0.0):
+def miniblock(
+    input_size: int,
+    output_size: int = 0,
+    norm_layer: Optional[ModuleType] = None,
+    norm_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
+    activation: Optional[ModuleType] = None,
+    act_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
+    linear_layer: Type[nn.Linear] = nn.Linear,
+) -> List[nn.Module]:
+    """Construct a miniblock with given input/output-size, norm layer and \
+    activation function."""
+    layers: List[nn.Module] = [linear_layer(input_size, output_size)]
+    if norm_layer is not None:
+        if isinstance(norm_args, tuple):
+            layers += [norm_layer(output_size, *norm_args)]
+        elif isinstance(norm_args, dict):
+            layers += [norm_layer(output_size, **norm_args)]
+        else:
+            layers += [norm_layer(output_size)]
+    if activation is not None:
+        if isinstance(act_args, tuple):
+            layers += [activation(*act_args)]
+        elif isinstance(act_args, dict):
+            layers += [activation(**act_args)]
+        else:
+            layers += [activation()]
+    return layers
+
+
+def per_layer_ortho_init_weights(module: nn.Module, gain: float = 1.0, bias: float = 0.0):
     """Initialize the weights of a module with orthogonal weights.
 
     Args:
-        module (torch.nn.Module): module to initialize
+        module (nn.Module): module to initialize
         gain (float, optional): gain of the orthogonal initialization. Defaults to 1.0.
         bias (float, optional): bias of the orthogonal initialization. Defaults to 0.0.
     """
-    if isinstance(module, torch.nn.Linear):
-        torch.nn.init.orthogonal_(module.weight, gain=gain)
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight, gain=gain)
         if module.bias is not None:
             module.bias.data.fill_(bias)
-    elif isinstance(module, torch.nn.LSTM):
+    elif isinstance(module, nn.LSTM):
         for name, param in module.named_parameters():
             if "bias" in name:
-                torch.nn.init.constant_(param, val=bias)
+                nn.init.constant_(param, val=bias)
             elif "weight" in name:
-                torch.nn.init.orthogonal_(param, gain=gain)
-    elif isinstance(module, (torch.nn.Sequential, torch.nn.ModuleList)):
+                nn.init.orthogonal_(param, gain=gain)
+    elif isinstance(module, (nn.Sequential, nn.ModuleList)):
         for i in range(len(module)):
             per_layer_ortho_init_weights(module[i], gain=gain, bias=bias)
-
-
-def repackage_hidden(h: Union[torch.Tensor, Tuple[torch.Tensor, ...]]):
-    """Wraps hidden states in new Tensors, to detach them from their history.
-    Args:
-        h (Union[torch.Tensor, Tuple[torch.Tensor, ...]]): the hidden state to repackage.
-    """
-
-    if isinstance(h, torch.Tensor):
-        return h.detach()
-    else:
-        return tuple(repackage_hidden(v) for v in h)
