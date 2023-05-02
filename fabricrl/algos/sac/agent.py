@@ -1,6 +1,6 @@
 import copy
 from math import prod
-from typing import Sequence, Tuple
+from typing import Sequence, Tuple, Union
 
 import gymnasium as gym
 import torch
@@ -66,22 +66,38 @@ class Actor(nn.Module):
         )
 
     def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
-        """Forward of the Actor: given an observation, it returns a tanh-squashed
-        sampled action (correctly rescaled to the environment action bounds) and its
-        log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
+        """Forward of the Actor: given an observation, it returns the mean and
+        the standard deviation of a Normal distribution, to be used with
+        `self.get_action_and_log_probs` to sample an action randomly during the
+        exploration of the environment.
 
         Args:
             obs (Tensor): the observation tensor
 
         Returns:
-            tanh-squashed action, rescaled to the environment action bounds
-            action log-prob
+            mean
+            standard deviation
         """
         x = F.relu(self.fc1(obs))
         x = F.relu(self.fc2(x))
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
+        return mean, std
+
+    def get_action_and_log_prob(self, mean: Tensor, std: Tensor):
+        """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
+        sampled action (correctly rescaled to the environment action bounds) and its
+        log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
+
+        Args:
+            mean (Tensor): the mean of the distribution
+            std (Tensor): the standard deviation of the distribution
+
+        Returns:
+            tanh-squashed action, rescaled to the environment action bounds
+            action log-prob
+        """
         normal = torch.distributions.Normal(mean, std)
 
         # Reparameterization trick (mean + std * N(0,1))
@@ -124,8 +140,8 @@ class Actor(nn.Module):
 class SACAgent:
     def __init__(
         self,
-        actor: Actor,
-        critics: Sequence[Critic],
+        actor: Union[Actor, _FabricModule],
+        critics: Sequence[Union[Critic, _FabricModule]],
         target_entropy: float,
         alpha: float = 1.0,
         tau: float = 0.005,
@@ -165,7 +181,7 @@ class SACAgent:
         return self._qfs
 
     @property
-    def actor(self) -> Actor:
+    def actor(self) -> Union[Actor, _FabricModule]:
         return self._actor
 
     @property
@@ -185,7 +201,8 @@ class SACAgent:
         return self._log_alpha
 
     def get_action_and_log_prob(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
-        return self.actor(obs)
+        mean, std = self.actor(obs)
+        return self.actor.get_action_and_log_prob(mean, std)
 
     def get_greedy_action(self, obs: Tensor) -> Tensor:
         return self.actor.get_greedy_action(obs)
