@@ -11,7 +11,7 @@ from fabricrl.algos.sac.agent import SACAgent
 
 
 def policy_loss(agent: SACAgent, obs: Tensor) -> Tuple[Tensor, Tensor]:
-    pi, log_pi, _ = agent.get_action(obs)
+    pi, log_pi = agent.get_action_and_log_prob(obs)
     qf_pi = agent.get_q_values(obs, pi)
     min_qf_pi = torch.min(qf_pi, dim=-1, keepdim=True)[0]
 

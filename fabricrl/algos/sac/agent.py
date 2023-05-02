@@ -66,23 +66,22 @@ class Actor(nn.Module):
         )
 
     def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
+        """Forward of the Actor: given an observation, it returns a tanh-squashed
+        sampled action (correctly rescaled to the environment action bounds) and its
+        log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
+
+        Args:
+            obs (Tensor): the observation tensor
+
+        Returns:
+            tanh-squashed action, rescaled to the environment action bounds
+            action log-prob
+        """
         x = F.relu(self.fc1(obs))
         x = F.relu(self.fc2(x))
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
-        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        return mean, log_std
-
-    def get_greedy_action(self, obs: Tensor) -> Tensor:
-        x = F.relu(self.fc1(obs))
-        x = F.relu(self.fc2(x))
-        mean = self.fc_mean(x)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return mean
-
-    def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        mean, log_std = self.forward(obs)
-        std = log_std.exp()
+        std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
         normal = torch.distributions.Normal(mean, std)
 
         # Reparameterization trick (mean + std * N(0,1))
@@ -104,7 +103,22 @@ class Actor(nn.Module):
 
         # Squash mean
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return action, log_prob, mean
+        return action, log_prob
+
+    def get_greedy_action(self, obs: Tensor) -> Tensor:
+        """Get the action given the input observation greedily
+
+        Args:
+            obs (Tensor): input observation
+
+        Returns:
+            action
+        """
+        x = F.relu(self.fc1(obs))
+        x = F.relu(self.fc2(x))
+        mean = self.fc_mean(x)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+        return mean
 
 
 class SACAgent:
@@ -170,28 +184,30 @@ class SACAgent:
     def log_alpha(self) -> Tensor:
         return self._log_alpha
 
-    def get_action(self, obs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        return self.actor.get_action(obs)
+    def get_action_and_log_prob(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
+        return self.actor(obs)
 
     def get_greedy_action(self, obs: Tensor) -> Tensor:
         return self.actor.get_greedy_action(obs)
 
     def get_ith_q_value(self, obs: Tensor, action: Tensor, critic_idx: int) -> Tensor:
-        return self.qfs[critic_idx].forward(obs, action)
+        return self.qfs[critic_idx](obs, action)
 
     def get_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return torch.cat([self.get_ith_q_value(obs, action, critic_idx=i) for i in range(len(self.qfs))], dim=-1)
 
+    @torch.no_grad()
     def get_ith_target_q_value(self, obs: Tensor, action: Tensor, critic_idx: int) -> Tensor:
-        return self.qfs_target[critic_idx].forward(obs, action)
+        return self.qfs_target[critic_idx](obs, action)
 
+    @torch.no_grad()
     def get_target_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return torch.cat([self.get_ith_target_q_value(obs, action, critic_idx=i) for i in range(len(self.qfs))], dim=-1)
 
     @torch.no_grad()
     def get_next_target_q_value(self, next_obs: Tensor, rewards: Tensor, dones: Tensor, gamma: float):
         # Get q-values for the next observations and actions, estimated by the target q-functions
-        next_state_actions, next_state_log_pi, _ = self.get_action(next_obs)
+        next_state_actions, next_state_log_pi = self.get_action_and_log_prob(next_obs)
         qf_next_target = self.get_target_q_values(next_obs, next_state_actions)
         min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - self.alpha * next_state_log_pi
         next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
