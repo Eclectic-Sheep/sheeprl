@@ -23,9 +23,9 @@ class RecurrentPPOAgent(nn.Module):
         self._actor_rnn = nn.GRU(
             input_size=self._actor_fc.output_dim, hidden_size=self._actor_fc.output_dim, batch_first=False
         )
-        self._actor_logits = nn.Linear(self._actor_fc.output_dim, envs.single_action_space.n)
+        self._actor_logits = MLP(self._actor_fc.output_dim, envs.single_action_space.n, flatten_input=False)
 
-        # Actor: Obs -> Feature -> GRU -> Values
+        # Critic: Obs -> Feature -> GRU -> Values
         self._critic_fc = MLP(
             envs.single_observation_space.shape,
             output_dim=0,
@@ -36,7 +36,7 @@ class RecurrentPPOAgent(nn.Module):
         self._critic_rnn = nn.GRU(
             input_size=self._critic_fc.output_dim, hidden_size=self._critic_fc.output_dim, batch_first=False
         )
-        self._critic = nn.Linear(self._critic_fc.output_dim, 1, bias=False)
+        self._critic = MLP(self._critic_fc.output_dim, 1, flatten_input=False)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tuple[Tensor, Tensor] = (
