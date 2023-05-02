@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 from datetime import datetime
+from math import prod
 from typing import Optional
 
 import gymnasium as gym
@@ -17,7 +18,7 @@ from torch.optim import Adam, Optimizer
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import SACAgent
+from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
 from fabricrl.algos.sac.args import parse_args
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.algos.sac.utils import test
@@ -112,9 +113,12 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
-    agent.qfs = fabric.setup_module(agent.qfs)
-    agent.actor = fabric.setup_module(agent.actor)
+    actor = fabric.setup_module(Actor(envs))
+    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    target_entropy = -prod(envs.single_action_space.shape)
+    agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
+
+    # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
         Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
         Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
@@ -152,7 +156,7 @@ def main(args: argparse.Namespace):
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         with torch.inference_mode():
-            actions, _, _ = agent.actor.module.get_action(obs)
+            actions, _, _ = actor.get_action(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
@@ -176,7 +180,7 @@ def main(args: argparse.Namespace):
         with device:
             next_obs = torch.tensor(real_next_obs)
             actions = torch.tensor(actions).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()  # [N_envs, 1]
+            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()
             dones = torch.tensor(dones).view(args.num_envs, -1).float()
 
         step_data["dones"] = dones
@@ -212,7 +216,7 @@ def main(args: argparse.Namespace):
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
+        test(actor.module, device, fabric.logger.experiment, args)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 import copy
 from math import prod
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lightning import LightningModule
+from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
+from torch.nn.parallel import DistributedDataParallel
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -106,31 +107,37 @@ class Actor(nn.Module):
         return action, log_prob, mean
 
 
-class SACAgent(LightningModule):
+class SACAgent:
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv,
-        num_critics: int = 2,
+        actor: Actor,
+        critics: Sequence[Critic],
+        target_entropy: float,
         alpha: float = 1.0,
         tau: float = 0.005,
-        dropout: float = 0.0,
-        layer_norm: bool = False,
+        device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
 
         # Actor and critics
-        self._num_critics = num_critics
-        self._actor = Actor(envs)
-        self._qfs = nn.ModuleList(
-            [Critic(envs, num_critics=1, dropout=dropout, layer_norm=layer_norm) for _ in range(num_critics)]
-        )
-        self._qfs_target = copy.deepcopy(self.qfs)
+        self._num_critics = len(critics)
+        self._actor = actor
+        self._qfs = nn.ModuleList(critics)
+        qfs_target = []
+        for critic in critics:
+            if isinstance(critic, (DistributedDataParallel, _FabricModule)):
+                qfs_target.append(copy.deepcopy(critic.module))
+            elif isinstance(critic, nn.Module):
+                qfs_target.append(copy.deepcopy(critic))
+            else:
+                raise ValueError("Every critic must be a subclass of `torch.nn.Module`")
+        self._qfs_target = nn.ModuleList(qfs_target)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
 
         # Automatic entropy tuning
-        self._target_entropy = -torch.prod(torch.tensor(envs.single_action_space.shape).to(self.device))
-        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=self.device)), requires_grad=True)
+        self._target_entropy = torch.tensor(target_entropy, device=device)
+        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=device)), requires_grad=True)
 
         # EMA tau
         self._tau = tau
@@ -140,28 +147,16 @@ class SACAgent(LightningModule):
         return self._num_critics
 
     @property
-    def qfs(self) -> nn.Module:
+    def qfs(self) -> nn.ModuleList:
         return self._qfs
-
-    @qfs.setter
-    def qfs(self, v) -> None:
-        self._qfs = v
 
     @property
     def actor(self) -> Actor:
         return self._actor
 
-    @actor.setter
-    def actor(self, v) -> None:
-        self._actor = v
-
     @property
-    def qfs_target(self) -> nn.Module:
+    def qfs_target(self) -> nn.ModuleList:
         return self._qfs_target
-
-    @qfs_target.setter
-    def qfs_target(self, v) -> None:
-        self._qfs_target = v
 
     @property
     def alpha(self) -> float:

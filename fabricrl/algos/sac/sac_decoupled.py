@@ -7,6 +7,7 @@ import argparse
 import os
 import time
 from datetime import datetime
+from math import prod
 
 import gymnasium as gym
 import numpy as np
@@ -23,7 +24,7 @@ from torch.optim import Adam
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import SACAgent
+from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
 from fabricrl.algos.sac.args import parse_args
 from fabricrl.algos.sac.sac import train
 from fabricrl.algos.sac.utils import test
@@ -72,15 +73,15 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau).to(device)
+    actor = Actor(envs)
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), device=device
+        torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
     # Metrics
     with device:
@@ -109,8 +110,8 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
-        with torch.no_grad():
-            actions, _, _ = agent.actor.get_action(obs)
+        with torch.inference_mode():
+            actions, _, _ = actor.get_action(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
@@ -161,7 +162,7 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
             player_trainer_collective.broadcast(flattened_parameters, src=1)
 
             # Convert back the parameters
-            torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+            torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
             fabric.log_dict(metrics[0], global_step)
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
@@ -171,7 +172,7 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
-        test(agent, device, fabric.logger.experiment, args)
+        test(actor, device, fabric.logger.experiment, args)
 
 
 def trainer(
@@ -194,9 +195,10 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
-    agent.qfs = fabric.setup_module(agent.qfs)
-    agent.actor = fabric.setup_module(agent.actor)
+    actor = fabric.setup_module(Actor(envs))
+    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    target_entropy = -prod(envs.single_action_space.shape)
+    agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
@@ -208,7 +210,7 @@ def trainer(
     # Send weights to rank-0, a.k.a. the player
     if global_rank == 1:
         player_trainer_collective.broadcast(
-            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
+            torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), src=1
         )
 
     # Metrics
@@ -255,7 +257,7 @@ def trainer(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
-                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
+                torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), src=1
             )
 
 
