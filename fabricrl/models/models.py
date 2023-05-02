@@ -233,8 +233,6 @@ class Recurrent(MLP):
             self.rnn.apply(partial(per_layer_ortho_init_weights, gain=np.sqrt(2.0)))
         self._num_recurrent_states = 1
         self.output_dim = self._rnn_hidden_dim
-        self._input_names += ["in_hx"]
-        self._output_names += ["out_hx"]
 
     @property
     def rnn_input_dim(self) -> int:
@@ -366,8 +364,6 @@ class LSTM(Recurrent):
             activation_fn=activation_fn,
         )
         self._num_recurrent_states = 2
-        self._input_names += ["in_cx"]
-        self._output_names += ["out_cx"]
 
     def forward(
         self,
