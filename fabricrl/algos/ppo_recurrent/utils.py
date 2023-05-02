@@ -17,7 +17,7 @@ def test(agent: RecurrentPPOAgent, device: torch.device, logger: SummaryWriter, 
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
-    state = torch.zeros(1, agent.hidden_size, device=device)
+    state = agent.initial_states[0]
     while not done:
         # Act greedly through the environment
         action, state = agent.get_greedy_action(next_obs, state)
