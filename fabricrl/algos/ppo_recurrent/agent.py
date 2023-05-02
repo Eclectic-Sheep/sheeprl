@@ -16,7 +16,7 @@ class RecurrentPPOAgent(nn.Module):
         self._actor_fc = MLP(
             envs.single_observation_space.shape,
             output_dim=0,
-            hidden_sizes=(64,),
+            hidden_sizes=(64, 64),
             activation=nn.ReLU,
             flatten_input=False,
         )
@@ -29,7 +29,7 @@ class RecurrentPPOAgent(nn.Module):
         self._critic_fc = MLP(
             envs.single_observation_space.shape,
             output_dim=0,
-            hidden_sizes=(64,),
+            hidden_sizes=(64, 64),
             activation=nn.ReLU,
             flatten_input=False,
         )

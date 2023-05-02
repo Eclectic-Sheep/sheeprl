@@ -335,20 +335,13 @@ def trainer(
                     pg_loss = policy_loss(dist, batch, args.clip_coef)
 
                     # Value loss
-                    v_loss = value_loss(
-                        new_values,
-                        batch["values"],
-                        batch["returns"],
-                        args.clip_coef,
-                        args.clip_vloss,
-                    )
+                    v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
 
                     # Entropy loss
                     entropy = dist.entropy().mean()
 
-                    loss = (
-                        -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
-                    )  # Equation (9) in the paper, changed of sign since we minimize
+                    # Equation (9) in the paper, changed sign since we minimize
+                    loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
 
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)

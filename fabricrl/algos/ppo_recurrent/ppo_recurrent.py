@@ -51,16 +51,11 @@ def train(
             if args.normalize_advantages:
                 batch["advantages"] = normalize_tensor(batch["advantages"])
 
+            # Policy loss
             pg_loss = policy_loss(dist, batch, args.clip_coef)
 
             # Value loss
-            v_loss = value_loss(
-                new_values,
-                batch["values"],
-                batch["returns"],
-                args.clip_coef,
-                args.clip_vloss,
-            )
+            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
 
             # Entropy loss
             entropy = dist.entropy().mean()
