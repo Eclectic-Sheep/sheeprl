@@ -124,6 +124,6 @@ class RecurrentPPOAgent(nn.Module):
             next recurrent state for both the actor and the critic
         """
         actor_state, critic_state = state
-        logits, actor_state = self.get_logits(obs, dones, actor_state)
-        values, critic_state = self.get_values(obs, dones, critic_state)
+        logits, actor_state = self.get_logits(obs, dones, actor_state.to(obs.device))
+        values, critic_state = self.get_values(obs, dones, critic_state.to(obs.device))
         return logits, values, (actor_state, critic_state)
