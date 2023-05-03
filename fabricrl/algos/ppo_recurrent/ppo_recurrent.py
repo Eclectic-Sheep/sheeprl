@@ -25,6 +25,8 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
+__all__ = ["main"]
+
 
 def train(
     fabric: Fabric,
@@ -74,7 +76,9 @@ def train(
             aggregator.update("Loss/entropy_loss", entropy.detach())
 
 
-def main(args: argparse.Namespace):
+def main():
+    args = parse_args()
+
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
 
@@ -234,5 +238,4 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main()
