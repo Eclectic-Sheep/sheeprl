@@ -86,8 +86,8 @@ def conditional_arange(n: int, mask: Tensor) -> Tensor:
     return cs - torch.where(acc > 0, acc - 1, 0) - 1
 
 
-@torch.no_grad()
-def estimate_returns_and_advantages(
+@torch.inference_mode()
+def gae(
     rewards: Tensor,
     values: Tensor,
     dones: Tensor,
@@ -128,8 +128,8 @@ def estimate_returns_and_advantages(
     return returns, advantages
 
 
-@torch.no_grad()
-def vectorized_estimate_returns_and_advantages(
+@torch.inference_mode()
+def vectorized_gae(
     rewards: Tensor,
     values: Tensor,
     dones: Tensor,
@@ -177,3 +177,7 @@ def vectorized_estimate_returns_and_advantages(
     adv = torch.flipud(cs - acc) / gt
     adv = adv + dones * (deltas + gamma * gae_lambda * adv.roll(-1, 0))
     return adv + values, adv
+
+
+def normalize_tensor(tensor, eps=1e-8):
+    return (tensor - tensor.mean()) / (tensor.std() + eps)

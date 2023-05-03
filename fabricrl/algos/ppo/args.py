@@ -92,13 +92,6 @@ def parse_args():
         help="the number of environments to be batched during a single PPO epoch",
     )
     parser.add_argument(
-        "--activation-function",
-        type=str,
-        default="relu",
-        choices=["relu", "tanh"],
-        help="The activation function of the model",
-    )
-    parser.add_argument(
         "--ortho-init",
         type=lambda x: bool(strtobool(x)),
         default=False,
