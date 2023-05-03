@@ -108,3 +108,12 @@ In the decoupled version, a process is responsible only for interacting with the
 <p align="center">
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/ppo_fabric_decoupled.png">
 </p>
+
+## Algorithm implementations
+You can check inside the folder of each algorithm the `readme.md` file for the details about the implementation.
+
+All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related with the training loop of the algorithm. 
+
+For example, we decided to create a `models` folder with ready-made NN models that can be composed to create the NN model of the agent.
+
+For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized also for the decoupled or the recurrent version of the algorithm.
