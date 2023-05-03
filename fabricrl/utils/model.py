@@ -9,6 +9,8 @@ ArgsType = Union[Tuple[Any, ...], Dict[Any, Any], Sequence[Tuple[Any, ...]], Seq
 def miniblock(
     input_size: int,
     output_size: int = 0,
+    dropout_layer: Optional[ModuleType] = None,
+    dropout_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
     norm_layer: Optional[ModuleType] = None,
     norm_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
     activation: Optional[ModuleType] = None,
@@ -18,6 +20,13 @@ def miniblock(
     """Construct a miniblock with given input/output-size, norm layer and \
     activation function."""
     layers: List[nn.Module] = [linear_layer(input_size, output_size)]
+    if dropout_layer is not None:
+        if isinstance(dropout_args, tuple):
+            layers += [dropout_layer(*dropout_args)]
+        elif isinstance(dropout_args, dict):
+            layers += [dropout_layer(**dropout_args)]
+        else:
+            layers += [dropout_layer()]
     if norm_layer is not None:
         if isinstance(norm_args, tuple):
             layers += [norm_layer(output_size, *norm_args)]

@@ -203,9 +203,9 @@ def trainer(
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
-        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
-        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
     )
 
     # Send weights to rank-0, a.k.a. the player

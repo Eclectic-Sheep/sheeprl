@@ -5,10 +5,11 @@ from typing import Sequence, Tuple, Union
 import gymnasium as gym
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel
+
+from fabricrl.models.models import MLP
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -21,28 +22,20 @@ class Critic(nn.Module):
         super().__init__()
         act_space = prod(envs.single_action_space.shape)
         obs_space = prod(envs.single_observation_space.shape)
-        self.fc1 = nn.Linear(obs_space + act_space, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, num_critics)
-        if dropout > 0.0:
-            self.dr1 = nn.Dropout(dropout)
-            self.dr2 = nn.Dropout(dropout)
-        else:
-            self.dr1 = nn.Identity()
-            self.dr2 = nn.Identity()
-        if layer_norm:
-            self.ln1 = nn.LayerNorm(256)
-            self.ln2 = nn.LayerNorm(256)
-        else:
-            self.ln1 = nn.Identity()
-            self.ln2 = nn.Identity()
+        self.model = MLP(
+            input_dims=obs_space + act_space,
+            output_dim=num_critics,
+            hidden_sizes=(256, 256),
+            dropout_layer=nn.Dropout if dropout > 0 else None,
+            dropout_args={"p": dropout} if dropout > 0 else None,
+            norm_layer=nn.LayerNorm if layer_norm else None,
+            activation=nn.ReLU,
+            flatten_input=False,
+        )
 
     def forward(self, obs: Tensor, action: Tensor) -> Tensor:
         x = torch.cat([obs, action], -1)
-        x = F.relu(self.ln1(self.dr1(self.fc1(x))))
-        x = F.relu(self.ln2(self.dr2(self.fc2(x))))
-        x = self.fc3(x)
-        return x
+        return self.model(x)
 
 
 class Actor(nn.Module):
@@ -50,10 +43,9 @@ class Actor(nn.Module):
         super().__init__()
         act_space = prod(envs.single_action_space.shape)
         obs_space = prod(envs.single_observation_space.shape)
-        self.fc1 = nn.Linear(obs_space, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, act_space)
-        self.fc_logstd = nn.Linear(256, act_space)
+        self.model = MLP(input_dims=obs_space, output_dim=0, hidden_sizes=(256, 256), flatten_input=False)
+        self.fc_mean = nn.Linear(self.model.output_dim, act_space)
+        self.fc_logstd = nn.Linear(self.model.output_dim, act_space)
 
         # Action rescaling buffers
         self.register_buffer(
@@ -78,8 +70,7 @@ class Actor(nn.Module):
             mean
             standard deviation
         """
-        x = F.relu(self.fc1(obs))
-        x = F.relu(self.fc2(x))
+        x = self.model(obs)
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
@@ -130,8 +121,7 @@ class Actor(nn.Module):
         Returns:
             action
         """
-        x = F.relu(self.fc1(obs))
-        x = F.relu(self.fc2(x))
+        x = self.model(obs)
         mean = self.fc_mean(x)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return mean
