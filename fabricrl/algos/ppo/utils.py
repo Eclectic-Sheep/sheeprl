@@ -4,24 +4,27 @@ from typing import Optional
 
 import gymnasium as gym
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from gymnasium.vector import SyncVectorEnv
 from torch.utils.tensorboard import SummaryWriter
 
-from fabricrl.algos.ppo.agent import PPOAgent
 from fabricrl.envs.wrappers import MaskVelocityWrapper
 
 
-@torch.no_grad()
-def test(agent: PPOAgent, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(
-        args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel
-    )()
+@torch.inference_mode()
+def test(actor: nn.Module, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
+    env = SyncVectorEnv(
+        [make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=args.mask_vel)]
+    )
     step = 0
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
     while not done:
         # Act greedly through the environment
-        action = agent.get_greedy_action(next_obs)
+        logits = actor(next_obs)
+        action = F.softmax(logits, dim=-1).argmax(dim=-1)
 
         # Single environment step
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())

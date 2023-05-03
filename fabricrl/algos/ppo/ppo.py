@@ -1,56 +1,47 @@
-"""
-Proximal Policy Optimization (PPO) - Accelerated with Lightning Fabric
-
-Author: Federico Belotti @belerico
-Adapted from https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
-Based on the paper: https://arxiv.org/abs/1707.06347
-
-Requirements:
-- gymnasium[box2d]>=0.27.1
-- moviepy
-- lightning
-- torchmetrics
-- tensorboard
-
-
-Run it with:
-    lightning run model --accelerator=cpu --strategy=ddp --devices=2 train_fabric.py
-"""
-
 import argparse
 import os
 import time
 from datetime import datetime
 
-import gymnasium as gym
 import torch
-import torchmetrics
+from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
+from torch.distributions import Categorical
+from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
+from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.agent import PPOAgent
 from fabricrl.algos.ppo.args import parse_args
+from fabricrl.algos.ppo.loss import policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
-from fabricrl.utils.utils import estimate_returns_and_advantages, linear_annealing
+from fabricrl.models.models import MLP
+from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 
 def train(
     fabric: Fabric,
-    agent: PPOAgent,
+    actor: torch.nn.Module,
+    critic: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
-    global_step: int,
+    aggregator: MetricAggregator,
     args: argparse.Namespace,
 ):
-    indexes = list(range(data["observations"].shape[0]))
+    """Train the agent on the data collected from the environment."""
+    indexes = list(range(data.batch_size[0]))
     if args.share_data:
         sampler = DistributedSampler(
-            indexes, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True, seed=args.seed
+            indexes,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=args.seed,
         )
     else:
         sampler = RandomSampler(indexes)
@@ -60,19 +51,43 @@ def train(
         if args.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
-            loss = agent.training_step(data[batch_idxes])
+            batch = data[batch_idxes]
+            actions_logits = actor(batch["observations"])
+            new_values = critic(batch["observations"])
+
+            dist = Categorical(logits=actions_logits.unsqueeze(-2))
+            if args.normalize_advantages:
+                batch["advantages"] = normalize_tensor(batch["advantages"])
+
+            # Policy loss
+            pg_loss = policy_loss(dist, batch, args.clip_coef)
+
+            # Value loss
+            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+
+            # Entropy loss
+            entropy = dist.entropy().mean()
+
+            # Equation (9) in the paper, changed the sign since we minimize
+            loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
-            fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+            fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
+            fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
             optimizer.step()
-        agent.on_train_epoch_end(global_step)
+
+            # Update metrics
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
+            aggregator.update("Loss/entropy_loss", entropy.detach())
 
 
 def main(args: argparse.Namespace):
+    """Main function to run the PPO algorithm."""
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-        name=run_name,
+        root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
     )
 
     # Initialize Fabric
@@ -92,7 +107,7 @@ def main(args: argparse.Namespace):
     )
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv(
+    envs = SyncVectorEnv(
         [
             make_env(
                 args.env_id,
@@ -106,26 +121,36 @@ def main(args: argparse.Namespace):
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+
+    # Create the actor and critic models
+    actor = MLP(
+        input_dims=envs.single_observation_space.shape,
+        output_dim=envs.single_action_space.n,
+        hidden_sizes=(64, 64),
+        activation=torch.nn.ReLU,
+    )
+    critic = MLP(
+        input_dims=envs.single_observation_space.shape, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU
+    )
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent: PPOAgent = PPOAgent(
-        envs,
-        act_fun=args.activation_function,
-        vf_coef=args.vf_coef,
-        ent_coef=args.ent_coef,
-        clip_coef=args.clip_coef,
-        clip_vloss=args.clip_vloss,
-        ortho_init=args.ortho_init,
-        normalize_advantages=args.normalize_advantages,
-    )
-    optimizer = agent.configure_optimizers(lr=args.learning_rate)
-    agent, optimizer = fabric.setup(agent, optimizer)
+    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
+    actor = fabric.setup_module(actor)
+    critic = fabric.setup_module(critic)
+    optimizer = fabric.setup_optimizers(optimizer)
 
-    # Player metrics
-    with fabric.device:
-        rew_avg = torchmetrics.MeanMetric()
-        ep_len_avg = torchmetrics.MeanMetric()
+    # Metrics
+    with device:
+        aggregator = MetricAggregator(
+            {
+                "Rewards/rew_avg": MeanMetric(),
+                "Game/ep_len_avg": MeanMetric(),
+                "Time/step_per_second": MeanMetric(),
+                "Loss/value_loss": MeanMetric(),
+                "Loss/policy_loss": MeanMetric(),
+                "Loss/entropy_loss": MeanMetric(),
+            }
+        )
 
     # Local data
     rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
@@ -151,10 +176,17 @@ def main(args: argparse.Namespace):
         for _ in range(0, args.num_steps):
             global_step += args.num_envs * world_size
 
-            # Sample an action given the observation received by the environment
-            with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+            with torch.inference_mode():
+                # Sample an action given the observation received by the environment
+                action_logits = actor.module(next_obs)
+                dist = Categorical(logits=action_logits.unsqueeze(-2))
+                action = dist.sample()
+                logprob = dist.log_prob(action)
 
+                # Estimate critic value
+                value = critic.module(next_obs)
+
+            # Update the step data
             step_data["dones"] = next_done
             step_data["values"] = value
             step_data["actions"] = action
@@ -162,16 +194,19 @@ def main(args: argparse.Namespace):
             step_data["observations"] = next_obs
 
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            next_obs, reward, done, truncated, info = envs.step(
+                step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)
+            )
 
             with device:
+                # Save reward for the last (observation, action) pair
+                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+
+                # Update the observation
                 next_obs = torch.tensor(next_obs)
                 next_done = (
                     torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
                 )  # [N_envs, 1]
-
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -182,26 +217,17 @@ def main(args: argparse.Namespace):
                         fabric.print(
                             f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                         )
-                        rew_avg(agent_final_info["episode"]["r"][0])
-                        ep_len_avg(agent_final_info["episode"]["l"][0])
-
-        # Sync the metrics
-        rew_avg_reduced = rew_avg.compute()
-        if not rew_avg_reduced.isnan():
-            fabric.log("Rewards/rew_avg", rew_avg_reduced, global_step)
-        ep_len_avg_reduced = ep_len_avg.compute()
-        if not ep_len_avg_reduced.isnan():
-            fabric.log("Game/ep_len_avg", ep_len_avg_reduced, global_step)
-        rew_avg.reset()
-        ep_len_avg.reset()
+                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
+                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
-            returns, advantages = estimate_returns_and_advantages(
+        with torch.inference_mode():
+            next_values = critic(next_obs)
+            returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
                 rb["dones"],
-                agent.get_value(next_obs),
+                next_values,
                 next_done,
                 args.num_steps,
                 args.gamma,
@@ -217,20 +243,23 @@ def main(args: argparse.Namespace):
 
         if args.share_data and fabric.world_size > 1:
             # Gather all the tensors from all the world and reshape them
-            gathered_data = fabric.all_gather(
-                local_data.to_dict()
-            )  # Fabric does not work with TensorDict: I'll open them a PR!
+            gathered_data = fabric.all_gather(local_data.to_dict())  # Fabric does not work with TensorDict
             gathered_data = make_tensordict(gathered_data).view(-1)
         else:
             gathered_data = local_data
 
         # Train the agent
-        train(fabric, agent, optimizer, gathered_data, global_step, args)
+        train(fabric, actor, critic, optimizer, gathered_data, aggregator, args)
+
+        # Log metrics
+        metrics_dict = aggregator.compute()
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+        fabric.log_dict(metrics_dict, global_step)
+        aggregator.reset()
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
+        test(actor.module, device, fabric.logger.experiment, args)
 
 
 if __name__ == "__main__":
