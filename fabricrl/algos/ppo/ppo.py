@@ -24,65 +24,6 @@ from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 
-def train(
-    fabric: Fabric,
-    actor: torch.nn.Module,
-    critic: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    data: TensorDictBase,
-    aggregator: MetricAggregator,
-    args: argparse.Namespace,
-):
-    """Train the agent on the data collected from the environment."""
-    indexes = list(range(data.batch_size[0]))
-    if args.share_data:
-        sampler = DistributedSampler(
-            indexes,
-            num_replicas=fabric.world_size,
-            rank=fabric.global_rank,
-            shuffle=True,
-            seed=args.seed,
-        )
-    else:
-        sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
-
-    for epoch in range(args.update_epochs):
-        if args.share_data:
-            sampler.sampler.set_epoch(epoch)
-        for batch_idxes in sampler:
-            batch = data[batch_idxes]
-            actions_logits = actor(batch["observations"])
-            new_values = critic(batch["observations"])
-
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
-            if args.normalize_advantages:
-                batch["advantages"] = normalize_tensor(batch["advantages"])
-
-            # Policy loss
-            pg_loss = policy_loss(dist, batch, args.clip_coef)
-
-            # Value loss
-            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
-
-            # Entropy loss
-            entropy = dist.entropy().mean()
-
-            # Equation (9) in the paper, changed the sign since we minimize
-            loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
-
-            optimizer.zero_grad(set_to_none=True)
-            fabric.backward(loss)
-            fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
-            fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
-            optimizer.step()
-
-            # Update metrics
-            aggregator.update("Loss/policy_loss", pg_loss.detach())
-            aggregator.update("Loss/value_loss", v_loss.detach())
-            aggregator.update("Loss/entropy_loss", entropy.detach())
-
-
 def main(args: argparse.Namespace):
     """Main function to run the PPO algorithm."""
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
@@ -133,13 +74,13 @@ def main(args: argparse.Namespace):
         input_dims=envs.single_observation_space.shape, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU
     )
 
-    # Define the agent and the optimizer and setup them with Fabric
+    # Define the models and the optimizer and set them up with Fabric
     optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
 
-    # Metrics
+    # Create a metric aggregator to log the metrics
     with device:
         aggregator = MetricAggregator(
             {
@@ -260,6 +201,65 @@ def main(args: argparse.Namespace):
     envs.close()
     if fabric.is_global_zero:
         test(actor.module, device, fabric.logger.experiment, args)
+
+
+def train(
+    fabric: Fabric,
+    actor: torch.nn.Module,
+    critic: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    data: TensorDictBase,
+    aggregator: MetricAggregator,
+    args: argparse.Namespace,
+):
+    """Train the agent on the data collected from the environment."""
+    indexes = list(range(data.batch_size[0]))
+    if args.share_data:
+        sampler = DistributedSampler(
+            indexes,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=args.seed,
+        )
+    else:
+        sampler = RandomSampler(indexes)
+    sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
+
+    for epoch in range(args.update_epochs):
+        if args.share_data:
+            sampler.sampler.set_epoch(epoch)
+        for batch_idxes in sampler:
+            batch = data[batch_idxes]
+            actions_logits = actor(batch["observations"])
+            new_values = critic(batch["observations"])
+
+            dist = Categorical(logits=actions_logits.unsqueeze(-2))
+            if args.normalize_advantages:
+                batch["advantages"] = normalize_tensor(batch["advantages"])
+
+            # Policy loss
+            pg_loss = policy_loss(dist, batch, args.clip_coef)
+
+            # Value loss
+            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+
+            # Entropy loss
+            entropy = dist.entropy().mean()
+
+            # Equation (9) in the paper, changed the sign since we minimize
+            loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+
+            optimizer.zero_grad(set_to_none=True)
+            fabric.backward(loss)
+            fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
+            fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
+            optimizer.step()
+
+            # Update metrics
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
+            aggregator.update("Loss/entropy_loss", entropy.detach())
 
 
 if __name__ == "__main__":
