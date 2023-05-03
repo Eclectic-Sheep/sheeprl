@@ -2,46 +2,28 @@ import argparse
 import os
 import time
 from datetime import datetime
+from math import prod
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.optim as optim
-import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
-from torch.optim import Optimizer
-from torch.utils.tensorboard import SummaryWriter
+from torch.optim import Adam, Optimizer
+from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import SACAgent
+from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
 from fabricrl.algos.sac.args import parse_args
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
+from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
-
-
-@torch.no_grad()
-def test(agent: SACAgent, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
-    env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=False)()
-    step = 0
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=device)
-    while not done:
-        # Act greedly through the environment
-        action = agent.get_greedy_action(next_obs)
-
-        # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
-        done = done or truncated
-        cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=device)
-        step += 1
-    logger.add_scalar("Test/cumulative_reward", cumulative_rew, 0)
-    env.close()
+from fabricrl.utils.metric import MetricAggregator
 
 
 def train(
@@ -51,8 +33,10 @@ def train(
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
     data: TensorDictBase,
+    aggregator: MetricAggregator,
     global_step: int,
     args: argparse.Namespace,
+    group: Optional[CollectibleGroup] = None,
 ):
     # Get next_obs target q-values
     next_target_qf_value = agent.get_next_target_q_value(
@@ -67,6 +51,7 @@ def train(
     qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
+    aggregator.update("Loss/value_loss", qf_loss)
 
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
@@ -77,16 +62,15 @@ def train(
     actor_optimizer.zero_grad(set_to_none=True)
     fabric.backward(actor_loss)
     actor_optimizer.step()
+    aggregator.update("Loss/policy_loss", actor_loss)
 
     # Update the entropy value
     alpha_loss = entropy_loss(agent, log_pi)
     alpha_optimizer.zero_grad(set_to_none=True)
     fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
+    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
     alpha_optimizer.step()
-
-    # Log metrics
-    agent.on_train_epoch_end(global_step)
+    aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
 def main(args: argparse.Namespace):
@@ -129,19 +113,30 @@ def main(args: argparse.Namespace):
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(SACAgent(envs, num_critics=2, alpha=args.alpha, tau=args.tau))
-    agent.qfs = fabric.setup_module(agent.qfs)
-    agent.actor = fabric.setup_module(agent.actor)
+    actor = fabric.setup_module(Actor(envs))
+    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    target_entropy = -prod(envs.single_action_space.shape)
+    agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
+
+    # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        optim.Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4, weight_decay=1e-5),
-        optim.Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4, weight_decay=1e-5),
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
     )
 
-    # Player metrics
+    # Metrics
     with device:
-        rew_avg = torchmetrics.MeanMetric()
-        ep_len_avg = torchmetrics.MeanMetric()
+        aggregator = MetricAggregator(
+            {
+                "Rewards/rew_avg": MeanMetric(),
+                "Game/ep_len_avg": MeanMetric(),
+                "Time/step_per_second": MeanMetric(),
+                "Loss/value_loss": MeanMetric(),
+                "Loss/policy_loss": MeanMetric(),
+                "Loss/alpha_loss": MeanMetric(),
+            }
+        )
 
     # Local data
     rb = ReplayBuffer(args.buffer_size // int(args.num_envs * fabric.world_size), args.num_envs, device=device)
@@ -160,8 +155,9 @@ def main(args: argparse.Namespace):
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
-        with torch.no_grad():
-            actions, _, _ = agent.actor.get_action(obs)
+        with torch.inference_mode():
+            mean, std = actor.module(obs)
+            actions, _ = actor.module.get_action_and_log_prob(mean, std)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
@@ -172,18 +168,8 @@ def main(args: argparse.Namespace):
                     fabric.print(
                         f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
-                    rew_avg(agent_final_info["episode"]["r"][0])
-                    ep_len_avg(agent_final_info["episode"]["l"][0])
-
-        # Sync the metrics
-        rew_avg_reduced = rew_avg.compute()
-        if not rew_avg_reduced.isnan():
-            fabric.log("Rewards/rew_avg", rew_avg_reduced, global_step)
-        ep_len_avg_reduced = ep_len_avg.compute()
-        if not ep_len_avg_reduced.isnan():
-            fabric.log("Game/ep_len_avg", ep_len_avg_reduced, global_step)
-        rew_avg.reset()
-        ep_len_avg.reset()
+                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
+                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Save the real next observation
         real_next_obs = next_obs.copy()
@@ -195,7 +181,7 @@ def main(args: argparse.Namespace):
         with device:
             next_obs = torch.tensor(real_next_obs)
             actions = torch.tensor(actions).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()  # [N_envs, 1]
+            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()
             dones = torch.tensor(dones).view(args.num_envs, -1).float()
 
         step_data["dones"] = dones
@@ -214,12 +200,24 @@ def main(args: argparse.Namespace):
                 local_data = rb.sample(args.batch_size // fabric.world_size)
                 gathered_data = fabric.all_gather(local_data.to_dict())
                 gathered_data = make_tensordict(gathered_data).view(-1)
-                train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, global_step, args)
-        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+                train(
+                    fabric,
+                    agent,
+                    actor_optimizer,
+                    qf_optimizer,
+                    alpha_optimizer,
+                    gathered_data,
+                    aggregator,
+                    global_step,
+                    args,
+                )
+        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.reset()
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
+        test(actor.module, device, fabric.logger.experiment, args)
 
 
 if __name__ == "__main__":

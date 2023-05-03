@@ -46,7 +46,7 @@ def make_env(
     mask_velocities: bool = False,
 ):
     def thunk():
-        env = gym.make(env_id, render_mode="rgb_array")  # , continuous=True)
+        env = gym.make(env_id, render_mode="rgb_array")
         if mask_velocities:
             env = MaskVelocityWrapper(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)

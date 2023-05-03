@@ -36,7 +36,6 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
     )
-    log_dir = logger.log_dir
 
     # Initialize Fabric object
     fabric = Fabric(loggers=logger, accelerator="cuda" if args.player_on_gpu else "cpu")
@@ -53,7 +52,15 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
     # Environment setup
     envs = SyncVectorEnv(
         [
-            make_env(args.env_id, args.seed + i, 0, args.capture_video, log_dir, "train", mask_velocities=args.mask_vel)
+            make_env(
+                args.env_id,
+                args.seed + i,
+                0,
+                args.capture_video,
+                logger.log_dir,
+                "train",
+                mask_velocities=args.mask_vel,
+            )
             for i in range(args.num_envs)
         ]
     )

@@ -16,6 +16,12 @@ class MLP(nn.Module):
             Defaults to 0.
         hidden_sizes (Sequence[int], optional): shape of MLP passed in as a list, not including
             input_dims and output_dim.
+        dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
+            before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
+            You can also pass a list of dropout modules with the same length
+            of hidden_sizes to use different dropout modules in different layers.
+            If None, then no dropout layer is used.
+            Defaults to None.
         norm_layer (Union[ModuleType, Sequence[ModuleType]], optional): which normalization layer to be used
             before activation, e.g., ``nn.LayerNorm`` and ``nn.BatchNorm1d``.
             You can also pass a list of normalization modules with the same length
@@ -39,6 +45,8 @@ class MLP(nn.Module):
         input_dims: Union[int, Sequence[int]],
         output_dim: int = 0,
         hidden_sizes: Sequence[int] = (),
+        dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
+        dropout_args: Optional[ArgsType] = None,
         norm_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         norm_args: Optional[ArgsType] = None,
         activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
@@ -47,6 +55,21 @@ class MLP(nn.Module):
         flatten_input: bool = True,
     ) -> None:
         super().__init__()
+        if dropout_layer:
+            if isinstance(dropout_layer, list):
+                assert len(dropout_layer) == len(hidden_sizes)
+                dropout_layer_list = dropout_layer
+                if isinstance(dropout_args, list):
+                    assert len(dropout_args) == len(hidden_sizes)
+                    dropout_args_list = dropout_args
+                else:
+                    dropout_args_list = [dropout_args for _ in range(len(hidden_sizes))]
+            else:
+                dropout_layer_list = [dropout_layer for _ in range(len(hidden_sizes))]
+                dropout_args_list = [dropout_args for _ in range(len(hidden_sizes))]
+        else:
+            dropout_layer_list = [None] * len(hidden_sizes)
+            dropout_args_list = [None] * len(hidden_sizes)
         if norm_layer:
             if isinstance(norm_layer, list):
                 assert len(norm_layer) == len(hidden_sizes)
@@ -81,10 +104,17 @@ class MLP(nn.Module):
             input_dims = [input_dims]
         hidden_sizes = [prod(input_dims)] + list(hidden_sizes)
         model = []
-        for in_dim, out_dim, norm, norm_args, activ, act_args in zip(
-            hidden_sizes[:-1], hidden_sizes[1:], norm_layer_list, norm_args_list, activation_list, act_args_list
+        for in_dim, out_dim, drop, drop_args, norm, norm_args, activ, act_args in zip(
+            hidden_sizes[:-1],
+            hidden_sizes[1:],
+            dropout_layer_list,
+            dropout_args_list,
+            norm_layer_list,
+            norm_args_list,
+            activation_list,
+            act_args_list,
         ):
-            model += miniblock(in_dim, out_dim, norm, norm_args, activ, act_args, linear_layer)
+            model += miniblock(in_dim, out_dim, drop, drop_args, norm, norm_args, activ, act_args, linear_layer)
         if output_dim > 0:
             model += [linear_layer(hidden_sizes[-1], output_dim)]
         self._output_dim = output_dim or hidden_sizes[-1]
