@@ -1,4 +1,3 @@
-import argparse
 import os
 import time
 from contextlib import nullcontext
@@ -27,6 +26,8 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+
+__all__ = ["main"]
 
 
 @torch.inference_mode()
@@ -378,7 +379,9 @@ def trainer(
             )
 
 
-def main(args: argparse.Namespace):
+def main():
+    args = parse_args()
+
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
     world_collective.setup(backend="nccl" if args.player_on_gpu and args.cuda else "gloo")

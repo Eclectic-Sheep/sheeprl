@@ -16,7 +16,7 @@ readme = "README.md"
 python = ">=3.8,<3.10"
 lightning = "^2.0"
 torch = "^2.0"
-gymnasium = {extras = ["box2d"], version = "^0.28.1"}
+gymnasium = { extras = ["box2d"], version = "^0.28.1" }
 moviepy = "^1.0.3"
 tensordict = "^0.1.0"
 jsonargparse = "^4.20.1"

@@ -23,6 +23,8 @@ from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
+__all__ = ["main"]
+
 
 def train(
     fabric: Fabric,
@@ -83,8 +85,9 @@ def train(
             aggregator.update("Loss/entropy_loss", entropy.detach())
 
 
-def main(args: argparse.Namespace):
-    """Main function to run the PPO algorithm."""
+def main():
+    args = parse_args()
+
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
@@ -263,5 +266,4 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main()
