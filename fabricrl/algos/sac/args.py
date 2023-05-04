@@ -6,6 +6,7 @@ from fabricrl.utils.parser import Arg
 
 @dataclass
 class SACArgs(StandardArgs):
+    env_id: str = Arg(default="LunarLanderContinuous-v2", help="the id of the environment")
     total_steps: int = Arg(default=1e6, help="total timesteps of the experiments")
     capture_video: bool = Arg(
         default=False, help="whether to capture videos of the agent performances (check out `videos` folder)"
