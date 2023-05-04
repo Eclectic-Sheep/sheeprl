@@ -1,5 +1,6 @@
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime
 from math import prod
 from typing import Optional
@@ -81,14 +82,8 @@ def main():
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-        name=run_name,
-    )
-
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric()
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -96,11 +91,14 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Log hyperparameters
-    fabric.logger.experiment.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+    # Set logger only on rank-0
+    if rank == 0:
+        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        logger = TensorBoardLogger(
+            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+        )
+        fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(asdict(args))
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
@@ -110,7 +108,7 @@ def main():
                 args.seed + rank * args.num_envs + i,
                 rank,
                 args.capture_video,
-                logger.log_dir,
+                logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=False,
             )
