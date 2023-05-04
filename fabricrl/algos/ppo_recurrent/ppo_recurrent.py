@@ -1,4 +1,3 @@
-import argparse
 import os
 import time
 import warnings
@@ -16,13 +15,14 @@ from torch.distributions import Categorical
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.args import parse_args
+from fabricrl.algos.ppo.args import PPOArgs
+from fabricrl.algos.ppo.loss import policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
-from fabricrl.losses.ppo import policy_loss, value_loss
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 __all__ = ["main"]
@@ -34,7 +34,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: argparse.Namespace,
+    args: PPOArgs,
 ):
     for _ in range(args.update_epochs):
         env_idxes = torch.randperm(args.num_envs)
@@ -77,7 +77,8 @@ def train(
 
 
 def main():
-    args = parse_args()
+    parser = HfArgumentParser(PPOArgs)
+    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
@@ -123,7 +124,7 @@ def main():
 
     # Define the agent and the optimizer and setup them with Fabric
     agent = fabric.setup_module(RecurrentPPOAgent(envs))
-    optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.learning_rate, eps=1e-4))
+    optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
     # Metrics
     with device:
@@ -139,14 +140,14 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[1, args.num_envs], device=device)
 
     # Global variables
     global_step = 0
     start_time = time.time()
-    single_global_rollout = int(args.num_envs * args.num_steps * world_size)
-    num_updates = args.total_timesteps // single_global_rollout
+    single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
+    num_updates = args.total_steps // single_global_rollout
 
     with device:
         # Get the first environment observation and start the optimization
@@ -161,7 +162,7 @@ def main():
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
         initial_states = (state[0].clone(), state[1].clone())
-        for _ in range(0, args.num_steps):
+        for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
             with torch.inference_mode():
@@ -210,7 +211,7 @@ def main():
                 rb["dones"],
                 next_value,
                 next_done,
-                args.num_steps,
+                args.rollout_steps,
                 args.gamma,
                 args.gae_lambda,
             )

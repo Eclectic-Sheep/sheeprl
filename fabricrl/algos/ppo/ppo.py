@@ -1,6 +1,6 @@
-import argparse
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime
 
 import torch
@@ -15,12 +15,13 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.args import parse_args
+from fabricrl.algos.ppo.args import PPOArgs
+from fabricrl.algos.ppo.loss import policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
-from fabricrl.losses.ppo import policy_loss, value_loss
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 __all__ = ["main"]
@@ -33,7 +34,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: argparse.Namespace,
+    args: PPOArgs,
 ):
     """Train the agent on the data collected from the environment."""
     indexes = list(range(data.batch_size[0]))
@@ -86,15 +87,11 @@ def train(
 
 
 def main():
-    args = parse_args()
-
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
-    )
+    parser = HfArgumentParser(PPOArgs)
+    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric()
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -103,11 +100,14 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Log hyperparameters
-    fabric.logger.experiment.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+    # Set logger only on rank-0
+    if rank == 0:
+        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        logger = TensorBoardLogger(
+            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+        )
+        fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(asdict(args))
 
     # Environment setup
     envs = SyncVectorEnv(
@@ -117,7 +117,7 @@ def main():
                 args.seed + rank * args.num_envs + i,
                 rank,
                 args.capture_video,
-                logger.log_dir,
+                logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=args.mask_vel,
             )
@@ -137,7 +137,7 @@ def main():
     )
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
+    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -156,14 +156,14 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     global_step = 0
     start_time = time.time()
-    single_global_rollout = int(args.num_envs * args.num_steps * world_size)
-    num_updates = args.total_timesteps // single_global_rollout
+    single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
+    num_updates = args.total_steps // single_global_rollout
 
     with device:
         # Get the first environment observation and start the optimization
@@ -176,7 +176,7 @@ def main():
             linear_annealing(optimizer, update, num_updates, args.learning_rate)
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
-        for _ in range(0, args.num_steps):
+        for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
             with torch.inference_mode():
@@ -232,7 +232,7 @@ def main():
                 rb["dones"],
                 next_values,
                 next_done,
-                args.num_steps,
+                args.rollout_steps,
                 args.gamma,
                 args.gae_lambda,
             )
