@@ -95,7 +95,7 @@ def main():
     if rank == 0:
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         logger = TensorBoardLogger(
-            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+            root_dir=os.path.join("logs", "droq", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
         )
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(asdict(args))
