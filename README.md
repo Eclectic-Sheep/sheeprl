@@ -1,28 +1,43 @@
-# Fabric RL
+# ⚡ Fabric RL
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
-The goal of this repo is to provide a simple framework for RL algorithms that are scalable and distributed thanks to Lightning Fabric.
+## Why
+We want to provide a framework for RL algorithms that is at the same time simple and scalable thanks to Lightning Fabric.
 
 ## How to use
 Clone the repo.
+
+```bash
+git clone <http-url>
+cd fabric_rl
+```
 
 From inside the newly create folder run [Poetry](https://python-poetry.org) to create the virtual environment and install the dependencies:
 ```bash
 poetry install
 ```
 
-Then you can use one of the already available algorithms, or create your own. For example, to train a PPO agent on the CartPole environment, just run
+Now you can use one of the already available algorithms, or create your own. 
+
+For example, to train a PPO agent on the CartPole environment, just run
 ```bash
 python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1
 ```
+---
 
-Once you did that, a new folder called `logs` will be created, containing the logs of the training. You can visualize them with [TensorBoard](https://www.tensorflow.org/tensorboard):
+That's all it takes to train an agent with Fabric RL! 🎉
+
+### :chart_with_upwards_trend: Check your results
+
+Once you trained an agent, a new folder called `logs` will be created, containing the logs of the training. You can visualize them with [TensorBoard](https://www.tensorflow.org/tensorboard):
 ```bash
 tensorboard --logdir logs
 ```
 
-### More about running an algorithm
-What we just run is the PPO algorithm with the default configuration. You can change the configuration by passing arguments to the script. For example, in the default configuration, the number of parallel environments is 4. You can change it to 8 by passing the `--num-envs` argument:
+### :nerd_face: More about running an algorithm
+What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
+
+For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num-envs` argument:
 ```bash
 python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1 --num-envs 8
 ```
@@ -37,7 +52,7 @@ lightning run model --accelerator=cpu --strategy=ddp --devices=2 fabricrl/algos/
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
-## Repository structure
+## :book: Repository structure
 The repository is structured as follows:
 ```bash
 fabricrl
@@ -109,7 +124,7 @@ In the decoupled version, a process is responsible only for interacting with the
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/ppo_fabric_decoupled.png">
 </p>
 
-## Algorithm implementations
+## Algorithms implementation
 You can check inside the folder of each algorithm the `readme.md` file for the details about the implementation.
 
 All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related with the training loop of the algorithm. 
@@ -124,3 +139,6 @@ For the buffer implementation, we choose to use a wrapper around a [TensorDict](
 TensorDict comes handy since we can easily add custom fields to the buffer as if we are working with dictionaries, but we can also easily perform operations on them as if we are working with tensors.
 
 This flexibility makes it very simple to implement, with the single class `ReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
+
+## :bow: Contributing
+The best way to contribute is by opening an issue to discuss a new feature or a bug, or by opening a PR to fix a bug or to add a new feature.
