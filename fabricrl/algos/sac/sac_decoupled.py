@@ -7,7 +7,6 @@ import gymnasium as gym
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
@@ -39,8 +38,6 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger)
-    if not _is_using_cli():
-        fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -70,7 +67,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = Actor(envs)
+    actor = Actor(envs).to(device)
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
@@ -96,7 +93,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Global variables
     start_time = time.time()
-    num_updates = args.total_steps // args.num_envs
+    num_updates = int(args.total_steps // args.num_envs)
     args.learning_starts = args.learning_starts // args.num_envs
     if args.learning_starts <= 1:
         args.learning_starts = 2
@@ -260,12 +257,19 @@ def trainer(
 
 
 def main():
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices == "1":
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
-    world_collective.setup(backend="gloo")  # "nccl" if args.player_on_gpu and args.cuda else
+    world_collective.setup(backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo")
 
     # Create a global group, assigning it to the collective: used by the player to exchange
     # collected experiences with the trainers

@@ -42,9 +42,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(
-        loggers=logger, accelerator="cuda" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "cpu"
-    )
+    fabric = Fabric(loggers=logger)
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -379,14 +377,19 @@ def trainer(
 
 
 def main():
-    accelerator = os.environ.get("LT_ACCELERATOR", None)
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices == "1":
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
 
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
-    world_collective.setup(backend="nccl" if accelerator in ("gpu", "cuda") else "gloo")
+    world_collective.setup(backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo")
 
     # Create a global group, assigning it to the collective: used by the player to exchange
     # collected experiences with the trainers

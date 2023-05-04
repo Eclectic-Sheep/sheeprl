@@ -151,7 +151,7 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = args.total_steps // int(args.num_envs * fabric.world_size)
+    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size))
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
     if args.learning_starts <= 1:
         args.learning_starts = 2
