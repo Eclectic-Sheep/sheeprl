@@ -161,8 +161,7 @@ def main():
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         with torch.inference_mode():
-            mean, std = actor.module(obs)
-            actions, _ = actor.module.get_action_and_log_prob(mean, std)
+            actions, _ = actor.module(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)

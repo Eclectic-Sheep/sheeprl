@@ -1,5 +1,6 @@
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime
 from math import prod
 
@@ -35,6 +36,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
+    fabric.logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger)
@@ -42,12 +44,6 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    # Log hyperparameters
-    fabric.logger.experiment.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
@@ -105,8 +101,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         with torch.inference_mode():
-            mean, std = actor(obs)
-            actions, _ = actor.get_action_and_log_prob(mean, std)
+            actions, _ = actor.module(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
