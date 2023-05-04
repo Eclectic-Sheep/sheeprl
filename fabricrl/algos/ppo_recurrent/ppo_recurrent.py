@@ -17,11 +17,11 @@ from torch.optim import Adam
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import parse_args
-from fabricrl.algos.ppo.loss import policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
+from fabricrl.losses.ppo import policy_loss, value_loss
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
@@ -54,7 +54,7 @@ def train(
                 batch["advantages"] = normalize_tensor(batch["advantages"])
 
             # Policy loss
-            pg_loss = policy_loss(dist, batch, args.clip_coef)
+            pg_loss = policy_loss(dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef)
 
             # Value loss
             v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)

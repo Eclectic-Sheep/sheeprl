@@ -7,6 +7,7 @@ from math import prod
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -15,13 +16,12 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.droq.loss import critic_loss, policy_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
 from fabricrl.algos.sac.args import parse_args
-from fabricrl.algos.sac.loss import entropy_loss
 from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
+from fabricrl.losses.sac import entropy_loss, policy_loss
 from fabricrl.utils.metric import MetricAggregator
 
 __all__ = ["main"]
@@ -38,17 +38,18 @@ def train(
     args: argparse.Namespace,
 ):
     for _ in range(args.gradient_steps):
-        # Get next_obs target q-values
+        # Update the soft-critic
         next_target_qf_value = agent.get_next_target_q_value(
             data["next_observations"],
             data["rewards"],
             data["dones"],
             args.gamma,
         )
-
         for qf_value_idx in range(agent.num_critics):
-            # Update the soft-critic
-            qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value, qf_value_idx)
+            # Line 8 - Algorithm 2
+            qf_loss = F.mse_loss(
+                agent.get_ith_q_value(data["observations"], data["actions"], qf_value_idx), next_target_qf_value
+            )
             qf_optimizer.zero_grad(set_to_none=True)
             fabric.backward(qf_loss)
             qf_optimizer.step()
@@ -58,14 +59,17 @@ def train(
             agent.qfs_target_ema()
 
     # Update the actor
-    actor_loss, log_pi = policy_loss(agent, data["observations"])
+    actions, logprobs = agent.get_action_and_log_prob(data["observations"])
+    qf_values = agent.get_q_values(data["observations"], actions)
+    min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
+    actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
     actor_optimizer.zero_grad(set_to_none=True)
     fabric.backward(actor_loss)
     actor_optimizer.step()
     aggregator.update("Loss/policy_loss", actor_loss)
 
     # Update the entropy value
-    alpha_loss = entropy_loss(agent, log_pi)
+    alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
     alpha_optimizer.zero_grad(set_to_none=True)
     fabric.backward(alpha_loss)
     agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
