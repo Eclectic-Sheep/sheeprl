@@ -1,9 +1,3 @@
-"""
-Run it with:
-    lightning run model --devices=2 train_fabric_decoupled.py
-"""
-
-import argparse
 import os
 import time
 from datetime import datetime
@@ -25,17 +19,18 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
-from fabricrl.algos.sac.args import parse_args
+from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.sac import train
 from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 
 __all__ = ["main"]
 
 
 @torch.inference_mode()
-def player(args: argparse.Namespace, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
@@ -101,7 +96,7 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
 
     # Global variables
     start_time = time.time()
-    num_updates = args.total_timesteps // args.num_envs
+    num_updates = args.total_steps // args.num_envs
     args.learning_starts = args.learning_starts // args.num_envs
     if args.learning_starts <= 1:
         args.learning_starts = 2
@@ -179,7 +174,7 @@ def player(args: argparse.Namespace, world_collective: TorchCollective, player_t
 
 
 def trainer(
-    args,
+    args: SACArgs,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
@@ -265,7 +260,8 @@ def trainer(
 
 
 def main():
-    args = parse_args()
+    parser = HfArgumentParser(SACArgs)
+    args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()

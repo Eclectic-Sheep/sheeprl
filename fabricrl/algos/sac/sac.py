@@ -1,4 +1,3 @@
-import argparse
 import os
 import time
 from datetime import datetime
@@ -19,11 +18,12 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
-from fabricrl.algos.sac.args import parse_args
+from fabricrl.algos.sac.args import SACArgs
+from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
-from fabricrl.losses.sac import critic_loss, entropy_loss, policy_loss
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 
 __all__ = ["main"]
 
@@ -37,7 +37,7 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     global_step: int,
-    args: argparse.Namespace,
+    args: SACArgs,
     group: Optional[CollectibleGroup] = None,
 ):
     # Update the soft-critic
@@ -78,7 +78,8 @@ def train(
 
 
 def main():
-    args = parse_args()
+    parser = HfArgumentParser(SACArgs)
+    args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
@@ -150,7 +151,7 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = args.total_timesteps // int(args.num_envs * fabric.world_size)
+    num_updates = args.total_steps // int(args.num_envs * fabric.world_size)
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
     if args.learning_starts <= 1:
         args.learning_starts = 2
