@@ -43,7 +43,7 @@ def train(
     group: Optional[CollectibleGroup] = None,
 ):
     # Update the soft-critic
-    next_target_qf_value = agent.get_next_target_q_value(
+    next_target_qf_value = agent.get_next_target_q_values(
         data["next_observations"],
         data["rewards"],
         data["dones"],

@@ -56,7 +56,7 @@ def train(
             data = data[next(iter(sampler))]
 
         # Update the soft-critic
-        next_target_qf_value = agent.get_next_target_q_value(
+        next_target_qf_value = agent.get_next_target_q_values(
             data["next_observations"],
             data["rewards"],
             data["dones"],
