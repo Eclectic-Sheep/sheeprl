@@ -25,6 +25,8 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 
+__all__ = ["main"]
+
 
 def train(
     fabric: Fabric,
@@ -73,7 +75,9 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
-def main(args: argparse.Namespace):
+def main():
+    args = parse_args()
+
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
@@ -221,5 +225,4 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main()

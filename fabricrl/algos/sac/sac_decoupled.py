@@ -31,6 +31,8 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 
+__all__ = ["main"]
+
 
 @torch.inference_mode()
 def player(args: argparse.Namespace, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
@@ -262,7 +264,9 @@ def trainer(
             )
 
 
-def main(args: argparse.Namespace):
+def main():
+    args = parse_args()
+
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
     world_collective.setup(backend="gloo")  # "nccl" if args.player_on_gpu and args.cuda else
@@ -287,5 +291,4 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main()
