@@ -8,6 +8,7 @@ import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
+from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
@@ -377,11 +378,10 @@ def trainer(
 
 
 def main():
-    devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices == "1":
+    if not _is_using_cli():
         raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "This script was launched without the Lightning CLI. Consider to launch the script with "
+            "`lightning run model --devices=2 main.py ...` to scale it with Fabric"
         )
 
     parser = HfArgumentParser(PPOArgs)
@@ -396,6 +396,12 @@ def main():
     world_collective.create_group()
     global_rank = world_collective.rank
 
+    if world_collective.world_size == 1:
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
     player_trainer_collective.create_group(ranks=[0, 1])
@@ -408,3 +414,7 @@ def main():
         player(args, world_collective, player_trainer_collective)
     else:
         trainer(args, world_collective, player_trainer_collective, optimization_pg)
+
+
+if __name__ == "__main__":
+    main()

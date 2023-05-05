@@ -8,6 +8,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
@@ -18,7 +19,7 @@ from torch.optim import Adam
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
+from fabricrl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.sac import train
 from fabricrl.algos.sac.utils import test
@@ -36,7 +37,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
-    fabric.logger.log_hyperparams(asdict(args))
+    logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger)
@@ -63,7 +64,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = Actor(envs).to(device)
+    actor = SACActor(envs).to(device)
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
@@ -101,7 +102,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         with torch.inference_mode():
-            actions, _ = actor.module(obs)
+            actions, _ = actor(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
@@ -185,8 +186,8 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = fabric.setup_module(Actor(envs))
-    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    actor = fabric.setup_module(SACActor(envs))
+    critics = [fabric.setup_module(SACCritic(envs)) for _ in range(args.num_critics)]
     target_entropy = -prod(envs.single_action_space.shape)
     agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 
@@ -252,11 +253,10 @@ def trainer(
 
 
 def main():
-    devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices == "1":
+    if not _is_using_cli():
         raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "This script was launched without the Lightning CLI. Consider to launch the script with "
+            "`lightning run model --devices=2 main.py ...` to scale it with Fabric"
         )
 
     parser = HfArgumentParser(SACArgs)
@@ -270,6 +270,12 @@ def main():
     # collected experiences with the trainers
     world_collective.create_group()
     global_rank = world_collective.rank
+
+    if world_collective.world_size == 1:
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
