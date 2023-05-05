@@ -74,7 +74,7 @@ class Actor(nn.Module):
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
-        return mean, std
+        return self.get_action_and_log_prob(mean, std)
 
     def get_action_and_log_prob(self, mean: Tensor, std: Tensor):
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
@@ -191,8 +191,7 @@ class SACAgent:
         return self._log_alpha
 
     def get_action_and_log_prob(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
-        mean, std = self.actor(obs)
-        return self.actor.get_action_and_log_prob(mean, std)
+        return self.actor(obs)
 
     def get_greedy_action(self, obs: Tensor) -> Tensor:
         return self.actor.get_greedy_action(obs)

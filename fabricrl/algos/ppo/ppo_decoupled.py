@@ -1,6 +1,7 @@
 import os
 import time
 from contextlib import nullcontext
+from dataclasses import asdict
 from datetime import datetime
 
 import gymnasium as gym
@@ -19,36 +20,32 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.args import parse_args
+from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
 
 __all__ = ["main"]
 
 
 @torch.inference_mode()
-def player(args, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
     logger = TensorBoardLogger(
         root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
     )
+    logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(loggers=logger, accelerator="cuda" if args.player_on_gpu else "cpu")
+    fabric = Fabric(loggers=logger)
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    # Log hyperparameters
-    logger.experiment.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
     # Environment setup
     envs = SyncVectorEnv(
@@ -104,14 +101,14 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         )
 
     # Local data
-    rb = ReplayBuffer(args.num_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     global_step = 0
     start_time = time.time()
-    single_global_step = int(args.num_envs * args.num_steps)
-    num_updates = args.total_timesteps // single_global_step
+    single_global_step = int(args.num_envs * args.rollout_steps)
+    num_updates = args.total_steps // single_global_step
     if not args.share_data:
         if single_global_step < world_collective.world_size - 1:
             raise RuntimeError(
@@ -135,7 +132,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
         next_done = torch.zeros(args.num_envs, 1).to(device)
 
     for _ in range(1, num_updates + 1):
-        for _ in range(0, args.num_steps):
+        for _ in range(0, args.rollout_steps):
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment
@@ -186,7 +183,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
             rb["dones"],
             next_values,
             next_done,
-            args.num_steps,
+            args.rollout_steps,
             args.gamma,
             args.gae_lambda,
         )
@@ -197,8 +194,6 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
-        if not args.player_on_gpu and args.cuda:
-            local_data.pin_memory()
 
         # Send data to the training agents
         if args.share_data:
@@ -237,7 +232,7 @@ def player(args, world_collective: TorchCollective, player_trainer_collective: T
 
 
 def trainer(
-    args,
+    args: PPOArgs,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
@@ -247,7 +242,7 @@ def trainer(
     group_world_size = world_collective.world_size - 1
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), accelerator="cuda" if args.cuda else "cpu")
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -268,7 +263,7 @@ def trainer(
     )
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.learning_rate, eps=1e-4)
+    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -341,7 +336,9 @@ def trainer(
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
                     # Policy loss
-                    pg_loss = policy_loss(dist, batch, args.clip_coef)
+                    pg_loss = policy_loss(
+                        dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef
+                    )
 
                     # Value loss
                     v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
@@ -380,11 +377,19 @@ def trainer(
 
 
 def main():
-    args = parse_args()
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices == "1":
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
+    parser = HfArgumentParser(PPOArgs)
+    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
-    world_collective.setup(backend="nccl" if args.player_on_gpu and args.cuda else "gloo")
+    world_collective.setup(backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo")
 
     # Create a global group, assigning it to the collective: used by the player to exchange
     # collected experiences with the trainers
@@ -403,8 +408,3 @@ def main():
         player(args, world_collective, player_trainer_collective)
     else:
         trainer(args, world_collective, player_trainer_collective, optimization_pg)
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    main(args)

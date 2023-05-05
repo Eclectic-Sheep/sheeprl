@@ -1,14 +1,13 @@
-import argparse
-
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import Actor
+from fabricrl.algos.sac.args import SACArgs
 
 
 @torch.no_grad()
-def test(actor: Actor, device: torch.device, logger: SummaryWriter, args: argparse.Namespace):
+def test(actor: Actor, device: torch.device, logger: SummaryWriter, args: SACArgs):
     env = make_env(args.env_id, args.seed, 0, args.capture_video, logger.log_dir, "test", mask_velocities=False)()
     step = 0
     done = False
