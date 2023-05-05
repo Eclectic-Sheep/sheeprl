@@ -1,3 +1,6 @@
+"""
+Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
+"""
 from math import prod
 from typing import Optional, Sequence, Type, Union, no_type_check
 
