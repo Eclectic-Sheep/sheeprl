@@ -12,14 +12,14 @@ from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torchmetrics import MeanMetric
 
+from fabricrl.algos.droq.agent import DROQAgent, DROQCritic
 from fabricrl.algos.droq.args import DROQArgs
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
+from fabricrl.algos.sac.agent import SACActor
 from fabricrl.algos.sac.loss import entropy_loss, policy_loss
 from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
@@ -31,15 +31,30 @@ __all__ = ["main"]
 
 def train(
     fabric: Fabric,
-    agent: SACAgent,
+    agent: DROQAgent,
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
-    data: TensorDictBase,
+    rb: ReplayBuffer,
     aggregator: MetricAggregator,
     args: DROQArgs,
 ):
     for _ in range(args.gradient_steps):
+        # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
+        sample = rb.sample(args.batch_size // fabric.world_size)
+        data = fabric.all_gather(sample.to_dict())
+        data = make_tensordict(data).view(-1)
+        if fabric.world_size > 1:
+            sampler = DistributedSampler(
+                range(len(data)),
+                num_replicas=fabric.world_size,
+                rank=fabric.global_rank,
+                shuffle=True,
+                seed=args.seed,
+                drop_last=False,
+            )
+            data = data[next(iter(sampler))]
+
         # Update the soft-critic
         next_target_qf_value = agent.get_next_target_q_value(
             data["next_observations"],
@@ -61,7 +76,7 @@ def train(
             agent.qfs_target_ema()
 
     # Update the actor
-    actions, logprobs = agent.get_action_and_log_prob(data["observations"])
+    actions, logprobs = agent.get_actions_and_log_probs(data["observations"])
     qf_values = agent.get_q_values(data["observations"], actions)
     min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
     actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
@@ -84,9 +99,11 @@ def main():
     args: DROQArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        fabric = Fabric(devices=1)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -119,10 +136,10 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = fabric.setup_module(Actor(envs))
-    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    actor = fabric.setup_module(SACActor(envs))
+    critics = [fabric.setup_module(DROQCritic(envs)) for _ in range(args.num_critics)]
     target_entropy = -prod(envs.single_action_space.shape)
-    agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
+    agent = DROQAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
@@ -201,20 +218,7 @@ def main():
 
         # Train the agent
         if global_step > args.learning_starts:
-            local_data = rb.sample(args.batch_size // fabric.world_size)
-            gathered_data = fabric.all_gather(local_data.to_dict())
-            gathered_data = make_tensordict(gathered_data).view(-1)
-            if fabric.world_size > 1:
-                sampler = DistributedSampler(
-                    range(len(gathered_data)),
-                    num_replicas=fabric.world_size,
-                    rank=fabric.global_rank,
-                    shuffle=True,
-                    seed=args.seed,
-                    drop_last=False,
-                )
-                gathered_data = gathered_data[next(iter(sampler))]
-            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, gathered_data, aggregator, args)
+            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, rb, aggregator, args)
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
