@@ -19,7 +19,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
+from fabricrl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.algos.sac.utils import test
@@ -61,7 +61,7 @@ def train(
         agent.qfs_target_ema()
 
     # Update the actor
-    actions, logprobs = agent.get_action_and_log_prob(data["observations"])
+    actions, logprobs = agent.get_actions_and_log_probs(data["observations"])
     qf_values = agent.get_q_values(data["observations"], actions)
     min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
     actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
@@ -84,9 +84,11 @@ def main():
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        fabric = Fabric(devices=1)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -119,8 +121,8 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = fabric.setup_module(Actor(envs))
-    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
+    actor = fabric.setup_module(SACActor(envs))
+    critics = [fabric.setup_module(SACCritic(envs)) for _ in range(args.num_critics)]
     target_entropy = -prod(envs.single_action_space.shape)
     agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 

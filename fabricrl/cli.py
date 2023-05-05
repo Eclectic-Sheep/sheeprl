@@ -2,6 +2,7 @@
 
 import functools
 import importlib
+import warnings
 from typing import Optional
 from unittest.mock import patch
 
@@ -13,9 +14,9 @@ from lightning.fabric.fabric import _is_using_cli
 def run():
     """Fabric-RL zero-code command line utility."""
     if not _is_using_cli():
-        raise RuntimeError(
-            "This script was launched without the Lightning CLI. Please launch the script with "
-            "`lightning run model ...`"
+        warnings.warn(
+            "This script was launched without the Lightning CLI. Consider to launch the script with "
+            "`lightning run model ...` to scale it with Fabric"
         )
 
 

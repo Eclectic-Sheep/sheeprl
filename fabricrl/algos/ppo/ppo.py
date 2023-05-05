@@ -91,9 +91,11 @@ def main():
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        fabric = Fabric(devices=1)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
