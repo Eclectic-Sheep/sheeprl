@@ -1,29 +1,27 @@
 import torch
 import torch.nn.functional as F
-from tensordict.tensordict import TensorDict
 from torch import Tensor
+from torch.distributions import Distribution
 
 
-def policy_loss(dist: torch.distributions.Distribution, batch: TensorDict, clip_coef: float) -> Tensor:
+def policy_loss(dist: Distribution, actions: Tensor, logprobs: Tensor, advantages: Tensor, clip_coef: float) -> Tensor:
     """Compute the policy loss for a batch of data, as described in equation (7) of the paper.
 
-    - Compute the logprobs using the updated model for the actions taken.
-    - Compute the difference between the new and old logprobs.
-    - Exponentiate it to find the ratio.
-    - Use the ratio and advantages to compute the loss as per equation (7).
+        - Compute the logprobs using the updated model for the actions taken.
+        - Compute the difference between the new and old logprobs.
+        - Exponentiate it to find the ratio.
+        - Use the ratio and advantages to compute the loss as per equation (7).
 
     Args:
         dist (torch.distributions.Distribution): the policy distribution.
-        batch (TensorDict): the batch of data.
         clip_coef (float): the clipping coefficient.
 
     Returns:
-        the policy loss.
+        the policy loss
     """
-    new_logprobs = dist.log_prob(batch["actions"])
-    logratio = new_logprobs - batch["logprobs"]
+    new_logprobs = dist.log_prob(actions)
+    logratio = new_logprobs - logprobs
     ratio = logratio.exp()
-    advantages: Tensor = batch["advantages"]
 
     pg_loss1 = advantages * ratio
     pg_loss2 = advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)

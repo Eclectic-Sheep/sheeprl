@@ -1,6 +1,6 @@
-import argparse
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime
 from math import prod
 from typing import Optional
@@ -19,11 +19,12 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
-from fabricrl.algos.sac.args import parse_args
+from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
+from fabricrl.utils.parser import HfArgumentParser
 
 __all__ = ["main"]
 
@@ -37,19 +38,18 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     global_step: int,
-    args: argparse.Namespace,
+    args: SACArgs,
     group: Optional[CollectibleGroup] = None,
 ):
-    # Get next_obs target q-values
+    # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_value(
         data["next_observations"],
         data["rewards"],
         data["dones"],
         args.gamma,
     )
-
-    # Update the soft-critic
-    qf_loss = critic_loss(agent, data["observations"], data["actions"], next_target_qf_value)
+    qf_values = agent.get_q_values(data["observations"], data["actions"])
+    qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
     qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
@@ -60,14 +60,17 @@ def train(
         agent.qfs_target_ema()
 
     # Update the actor
-    actor_loss, log_pi = policy_loss(agent, data["observations"])
+    actions, logprobs = agent.get_action_and_log_prob(data["observations"])
+    qf_values = agent.get_q_values(data["observations"], actions)
+    min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
+    actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
     actor_optimizer.zero_grad(set_to_none=True)
     fabric.backward(actor_loss)
     actor_optimizer.step()
     aggregator.update("Loss/policy_loss", actor_loss)
 
     # Update the entropy value
-    alpha_loss = entropy_loss(agent, log_pi)
+    alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
     alpha_optimizer.zero_grad(set_to_none=True)
     fabric.backward(alpha_loss)
     agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
@@ -76,16 +79,11 @@ def train(
 
 
 def main():
-    args = parse_args()
-
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-        name=run_name,
-    )
+    parser = HfArgumentParser(SACArgs)
+    args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric()
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -93,11 +91,14 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Log hyperparameters
-    fabric.logger.experiment.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+    # Set logger only on rank-0
+    if rank == 0:
+        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        logger = TensorBoardLogger(
+            root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+        )
+        fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(asdict(args))
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
@@ -107,7 +108,7 @@ def main():
                 args.seed + rank * args.num_envs + i,
                 rank,
                 args.capture_video,
-                logger.log_dir,
+                logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=False,
             )
@@ -148,7 +149,7 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = args.total_timesteps // int(args.num_envs * fabric.world_size)
+    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size))
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
     if args.learning_starts <= 1:
         args.learning_starts = 2
@@ -160,8 +161,7 @@ def main():
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
         with torch.inference_mode():
-            mean, std = actor.module(obs)
-            actions, _ = actor.module.get_action_and_log_prob(mean, std)
+            actions, _ = actor.module(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
