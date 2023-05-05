@@ -15,6 +15,7 @@ from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
+from torch.utils.data.distributed import DistributedSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
@@ -204,6 +205,16 @@ def main():
                 local_data = rb.sample(args.batch_size // fabric.world_size)
                 gathered_data = fabric.all_gather(local_data.to_dict())
                 gathered_data = make_tensordict(gathered_data).view(-1)
+                if fabric.world_size > 1:
+                    sampler = DistributedSampler(
+                        range(len(gathered_data)),
+                        num_replicas=fabric.world_size,
+                        rank=fabric.global_rank,
+                        shuffle=True,
+                        seed=args.seed,
+                        drop_last=False,
+                    )
+                    gathered_data = gathered_data[next(iter(sampler))]
                 train(
                     fabric,
                     agent,
