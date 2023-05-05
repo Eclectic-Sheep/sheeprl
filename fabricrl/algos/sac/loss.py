@@ -2,13 +2,12 @@
 """
 
 from numbers import Number
-from typing import Tuple
 
 import torch.nn.functional as F
 from torch import Tensor
 
 
-def policy_loss(alpha: Number, logprobs: Tensor, qf_values: Tensor) -> Tuple[Tensor, Tensor]:
+def policy_loss(alpha: Number, logprobs: Tensor, qf_values: Tensor) -> Tensor:
     # Eq. 7
     return ((alpha * logprobs) - qf_values).mean()
 
