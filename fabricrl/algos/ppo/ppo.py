@@ -144,7 +144,7 @@ def main():
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
 
-    # Metrics
+    # Create a metric aggregator to log the metrics
     with device:
         aggregator = MetricAggregator(
             {
