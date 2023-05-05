@@ -241,7 +241,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
+        test(agent.module, fabric, args)
 
 
 if __name__ == "__main__":

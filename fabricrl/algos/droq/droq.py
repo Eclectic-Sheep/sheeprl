@@ -225,7 +225,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, device, fabric.logger.experiment, args)
+        test(actor.module, fabric, args)
 
 
 if __name__ == "__main__":

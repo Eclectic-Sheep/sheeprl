@@ -227,9 +227,10 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         world_collective.broadcast_object_list([-1], src=0)
     else:
         world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
     envs.close()
     if fabric.is_global_zero:
-        test(actor, device, fabric.logger.experiment, args)
+        test(actor, fabric, args)
 
 
 def trainer(
