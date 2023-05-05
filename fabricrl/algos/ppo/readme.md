@@ -37,17 +37,3 @@ def policy_loss(dist: torch.distributions.Distribution, batch: TensorDict, clip_
     return pg_loss
 ```
 
-# PPO coupled
-The PPO algorithm is implemented in the `ppo.py` file. 
-
-There are 2 functions inside this script:
-  * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
-
-# PPO decoupled
-The decoupled version of PPO is implemented in the `ppo_decoupled.py` file.
-
-There are 3 functions inside this script:
-  * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `trainer()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
-  * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer.
