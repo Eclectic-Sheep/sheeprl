@@ -9,8 +9,10 @@ from unittest.mock import patch
 import click
 from lightning.fabric.fabric import _is_using_cli
 
+CONTEXT_SETTINGS = dict(help_option_names=["--fabricrl_help"])
 
-@click.group(no_args_is_help=True, add_help_option=False)
+
+@click.group(no_args_is_help=True, add_help_option=True, context_settings=CONTEXT_SETTINGS)
 def run():
     """Fabric-RL zero-code command line utility."""
     if not _is_using_cli():
