@@ -23,7 +23,7 @@ Now you can use one of the already available algorithms, or create your own.
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1
+python main ppo --env-id CartPole-v1
 ```
 ---
 
@@ -41,7 +41,7 @@ What you run is the PPO algorithm with the default configuration. But you can al
 
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num-envs` argument:
 ```bash
-python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1 --num-envs 8
+python main.py ppo --env-id CartPole-v1 --num-envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder.
@@ -49,61 +49,17 @@ All the available arguments, with their descriptions, are listed in the `args.py
 ### Running with Lightning Fabric
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 fabricrl/algos/ppo/ppo.py --env-id CartPole-v1
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 main ppo --env-id CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
 ## :book: Repository structure
-The repository is structured as follows:
-```bash
-fabricrl
-├── algos
-│   ├── droq
-│   │   ├── args.py
-│   │   ├── droq.py
-│   │   ├── __init__.py
-│   │   └── loss.py
-│   ├── __init__.py
-│   ├── ppo
-│   │   ├── args.py
-│   │   ├── __init__.py
-│   │   ├── loss.py
-│   │   ├── ppo_decoupled.py
-│   │   ├── ppo.py
-│   │   └── utils.py
-│   ├── ppo_recurrent
-│   │   ├── agent.py
-│   │   ├── __init__.py
-│   │   ├── ppo_recurrent.py
-│   │   └── utils.py
-│   └── sac
-│       ├── agent.py
-│       ├── args.py
-│       ├── __init__.py
-│       ├── loss.py
-│       ├── sac_decoupled.py
-│       ├── sac.py
-│       └── utils.py
-├── data
-│   ├── buffers.py
-│   └── __init__.py
-├── envs
-│   ├── __init__.py
-│   └── wrappers.py
-├── __init__.py
-├── models
-│   └── models.py
-└── utils
-    ├── __init__.py
-    ├── metric.py
-    ├── model.py
-    └── utils.py
-```
+The repository is (possibly) structured as follows:
 
   * `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and contains the following files:
     * `<algorithm>.py`: contains the implementation of the algorithm.
-    * <algorithm>_decoupled.py: contains the implementation of the decoupled version of the algorithm.
+    * `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm.
     * `agent`: optional, contains the implementation of the agent.
     * `args.py`: contains the arguments of the algorithm, with their default values and descriptions.
     * `loss.py`: contains the implementation of the loss functions of the algorithm.
