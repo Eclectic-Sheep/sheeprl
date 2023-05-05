@@ -120,7 +120,7 @@ In the coupled version of an algorithm, the agent interacts with the environment
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/fabric_coupled.png">
 </p>
 
-In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate throgh [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective) and thanks to Fabric's flexibility we can run Player and Trainers on different devices.
+In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
 
 <p align="center">
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/ppo_fabric_decoupled.png">
@@ -131,22 +131,22 @@ The algorithm is implemented in the `<algorithm>.py` file.
 
 There are 2 functions inside this script:
   * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
+  * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss and updates the parameters of the agent.
 
 #### Decoupled
 The decoupled version of an algorithm is implemented in the `<algorithm>_decoupled.py` file.
 
 There are 3 functions inside this script:
-  * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `trainer()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
-  * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer.
+  * `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers and calls the `player()` and `trainer()` functions.
+  * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of iteractions with the environment, the player randomly splits the collected data in almost-equal chunks and send them separately to the trainers. It then waits for the trainers to finish the agent update.
+  * `trainer()`: executes the training loop. It receives a chunk of data from the player, compute the loss and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
 
 ## Algorithms implementation
-You can check inside the folder of each algorithm the `readme.md` file for the details about the implementation.
+You can check inside the folder of each algorithm the `README.md` file for the details about the implementation.
 
 All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related with the training loop of the algorithm. 
 
-For example, we decided to create a `models` folder with ready-made NN models that can be composed to create the NN model of the agent.
+For example, we decided to create a `models` folder with an already-made models that can be composed to create the model of the agent.
 
 For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized also for the decoupled or the recurrent version of the algorithm.
 
