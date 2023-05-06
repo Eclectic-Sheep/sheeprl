@@ -1,8 +1,6 @@
 import copy
-from math import prod
 from typing import Sequence, Tuple, Union
 
-import gymnasium as gym
 import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
@@ -16,12 +14,20 @@ LOG_STD_MIN = -5
 
 
 class SACCritic(nn.Module):
-    def __init__(self, envs: gym.vector.SyncVectorEnv, num_critics: int = 1):
+    def __init__(self, observation_dim: int, num_critics: int = 1):
+        """The SAC critic. The architecture is the one specified in https://arxiv.org/abs/1812.05905
+
+        Args:
+            observation_dim (int): the input dimensions. Can be either an integer
+                or a sequence of integers.
+            num_critics (int, optional): the number of critic values to output.
+                This is useful if one wants to have a single shared backbone that outputs
+                `num_critics` critic values.
+                Defaults to 1.
+        """
         super().__init__()
-        act_space = prod(envs.single_action_space.shape)
-        obs_space = prod(envs.single_observation_space.shape)
         self.model = MLP(
-            input_dims=obs_space + act_space,
+            input_dims=observation_dim,
             output_dim=num_critics,
             hidden_sizes=(256, 256),
             activation=nn.ReLU,
@@ -43,23 +49,21 @@ class SACCritic(nn.Module):
 
 
 class SACActor(nn.Module):
-    def __init__(self, envs: gym.vector.SyncVectorEnv):
+    def __init__(
+        self,
+        observation_dim: int,
+        action_dim: int,
+        action_low: float = -1.0,
+        action_high: float = 1.0,
+    ):
         super().__init__()
-        act_space = prod(envs.single_action_space.shape)
-        obs_space = prod(envs.single_observation_space.shape)
-        self.model = MLP(input_dims=obs_space, output_dim=0, hidden_sizes=(256, 256), flatten_input=False)
-        self.fc_mean = nn.Linear(self.model.output_dim, act_space)
-        self.fc_logstd = nn.Linear(self.model.output_dim, act_space)
+        self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_input=False)
+        self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
+        self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
         # Action rescaling buffers
-        self.register_buffer(
-            "action_scale",
-            torch.tensor((envs.single_action_space.high - envs.single_action_space.low) / 2.0, dtype=torch.float32),
-        )
-        self.register_buffer(
-            "action_bias",
-            torch.tensor((envs.single_action_space.high + envs.single_action_space.low) / 2.0, dtype=torch.float32),
-        )
+        self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
     def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         """Given an observation, it returns a tanh-squashed

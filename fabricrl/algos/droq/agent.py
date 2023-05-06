@@ -1,8 +1,6 @@
 import copy
-from math import prod
 from typing import Sequence, Tuple, Union
 
-import gymnasium as gym
 import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
@@ -17,12 +15,22 @@ LOG_STD_MIN = -5
 
 
 class DROQCritic(nn.Module):
-    def __init__(self, envs: gym.vector.SyncVectorEnv, num_critics: int = 1, dropout: float = 0.0):
+    def __init__(self, observation_dim: int, num_critics: int = 1, dropout: float = 0.0):
+        """The DroQ critic with Dropout and LayerNorm layers. The architecture is the one specified in
+        https://arxiv.org/abs/2110.02034
+
+        Args:
+            observation_dim (int): the input dimension.
+            num_critics (int, optional): the number of critic values to output.
+                This is useful if one wants to have a single shared backbone that outputs
+                `num_critics` critic values.
+                Defaults to 1.
+            dropout (float, optional): the dropout probability for every layer.
+                Defaults to 0.0.
+        """
         super().__init__()
-        act_space = prod(envs.single_action_space.shape)
-        obs_space = prod(envs.single_observation_space.shape)
         self.model = MLP(
-            input_dims=obs_space + act_space,
+            observation_dim=observation_dim,
             output_dim=num_critics,
             hidden_sizes=(256, 256),
             dropout_layer=nn.Dropout if dropout > 0 else None,
@@ -33,6 +41,15 @@ class DROQCritic(nn.Module):
         )
 
     def forward(self, obs: Tensor, action: Tensor) -> Tensor:
+        """Return the Q-value conditioned on the observation and the action
+
+        Args:
+            obs (Tensor): input observation
+            action (Tensor): input action
+
+        Returns:
+            q-value
+        """
         x = torch.cat([obs, action], -1)
         return self.model(x)
 
@@ -47,6 +64,19 @@ class DROQAgent:
         tau: float = 0.005,
         device: torch.device = torch.device("cpu"),
     ) -> None:
+        """DroQ agent with some helper functions.
+
+        Args:
+            actor (Union[SACActor, _FabricModule]): the actor.
+            critics (Sequence[Union[DROQCritic, _FabricModule]]): a sequence of critics.
+            target_entropy (float): the target entropy to learn the alpha parameter.
+            alpha (float, optional): initial alpha value. The parameter learned is the logarithm
+                of the alpha value.
+                Defaults to 1.0.
+            tau (float, optional): the tau value for the exponential moving average of the critics.
+                Defaults to 0.005.
+            device (torch.device, optional): defaults to torch.device("cpu").
+        """
         super().__init__()
 
         # Actor and critics

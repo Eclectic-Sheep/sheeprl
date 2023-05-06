@@ -136,9 +136,21 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = fabric.setup_module(SACActor(envs))
-    critics = [fabric.setup_module(DROQCritic(envs)) for _ in range(args.num_critics)]
-    target_entropy = -prod(envs.single_action_space.shape)
+    act_dim = prod(envs.single_action_space.shape)
+    obs_dim = prod(envs.single_observation_space.shape)
+    actor = fabric.setup_module(
+        SACActor(
+            observation_dim=obs_dim,
+            action_dim=act_dim,
+            action_low=envs.single_action_space.low,
+            action_high=envs.single_action_space.high,
+        )
+    )
+    critics = [
+        fabric.setup_module(DROQCritic(observation_dim=obs_dim + act_dim, num_critics=1, dropout=0.01))
+        for _ in range(args.num_critics)
+    ]
+    target_entropy = -act_dim
     agent = DROQAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 
     # Optimizers

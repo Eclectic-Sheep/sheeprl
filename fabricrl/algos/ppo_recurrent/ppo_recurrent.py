@@ -3,6 +3,7 @@ import time
 import warnings
 from dataclasses import asdict
 from datetime import datetime
+from math import prod
 
 import gymnasium as gym
 import torch
@@ -129,7 +130,8 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(RecurrentPPOAgent(envs))
+    obs_dim = prod(envs.single_observation_space.shape)
+    agent = fabric.setup_module(RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n))
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
     # Metrics
