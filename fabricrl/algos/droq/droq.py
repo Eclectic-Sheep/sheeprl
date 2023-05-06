@@ -155,11 +155,9 @@ def main():
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        (
-            Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
-            Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
-            Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
-        )
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
     )
 
     # Metrics
