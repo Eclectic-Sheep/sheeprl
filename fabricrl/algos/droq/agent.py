@@ -30,7 +30,7 @@ class DROQCritic(nn.Module):
         """
         super().__init__()
         self.model = MLP(
-            observation_dim=observation_dim,
+            input_dims=observation_dim,
             output_dim=num_critics,
             hidden_sizes=(256, 256),
             dropout_layer=nn.Dropout if dropout > 0 else None,

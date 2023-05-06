@@ -1,9 +1,10 @@
 import copy
-from typing import Sequence, Tuple, Union
+from typing import Sequence, SupportsFloat, Tuple, Union
 
 import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
+from numpy.typing import NDArray
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel
 
@@ -53,9 +54,20 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
-        action_low: float = -1.0,
-        action_high: float = 1.0,
+        action_low: Union[SupportsFloat, NDArray] = -1.0,
+        action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
+        """The SAC critic. The architecture is the one specified in https://arxiv.org/abs/1812.05905
+
+        Args:
+            observation_dim (int): the input dimensions. Can be either an integer
+                or a sequence of integers.
+            action_dim (int): the action dimension.
+            action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
+                Defaults to -1.0.
+            action_high (Union[SupportsFloat, NDArray], optional): the action higher bound.
+                Defaults to 1.0.
+        """
         super().__init__()
         self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_input=False)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)

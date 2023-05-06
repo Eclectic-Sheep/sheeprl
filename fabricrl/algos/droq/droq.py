@@ -45,7 +45,7 @@ def train(
         data = fabric.all_gather(sample.to_dict())
         data = make_tensordict(data).view(-1)
         if fabric.world_size > 1:
-            sampler = DistributedSampler(
+            sampler: DistributedSampler = DistributedSampler(
                 range(len(data)),
                 num_replicas=fabric.world_size,
                 rank=fabric.global_rank,
@@ -155,9 +155,11 @@ def main():
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
-        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
-        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
+        (
+            Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
+            Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
+            Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
+        )
     )
 
     # Metrics
