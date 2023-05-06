@@ -131,7 +131,9 @@ def main():
 
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)
-    agent = fabric.setup_module(RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n))
+    agent = fabric.setup_module(
+        RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n, num_envs=args.num_envs)
+    )
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
     # Metrics

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ from fabricrl.models.models import MLP
 
 
 class RecurrentPPOAgent(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int):
+    def __init__(self, observation_dim: int, action_dim: int, num_envs: int = 1):
         super().__init__()
         # Actor: Obs -> Feature -> GRU -> Logits
         self._actor_fc = MLP(
@@ -38,10 +38,13 @@ class RecurrentPPOAgent(nn.Module):
         self._critic = MLP(self._critic_fc.output_dim, 1, flatten_input=False)
 
         # Initial recurrent states for both the actor and critic rnn
-        self._initial_states: Optional[Tuple[Tensor, Tensor]] = None
+        self._initial_states: Tuple[Tensor, Tensor] = (
+            torch.zeros(1, num_envs, self._actor_fc.output_dim),
+            torch.zeros(1, num_envs, self._critic_fc.output_dim),
+        )
 
     @property
-    def initial_states(self) -> Optional[Tuple[Tensor, Tensor]]:
+    def initial_states(self) -> Tuple[Tensor, Tensor]:
         return self._initial_states
 
     @initial_states.setter
