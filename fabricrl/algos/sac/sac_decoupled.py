@@ -16,6 +16,7 @@ from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
@@ -148,9 +149,10 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Send data to the training agents
         if global_step > args.learning_starts:
-            for _ in range(args.gradient_steps):
-                chunks = rb.sample(args.batch_size * (fabric.world_size - 1)).split(args.batch_size)
-                world_collective.scatter_object_list([None], [None] + chunks, src=0)
+            chunks = rb.sample(args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1)).split(
+                args.gradient_steps * args.per_rank_batch_size
+            )
+            world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
             metrics = [None]
@@ -236,22 +238,22 @@ def trainer(
     # Start training
     global_step = 0
     while True:
-        for _ in range(args.gradient_steps):
-            # Wait for data
-            data = [None]
-            world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
-            data = data[0]
-            if not isinstance(data, TensorDictBase) and data == -1:
-                return
-            data = make_tensordict(data, device=device)
-
+        # Wait for data
+        data = [None]
+        world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
+        data = data[0]
+        if not isinstance(data, TensorDictBase) and data == -1:
+            return
+        data = make_tensordict(data, device=device)
+        sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
+        for batch_idxes in sampler:
             train(
                 fabric,
                 agent,
                 actor_optimizer,
                 qf_optimizer,
                 alpha_optimizer,
-                data,
+                data[batch_idxes],
                 aggregator,
                 global_step,
                 args,

@@ -160,6 +160,6 @@ class DROQAgent:
         return next_qf_value
 
     @torch.no_grad()
-    def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs.parameters(), self.qfs_target.parameters()):
+    def qfs_target_ema(self, critic_idx: int) -> None:
+        for param, target_param in zip(self.qfs[critic_idx].parameters(), self.qfs_target[critic_idx].parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)

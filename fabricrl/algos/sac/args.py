@@ -15,7 +15,7 @@ class SACArgs(StandardArgs):
     gamma: float = Arg(default=0.99, help="the discount factor gamma")
     tau: float = Arg(default=0.005, help="target smoothing coefficient")
     alpha: float = Arg(default=1.0, help="Entropy regularization coefficient")
-    batch_size: int = Arg(default=256, help="the batch size of sample from the reply memory")
+    per_rank_batch_size: int = Arg(default=256, help="the batch size of sample from the reply memory for every rank")
     learning_starts: int = Arg(default=100, help="timestep to start learning")
     num_critics: int = Arg(default=2, help="the number of critics")
     q_lr: float = Arg(default=3e-4, help="the learning rate of the critic network optimizer")

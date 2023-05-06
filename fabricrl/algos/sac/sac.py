@@ -16,6 +16,7 @@ from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
@@ -215,27 +216,34 @@ def main():
 
         # Train the agent
         if global_step > args.learning_starts:
-            for _ in range(args.gradient_steps):
-                local_data = rb.sample(args.batch_size // fabric.world_size)
-                gathered_data = fabric.all_gather(local_data.to_dict())
-                gathered_data = make_tensordict(gathered_data).view(-1)
-                if fabric.world_size > 1:
-                    sampler = DistributedSampler(
-                        range(len(gathered_data)),
-                        num_replicas=fabric.world_size,
-                        rank=fabric.global_rank,
-                        shuffle=True,
-                        seed=args.seed,
-                        drop_last=False,
-                    )
-                    gathered_data = gathered_data[next(iter(sampler))]
+            # We sample one time to reduce the communications between processes
+            sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)  # [G*B, 1]
+            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+            if fabric.world_size > 1:
+                dist_sampler: DistributedSampler = DistributedSampler(
+                    range(len(gathered_data)),
+                    num_replicas=fabric.world_size,
+                    rank=fabric.global_rank,
+                    shuffle=True,
+                    seed=args.seed,
+                    drop_last=False,
+                )
+                sampler: BatchSampler = BatchSampler(
+                    sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
+                )
+            else:
+                sampler = BatchSampler(
+                    sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
+                )
+            for batch_idxes in sampler:
                 train(
                     fabric,
                     agent,
                     actor_optimizer,
                     qf_optimizer,
                     alpha_optimizer,
-                    gathered_data,
+                    gathered_data[batch_idxes],
                     aggregator,
                     global_step,
                     args,

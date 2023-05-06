@@ -14,6 +14,7 @@ from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.droq.agent import DROQAgent, DROQCritic
@@ -39,23 +40,27 @@ def train(
     aggregator: MetricAggregator,
     args: DROQArgs,
 ):
-    for _ in range(args.gradient_steps):
-        # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
-        sample = rb.sample(args.batch_size // fabric.world_size)
-        data = fabric.all_gather(sample.to_dict())
-        data = make_tensordict(data).view(-1)
-        if fabric.world_size > 1:
-            sampler: DistributedSampler = DistributedSampler(
-                range(len(data)),
-                num_replicas=fabric.world_size,
-                rank=fabric.global_rank,
-                shuffle=True,
-                seed=args.seed,
-                drop_last=False,
-            )
-            data = data[next(iter(sampler))]
+    # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
+    # We sample one time to reduce the communications between processes
+    sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)
+    gathered_data = fabric.all_gather(sample.to_dict())
+    gathered_data = make_tensordict(gathered_data).view(-1)
+    if fabric.world_size > 1:
+        dist_sampler: DistributedSampler = DistributedSampler(
+            range(len(gathered_data)),
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=args.seed,
+            drop_last=False,
+        )
+        sampler: BatchSampler = BatchSampler(sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False)
+    else:
+        sampler = BatchSampler(sampler=range(len(gathered_data)), per_rank_=args.per_rank_batch_size, drop_last=False)
 
-        # Update the soft-critic
+    # Update the soft-critic
+    for batch_idxes in sampler:
+        data = gathered_data[batch_idxes]
         next_target_qf_value = agent.get_next_target_q_values(
             data["next_observations"],
             data["rewards"],
@@ -73,7 +78,22 @@ def train(
             aggregator.update("Loss/value_loss", qf_loss)
 
             # Update the target networks with EMA
-            agent.qfs_target_ema()
+            agent.qfs_target_ema(critic_idx=qf_value_idx)
+
+    # Sample a different minibatch in a distributed way to update actor and alpha parameter
+    sample = rb.sample(args.per_rank_batch_size)
+    data = fabric.all_gather(sample.to_dict())
+    data = make_tensordict(data).view(-1)
+    if fabric.world_size > 1:
+        sampler: DistributedSampler = DistributedSampler(
+            range(len(data)),
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=args.seed,
+            drop_last=False,
+        )
+        data = data[next(iter(sampler))]
 
     # Update the actor
     actions, logprobs = agent.get_actions_and_log_probs(data["observations"])
@@ -147,7 +167,7 @@ def main():
         )
     )
     critics = [
-        fabric.setup_module(DROQCritic(observation_dim=obs_dim + act_dim, num_critics=1, dropout=0.01))
+        fabric.setup_module(DROQCritic(observation_dim=obs_dim + act_dim, num_critics=1, dropout=args.dropout))
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim
