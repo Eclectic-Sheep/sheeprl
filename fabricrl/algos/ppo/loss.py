@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -12,7 +10,7 @@ def policy_loss(
     logprobs: Tensor,
     advantages: Tensor,
     clip_coef: float,
-    reduction: Optional[str] = "mean",
+    reduction: str = "mean",
 ) -> Tensor:
     """Compute the policy loss for a batch of data, as described in equation (7) of the paper.
 
@@ -37,12 +35,13 @@ def policy_loss(
 
     pg_loss1 = advantages * ratio
     pg_loss2 = advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-    pg_loss = torch.min(pg_loss1, pg_loss2)
-    if reduction is None:
+    pg_loss = -torch.min(pg_loss1, pg_loss2)
+    reduction = reduction.lower()
+    if reduction == "none":
         return pg_loss
-    elif reduction.lower() == "mean":
+    elif reduction == "mean":
         return pg_loss.mean()
-    elif reduction.lower() == "sum":
+    elif reduction == "sum":
         return pg_loss.sum()
     else:
         raise ValueError(f"Unrecognized reduction: {reduction}")
@@ -54,10 +53,23 @@ def value_loss(
     returns: Tensor,
     clip_coef: float,
     clip_vloss: bool,
-    reduction: Optional[str] = "mean",
+    reduction: str = "mean",
 ) -> Tensor:
     if not clip_vloss:
         values_pred = new_values
     else:
         values_pred = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
     return F.mse_loss(values_pred, returns, reduction=reduction)
+
+
+def entropy_loss(dist: Distribution, reduction: str = "mean") -> Tensor:
+    entropy = -dist.entropy()
+    reduction = reduction.lower()
+    if reduction == "none":
+        return entropy
+    elif reduction == "mean":
+        return entropy.mean()
+    elif reduction == "sum":
+        return entropy.sum()
+    else:
+        raise ValueError(f"Unrecognized reduction: {reduction}")

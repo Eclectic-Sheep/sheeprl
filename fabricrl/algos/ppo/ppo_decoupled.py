@@ -22,7 +22,7 @@ from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
-from fabricrl.algos.ppo.loss import policy_loss, value_loss
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
@@ -310,7 +310,7 @@ def trainer(
 
         # Lerning rate annealing
         if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.learning_rate)
+            linear_annealing(optimizer, update, num_updates, args.lr)
         update += 1
 
         indexes = list(range(data.shape[0]))
@@ -339,17 +339,29 @@ def trainer(
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef
+                        dist,
+                        batch["actions"],
+                        batch["logprobs"],
+                        batch["advantages"],
+                        args.clip_coef,
+                        args.loss_reduction,
                     )
 
                     # Value loss
-                    v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+                    v_loss = value_loss(
+                        new_values,
+                        batch["values"],
+                        batch["returns"],
+                        args.clip_coef,
+                        args.clip_vloss,
+                        args.loss_reduction,
+                    )
 
                     # Entropy loss
-                    entropy = dist.entropy().mean()
+                    ent_loss = entropy_loss(dist, args.loss_reduction)
 
-                    # Equation (9) in the paper, changed sign since we minimize
-                    loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+                    # Equation (9) in the paper
+                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
 
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
@@ -360,7 +372,7 @@ def trainer(
                     # Update metrics
                     aggregator.update("Loss/policy_loss", pg_loss.detach())
                     aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", entropy.detach())
+                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
         # Send updated weights to the player
         metrics = aggregator.compute()

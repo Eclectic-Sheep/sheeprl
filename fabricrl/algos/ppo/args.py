@@ -19,7 +19,9 @@ class PPOArgs(StandardArgs):
     gamma: float = Arg(default=0.99, help="the discount factor gamma")
     gae_lambda: float = Arg(default=0.95, help="the lambda for the general advantage estimation")
     update_epochs: int = Arg(default=10, help="the K epochs to update the policy")
-    envs_batch_size: int = Arg(default=2, help="the number of environments to be batched during a single PPO epoch")
+    loss_reduction: str = Arg(
+        default="mean", metadata={"choices": ("mean", "sum", "none")}, help="Which reduction to use"
+    )
     normalize_advantages: bool = Arg(default=False, help="Toggles advantages normalization")
     clip_coef: float = Arg(default=0.2, help="the surrogate clipping coefficient")
     clip_vloss: bool = Arg(
