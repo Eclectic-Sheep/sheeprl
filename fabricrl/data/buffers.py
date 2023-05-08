@@ -116,8 +116,6 @@ class ReplayBuffer:
             raise ValueError("Batch size must be greater than 0")
         if self._full and batch_size > self._buf.shape[0]:
             raise ValueError(f"Batch size {batch_size} is larger than the replay buffer size ({self._buf.shape[0]})")
-        elif not self._full and batch_size > self._pos:
-            raise ValueError(f"Batch size {batch_size} is larger than the available collected data ({self._pos})")
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
         if self._full:
