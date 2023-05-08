@@ -7,6 +7,7 @@ from datetime import datetime
 import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
+from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning.fabric import Fabric
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
@@ -44,7 +45,6 @@ class CnnNet(torch.nn.Module):
         self.activation = ReLU()
 
     def forward(self, x: torch.Tensor):
-        x = x / 255.0
         x = self.activation(self.conv1(x))
         x = self.activation(self.conv2(x))
         x = self.activation(self.conv3(x))
@@ -69,14 +69,9 @@ def make_env(
                 env = gym.wrappers.RecordVideo(
                     env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
                 )
-        # env = NoopResetEnv(env, noop_max=30)
-        # env = MaxAndSkipEnv(env, skip=4)
-        # env = EpisodicLifeEnv(env)
-        # if "FIRE" in env.unwrapped.get_action_meanings():
-        #     env = FireResetEnv(env)
-        # env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
+        env = AtariPreprocessing(
+            env, noop_max=30, frame_skip=4, screen_size=84, terminal_on_life_loss=True, scale_obs=True
+        )
         env = gym.wrappers.FrameStack(env, 4)
 
         env.action_space.seed(seed)
@@ -392,6 +387,7 @@ def trainer(
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
                     # Policy loss
+                    # import pdb; pdb.set_trace()
                     pg_loss = policy_loss(
                         dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef
                     )
