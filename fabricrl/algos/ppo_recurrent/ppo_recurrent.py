@@ -3,6 +3,7 @@ import time
 import warnings
 from dataclasses import asdict
 from datetime import datetime
+from math import prod
 
 import gymnasium as gym
 import torch
@@ -14,10 +15,11 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Categorical
 from torch.optim import Adam
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
-from fabricrl.algos.ppo.loss import policy_loss, value_loss
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from fabricrl.algos.ppo_recurrent.utils import test
@@ -38,33 +40,33 @@ def train(
     args: PPOArgs,
 ):
     for _ in range(args.update_epochs):
-        env_idxes = torch.randperm(args.num_envs)
-        env_idxes_batches = torch.tensor_split(env_idxes, args.envs_batch_size)
-        for env_idxes_batch in env_idxes_batches:
-            if env_idxes_batch.numel() == 0:
-                continue
-            batch = data[:, env_idxes_batch]
-            action_logits, new_values, _ = agent(
-                batch["observations"],
-                batch["dones"],
-                state=tuple([s[:, env_idxes_batch] for s in agent.initial_states]),
+        state = agent.initial_states
+        seq_sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
+        for seq_idxes_batch in seq_sampler:
+            batch = data[seq_idxes_batch]
+            action_logits, new_values, state = agent(
+                batch["observations"], batch["dones"], state=tuple([s.detach() for s in state])
             )
-
             dist = Categorical(logits=action_logits.unsqueeze(-2))
+
             if args.normalize_advantages:
                 batch["advantages"] = normalize_tensor(batch["advantages"])
 
             # Policy loss
-            pg_loss = policy_loss(dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef)
+            pg_loss = policy_loss(
+                dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef, args.loss_reduction
+            )
 
             # Value loss
-            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+            v_loss = value_loss(
+                new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss, args.loss_reduction
+            )
 
             # Entropy loss
-            entropy = dist.entropy().mean()
+            ent_loss = entropy_loss(dist, args.loss_reduction)
 
-            # Equation (9) in the paper, changed the sign since we minimize
-            loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+            # Equation (9) in the paper
+            loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
 
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
@@ -74,7 +76,7 @@ def train(
             # Update metrics
             aggregator.update("Loss/policy_loss", pg_loss.detach())
             aggregator.update("Loss/value_loss", v_loss.detach())
-            aggregator.update("Loss/entropy_loss", entropy.detach())
+            aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
 def main():
@@ -91,9 +93,11 @@ def main():
     )
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        fabric = Fabric(devices=1)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -127,7 +131,10 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = fabric.setup_module(RecurrentPPOAgent(envs))
+    obs_dim = prod(envs.single_observation_space.shape)
+    agent = fabric.setup_module(
+        RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n, num_envs=args.num_envs)
+    )
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
     # Metrics
@@ -162,7 +169,7 @@ def main():
     for update in range(1, num_updates + 1):
         # Learning rate annealing
         if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.learning_rate)
+            linear_annealing(optimizer, update, num_updates, args.lr)
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
         initial_states = (state[0].clone(), state[1].clone())
@@ -239,7 +246,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, device, fabric.logger.experiment, args)
+        test(agent.module, fabric, args)
 
 
 if __name__ == "__main__":

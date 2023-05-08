@@ -3,18 +3,17 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gymnasium.vector import SyncVectorEnv
 from torch import Tensor
 
 from fabricrl.models.models import MLP
 
 
 class RecurrentPPOAgent(nn.Module):
-    def __init__(self, envs: SyncVectorEnv):
+    def __init__(self, observation_dim: int, action_dim: int, num_envs: int = 1):
         super().__init__()
         # Actor: Obs -> Feature -> GRU -> Logits
         self._actor_fc = MLP(
-            envs.single_observation_space.shape,
+            input_dims=observation_dim,
             output_dim=0,
             hidden_sizes=(64, 64),
             activation=nn.ReLU,
@@ -23,11 +22,11 @@ class RecurrentPPOAgent(nn.Module):
         self._actor_rnn = nn.GRU(
             input_size=self._actor_fc.output_dim, hidden_size=self._actor_fc.output_dim, batch_first=False
         )
-        self._actor_logits = MLP(self._actor_fc.output_dim, envs.single_action_space.n, flatten_input=False)
+        self._actor_logits = MLP(self._actor_fc.output_dim, action_dim, flatten_input=False)
 
         # Critic: Obs -> Feature -> GRU -> Values
         self._critic_fc = MLP(
-            envs.single_observation_space.shape,
+            input_dims=observation_dim,
             output_dim=0,
             hidden_sizes=(64, 64),
             activation=nn.ReLU,
@@ -40,8 +39,8 @@ class RecurrentPPOAgent(nn.Module):
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tuple[Tensor, Tensor] = (
-            torch.zeros(1, envs.num_envs, self._actor_fc.output_dim),
-            torch.zeros(1, envs.num_envs, self._critic_fc.output_dim),
+            torch.zeros(1, num_envs, self._actor_fc.output_dim),
+            torch.zeros(1, num_envs, self._critic_fc.output_dim),
         )
 
     @property
@@ -53,16 +52,6 @@ class RecurrentPPOAgent(nn.Module):
         self._initial_states = value
 
     def get_greedy_action(self, obs: Tensor, state: Tensor) -> Tuple[Tensor, Tensor]:
-        """Get action given the observation greedily.
-
-        Args:
-            obs (Tensor): input observation
-            state (Tensor): recurrent state
-
-        Returns:
-            sampled action
-            new recurrent state
-        """
         x = self._actor_fc(obs)
         x, state = self._actor_rnn(x, state)
         logits = self._actor_logits(x)

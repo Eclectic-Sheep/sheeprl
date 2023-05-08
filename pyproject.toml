@@ -14,13 +14,11 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.8,<3.10"
-lightning = "^2.0"
-torch = "^2.0"
+lightning = { git = "https://github.com/Lightning-AI/lightning.git", rev = "master" }
+torch = ">=2.0"
 gymnasium = { extras = ["box2d"], version = "^0.28.1" }
 moviepy = "^1.0.3"
 tensordict = "^0.1.0"
-jsonargparse = "^4.20.1"
-fastapi = ">=0.80"
 tensorboard = "^2.12.2"
 
 [tool.poetry.group.dev.dependencies]
