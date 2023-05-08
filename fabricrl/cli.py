@@ -37,7 +37,7 @@ def register_command(command, name: Optional[str] = None):
 tasks = {
     "droq": ["droq"],
     "sac": ["sac", "sac_decoupled"],
-    "ppo": ["ppo", "ppo_decoupled"],
+    "ppo": ["ppo", "ppo_decoupled", "ppo_atari"],
     "ppo_recurrent": ["ppo_recurrent"],
 }
 
