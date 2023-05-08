@@ -69,9 +69,7 @@ def make_env(
                 env = gym.wrappers.RecordVideo(
                     env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
                 )
-        env = AtariPreprocessing(
-            env, noop_max=30, frame_skip=4, screen_size=84, terminal_on_life_loss=True, scale_obs=True
-        )
+        env = AtariPreprocessing(env, scale_obs=True)
         env = gym.wrappers.FrameStack(env, 4)
 
         env.action_space.seed(seed)
@@ -178,7 +176,6 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
         next_done = torch.zeros(args.num_envs, 1).to(device)
-
     for _ in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs
