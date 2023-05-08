@@ -56,7 +56,7 @@ def train(
         )
         sampler: BatchSampler = BatchSampler(sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False)
     else:
-        sampler = BatchSampler(sampler=range(len(gathered_data)), per_rank_=args.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False)
 
     # Update the soft-critic
     for batch_idxes in sampler:
@@ -153,7 +153,8 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("only continuous action space is supported")
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
