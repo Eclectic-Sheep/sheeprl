@@ -26,7 +26,7 @@ from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor
 
 __all__ = ["main"]
 
@@ -128,7 +128,8 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported")
 
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)
@@ -160,18 +161,19 @@ def main():
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
     num_updates = args.total_steps // single_global_rollout
 
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+
     with device:
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
         next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
         state = agent.initial_states
 
-    for update in range(1, num_updates + 1):
-        # Learning rate annealing
-        if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.lr)
-        fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-
+    for _ in range(1, num_updates + 1):
         initial_states = (state[0].clone(), state[1].clone())
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
@@ -227,9 +229,9 @@ def main():
                 args.gae_lambda,
             )
 
-        # Add returns and advantages to the buffer
-        rb["returns"] = returns.float()
-        rb["advantages"] = advantages.float()
+            # Add returns and advantages to the buffer
+            rb["returns"] = returns.float()
+            rb["advantages"] = advantages.float()
 
         # Get the training data as a TensorDict
         local_data = rb.buffer
@@ -237,6 +239,13 @@ def main():
         # Train the agent
         agent.initial_states = initial_states
         train(fabric, agent, optimizer, local_data, aggregator, args)
+
+        # Learning rate annealing
+        if args.anneal_lr:
+            scheduler.step()
+            fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
+        else:
+            fabric.log("Info/learning_rate", args.lr, global_step)
 
         # Log metrics
         metrics_dict = aggregator.compute()
