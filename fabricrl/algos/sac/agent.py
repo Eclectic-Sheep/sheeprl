@@ -32,7 +32,7 @@ class SACCritic(nn.Module):
             output_dim=num_critics,
             hidden_sizes=(256, 256),
             activation=nn.ReLU,
-            flatten_input=False,
+            flatten_dim=None,
         )
 
     def forward(self, obs: Tensor, action: Tensor) -> Tensor:
@@ -69,7 +69,7 @@ class SACActor(nn.Module):
                 Defaults to 1.0.
         """
         super().__init__()
-        self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_input=False)
+        self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 

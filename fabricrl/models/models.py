@@ -39,7 +39,7 @@ class MLP(nn.Module):
             Defaults to "cpu".
         linear_layer (ModuleType, optional): which linear layer to use.
             Defaults to ``nn.Linear``.
-        flatten_input (bool, optional): whether to flatten input data. The flatten dimension starts from 1.
+        flatten_dim (int, optional): whether to flatten input data. The flatten dimension starts from 1.
             Defaults to True.
     """
 
@@ -55,7 +55,7 @@ class MLP(nn.Module):
         activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
         act_args: Optional[ArgsType] = None,
         linear_layer: Type[nn.Linear] = nn.Linear,
-        flatten_input: bool = True,
+        flatten_dim: Optional[int] = 1,
     ) -> None:
         super().__init__()
         if dropout_layer:
@@ -122,7 +122,7 @@ class MLP(nn.Module):
             model += [linear_layer(hidden_sizes[-1], output_dim)]
         self._output_dim = output_dim or hidden_sizes[-1]
         self._model = nn.Sequential(*model)
-        self._flatten_input = flatten_input
+        self._flatten_dim = flatten_dim
 
     @property
     def model(self) -> nn.Module:
@@ -133,11 +133,11 @@ class MLP(nn.Module):
         return self._output_dim
 
     @property
-    def flatten_input(self) -> int:
-        return self._flatten_input
+    def flatten_dim(self) -> Optional[int]:
+        return self._flatten_dim
 
     @no_type_check
     def forward(self, obs: Tensor) -> Tensor:
-        if self._flatten_input:
-            obs = obs.flatten(1)
+        if self.flatten_dim is not None:
+            obs = obs.flatten(self.flatten_dim)
         return self.model(obs)
