@@ -9,14 +9,17 @@ from torch import Size, Tensor, device
 
 class ReplayBuffer:
     def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[device, str] = "cpu"):
-        """Replay buffer used in off-policy algorithms like SAC/TD3.
-        The replay buffer internally uses a TensorDict
+        """A replay buffer which internally uses a TensorDict.
 
         Args:
             buffer_size (int): The buffer size.
             n_envs (int, optional): The number of environments. Defaults to 1.
             device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
         """
+        if buffer_size <= 0:
+            raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
+        if n_envs <= 0:
+            raise ValueError(f"The number of environments must be greater than zero, got: {n_envs}")
         self._buffer_size = buffer_size
         self._n_envs = n_envs
         if isinstance(device, str):
@@ -82,7 +85,7 @@ class ReplayBuffer:
             )
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if next_pos < self._pos:
+        if next_pos < self._pos or (self._pos + data_len > self._buffer_size and self._pos == 0):
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
             )
@@ -111,8 +114,10 @@ class ReplayBuffer:
         """
         if batch_size <= 0:
             raise ValueError("Batch size must be greater than 0")
-        if batch_size > self._buf.shape[0]:
-            raise ValueError(f"Batch size {batch_size} is larger than the replay buffer size {self._buf.shape[0]}")
+        if self._full and batch_size > self._buf.shape[0]:
+            raise ValueError(f"Batch size {batch_size} is larger than the replay buffer size ({self._buf.shape[0]})")
+        elif not self._full and batch_size > self._pos:
+            raise ValueError(f"Batch size {batch_size} is larger than the available collected data ({self._pos})")
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
         if self._full:
