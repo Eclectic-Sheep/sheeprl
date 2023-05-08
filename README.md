@@ -59,43 +59,22 @@ The repository is structured as follows:
 ```bash
 fabricrl
 ├── algos
-│   ├── droq
-│   │   ├── args.py
-│   │   ├── droq.py
-│   │   ├── __init__.py
-│   │   └── loss.py
-│   ├── __init__.py
-│   ├── ppo
-│   │   ├── args.py
-│   │   ├── __init__.py
-│   │   ├── loss.py
-│   │   ├── ppo_decoupled.py
-│   │   ├── ppo.py
-│   │   └── utils.py
-│   ├── ppo_recurrent
-│   │   ├── agent.py
-│   │   ├── __init__.py
-│   │   ├── ppo_recurrent.py
-│   │   └── utils.py
-│   └── sac
+│   └──<algorithm>
+│       ├── __init__.py
+│       ├── <algorithm>.py
+│       ├── <algorithm>_decoupled.py
 │       ├── agent.py
 │       ├── args.py
-│       ├── __init__.py
 │       ├── loss.py
-│       ├── sac_decoupled.py
-│       ├── sac.py
+│       ├── ... (other files)
 │       └── utils.py
 ├── data
-│   ├── buffers.py
-│   └── __init__.py
+│   └── buffers.py
 ├── envs
-│   ├── __init__.py
 │   └── wrappers.py
-├── __init__.py
 ├── models
 │   └── models.py
 └── utils
-    ├── __init__.py
     ├── metric.py
     ├── model.py
     └── utils.py
@@ -103,7 +82,7 @@ fabricrl
 
   * `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and contains the following files:
     * `<algorithm>.py`: contains the implementation of the algorithm.
-    * <algorithm>_decoupled.py: contains the implementation of the decoupled version of the algorithm.
+    * `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm.
     * `agent`: optional, contains the implementation of the agent.
     * `args.py`: contains the arguments of the algorithm, with their default values and descriptions.
     * `loss.py`: contains the implementation of the loss functions of the algorithm.
