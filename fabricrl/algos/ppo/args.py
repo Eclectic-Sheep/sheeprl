@@ -29,4 +29,4 @@ class PPOArgs(StandardArgs):
     )
     ent_coef: float = Arg(default=0.0, help="coefficient of the entropy")
     vf_coef: float = Arg(default=1.0, help="coefficient of the value function")
-    max_grad_norm: float = Arg(default=0.5, help="the maximum norm for the gradient clipping")
+    max_grad_norm: float = Arg(default=0.0, help="the maximum norm for the gradient clipping")

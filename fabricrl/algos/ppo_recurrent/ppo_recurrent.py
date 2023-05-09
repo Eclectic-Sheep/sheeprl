@@ -76,7 +76,8 @@ def train(
 
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
-            fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+            if args.max_grad_norm > 0.0:
+                fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
             optimizer.step()
 
             # Update metrics

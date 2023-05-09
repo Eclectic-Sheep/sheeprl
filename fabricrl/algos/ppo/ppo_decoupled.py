@@ -366,8 +366,9 @@ def trainer(
 
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
-                    fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
-                    fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
+                    if args.max_grad_norm > 0.0:
+                        fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
+                        fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
                     optimizer.step()
 
                     # Update metrics
@@ -380,6 +381,7 @@ def trainer(
         aggregator.reset()
         if global_rank == 1:
             if args.anneal_lr:
+                scheduler.step()
                 metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
             else:
                 metrics["Info/learning_rate"] = args.lr
