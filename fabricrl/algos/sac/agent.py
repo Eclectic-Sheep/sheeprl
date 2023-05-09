@@ -127,8 +127,6 @@ class SACActor(nn.Module):
         # Log-prob of independent actions is the sum of the log-probs
         log_prob = log_prob.sum(-1, keepdim=True)
 
-        # Squash mean
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob
 
     def get_greedy_actions(self, obs: Tensor) -> Tensor:

@@ -341,8 +341,7 @@ def trainer(
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist,
-                        batch["actions"],
+                        dist.log_prob(batch["actions"]),
                         batch["logprobs"],
                         batch["advantages"],
                         args.clip_coef,
@@ -360,7 +359,7 @@ def trainer(
                     )
 
                     # Entropy loss
-                    ent_loss = entropy_loss(dist, args.loss_reduction)
+                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
 
                     # Equation (9) in the paper
                     loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
