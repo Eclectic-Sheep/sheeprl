@@ -17,39 +17,20 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.distributions import Categorical
-from torch.nn.modules import Conv2d, Flatten, ReLU
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
-from fabricrl.algos.ppo.loss import policy_loss, value_loss
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
-from fabricrl.models.models import MLP
+from fabricrl.models.models import MLP, NatureCNN
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor
 
 __all__ = ["main"]
-
-
-class CnnNet(torch.nn.Module):
-    def __init__(self, num_input_layers: int, features_length: int):
-        super().__init__()
-        self.conv1 = Conv2d(num_input_layers, 32, kernel_size=8, stride=4)
-        self.conv2 = Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc1 = torch.nn.Linear(7 * 7 * 64, features_length)
-        self.flatten = Flatten()
-        self.activation = ReLU()
-
-    def forward(self, x: torch.Tensor):
-        x = self.activation(self.conv1(x))
-        x = self.activation(self.conv2(x))
-        x = self.activation(self.conv3(x))
-        x = self.activation(self.fc1(self.flatten(x)))  # flatten but keep batch dimension
-        return x
 
 
 def make_env(
@@ -68,9 +49,8 @@ def make_env(
                 env = gym.wrappers.RecordVideo(
                     env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
                 )
-        env = AtariPreprocessing(env, scale_obs=True)
+        env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
         env = gym.wrappers.FrameStack(env, 4)
-
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         return env
@@ -83,7 +63,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+        root_dir=os.path.join("logs", "ppo_atari", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
     )
     logger.log_hyperparams(asdict(args))
 
@@ -102,18 +82,17 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    # import pdb; pdb.set_trace()
     # Create the actor and critic models
-    features_length = 512
-    feature_extractor = CnnNet(num_input_layers=4, features_length=features_length).to(device)
+    features_dim = 512
+    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim).to(device)
     actor = MLP(
-        input_dims=features_length,
+        input_dims=features_dim,
         output_dim=envs.single_action_space.n,
         hidden_sizes=(),
         activation=torch.nn.ReLU,
     ).to(device)
     critic = MLP(
-        input_dims=features_length,
+        input_dims=features_dim,
         output_dim=1,
         hidden_sizes=(),
         activation=torch.nn.ReLU,
@@ -298,15 +277,15 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Create the actor and critic models
-    features_length = 512
-    feature_extractor = CnnNet(num_input_layers=4, features_length=features_length).to(device)
+    features_dim = 512
+    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim)
     actor = MLP(
-        input_dims=features_length,
+        input_dims=features_dim,
         output_dim=envs.single_action_space.n,
         hidden_sizes=(),
         activation=torch.nn.ReLU,
     )
-    critic = MLP(input_dims=features_length, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
+    critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(
@@ -329,10 +308,15 @@ def trainer(
         )
 
     # Receive maximum number of updates from the player
-    update = 0
     num_updates = torch.zeros(1, device=device)
     world_collective.broadcast(num_updates, src=0)
     num_updates = num_updates.item()
+
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
     # Metrics
     with fabric.device:
@@ -357,11 +341,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
 
-        # Lerning rate annealing
-        if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.lr)
-        update += 1
-
+        # Prepare sampler
         indexes = list(range(data.shape[0]))
         if args.share_data:
             sampler = DistributedSampler(
@@ -369,7 +349,7 @@ def trainer(
             )
         else:
             sampler = RandomSampler(indexes)
-        sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=False)
 
         # The Join context is needed because there can be the possibility
         # that some ranks receive less data
@@ -381,26 +361,36 @@ def trainer(
                     batch = data[batch_idxes]
                     features = feature_extractor(batch["observations"])
                     actions_logits = actor(features)
-                    new_values = critic(features.detach())
+                    new_values = critic(features)
 
                     dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
                     # Policy loss
-                    # import pdb; pdb.set_trace()
                     pg_loss = policy_loss(
-                        dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef
+                        dist.log_prob(batch["actions"]),
+                        batch["logprobs"],
+                        batch["advantages"],
+                        args.clip_coef,
+                        args.loss_reduction,
                     )
 
                     # Value loss
-                    v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+                    v_loss = value_loss(
+                        new_values,
+                        batch["values"],
+                        batch["returns"],
+                        args.clip_coef,
+                        args.clip_vloss,
+                        args.loss_reduction,
+                    )
 
                     # Entropy loss
-                    entropy = dist.entropy().mean()
+                    entropy = entropy_loss(dist.entropy(), reduction=args.loss_reduction)
 
-                    # Equation (9) in the paper, changed sign since we minimize
-                    loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+                    # Equation (9) in the paper
+                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * entropy
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     fabric.clip_gradients(feature_extractor, optimizer, max_norm=args.max_grad_norm)
@@ -417,7 +407,10 @@ def trainer(
         metrics = aggregator.compute()
         aggregator.reset()
         if global_rank == 1:
-            metrics["Info/learning_rate"] = optimizer.param_groups[0]["lr"]
+            if args.anneal_lr:
+                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+            else:
+                metrics["Info/learning_rate"] = args.lr
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
