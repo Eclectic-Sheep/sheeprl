@@ -97,13 +97,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # Environment setup
     envs = SyncVectorEnv(
         [
-            make_env(
-                args.env_id,
-                args.seed + i,
-                0,
-                args.capture_video,
-                logger.log_dir,
-            )
+            make_env(args.env_id, args.seed + i, 0, args.capture_video, logger.log_dir, "train")
             for i in range(args.num_envs)
         ]
     )
@@ -134,6 +128,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
+    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, all_parameters)
 
     # Metrics
@@ -259,6 +254,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
+        all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, all_parameters)
 
         # Log metrics
@@ -317,6 +313,7 @@ def trainer(
 
     # Send weights to rank-0, a.k.a. the player
     if global_rank == 1:
+        all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
         player_trainer_collective.broadcast(
             torch.nn.utils.convert_parameters.parameters_to_vector(all_parameters),
             src=1,
@@ -418,6 +415,7 @@ def trainer(
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
+            all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(all_parameters),
                 src=1,
