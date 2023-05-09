@@ -145,6 +145,14 @@ class MLP(nn.Module):
 
 
 class NatureCNN(nn.Module):
+    """CNN from DQN Nature paper: Mnih, Volodymyr, et al. "Human-level control through deep reinforcement learning."
+    Nature 518.7540 (2015): 529-533.
+
+    Args:
+        in_channels (int): the input channels to the first convolutional layer
+        features_dim (int): the features dimension in output from the last convolutional layer
+    """
+
     def __init__(self, in_channels: int, features_dim: int):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
