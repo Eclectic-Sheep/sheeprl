@@ -25,7 +25,10 @@ def test(agent: RecurrentPPOAgent, fabric: Fabric, args: PPOArgs):
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).unsqueeze(0)
-    state = torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device)
+    state = (
+        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
+        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
+    )
     while not done:
         # Act greedly through the environment
         action, state = agent.get_greedy_action(next_obs, state)

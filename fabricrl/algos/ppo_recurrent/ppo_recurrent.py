@@ -40,12 +40,14 @@ def train(
     args: PPOArgs,
 ):
     for _ in range(args.update_epochs):
-        state = agent.initial_states
+        states = agent.initial_states
         seq_sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
         for seq_idxes_batch in seq_sampler:
             batch = data[seq_idxes_batch]
-            action_logits, new_values, state = agent(
-                batch["observations"], batch["dones"], state=tuple([s.detach() for s in state])
+            action_logits, new_values, states = agent(
+                batch["observations"],
+                batch["dones"],
+                state=tuple([tuple([s.detach() for s in state]) for state in states]),
             )
             dist = Categorical(logits=action_logits.unsqueeze(-2))
 
@@ -90,12 +92,6 @@ def main():
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
 
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-        name=run_name,
-    )
-
     # Initialize Fabric
     if not _is_using_cli():
         fabric = Fabric(devices=1)
@@ -112,7 +108,8 @@ def main():
     if rank == 0:
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         logger = TensorBoardLogger(
-            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+            root_dir=os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+            name=run_name,
         )
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(asdict(args))
@@ -178,7 +175,10 @@ def main():
         state = agent.initial_states
 
     for _ in range(1, num_updates + 1):
-        initial_states = (state[0].clone(), state[1].clone())
+        initial_states = (
+            tuple([s.clone() for s in agent.initial_states[0]]),
+            tuple([s.clone() for s in agent.initial_states[1]]),
+        )
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
