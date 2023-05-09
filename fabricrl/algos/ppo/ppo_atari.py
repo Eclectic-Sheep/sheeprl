@@ -349,7 +349,7 @@ def trainer(
             )
         else:
             sampler = RandomSampler(indexes)
-        sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=False)
+        sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
 
         # The Join context is needed because there can be the possibility
         # that some ranks receive less data
