@@ -162,7 +162,7 @@ def main():
     for update in range(1, num_updates + 1):
         # Learning rate annealing
         if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.learning_rate)
+            linear_annealing(optimizer, update, num_updates, args.lr)
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
         initial_states = (state[0].clone(), state[1].clone())

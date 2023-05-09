@@ -359,7 +359,7 @@ def trainer(
 
         # Lerning rate annealing
         if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.learning_rate)
+            linear_annealing(optimizer, update, num_updates, args.lr)
         update += 1
 
         indexes = list(range(data.shape[0]))
