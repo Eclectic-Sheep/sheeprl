@@ -23,7 +23,12 @@ Now you can use one of the already available algorithms, or create your own.
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1
+python main.py ppo --env-id CartPole-v1
+```
+
+One can check all the available algorithms with
+```bash
+python main.py --fabricrl_help
 ```
 ---
 
@@ -41,7 +46,7 @@ What you run is the PPO algorithm with the default configuration. But you can al
 
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num-envs` argument:
 ```bash
-python fabricrl/algos/ppo/ppo.py --env-id CartPole-v1 --num-envs 8
+python main.py ppo --env-id CartPole-v1 --num-envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder.
@@ -49,36 +54,13 @@ All the available arguments, with their descriptions, are listed in the `args.py
 ### Running with Lightning Fabric
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 fabricrl/algos/ppo/ppo.py --env-id CartPole-v1
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo --env-id CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
 ## :book: Repository structure
-The repository is structured as follows:
-```bash
-fabricrl
-├── algos
-│   └──<algorithm>
-│       ├── __init__.py
-│       ├── <algorithm>.py
-│       ├── <algorithm>_decoupled.py
-│       ├── agent.py
-│       ├── args.py
-│       ├── loss.py
-│       ├── ... (other files)
-│       └── utils.py
-├── data
-│   └── buffers.py
-├── envs
-│   └── wrappers.py
-├── models
-│   └── models.py
-└── utils
-    ├── metric.py
-    ├── model.py
-    └── utils.py
-```
+The repository is (possibly) structured as follows:
 
   * `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and contains the following files:
     * `<algorithm>.py`: contains the implementation of the algorithm.
@@ -99,7 +81,7 @@ In the coupled version of an algorithm, the agent interacts with the environment
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/fabric_coupled.png">
 </p>
 
-In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate throgh [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective) and thanks to Fabric's flexibility we can run Player and Trainers on different devices.
+In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
 
 <p align="center">
   <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/ppo_fabric_decoupled.png">
@@ -110,22 +92,22 @@ The algorithm is implemented in the `<algorithm>.py` file.
 
 There are 2 functions inside this script:
   * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
+  * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss and updates the parameters of the agent.
 
 #### Decoupled
 The decoupled version of an algorithm is implemented in the `<algorithm>_decoupled.py` file.
 
 There are 3 functions inside this script:
-  * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-  * `trainer()`: executes the training loop. It samples a batch of data from the buffer, compute the loss, and updates the parameters of the policy and value networks.
-  * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer.
+  * `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers and calls the `player()` and `trainer()` functions.
+  * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of iteractions with the environment, the player randomly splits the collected data in almost-equal chunks and send them separately to the trainers. It then waits for the trainers to finish the agent update.
+  * `trainer()`: executes the training loop. It receives a chunk of data from the player, compute the loss and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
 
 ## Algorithms implementation
-You can check inside the folder of each algorithm the `readme.md` file for the details about the implementation.
+You can check inside the folder of each algorithm the `README.md` file for the details about the implementation.
 
 All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related with the training loop of the algorithm. 
 
-For example, we decided to create a `models` folder with ready-made NN models that can be composed to create the NN model of the agent.
+For example, we decided to create a `models` folder with an already-made models that can be composed to create the model of the agent.
 
 For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized also for the decoupled or the recurrent version of the algorithm.
 

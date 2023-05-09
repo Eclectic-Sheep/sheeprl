@@ -21,7 +21,7 @@ from copy import copy
 from enum import Enum
 from inspect import isclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, NewType, Optional, Tuple, Union, get_type_hints
+from typing import Any, Callable, Dict, Iterable, List, NewType, Optional, Tuple, Union, get_type_hints, no_type_check
 
 import yaml
 
@@ -66,6 +66,7 @@ def make_choice_type_function(choices: list) -> Callable[[str], Any]:
     return lambda arg: str_to_choice.get(arg, arg)
 
 
+@no_type_check
 def Arg(
     *,
     aliases: Union[str, List[str]] = None,
@@ -81,7 +82,9 @@ def Arg(
     ```
     @dataclass
     class Args:
-        regular_arg: str = dataclasses.field(default="Huggingface", metadata={"aliases": ["--example", "-e"], "help": "This syntax could be better!"})
+        regular_arg: str = dataclasses.field(
+            default="Huggingface", metadata={"aliases": ["--example", "-e"], "help": "This syntax could be better!"}
+        )
         hf_arg: str = Arg(default="Huggingface", aliases=["--example", "-e"], help="What a nice syntax!")
     ```
 
@@ -103,7 +106,8 @@ def Arg(
         Field: A `dataclasses.Field` with the desired properties.
     """
     if metadata is None:
-        # Important, don't use as default param in function signature because dict is mutable and shared across function calls
+        # Important, don't use as default param in function signature
+        # because dict is mutable and shared across function calls
         metadata = {}
     if aliases is not None:
         metadata["aliases"] = aliases
@@ -113,6 +117,7 @@ def Arg(
     return dataclasses.field(metadata=metadata, default=default, default_factory=default_factory, **kwargs)
 
 
+@no_type_check
 class HfArgumentParser(ArgumentParser):
     """
     This subclass of `argparse.ArgumentParser` uses type hints on dataclasses to generate arguments.

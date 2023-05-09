@@ -8,6 +8,7 @@ import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
+from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
@@ -21,13 +22,13 @@ from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
-from fabricrl.algos.ppo.loss import policy_loss, value_loss
+from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env, test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor
 
 __all__ = ["main"]
 
@@ -62,7 +63,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported")
 
     # Create the actor and critic models
     actor = MLP(
@@ -226,9 +228,10 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         world_collective.broadcast_object_list([-1], src=0)
     else:
         world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
     envs.close()
     if fabric.is_global_zero:
-        test(actor, device, fabric.logger.experiment, args)
+        test(actor, fabric, args)
 
 
 def trainer(
@@ -278,10 +281,15 @@ def trainer(
         )
 
     # Receive maximum number of updates from the player
-    update = 0
     num_updates = torch.zeros(1, device=device)
     world_collective.broadcast(num_updates, src=0)
     num_updates = num_updates.item()
+
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
     # Metrics
     with fabric.device:
@@ -306,11 +314,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
 
-        # Lerning rate annealing
-        if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.lr)
-        update += 1
-
+        # Prepare sampler
         indexes = list(range(data.shape[0]))
         if args.share_data:
             sampler = DistributedSampler(
@@ -337,17 +341,28 @@ def trainer(
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef
+                        dist.log_prob(batch["actions"]),
+                        batch["logprobs"],
+                        batch["advantages"],
+                        args.clip_coef,
+                        args.loss_reduction,
                     )
 
                     # Value loss
-                    v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss)
+                    v_loss = value_loss(
+                        new_values,
+                        batch["values"],
+                        batch["returns"],
+                        args.clip_coef,
+                        args.clip_vloss,
+                        args.loss_reduction,
+                    )
 
                     # Entropy loss
-                    entropy = dist.entropy().mean()
+                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
 
-                    # Equation (9) in the paper, changed sign since we minimize
-                    loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+                    # Equation (9) in the paper
+                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
 
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
@@ -358,13 +373,16 @@ def trainer(
                     # Update metrics
                     aggregator.update("Loss/policy_loss", pg_loss.detach())
                     aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", entropy.detach())
+                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
         # Send updated weights to the player
         metrics = aggregator.compute()
         aggregator.reset()
         if global_rank == 1:
-            metrics["Info/learning_rate"] = optimizer.param_groups[0]["lr"]
+            if args.anneal_lr:
+                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+            else:
+                metrics["Info/learning_rate"] = args.lr
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
@@ -377,11 +395,10 @@ def trainer(
 
 
 def main():
-    devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices == "1":
+    if not _is_using_cli():
         raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "This script was launched without the Lightning CLI. Consider to launch the script with "
+            "`lightning run model --devices=2 main.py ...` to scale it with Fabric"
         )
 
     parser = HfArgumentParser(PPOArgs)
@@ -396,6 +413,12 @@ def main():
     world_collective.create_group()
     global_rank = world_collective.rank
 
+    if world_collective.world_size == 1:
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
     player_trainer_collective.create_group(ranks=[0, 1])
@@ -408,3 +431,7 @@ def main():
         player(args, world_collective, player_trainer_collective)
     else:
         trainer(args, world_collective, player_trainer_collective, optimization_pg)
+
+
+if __name__ == "__main__":
+    main()

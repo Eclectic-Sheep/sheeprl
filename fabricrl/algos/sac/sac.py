@@ -16,10 +16,11 @@ from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.sac.agent import Actor, Critic, SACAgent
+from fabricrl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from fabricrl.algos.sac.utils import test
@@ -43,7 +44,7 @@ def train(
     group: Optional[CollectibleGroup] = None,
 ):
     # Update the soft-critic
-    next_target_qf_value = agent.get_next_target_q_value(
+    next_target_qf_value = agent.get_next_target_q_values(
         data["next_observations"],
         data["rewards"],
         data["dones"],
@@ -61,7 +62,7 @@ def train(
         agent.qfs_target_ema()
 
     # Update the actor
-    actions, logprobs = agent.get_action_and_log_prob(data["observations"])
+    actions, logprobs = agent.get_actions_and_log_probs(data["observations"])
     qf_values = agent.get_q_values(data["observations"], actions)
     min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
     actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
@@ -119,9 +120,21 @@ def main():
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    actor = fabric.setup_module(Actor(envs))
-    critics = [fabric.setup_module(Critic(envs)) for _ in range(args.num_critics)]
-    target_entropy = -prod(envs.single_action_space.shape)
+    act_dim = prod(envs.single_action_space.shape)
+    obs_dim = prod(envs.single_observation_space.shape)
+    actor = fabric.setup_module(
+        SACActor(
+            observation_dim=obs_dim,
+            action_dim=act_dim,
+            action_low=envs.single_action_space.low,
+            action_high=envs.single_action_space.high,
+        )
+    )
+    critics = [
+        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
+        for _ in range(args.num_critics)
+    ]
+    target_entropy = -act_dim
     agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
 
     # Optimizers
@@ -157,7 +170,7 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+        obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
@@ -184,10 +197,10 @@ def main():
                     real_next_obs[idx] = final_obs
 
         with device:
-            next_obs = torch.tensor(real_next_obs)
-            actions = torch.tensor(actions).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()
-            dones = torch.tensor(dones).view(args.num_envs, -1).float()
+            real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
+            actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)
+            dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -197,31 +210,38 @@ def main():
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = next_obs
+        obs = real_next_obs
 
         # Train the agent
         if global_step > args.learning_starts:
-            for _ in range(args.gradient_steps):
-                local_data = rb.sample(args.batch_size // fabric.world_size)
-                gathered_data = fabric.all_gather(local_data.to_dict())
-                gathered_data = make_tensordict(gathered_data).view(-1)
-                if fabric.world_size > 1:
-                    sampler = DistributedSampler(
-                        range(len(gathered_data)),
-                        num_replicas=fabric.world_size,
-                        rank=fabric.global_rank,
-                        shuffle=True,
-                        seed=args.seed,
-                        drop_last=False,
-                    )
-                    gathered_data = gathered_data[next(iter(sampler))]
+            # We sample one time to reduce the communications between processes
+            sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)  # [G*B, 1]
+            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+            if fabric.world_size > 1:
+                dist_sampler: DistributedSampler = DistributedSampler(
+                    range(len(gathered_data)),
+                    num_replicas=fabric.world_size,
+                    rank=fabric.global_rank,
+                    shuffle=True,
+                    seed=args.seed,
+                    drop_last=False,
+                )
+                sampler: BatchSampler = BatchSampler(
+                    sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
+                )
+            else:
+                sampler = BatchSampler(
+                    sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
+                )
+            for batch_idxes in sampler:
                 train(
                     fabric,
                     agent,
                     actor_optimizer,
                     qf_optimizer,
                     alpha_optimizer,
-                    gathered_data,
+                    gathered_data[batch_idxes],
                     aggregator,
                     global_step,
                     args,
@@ -232,7 +252,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, device, fabric.logger.experiment, args)
+        test(actor.module, fabric, args)
 
 
 if __name__ == "__main__":

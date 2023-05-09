@@ -4,11 +4,11 @@ from lightning import Fabric
 
 from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.utils import make_env
-from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from fabricrl.algos.ppo_continuous.agent import PPOContinuousActor
 
 
 @torch.inference_mode()
-def test(agent: RecurrentPPOAgent, fabric: Fabric, args: PPOArgs):
+def test(actor: PPOContinuousActor, fabric: Fabric, args: PPOArgs):
     env = SyncVectorEnv(
         [
             make_env(
@@ -24,20 +24,16 @@ def test(agent: RecurrentPPOAgent, fabric: Fabric, args: PPOArgs):
     )
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).unsqueeze(0)
-    state = (
-        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
-        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
-    )
+    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device)
     while not done:
         # Act greedly through the environment
-        action, state = agent.get_greedy_action(next_obs, state)
+        action = actor.get_greedy_actions(next_obs)
 
         # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
         done = done or truncated
         cumulative_rew += reward.item()
-        next_obs = torch.tensor(next_obs, device=fabric.device).unsqueeze(0)
+        next_obs = torch.tensor(next_obs, device=fabric.device)
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()

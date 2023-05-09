@@ -14,14 +14,13 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.8,<3.10"
-lightning = "^2.0"
-torch = "^2.0"
-gymnasium = {extras = ["atari"], version = "^0.28.1"}
+lightning = { git = "https://github.com/Lightning-AI/lightning.git", rev = "master" }
+torch = ">=2.0"
+gymnasium = { extras = ["box2d"], version = "^0.28.1" }
 moviepy = "^1.0.3"
 tensordict = "^0.1.0"
-jsonargparse = "^4.20.1"
-fastapi = ">=0.80"
 tensorboard = "^2.12.2"
+python-dotenv = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
@@ -29,11 +28,12 @@ mypy = "^1.2.0"
 black = "^23.3.0"
 isort = "^5.12.0"
 autoflake = "^2.1.1"
+pytest = "^7.3.1"
+pytest-timeout = "^2.1.0"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
 
 [tool.ruff]
 line-length = 120
