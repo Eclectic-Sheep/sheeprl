@@ -26,7 +26,7 @@ def mock_env_and_destroy(devices):
 
 
 @pytest.mark.timeout(60)
-def test_sac(standard_args):
+def test_droq(standard_args):
     task = importlib.import_module("fabricrl.algos.droq.droq")
     args = standard_args + ["--per_rank_batch_size=16", "--buffer_size=64", "--learning_starts=4", "--gradient_steps=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -58,6 +58,16 @@ def test_ppo(standard_args):
 @pytest.mark.timeout(60)
 def test_ppo_continuous(standard_args):
     task = importlib.import_module("fabricrl.algos.ppo_continuous.ppo_continuous")
+    args = standard_args + ["--rollout_steps=32", "--per_rank_batch_size=16"]
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+
+@pytest.mark.timeout(60)
+def test_ppo_recurrent(standard_args):
+    task = importlib.import_module("fabricrl.algos.ppo_recurrent.ppo_recurrent")
     args = standard_args + ["--rollout_steps=32", "--per_rank_batch_size=16"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
