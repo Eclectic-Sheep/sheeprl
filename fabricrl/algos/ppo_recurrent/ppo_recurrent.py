@@ -93,11 +93,9 @@ def main():
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
 
     # Initialize Fabric
+    fabric = Fabric()
     if not _is_using_cli():
-        fabric = Fabric(devices=1)
         fabric.launch()
-    else:
-        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device

@@ -38,7 +38,7 @@ def train(
     args: PPOArgs,
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(data.batch_size[0]))
+    indexes = list(range(data.shape[0]))
     if args.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -100,11 +100,9 @@ def main():
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
+    fabric = Fabric()
     if not _is_using_cli():
-        fabric = Fabric(devices=1)
         fabric.launch()
-    else:
-        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
