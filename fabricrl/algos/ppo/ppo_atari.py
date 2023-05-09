@@ -17,7 +17,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.distributions import Categorical
-from torch.nn.modules import Conv2d, ReLU
+from torch.nn.modules import Conv2d, Flatten, ReLU
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
@@ -40,16 +40,15 @@ class CnnNet(torch.nn.Module):
         self.conv1 = Conv2d(num_input_layers, 32, kernel_size=8, stride=4)
         self.conv2 = Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc1 = torch.nn.Linear(7 * 7 * 64, 512)
-        self.fc2 = torch.nn.Linear(512, features_length)
+        self.fc1 = torch.nn.Linear(7 * 7 * 64, features_length)
+        self.flatten = Flatten()
         self.activation = ReLU()
 
     def forward(self, x: torch.Tensor):
         x = self.activation(self.conv1(x))
         x = self.activation(self.conv2(x))
         x = self.activation(self.conv3(x))
-        x = self.activation(self.fc1(x.view(x.size(0), -1)))  # flatten but keep batch dimension
-        x = self.fc2(x)
+        x = self.activation(self.fc1(self.flatten(x)))  # flatten but keep batch dimension
         return x
 
 
@@ -110,26 +109,30 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     actor = MLP(
         input_dims=features_length,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(),
         activation=torch.nn.ReLU,
     ).to(device)
     critic = MLP(
         input_dims=features_length,
         output_dim=1,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(),
         activation=torch.nn.ReLU,
     ).to(device)
 
-    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(all_parameters), device=device
+        torch.nn.utils.convert_parameters.parameters_to_vector(
+            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
+        ),
+        device=device,
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, all_parameters)
+    torch.nn.utils.convert_parameters.vector_to_parameters(
+        flattened_parameters,
+        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
+    )
 
     # Metrics
     with device:
@@ -254,8 +257,10 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
-        all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, all_parameters)
+        torch.nn.utils.convert_parameters.vector_to_parameters(
+            flattened_parameters,
+            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
+        )
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
@@ -304,8 +309,11 @@ def trainer(
     critic = MLP(input_dims=features_length, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
 
     # Define the agent and the optimizer and setup them with Fabric
-    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-    optimizer = Adam(all_parameters, lr=args.lr, eps=1e-4)
+    optimizer = Adam(
+        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
+        lr=args.lr,
+        eps=1e-4,
+    )
     feature_extractor = fabric.setup_module(feature_extractor)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
@@ -313,9 +321,10 @@ def trainer(
 
     # Send weights to rank-0, a.k.a. the player
     if global_rank == 1:
-        all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
         player_trainer_collective.broadcast(
-            torch.nn.utils.convert_parameters.parameters_to_vector(all_parameters),
+            torch.nn.utils.convert_parameters.parameters_to_vector(
+                list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
+            ),
             src=1,
         )
 
@@ -364,9 +373,7 @@ def trainer(
 
         # The Join context is needed because there can be the possibility
         # that some ranks receive less data
-        with Join(
-            [feature_extractor._forward_module, actor._forward_module, critic._forward_module]
-        ) if not args.share_data else nullcontext():
+        with Join([actor._forward_module, critic._forward_module]) if not args.share_data else nullcontext():
             for epoch in range(args.update_epochs):
                 if args.share_data:
                     sampler.sampler.set_epoch(epoch)
@@ -374,7 +381,7 @@ def trainer(
                     batch = data[batch_idxes]
                     features = feature_extractor(batch["observations"])
                     actions_logits = actor(features)
-                    new_values = critic(features)
+                    new_values = critic(features.detach())
 
                     dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
@@ -394,7 +401,6 @@ def trainer(
 
                     # Equation (9) in the paper, changed sign since we minimize
                     loss = -pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
-
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     fabric.clip_gradients(feature_extractor, optimizer, max_norm=args.max_grad_norm)
@@ -415,9 +421,10 @@ def trainer(
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
-            all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
             player_trainer_collective.broadcast(
-                torch.nn.utils.convert_parameters.parameters_to_vector(all_parameters),
+                torch.nn.utils.convert_parameters.parameters_to_vector(
+                    list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
+                ),
                 src=1,
             )
 
