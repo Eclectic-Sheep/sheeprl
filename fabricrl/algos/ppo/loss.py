@@ -1,12 +1,10 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torch.distributions import Distribution
 
 
 def policy_loss(
-    dist: Distribution,
-    actions: Tensor,
+    new_logprobs: Tensor,
     logprobs: Tensor,
     advantages: Tensor,
     clip_coef: float,
@@ -14,22 +12,19 @@ def policy_loss(
 ) -> Tensor:
     """Compute the policy loss for a batch of data, as described in equation (7) of the paper.
 
-        - Compute the logprobs using the updated model for the actions taken.
         - Compute the difference between the new and old logprobs.
         - Exponentiate it to find the ratio.
         - Use the ratio and advantages to compute the loss as per equation (7).
 
     Args:
-        dist (Distribution): the policy distribution.
-        actions (Tensor): the actions sampled.
-        logprobs (Tensor): the log-probs of the actions.
+        new_logprobs (Tensor): the log-probs of the new actions.
+        logprobs (Tensor): the log-probs of the sampled actions from the environment.
         advantages (Tensor): the advantages.
         clip_coef (float): the clipping coefficient.
 
     Returns:
         the policy loss
     """
-    new_logprobs = dist.log_prob(actions)
     logratio = new_logprobs - logprobs
     ratio = logratio.exp()
 
@@ -62,14 +57,14 @@ def value_loss(
     return F.mse_loss(values_pred, returns, reduction=reduction)
 
 
-def entropy_loss(dist: Distribution, reduction: str = "mean") -> Tensor:
-    entropy = -dist.entropy()
+def entropy_loss(entropy: Tensor, reduction: str = "mean") -> Tensor:
+    entropy_loss = -entropy
     reduction = reduction.lower()
     if reduction == "none":
-        return entropy
+        return entropy_loss
     elif reduction == "mean":
-        return entropy.mean()
+        return entropy_loss.mean()
     elif reduction == "sum":
-        return entropy.sum()
+        return entropy_loss.sum()
     else:
         raise ValueError(f"Unrecognized reduction: {reduction}")

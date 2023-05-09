@@ -56,7 +56,7 @@ def train(
         )
         sampler: BatchSampler = BatchSampler(sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False)
     else:
-        sampler = BatchSampler(sampler=range(len(gathered_data)), per_rank_=args.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False)
 
     # Update the soft-critic
     for batch_idxes in sampler:
@@ -119,11 +119,9 @@ def main():
     args: DROQArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
+    fabric = Fabric()
     if not _is_using_cli():
-        fabric = Fabric(devices=1)
         fabric.launch()
-    else:
-        fabric = Fabric()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -153,7 +151,8 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("only continuous action space is supported")
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -206,7 +205,7 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+        obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
@@ -233,10 +232,10 @@ def main():
                     real_next_obs[idx] = final_obs
 
         with device:
-            next_obs = torch.tensor(real_next_obs)
-            actions = torch.tensor(actions).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()  # [N_envs, 1]
-            dones = torch.tensor(dones).view(args.num_envs, -1).float()
+            real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
+            actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
+            dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -246,7 +245,7 @@ def main():
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = next_obs
+        obs = real_next_obs
 
         # Train the agent
         if global_step > args.learning_starts:

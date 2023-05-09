@@ -3,6 +3,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 
+import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
@@ -22,7 +23,7 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor
 
 __all__ = ["main"]
 
@@ -37,7 +38,7 @@ def train(
     args: PPOArgs,
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(data.batch_size[0]))
+    indexes = list(range(data.shape[0]))
     if args.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -64,7 +65,11 @@ def train(
 
             # Policy loss
             pg_loss = policy_loss(
-                dist, batch["actions"], batch["logprobs"], batch["advantages"], args.clip_coef, args.loss_reduction
+                dist.log_prob(batch["actions"]),
+                batch["logprobs"],
+                batch["advantages"],
+                args.clip_coef,
+                args.loss_reduction,
             )
 
             # Value loss
@@ -73,7 +78,7 @@ def train(
             )
 
             # Entropy loss
-            ent_loss = entropy_loss(dist, args.loss_reduction)
+            ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
 
             # Equation (9) in the paper
             loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -95,11 +100,9 @@ def main():
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
+    fabric = Fabric()
     if not _is_using_cli():
-        fabric = Fabric(devices=1)
         fabric.launch()
-    else:
-        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -110,7 +113,8 @@ def main():
     if rank == 0:
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         logger = TensorBoardLogger(
-            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+            name=run_name,
         )
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(asdict(args))
@@ -130,6 +134,8 @@ def main():
             for i in range(args.num_envs)
         ]
     )
+    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported")
 
     # Create the actor and critic models
     actor = MLP(
@@ -139,7 +145,10 @@ def main():
         activation=torch.nn.ReLU,
     )
     critic = MLP(
-        input_dims=envs.single_observation_space.shape, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU
+        input_dims=envs.single_observation_space.shape,
+        output_dim=1,
+        hidden_sizes=(64, 64),
+        activation=torch.nn.ReLU,
     )
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -171,17 +180,18 @@ def main():
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
     num_updates = args.total_steps // single_global_rollout
 
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
-        next_done = torch.zeros(args.num_envs, 1)  # [N_envs, 1]
+        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
+        next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
-    for update in range(1, num_updates + 1):
-        # Learning rate annealing
-        if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.lr)
-        fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-
+    for _ in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
@@ -243,9 +253,9 @@ def main():
                 args.gae_lambda,
             )
 
-        # Add returns and advantages to the buffer
-        rb["returns"] = returns.float()
-        rb["advantages"] = advantages.float()
+            # Add returns and advantages to the buffer
+            rb["returns"] = returns.float()
+            rb["advantages"] = advantages.float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
@@ -259,6 +269,13 @@ def main():
 
         # Train the agent
         train(fabric, actor, critic, optimizer, gathered_data, aggregator, args)
+
+        # Learning rate annealing
+        if args.anneal_lr:
+            scheduler.step()
+            fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
+        else:
+            fabric.log("Info/learning_rate", args.lr, global_step)
 
         # Log metrics
         metrics_dict = aggregator.compute()

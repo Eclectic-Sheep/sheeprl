@@ -28,7 +28,7 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, linear_annealing, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor
 
 __all__ = ["main"]
 
@@ -63,7 +63,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported")
 
     # Create the actor and critic models
     actor = MLP(
@@ -280,10 +281,15 @@ def trainer(
         )
 
     # Receive maximum number of updates from the player
-    update = 0
     num_updates = torch.zeros(1, device=device)
     world_collective.broadcast(num_updates, src=0)
     num_updates = num_updates.item()
+
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
     # Metrics
     with fabric.device:
@@ -308,11 +314,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
 
-        # Lerning rate annealing
-        if args.anneal_lr:
-            linear_annealing(optimizer, update, num_updates, args.lr)
-        update += 1
-
+        # Prepare sampler
         indexes = list(range(data.shape[0]))
         if args.share_data:
             sampler = DistributedSampler(
@@ -339,8 +341,7 @@ def trainer(
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist,
-                        batch["actions"],
+                        dist.log_prob(batch["actions"]),
                         batch["logprobs"],
                         batch["advantages"],
                         args.clip_coef,
@@ -358,7 +359,7 @@ def trainer(
                     )
 
                     # Entropy loss
-                    ent_loss = entropy_loss(dist, args.loss_reduction)
+                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
 
                     # Equation (9) in the paper
                     loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -378,7 +379,10 @@ def trainer(
         metrics = aggregator.compute()
         aggregator.reset()
         if global_rank == 1:
-            metrics["Info/learning_rate"] = optimizer.param_groups[0]["lr"]
+            if args.anneal_lr:
+                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+            else:
+                metrics["Info/learning_rate"] = args.lr
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1

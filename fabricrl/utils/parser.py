@@ -82,7 +82,9 @@ def Arg(
     ```
     @dataclass
     class Args:
-        regular_arg: str = dataclasses.field(default="Huggingface", metadata={"aliases": ["--example", "-e"], "help": "This syntax could be better!"})
+        regular_arg: str = dataclasses.field(
+            default="Huggingface", metadata={"aliases": ["--example", "-e"], "help": "This syntax could be better!"}
+        )
         hf_arg: str = Arg(default="Huggingface", aliases=["--example", "-e"], help="What a nice syntax!")
     ```
 
@@ -104,7 +106,8 @@ def Arg(
         Field: A `dataclasses.Field` with the desired properties.
     """
     if metadata is None:
-        # Important, don't use as default param in function signature because dict is mutable and shared across function calls
+        # Important, don't use as default param in function signature
+        # because dict is mutable and shared across function calls
         metadata = {}
     if aliases is not None:
         metadata["aliases"] = aliases

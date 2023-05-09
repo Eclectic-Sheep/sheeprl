@@ -37,7 +37,7 @@ class DROQCritic(nn.Module):
             dropout_args={"p": dropout} if dropout > 0 else None,
             norm_layer=nn.LayerNorm,
             activation=nn.ReLU,
-            flatten_input=False,
+            flatten_dim=None,
         )
 
     def forward(self, obs: Tensor, action: Tensor) -> Tensor:

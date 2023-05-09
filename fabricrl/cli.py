@@ -22,7 +22,7 @@ def run():
         )
 
 
-def register_command(command, name: Optional[str] = None):
+def register_command(command, task, name: Optional[str] = None):
     @run.command(
         name if name is not None else command.__name__,
         context_settings=dict(
@@ -33,7 +33,7 @@ def register_command(command, name: Optional[str] = None):
     @click.argument("cli_args", nargs=-1, type=click.UNPROCESSED)
     @functools.wraps(command)
     def wrapper(cli_args):
-        with patch("sys.argv", [name if name is not None else command.__name__] + list(cli_args)):
+        with patch("sys.argv", [task.__file__] + list(cli_args)):
             command()
 
 
@@ -41,6 +41,7 @@ tasks = {
     "droq": ["droq"],
     "sac": ["sac", "sac_decoupled"],
     "ppo": ["ppo", "ppo_decoupled"],
+    "ppo_continuous": ["ppo_continuous"],
     "ppo_recurrent": ["ppo_recurrent"],
 }
 
@@ -52,6 +53,6 @@ for module, algos in tasks.items():
 
             for command in task.__all__:
                 command = task.__dict__[command]
-                register_command(command, name=algo_name)
+                register_command(command, task, name=algo_name)
         except ImportError:
             pass

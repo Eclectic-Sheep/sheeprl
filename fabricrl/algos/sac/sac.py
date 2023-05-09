@@ -85,11 +85,9 @@ def main():
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
+    fabric = Fabric()
     if not _is_using_cli():
-        fabric = Fabric(devices=1)
         fabric.launch()
-    else:
-        fabric = Fabric()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -133,7 +131,7 @@ def main():
         )
     )
     critics = [
-        fabric.setup_module(SACCritic(observation_dims=obs_dim + act_dim, num_critics=1))
+        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim
@@ -172,7 +170,7 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+        obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
 
     for global_step in range(num_updates):
         # Sample an action given the observation received by the environment
@@ -199,10 +197,10 @@ def main():
                     real_next_obs[idx] = final_obs
 
         with device:
-            next_obs = torch.tensor(real_next_obs)
-            actions = torch.tensor(actions).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards).view(args.num_envs, -1).float()
-            dones = torch.tensor(dones).view(args.num_envs, -1).float()
+            real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
+            actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)
+            dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -212,7 +210,7 @@ def main():
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = next_obs
+        obs = real_next_obs
 
         # Train the agent
         if global_step > args.learning_starts:

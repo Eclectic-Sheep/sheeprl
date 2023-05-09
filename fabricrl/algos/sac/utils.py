@@ -13,7 +13,7 @@ def test(actor: SACActor, fabric: Fabric, args: SACArgs):
     )()
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device)
+    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device, dtype=torch.float32)
     while not done:
         # Act greedly through the environment
         action = actor.get_greedy_actions(next_obs)
@@ -22,7 +22,7 @@ def test(actor: SACActor, fabric: Fabric, args: SACArgs):
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy())
         done = done or truncated
         cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=fabric.device)
+        next_obs = torch.tensor(next_obs, device=fabric.device, dtype=torch.float32)
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
