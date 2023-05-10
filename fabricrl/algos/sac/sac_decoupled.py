@@ -93,13 +93,14 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
     # Local data
-    rb = ReplayBuffer(args.buffer_size // args.num_envs, args.num_envs, device=device)
+    buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     start_time = time.time()
     num_updates = int(args.total_steps // args.num_envs) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // args.num_envs
+    args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
     with device:
         # Get the first environment observation and start the optimization

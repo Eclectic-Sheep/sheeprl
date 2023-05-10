@@ -158,13 +158,14 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.buffer_size // int(args.num_envs * fabric.world_size), args.num_envs, device=device)
+    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     start_time = time.time()
     num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
+    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
     with device:
         # Get the first environment observation and start the optimization
