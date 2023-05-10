@@ -44,12 +44,16 @@ tensorboard --logdir logs
 ### :nerd_face: More about running an algorithm
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
 
-For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `_` argument:
+For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 ```bash
 fabricrl ppo --env_id CartPole-v1 --num_envs 8
 ```
 
-All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder.
+All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:
+
+```bash
+fabricrl ppo -h
+```
 
 ### Running with Lightning Fabric
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:

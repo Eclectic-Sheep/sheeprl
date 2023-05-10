@@ -47,6 +47,10 @@ def register_command(command, task, name: Optional[str] = None):
                 ] + sys_argv_mock
                 torchrun.main(torchrun_args)
             else:
+                if not _is_using_cli():
+                    devices = os.environ.get("LT_DEVICES")
+                    if devices is None:
+                        os.environ["LT_DEVICES"] = "1"
                 command()
 
 
