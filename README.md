@@ -97,6 +97,7 @@ In the decoupled version, a process is responsible only for interacting with the
 The algorithm is implemented in the `<algorithm>.py` file. 
 
 There are 2 functions inside this script:
+
   * `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
   * `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss and updates the parameters of the agent.
 
@@ -104,6 +105,7 @@ There are 2 functions inside this script:
 The decoupled version of an algorithm is implemented in the `<algorithm>_decoupled.py` file.
 
 There are 3 functions inside this script:
+
   * `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers and calls the `player()` and `trainer()` functions.
   * `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of iteractions with the environment, the player randomly splits the collected data in almost-equal chunks and send them separately to the trainers. It then waits for the trainers to finish the agent update.
   * `trainer()`: executes the training loop. It receives a chunk of data from the player, compute the loss and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
