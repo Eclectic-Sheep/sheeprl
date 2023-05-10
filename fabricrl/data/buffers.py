@@ -85,7 +85,7 @@ class ReplayBuffer:
             )
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if next_pos < self._pos or (self._pos + data_len > self._buffer_size and self._pos == 0):
+        if next_pos < self._pos or (self._pos + data_len >= self._buffer_size and self._pos == 0):
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
             )
@@ -114,16 +114,23 @@ class ReplayBuffer:
         """
         if batch_size <= 0:
             raise ValueError("Batch size must be greater than 0")
+        if not self._full and self._pos == 0:
+            raise ValueError(
+                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+            )
         if self._full and batch_size > self._buf.shape[0]:
             raise ValueError(f"Batch size {batch_size} is larger than the replay buffer size ({self._buf.shape[0]})")
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
         if self._full:
-            batch_idxes = (
-                torch.randint(1, self._buffer_size, size=(batch_size,), device=self.device) + self._pos
-            ) % self._buffer_size
+            if sample_next_obs:
+                batch_idxes = (
+                    torch.randint(1, self._buffer_size, size=(batch_size,), device=self.device) + self._pos
+                ) % self._buffer_size
+            else:
+                batch_idxes = torch.randint(0, self._buffer_size, size=(batch_size,), device=self.device)
         else:
-            batch_idxes = torch.randint(0, self._pos - 1, size=(batch_size,), device=self.device)
+            batch_idxes = torch.randint(0, self._pos, size=(batch_size,), device=self.device)
         sample = self._get_samples(batch_idxes, sample_next_obs=sample_next_obs).unsqueeze(-1)
         if clone:
             return sample.clone()
