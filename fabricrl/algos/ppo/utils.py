@@ -15,7 +15,7 @@ from fabricrl.envs.wrappers import MaskVelocityWrapper
 
 @torch.no_grad()
 def test(actor: nn.Module, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
-    actor.train(False)
+    actor.eval()
     done = False
     cumulative_rew = 0
     env = envs.envs[0]

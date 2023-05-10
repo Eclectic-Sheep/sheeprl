@@ -8,7 +8,7 @@ from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 
 @torch.no_grad()
 def test(agent: RecurrentPPOAgent, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
-    agent.train(False)
+    agent.eval()
     done = False
     cumulative_rew = 0
     env = envs.envs[0]

@@ -9,7 +9,7 @@ from fabricrl.algos.sac.args import SACArgs
 
 @torch.no_grad()
 def test(actor: SACActor, envs: SyncVectorEnv, fabric: Fabric, args: SACArgs):
-    actor.train(False)
+    actor.eval()
     done = False
     cumulative_rew = 0
     env = envs.envs[0]

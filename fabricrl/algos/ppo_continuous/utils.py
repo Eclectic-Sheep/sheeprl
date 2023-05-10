@@ -8,7 +8,7 @@ from fabricrl.algos.ppo_continuous.agent import PPOContinuousActor
 
 @torch.no_grad()
 def test(actor: PPOContinuousActor, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
-    actor.train(False)
+    actor.eval()
     done = False
     cumulative_rew = 0
     env = envs.envs[0]
