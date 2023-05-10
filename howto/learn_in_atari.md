@@ -5,6 +5,16 @@ In this section, we will learn how to train an agent using a CNN model on Atari 
 
 The code for this section is available in `algos/ppo/ppo_atari.py`.
 
+## Install Atari environments
+First we should install the Atari environments with:
+
+```bash
+pip install gymnasium[atari]
+pip install gymnasium[accept-rom-license]
+```
+
+For more information: https://gymnasium.farama.org/environments/atari/ 
+
 ## Step by step
 We start from `ppo_decoupled.py` and copy its code in the new `ppo_atari.py` file.
 
