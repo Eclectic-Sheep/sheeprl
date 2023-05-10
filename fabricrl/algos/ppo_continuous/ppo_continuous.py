@@ -166,7 +166,7 @@ def main():
     global_step = 0
     start_time = time.time()
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
-    num_updates = args.total_steps // single_global_rollout
+    num_updates = args.total_steps // single_global_rollout if not args.dry_run else 1
 
     # Linear learning rate scheduler
     if args.anneal_lr:
@@ -183,7 +183,7 @@ def main():
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
-            with torch.inference_mode():
+            with torch.no_grad():
                 # Sample an action given the observation received by the environment
                 action, logprob, _ = actor.module(next_obs)
 
@@ -225,7 +225,7 @@ def main():
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.inference_mode():
+        with torch.no_grad():
             next_values = critic(next_obs)
             returns, advantages = gae(
                 rb["rewards"],
@@ -270,7 +270,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, fabric, args)
+        test(actor.module, envs, fabric, args)
 
 
 if __name__ == "__main__":

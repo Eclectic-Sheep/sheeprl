@@ -9,6 +9,7 @@ import torch
 from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning.fabric import Fabric
+from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
@@ -23,7 +24,7 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env, test
+from fabricrl.algos.ppo.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP, NatureCNN
 from fabricrl.utils.metric import MetricAggregator
@@ -58,7 +59,7 @@ def make_env(
     return thunk
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
@@ -131,7 +132,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     global_step = 0
     start_time = time.time()
     single_global_step = int(args.num_envs * args.rollout_steps)
-    num_updates = args.total_steps // single_global_step
+    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
     if not args.share_data:
         if single_global_step < world_collective.world_size - 1:
             raise RuntimeError(
@@ -153,6 +154,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
         next_done = torch.zeros(args.num_envs, 1).to(device)
+
     for _ in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs
@@ -253,7 +255,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
-        test(torch.nn.Sequential(feature_extractor, actor), fabric, args)
+        test(torch.nn.Sequential(feature_extractor, actor), envs, fabric, args)
 
 
 def trainer(
@@ -268,6 +270,8 @@ def trainer(
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    if not _is_using_cli():
+        fabric.launch()
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -456,3 +460,7 @@ def main():
         player(args, world_collective, player_trainer_collective)
     else:
         trainer(args, world_collective, player_trainer_collective, optimization_pg)
+
+
+if __name__ == "__main__":
+    main()

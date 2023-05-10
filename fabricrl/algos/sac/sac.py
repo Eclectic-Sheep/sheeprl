@@ -163,18 +163,16 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size))
+    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size)
-    if args.learning_starts <= 1:
-        args.learning_starts = 2
 
     with device:
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
 
-    for global_step in range(num_updates):
+    for global_step in range(1, num_updates + 1):
         # Sample an action given the observation received by the environment
-        with torch.inference_mode():
+        with torch.no_grad():
             actions, _ = actor.module(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
@@ -252,7 +250,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, fabric, args)
+        test(actor.module, envs, fabric, args)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ from fabricrl.utils.utils import gae, normalize_tensor
 __all__ = ["main"]
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
@@ -110,7 +110,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     global_step = 0
     start_time = time.time()
     single_global_step = int(args.num_envs * args.rollout_steps)
-    num_updates = args.total_steps // single_global_step
+    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
     if not args.share_data:
         if single_global_step < world_collective.world_size - 1:
             raise RuntimeError(
@@ -231,7 +231,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor, fabric, args)
+        test(actor, envs, fabric, args)
 
 
 def trainer(
@@ -246,6 +246,8 @@ def trainer(
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    if not _is_using_cli():
+        fabric.launch()
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -397,12 +399,6 @@ def trainer(
 
 
 def main():
-    if not _is_using_cli():
-        raise RuntimeError(
-            "This script was launched without the Lightning CLI. Consider to launch the script with "
-            "`lightning run model --devices=2 main.py ...` to scale it with Fabric"
-        )
-
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
