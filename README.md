@@ -7,7 +7,7 @@ We want to provide a framework for RL algorithms that is at the same time simple
 Moreover, in many RL repositories, the RL algorithm is tightly coupled with the environment, making it harder to extend them beyond the gym interface. We want to provide a framework that allows to easily decouple the RL algorithm from the environment, so that it can be used with any environment. 
 
 ## How to use
-Clone the repo.
+First, clone the repo with:
 
 ```bash
 git clone <http-url>
