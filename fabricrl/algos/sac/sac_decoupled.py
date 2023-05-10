@@ -31,7 +31,7 @@ from fabricrl.utils.parser import HfArgumentParser
 __all__ = ["main"]
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
@@ -93,23 +93,22 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
     # Local data
-    rb = ReplayBuffer(args.buffer_size // args.num_envs, args.num_envs, device=device)
+    buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     start_time = time.time()
-    num_updates = int(args.total_steps // args.num_envs)
-    args.learning_starts = args.learning_starts // args.num_envs
-    if args.learning_starts <= 1:
-        args.learning_starts = 2
+    num_updates = int(args.total_steps // args.num_envs) if not args.dry_run else 1
+    args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
     with device:
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
-    for global_step in range(num_updates):
+    for global_step in range(1, num_updates + 1):
         # Sample an action given the observation received by the environment
-        with torch.inference_mode():
+        with torch.no_grad():
             actions, _ = actor(obs)
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
@@ -172,7 +171,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
-        test(actor, fabric, args)
+        test(actor, envs, fabric, args)
 
 
 def trainer(
@@ -185,7 +184,9 @@ def trainer(
     global_rank - 1
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))  # accelerator="cuda" if args.cuda else "cpu"
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    if not _is_using_cli():
+        fabric.launch()
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -274,12 +275,6 @@ def trainer(
 
 
 def main():
-    if not _is_using_cli():
-        raise RuntimeError(
-            "This script was launched without the Lightning CLI. Consider to launch the script with "
-            "`lightning run model --devices=2 main.py ...` to scale it with Fabric"
-        )
-
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 

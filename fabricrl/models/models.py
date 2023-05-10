@@ -4,6 +4,7 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 from math import prod
 from typing import Optional, Sequence, Type, Union, no_type_check
 
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from fabricrl.utils.model import ArgsType, ModuleType, miniblock
@@ -141,3 +142,27 @@ class MLP(nn.Module):
         if self.flatten_dim is not None:
             obs = obs.flatten(self.flatten_dim)
         return self.model(obs)
+
+
+class NatureCNN(nn.Module):
+    """CNN from DQN Nature paper: Mnih, Volodymyr, et al. "Human-level control through deep reinforcement learning."
+    Nature 518.7540 (2015): 529-533.
+
+    Args:
+        in_channels (int): the input channels to the first convolutional layer
+        features_dim (int): the features dimension in output from the last convolutional layer
+    """
+
+    def __init__(self, in_channels: int, features_dim: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.fc = nn.Linear(7 * 7 * 64, features_dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc(x.flatten(1)))
+        return x

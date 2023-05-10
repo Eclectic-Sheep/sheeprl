@@ -2,6 +2,7 @@
 
 import functools
 import importlib
+import os
 import warnings
 from typing import Optional
 from unittest.mock import patch
@@ -33,17 +34,31 @@ def register_command(command, task, name: Optional[str] = None):
     @click.argument("cli_args", nargs=-1, type=click.UNPROCESSED)
     @functools.wraps(command)
     def wrapper(cli_args):
-        with patch("sys.argv", [task.__file__] + list(cli_args)):
-            command()
+        with patch("sys.argv", [task.__file__] + list(cli_args)) as sys_argv_mock:
+            if name in decoupled_tasks and not _is_using_cli():
+                import torch.distributed.run as torchrun
+
+                devices = os.environ.get("LT_DEVICES")
+                nproc_per_node = "2" if devices is None else devices
+                torchrun_args = [
+                    f"--nproc_per_node={nproc_per_node}",
+                    "--nnodes=1",
+                    "--standalone",
+                ] + sys_argv_mock
+                torchrun.main(torchrun_args)
+            else:
+                command()
 
 
 tasks = {
     "droq": ["droq"],
     "sac": ["sac", "sac_decoupled"],
-    "ppo": ["ppo", "ppo_decoupled"],
+    "ppo": ["ppo", "ppo_atari", "ppo_decoupled"],
     "ppo_continuous": ["ppo_continuous"],
     "ppo_recurrent": ["ppo_recurrent"],
 }
+
+decoupled_tasks = ["sac_decoupled", "ppo_decoupled", "ppo_atari"]
 
 for module, algos in tasks.items():
     for algo in algos:

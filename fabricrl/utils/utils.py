@@ -58,7 +58,7 @@ def get_obs_shape(
         raise NotImplementedError(f"{observation_space} observation space is not supported")
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def gae(
     rewards: Tensor,
     values: Tensor,

@@ -12,10 +12,13 @@ keywords = ["reinforcement", "machine", "learning", "research"]
 license = "MIT"
 readme = "README.md"
 
+[tool.poetry.scripts]
+fabricrl = 'fabricrl.cli:run'
+
 [tool.poetry.dependencies]
 python = ">=3.8,<3.10"
 lightning = { git = "https://github.com/Lightning-AI/lightning.git", rev = "master" }
-torch = ">=2.0"
+torch = "^2.0"
 gymnasium = { extras = ["box2d"], version = "^0.28.1" }
 moviepy = "^1.0.3"
 tensordict = "^0.1.0"

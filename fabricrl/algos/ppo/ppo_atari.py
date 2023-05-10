@@ -7,6 +7,7 @@ from datetime import datetime
 import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
+from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -23,9 +24,9 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env, test
+from fabricrl.algos.ppo.utils import test
 from fabricrl.data import ReplayBuffer
-from fabricrl.models.models import MLP
+from fabricrl.models.models import MLP, NatureCNN
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
 from fabricrl.utils.utils import gae, normalize_tensor
@@ -33,12 +34,37 @@ from fabricrl.utils.utils import gae, normalize_tensor
 __all__ = ["main"]
 
 
+def make_env(
+    env_id,
+    seed,
+    idx,
+    capture_video,
+    run_name,
+    prefix: str = "",
+):
+    def thunk():
+        env = gym.make(env_id, render_mode="rgb_array")
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if capture_video:
+            if idx == 0:
+                env = gym.wrappers.RecordVideo(
+                    env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
+                )
+        env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
+        env = gym.wrappers.FrameStack(env, 4)
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
+        return env
+
+    return thunk
+
+
 @torch.no_grad()
 def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+        root_dir=os.path.join("logs", "ppo_atari", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
     )
     logger.log_hyperparams(asdict(args))
 
@@ -51,37 +77,32 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # Environment setup
     envs = SyncVectorEnv(
         [
-            make_env(
-                args.env_id,
-                args.seed + i,
-                0,
-                args.capture_video,
-                logger.log_dir,
-                "train",
-                mask_velocities=args.mask_vel,
-            )
+            make_env(args.env_id, args.seed + i, 0, args.capture_video, logger.log_dir, "train")
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Create the actor and critic models
+    features_dim = 512
+    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim).to(device)
     actor = MLP(
-        input_dims=envs.single_observation_space.shape,
+        input_dims=features_dim,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(),
         activation=torch.nn.ReLU,
     ).to(device)
     critic = MLP(
-        input_dims=envs.single_observation_space.shape,
+        input_dims=features_dim,
         output_dim=1,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(),
         activation=torch.nn.ReLU,
     ).to(device)
 
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(list(actor.parameters()) + list(critic.parameters())),
+        torch.nn.utils.convert_parameters.parameters_to_vector(
+            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
+        ),
         device=device,
     )
 
@@ -89,7 +110,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
     torch.nn.utils.convert_parameters.vector_to_parameters(
-        flattened_parameters, list(actor.parameters()) + list(critic.parameters())
+        flattened_parameters,
+        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
     )
 
     # Metrics
@@ -138,13 +160,14 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment
-            actions_logits = actor(next_obs)
+            features = feature_extractor(next_obs)
+            actions_logits = actor(features)
             dist = Categorical(logits=actions_logits.unsqueeze(-2))
             action = dist.sample()
             logprob = dist.log_prob(action)
 
             # Compute the value of the current observation
-            value = critic(next_obs)
+            value = critic(features)
 
             # Store the current step data
             step_data["dones"] = next_done
@@ -178,7 +201,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             rb.add(step_data.unsqueeze(0))
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        next_values = critic(next_obs)
+        next_features = feature_extractor(next_obs)
+        next_values = critic(next_features)
         returns, advantages = gae(
             rb["rewards"],
             rb["values"],
@@ -215,7 +239,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(
-            flattened_parameters, list(actor.parameters()) + list(critic.parameters())
+            flattened_parameters,
+            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
         )
 
         # Log metrics
@@ -228,10 +253,9 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         world_collective.broadcast_object_list([-1], src=0)
     else:
         world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
-
     envs.close()
     if fabric.is_global_zero:
-        test(actor, envs, fabric, args)
+        test(torch.nn.Sequential(feature_extractor, actor), envs, fabric, args)
 
 
 def trainer(
@@ -253,22 +277,27 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
+    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Create the actor and critic models
+    features_dim = 512
+    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim)
     actor = MLP(
-        input_dims=envs.single_observation_space.shape,
+        input_dims=features_dim,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(),
         activation=torch.nn.ReLU,
     )
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU
-    )
+    critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
+    optimizer = Adam(
+        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
+        lr=args.lr,
+        eps=1e-4,
+    )
+    feature_extractor = fabric.setup_module(feature_extractor)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -277,7 +306,7 @@ def trainer(
     if global_rank == 1:
         player_trainer_collective.broadcast(
             torch.nn.utils.convert_parameters.parameters_to_vector(
-                list(actor.parameters()) + list(critic.parameters())
+                list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
             ),
             src=1,
         )
@@ -334,8 +363,9 @@ def trainer(
                     sampler.sampler.set_epoch(epoch)
                 for batch_idxes in sampler:
                     batch = data[batch_idxes]
-                    actions_logits = actor(batch["observations"])
-                    new_values = critic(batch["observations"])
+                    features = feature_extractor(batch["observations"])
+                    actions_logits = actor(features)
+                    new_values = critic(features)
 
                     dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
@@ -361,14 +391,14 @@ def trainer(
                     )
 
                     # Entropy loss
-                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
+                    entropy = entropy_loss(dist.entropy(), reduction=args.loss_reduction)
 
                     # Equation (9) in the paper
-                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
-
+                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * entropy
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     if args.max_grad_norm > 0.0:
+                        fabric.clip_gradients(feature_extractor, optimizer, max_norm=args.max_grad_norm)
                         fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
                         fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
                     optimizer.step()
@@ -376,7 +406,7 @@ def trainer(
                     # Update metrics
                     aggregator.update("Loss/policy_loss", pg_loss.detach())
                     aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                    aggregator.update("Loss/entropy_loss", entropy.detach())
 
         # Send updated weights to the player
         metrics = aggregator.compute()
@@ -392,13 +422,20 @@ def trainer(
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(
-                    list(actor.parameters()) + list(critic.parameters())
+                    list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
                 ),
                 src=1,
             )
 
 
 def main():
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices == "1":
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
@@ -410,12 +447,6 @@ def main():
     # collected experiences with the trainers
     world_collective.create_group()
     global_rank = world_collective.rank
-
-    if world_collective.world_size == 1:
-        raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
-        )
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
