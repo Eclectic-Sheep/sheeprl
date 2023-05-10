@@ -23,12 +23,12 @@ Now you can use one of the already available algorithms, or create your own.
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-python main.py ppo --env-id CartPole-v1
+fabricrl ppo --env_id CartPole-v1
 ```
 
 One can check all the available algorithms with
 ```bash
-python main.py --fabricrl_help
+fabricrl --fabricrl_help
 ```
 ---
 
@@ -44,9 +44,9 @@ tensorboard --logdir logs
 ### :nerd_face: More about running an algorithm
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
 
-For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num-envs` argument:
+For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `_` argument:
 ```bash
-python main.py ppo --env-id CartPole-v1 --num-envs 8
+fabricrl ppo --env_id CartPole-v1 --num_envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder.
@@ -54,7 +54,7 @@ All the available arguments, with their descriptions, are listed in the `args.py
 ### Running with Lightning Fabric
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo --env-id CartPole-v1
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 fabricrl ppo --env_id CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
