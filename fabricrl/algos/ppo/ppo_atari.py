@@ -27,9 +27,16 @@ from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP, NatureCNN
+from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
 from fabricrl.utils.utils import gae, normalize_tensor
+
+if not _IS_ATARI_AVAILABLE:
+    raise ModuleNotFoundError(str(_IS_ATARI_AVAILABLE))
+
+if not _IS_ATARI_ROMS_AVAILABLE:
+    raise ModuleNotFoundError(str(_IS_ATARI_ROMS_AVAILABLE))
 
 __all__ = ["main"]
 

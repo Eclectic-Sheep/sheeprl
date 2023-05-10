@@ -4,9 +4,10 @@ import sys
 from contextlib import nullcontext
 from unittest import mock
 
-import gymnasium
 import pytest
 import torch.distributed as dist
+
+from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 
 
 @pytest.fixture(params=["1", "2"])
@@ -112,7 +113,7 @@ def test_ppo_decoupled(standard_args):
 
 @pytest.mark.timeout(60)
 @pytest.mark.skipif(
-    "BreakoutNoFrameskip-v4" not in gymnasium.registry,
+    not (_IS_ATARI_AVAILABLE and _IS_ATARI_ROMS_AVAILABLE),
     reason="requires Atari games to be installed. "
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
