@@ -13,49 +13,48 @@ We decide to add a `feature_extractor` model that takes in input the observation
 We also need to define a `forward` method that takes in input the observations and returns the feature vector.
 
 ```python
-import torch.nn
-from torch.nn.modules import Conv2d, ReLU
+import torch.nn.functional as F
+from torch import Tensor, nn
 
 
-class CnnNet(torch.nn.Module):
-    def __init__(self, num_input_layers: int, features_length: int):
+class NatureCNN(nn.Module):
+    def __init__(self, in_channels: int, features_dim: int):
         super().__init__()
-        self.conv1 = Conv2d(num_input_layers, 32, kernel_size=8, stride=4)
-        self.conv2 = Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc1 = torch.nn.Linear(7 * 7 * 64, 512)
-        self.fc2 = torch.nn.Linear(512, features_length)
-        self.activation = ReLU()
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.fc1 = nn.Linear(7 * 7 * 64, 512)
+        self.fc2 = nn.Linear(512, features_dim)
 
-    def forward(self, x: torch.Tensor):
-        x = self.activation(self.conv1(x))
-        x = self.activation(self.conv2(x))
-        x = self.activation(self.conv3(x))
-        x = self.activation(self.fc1(x.view(x.size(0), -1)))  # flatten but keep batch dimension 
+    def forward(self, x: Tensor):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc1(x.flatten(1)))  # flatten but keep batch dimension 
         x = self.fc2(x)
         return x
 ```
 
-The output of the `feature_extractor` is then fed to the `actor` and `critic` models. This happens bot in the `player` and in the `trainer` functions.
+The output of the `feature_extractor` is then fed to the `actor` and `critic` models. This happens both in the `player` and in the `trainer` functions.
 
 ```diff
-+features_length = 512
-+feature_extractor = CnnNet(num_input_layers=envs.single_observation_space.shape[0], features_length=features_length).to(device)
++features_dim = 512
++feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim)  # '4' is the number of skipped frames by default by the AtariPreprocessing wrapper
 
 actor = MLP(
-- 			input_dims=envs.single_observation_space.shape[0],
-+        input_dims=features_length,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
-        activation=torch.nn.ReLU,
-    ).to(device)
-    critic = MLP(
-- 			input_dims=envs.single_observation_space.shape[0],
-+        input_dims=features_length,
-        output_dim=1,
-        hidden_sizes=(64, 64),
-        activation=torch.nn.ReLU,
-    ).to(device)
+- 	input_dims=envs.single_observation_space.shape[0],
++   input_dims=features_dim,
+    output_dim=envs.single_action_space.n,
+    hidden_sizes=(64, 64),
+    activation=torch.nn.ReLU,
+).to(device)
+critic = MLP(
+- 	input_dims=envs.single_observation_space.shape[0],
++   input_dims=features_dim,
+    output_dim=1,
+    hidden_sizes=(64, 64),
+    activation=torch.nn.ReLU,
+).to(device)
 ```
 
 We need to remember to add these parameters to the list of parameters to be optimized and shared by Fabric.
@@ -69,12 +68,40 @@ We need to remember to add these parameters to the list of parameters to be opti
     )
 ```
 
+The last thing to remember is to correctly pre-process the observation coming from the environment, pratically redefining the `make_env` function, wrapping the environment with the `gymnasium.wrappers.atari_preprocess.AtariPreprocess` wrapper:
+
+```python
+def make_env(
+    env_id,
+    seed,
+    idx,
+    capture_video,
+    run_name,
+    prefix: str = "",
+):
+    def thunk():
+        env = gym.make(env_id, render_mode="rgb_array")
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if capture_video:
+            if idx == 0:
+                env = gym.wrappers.RecordVideo(
+                    env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
+                )
+        env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
+        env = gym.wrappers.FrameStack(env, 4)
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
+        return env
+
+    return thunk
+```
+
 Once this is done, we are all set.
 
 We can train the model by running:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id Pong-v4
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v0
 ```
 
 :warning: **Note**: remember to install the Atari environments by running 
