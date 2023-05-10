@@ -4,6 +4,7 @@ import sys
 from contextlib import nullcontext
 from unittest import mock
 
+import gymnasium
 import pytest
 import torch.distributed as dist
 
@@ -110,6 +111,11 @@ def test_ppo_decoupled(standard_args):
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    "BreakoutNoFrameskip-v4" not in gymnasium.registry,
+    reason="requires Atari games to be installed. "
+    "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
+)
 def test_ppo_atari(standard_args):
     task = importlib.import_module("fabricrl.algos.ppo.ppo_atari")
     args = standard_args + [
