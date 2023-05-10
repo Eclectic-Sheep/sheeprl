@@ -60,15 +60,17 @@ lightning run model --accelerator=cpu --strategy=ddp --devices=2 fabricrl ppo --
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
 ## :book: Repository structure
-The repository is (possibly) structured as follows:
+The repository is structured as follows:
 
-  * `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and contains the following files:
+  * `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and (possibly) contains the following files:
+
     * `<algorithm>.py`: contains the implementation of the algorithm.
-    * `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm.
+    * `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm, if present.
     * `agent`: optional, contains the implementation of the agent.
     * `args.py`: contains the arguments of the algorithm, with their default values and descriptions.
     * `loss.py`: contains the implementation of the loss functions of the algorithm.
     * `utils.py`: contains utility functions for the algorithm.
+
   * `data`: contains the implementation of the data buffers.
   * `envs`: contains the implementation of the environment wrappers.
   * `models`: contains the implementation of the NN models (building blocks)
