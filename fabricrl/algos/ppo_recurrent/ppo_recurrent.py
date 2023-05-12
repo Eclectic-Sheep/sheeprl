@@ -1,9 +1,11 @@
+import itertools
 import os
 import time
 import warnings
 from dataclasses import asdict
 from datetime import datetime
 from math import prod
+from typing import List
 
 import gymnasium as gym
 import torch
@@ -12,16 +14,16 @@ from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict
-from tensordict.tensordict import TensorDictBase
+from tensordict.tensordict import TensorDictBase, pad_sequence
 from torch.distributions import Categorical
 from torch.optim import Adam
-from torch.utils.data.sampler import BatchSampler
+from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from fabricrl.algos.ppo_recurrent.args import RecurrentPPOArgs
 from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
@@ -37,17 +39,24 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: PPOArgs,
+    args: RecurrentPPOArgs,
 ):
+    num_sequences = data.shape[1]
+    batch_size = num_sequences // args.per_rank_num_batches
     for _ in range(args.update_epochs):
-        states = agent.initial_states
-        seq_sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
-        for seq_idxes_batch in seq_sampler:
-            batch = data[seq_idxes_batch]
-            action_logits, new_values, states = agent(
+        states = ((data["actor_hxs"], data["actor_cxs"]), (data["critic_hxs"], data["critic_cxs"]))
+        sampler = BatchSampler(
+            RandomSampler(range(num_sequences)),
+            batch_size=batch_size if batch_size > 0 else num_sequences,
+            drop_last=False,
+        )  # Random sampling sequences
+        for idxes in sampler:
+            batch = data[:, idxes]
+            mask_sum = batch["mask"].sum()
+            action_logits, new_values, _ = agent(
                 batch["observations"],
-                batch["dones"],
-                state=tuple([tuple([s.detach() for s in state]) for state in states]),
+                state=tuple([tuple([s[:1, idxes] for s in state]) for state in states]),
+                mask=batch["mask"],
             )
             dist = Categorical(logits=action_logits.unsqueeze(-2))
 
@@ -56,20 +65,17 @@ def train(
 
             # Policy loss
             pg_loss = policy_loss(
-                dist.log_prob(batch["actions"]),
-                batch["logprobs"],
-                batch["advantages"],
-                args.clip_coef,
-                args.loss_reduction,
+                dist.log_prob(batch["actions"]), batch["logprobs"], batch["advantages"], args.clip_coef, "none"
             )
+            pg_loss = (pg_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
 
             # Value loss
-            v_loss = value_loss(
-                new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss, args.loss_reduction
-            )
+            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss, "none")
+            v_loss = (v_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
 
             # Entropy loss
-            ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
+            ent_loss = entropy_loss(dist.entropy(), "none")
+            ent_loss = (ent_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
 
             # Equation (9) in the paper
             loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -87,8 +93,8 @@ def train(
 
 
 def main():
-    parser = HfArgumentParser(PPOArgs)
-    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser(RecurrentPPOArgs)
+    args: RecurrentPPOArgs = parser.parse_args_into_dataclasses()[0]
 
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
@@ -170,41 +176,38 @@ def main():
     with device:
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
-        next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
-        state = agent.initial_states
+        next_state = agent.initial_states
 
     for _ in range(1, num_updates + 1):
-        initial_states = (
-            tuple([s.clone() for s in agent.initial_states[0]]),
-            tuple([s.clone() for s in agent.initial_states[1]]),
-        )
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
-
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                action_logits, values, state = agent.module(next_obs, next_done, state=state)
+                action_logits, values, state = agent.module(next_obs, state=next_state)
                 dist = Categorical(logits=action_logits.unsqueeze(-2))
                 action = dist.sample()
                 logprob = dist.log_prob(action)
 
-            step_data["dones"] = next_done
-            step_data["values"] = values
-            step_data["actions"] = action
-            step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
-
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
-                next_obs = torch.tensor(next_obs).unsqueeze(0)
-                next_done = (
+                obs = torch.tensor(obs).unsqueeze(0)  # [1, N_envs, N_obs]
+                done = (
                     torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(1, args.num_envs, 1).float()
                 )  # [1, N_envs, 1]
+                reward = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, 1]
 
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, N_rews]
+            step_data["dones"] = done
+            step_data["values"] = values
+            step_data["actions"] = action
+            step_data["rewards"] = reward
+            step_data["logprobs"] = logprob
+            step_data["observations"] = next_obs
+            step_data["actor_hxs"] = next_state[0][0]
+            step_data["actor_cxs"] = next_state[0][1]
+            step_data["critic_hxs"] = next_state[1][0]
+            step_data["critic_cxs"] = next_state[1][1]
 
             # Append data to buffer
             rb.add(step_data)
@@ -218,9 +221,14 @@ def main():
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
+            # Update next_obs, next_dones and next_state
+            next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
+            next_obs = obs
+            next_done = done
+
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            next_value, _ = agent.module.get_values(next_obs, next_done, critic_state=state[1])
+            next_value, _ = agent.module.get_values(next_obs, critic_state=next_state[1])
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
@@ -240,8 +248,30 @@ def main():
         local_data = rb.buffer
 
         # Train the agent
-        agent.initial_states = initial_states
-        train(fabric, agent, optimizer, local_data, aggregator, args)
+
+        # Prepare data
+        # 1. Split data into episodes (for every environment)
+        episodes: List[TensorDictBase] = []
+        for env_id in range(args.num_envs):
+            env_data = local_data[:, env_id]  # [T, *]
+            episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
+            episode_ends = episode_ends.tolist()
+            if len(episode_ends) == 0 or episode_ends[-1] != args.rollout_steps - 1:
+                episode_ends.append(args.rollout_steps - 1)
+            start = 0
+            for ep_end_idx in episode_ends:
+                stop = ep_end_idx + 1
+                episode = env_data[start:stop]
+                if len(episode) > 0:
+                    episodes.append(episode)
+                start = stop
+        # 2. Split every episode into chunks of length `per_rank_batch_size`
+        if args.per_rank_batch_size is not None:
+            sequences = list(itertools.chain.from_iterable([ep.split(args.per_rank_batch_size) for ep in episodes]))
+        else:
+            sequences = episodes
+        padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
+        train(fabric, agent, optimizer, padded_sequences, aggregator, args)
 
         # Learning rate annealing
         if args.anneal_lr:

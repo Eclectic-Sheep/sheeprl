@@ -14,8 +14,8 @@ def test(agent: RecurrentPPOAgent, envs: SyncVectorEnv, fabric: Fabric, args: PP
     env = envs.envs[0]
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, -1)
     state = (
-        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
-        torch.zeros(1, 1, agent._actor_fc.output_dim, device=fabric.device),
+        torch.zeros(1, 1, agent.lstm_hidden_size, device=fabric.device),
+        torch.zeros(1, 1, agent.lstm_hidden_size, device=fabric.device),
     )
     while not done:
         # Act greedly through the environment

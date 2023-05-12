@@ -13,6 +13,7 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
 
     # Supported envs
     velocity_indices = {
+        "CartPole-v0": np.array([1, 3]),
         "CartPole-v1": np.array([1, 3]),
         "MountainCar-v0": np.array([1]),
         "MountainCarContinuous-v0": np.array([1]),
