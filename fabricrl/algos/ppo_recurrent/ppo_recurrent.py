@@ -222,9 +222,9 @@ def main():
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
             # Update next_obs, next_dones and next_state
-            next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
             next_obs = obs
             next_done = done
+            next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
