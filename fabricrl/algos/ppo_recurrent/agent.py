@@ -20,7 +20,7 @@ class RecurrentPPOAgent(nn.Module):
         self._actor_fc = MLP(
             input_dims=observation_dim,
             output_dim=0,
-            hidden_sizes=(64, 64),
+            hidden_sizes=(64,),
             activation=nn.ReLU,
             flatten_dim=2,
         )
@@ -31,7 +31,7 @@ class RecurrentPPOAgent(nn.Module):
         self._critic_fc = MLP(
             input_dims=observation_dim,
             output_dim=0,
-            hidden_sizes=(64, 64),
+            hidden_sizes=(64,),
             activation=nn.ReLU,
             flatten_dim=2,
         )
@@ -75,7 +75,7 @@ class RecurrentPPOAgent(nn.Module):
         x_actor = self._actor_fc(obs)
         self._actor_rnn.flatten_parameters()
         if mask is not None:
-            lengths = mask.sum(dim=0)
+            lengths = mask.sum(dim=0).view(-1).cpu()
             x_actor = torch.nn.utils.rnn.pack_padded_sequence(
                 x_actor, lengths=lengths, batch_first=False, enforce_sorted=False
             )
@@ -93,7 +93,7 @@ class RecurrentPPOAgent(nn.Module):
         x_critic = self._critic_fc(obs)
         self._critic_rnn.flatten_parameters()
         if mask is not None:
-            lengths = mask.sum(dim=0)
+            lengths = mask.sum(dim=0).view(-1).cpu()
             x_critic = torch.nn.utils.rnn.pack_padded_sequence(
                 x_critic, lengths=lengths, batch_first=False, enforce_sorted=False
             )

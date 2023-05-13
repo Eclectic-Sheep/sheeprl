@@ -52,11 +52,12 @@ def train(
         )  # Random sampling sequences
         for idxes in sampler:
             batch = data[:, idxes]
-            mask_sum = batch["mask"].sum()
+            mask = batch["mask"].unsqueeze(-1)
+            mask_sum = mask.sum()
             action_logits, new_values, _ = agent(
                 batch["observations"],
                 state=tuple([tuple([s[:1, idxes] for s in state]) for state in states]),
-                mask=batch["mask"],
+                mask=mask,
             )
             dist = Categorical(logits=action_logits.unsqueeze(-2))
 
@@ -67,15 +68,15 @@ def train(
             pg_loss = policy_loss(
                 dist.log_prob(batch["actions"]), batch["logprobs"], batch["advantages"], args.clip_coef, "none"
             )
-            pg_loss = (pg_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
+            pg_loss = (pg_loss * mask).sum() / mask_sum
 
             # Value loss
             v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss, "none")
-            v_loss = (v_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
+            v_loss = (v_loss * mask).sum() / mask_sum
 
             # Entropy loss
             ent_loss = entropy_loss(dist.entropy(), "none")
-            ent_loss = (ent_loss * batch["mask"].unsqueeze(-1)).sum() / mask_sum
+            ent_loss = (ent_loss * mask).sum() / mask_sum
 
             # Equation (9) in the paper
             loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -95,6 +96,8 @@ def train(
 def main():
     parser = HfArgumentParser(RecurrentPPOArgs)
     args: RecurrentPPOArgs = parser.parse_args_into_dataclasses()[0]
+    args.rollout_steps = 16
+    args.per_rank_batch_size = None
 
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
@@ -176,11 +179,13 @@ def main():
     with device:
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
+        next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
     for _ in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
+
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
                 action_logits, values, state = agent.module(next_obs, state=next_state)
@@ -193,12 +198,11 @@ def main():
 
             with device:
                 obs = torch.tensor(obs).unsqueeze(0)  # [1, N_envs, N_obs]
-                done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(1, args.num_envs, 1).float()
-                )  # [1, N_envs, 1]
+                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))
+                done = done.view(1, args.num_envs, 1).float()  # [1, N_envs, 1]
                 reward = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, 1]
 
-            step_data["dones"] = done
+            step_data["dones"] = next_done
             step_data["values"] = values
             step_data["actions"] = action
             step_data["rewards"] = reward
@@ -212,6 +216,14 @@ def main():
             # Append data to buffer
             rb.add(step_data)
 
+            # Update observation, done and recurrent state
+            next_obs = obs
+            next_done = done
+            if args.reset_recurrent_state_on_done:
+                next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
+            else:
+                next_state = state
+
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
                     if agent_final_info is not None and "episode" in agent_final_info:
@@ -220,11 +232,6 @@ def main():
                         )
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
-
-            # Update next_obs, next_dones and next_state
-            next_obs = obs
-            next_done = done
-            next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
@@ -260,7 +267,7 @@ def main():
                 episode_ends.append(args.rollout_steps - 1)
             start = 0
             for ep_end_idx in episode_ends:
-                stop = ep_end_idx + 1
+                stop = ep_end_idx
                 episode = env_data[start:stop]
                 if len(episode) > 0:
                     episodes.append(episode)

@@ -12,9 +12,11 @@ Optimization](https://arxiv.org/abs/2205.11104) paper. In particular, the steps 
 1. Initialize recurrent states to zero and retrieve the first observation from the environment
 2. Collect rollout experiences for `T` steps. When a done is encountered the recurrent states are reset to zero
 3. Compute returns and advantages
-4. Split collected data into multiple episodes, where a new episode starts when the `done` or `terminated` flag are true
-5. Split every episode into chunks of length `sequence_length`
+4. Split collected data into multiple episodes, where a new episode starts when the `done` or `terminated` flag is true
+5. Split every episode into chunks of length at most `per_rank_batch_size`
 6. Zero-pad every sequence to be all of the same length
+7. Optimize PPO loss for `update_epochs` epochs, creating `per_rank_num_batches` random mini-batches of sequences
+8. Repeat from 2. until convergence
 ## Agent
 
 We needed the creation of the agent in a separate class to make things easier. Indeed, in the forward, the agent needs to process data sequentially (since it uses a recurrent neural network). It was therefore impractical to implement the actor and critic `torch.nn.Module` classes using the utility building blocks as we did for `fabricrl/algos/ppo/ppo.py`.

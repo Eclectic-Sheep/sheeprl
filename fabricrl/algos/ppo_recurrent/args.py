@@ -11,3 +11,6 @@ class RecurrentPPOArgs(PPOArgs):
     per_rank_num_batches: int = Arg(
         default=4, help="the number of sequences in a single batch during a single PPO training epoch"
     )
+    reset_recurrent_state_on_done: bool = Arg(
+        default=False, help="If present the recurrent state will be reset when a done is received"
+    )
