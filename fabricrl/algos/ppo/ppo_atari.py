@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 from contextlib import nullcontext
@@ -30,7 +31,7 @@ from fabricrl.models.models import MLP, NatureCNN
 from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 if not _IS_ATARI_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_ATARI_AVAILABLE))
@@ -340,6 +341,9 @@ def trainer(
         )
 
     # Start training
+    update = 0
+    initial_ent_coef = copy.deepcopy(args.ent_coef)
+    initial_clip_coef = copy.deepcopy(args.clip_coef)
     while True:
         # Wait for data
         data = [None]
@@ -351,6 +355,7 @@ def trainer(
         if not isinstance(data, TensorDictBase) and data == -1:
             return
         data = make_tensordict(data, device=device)
+        update += 1
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
@@ -415,15 +420,29 @@ def trainer(
                     aggregator.update("Loss/value_loss", v_loss.detach())
                     aggregator.update("Loss/entropy_loss", entropy.detach())
 
+        if args.anneal_lr:
+            scheduler.step()
+
+        if args.anneal_clip_coef:
+            args.clip_coef = polynomial_decay(
+                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
+
+        if args.anneal_ent_coef:
+            args.ent_coef = polynomial_decay(
+                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
+
         # Send updated weights to the player
         metrics = aggregator.compute()
         aggregator.reset()
         if global_rank == 1:
             if args.anneal_lr:
-                scheduler.step()
                 metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
             else:
                 metrics["Info/learning_rate"] = args.lr
+            metrics["Info/clip_coef"] = args.clip_coef
+            metrics["Info/ent_coef"] = args.ent_coef
             player_trainer_collective.broadcast_object_list(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1

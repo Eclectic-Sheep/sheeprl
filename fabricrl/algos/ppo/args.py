@@ -24,9 +24,11 @@ class PPOArgs(StandardArgs):
     )
     normalize_advantages: bool = Arg(default=False, help="Toggles advantages normalization")
     clip_coef: float = Arg(default=0.2, help="the surrogate clipping coefficient")
+    anneal_clip_coef: bool = Arg(default=False, help="whether to linearly anneal the clip coefficient to zero")
     clip_vloss: bool = Arg(
         default=False, help="Toggles whether or not to use a clipped loss for the value function, as per the paper."
     )
     ent_coef: float = Arg(default=0.0, help="coefficient of the entropy")
+    anneal_ent_coef: bool = Arg(default=False, help="whether to linearly anneal the entropy coefficient to zero")
     vf_coef: float = Arg(default=1.0, help="coefficient of the value function")
     max_grad_norm: float = Arg(default=0.0, help="the maximum norm for the gradient clipping")
