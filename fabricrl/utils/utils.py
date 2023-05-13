@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -47,8 +47,11 @@ def gae(
     return returns, advantages
 
 
-def normalize_tensor(tensor: Tensor, eps: float = 1e-8):
-    return (tensor - tensor.mean()) / (tensor.std() + eps)
+@torch.no_grad()
+def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None):
+    if mask is None:
+        mask = torch.ones_like(tensor, dtype=torch.bool)
+    return (tensor - tensor[mask].mean()) / (tensor[mask].std() + eps)
 
 
 def polynomial_decay(

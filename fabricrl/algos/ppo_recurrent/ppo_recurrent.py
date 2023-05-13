@@ -1,7 +1,9 @@
+import copy
 import itertools
 import os
 import time
 import warnings
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 from math import prod
@@ -15,6 +17,7 @@ from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, pad_sequence
+from torch.distributed.algorithms.join import Join
 from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.utils.data.sampler import BatchSampler, RandomSampler
@@ -28,7 +31,7 @@ from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 __all__ = ["main"]
 
@@ -42,62 +45,75 @@ def train(
     args: RecurrentPPOArgs,
 ):
     num_sequences = data.shape[1]
-    batch_size = num_sequences // args.per_rank_num_batches
-    for _ in range(args.update_epochs):
-        states = ((data["actor_hxs"], data["actor_cxs"]), (data["critic_hxs"], data["critic_cxs"]))
-        sampler = BatchSampler(
-            RandomSampler(range(num_sequences)),
-            batch_size=batch_size if batch_size > 0 else num_sequences,
-            drop_last=False,
-        )  # Random sampling sequences
-        for idxes in sampler:
-            batch = data[:, idxes]
-            mask = batch["mask"].unsqueeze(-1)
-            mask_sum = mask.sum()
-            action_logits, new_values, _ = agent(
-                batch["observations"],
-                state=tuple([tuple([s[:1, idxes] for s in state]) for state in states]),
-                mask=mask,
-            )
-            dist = Categorical(logits=action_logits.unsqueeze(-2))
+    if args.per_rank_num_batches > 0:
+        batch_size = num_sequences // args.per_rank_num_batches
+        batch_size = batch_size if batch_size > 0 else num_sequences
+    else:
+        batch_size = 1
+    with Join([agent._forward_module]) if fabric.world_size > 1 else nullcontext():
+        for _ in range(args.update_epochs):
+            states = ((data["actor_hxs"], data["actor_cxs"]), (data["critic_hxs"], data["critic_cxs"]))
+            sampler = BatchSampler(
+                RandomSampler(range(num_sequences)),
+                batch_size=batch_size,
+                drop_last=False,
+            )  # Random sampling sequences
+            for idxes in sampler:
+                batch = data[:, idxes]
+                mask = batch["mask"].unsqueeze(-1)
+                action_logits, new_values, _ = agent(
+                    batch["observations"],
+                    state=tuple([tuple([s[:1, idxes] for s in state]) for state in states]),
+                    mask=mask,
+                )
+                dist = Categorical(logits=action_logits.unsqueeze(-2))
 
-            if args.normalize_advantages:
-                batch["advantages"] = normalize_tensor(batch["advantages"])
+                normalized_advantages = batch["advantages"][mask]
+                if args.normalize_advantages and len(normalized_advantages) > 1:
+                    normalized_advantages = normalize_tensor(normalized_advantages)
 
-            # Policy loss
-            pg_loss = policy_loss(
-                dist.log_prob(batch["actions"]), batch["logprobs"], batch["advantages"], args.clip_coef, "none"
-            )
-            pg_loss = (pg_loss * mask).sum() / mask_sum
+                # Policy loss
+                pg_loss = policy_loss(
+                    dist.log_prob(batch["actions"])[mask],
+                    batch["logprobs"][mask],
+                    normalized_advantages,
+                    args.clip_coef,
+                    "mean",
+                )
 
-            # Value loss
-            v_loss = value_loss(new_values, batch["values"], batch["returns"], args.clip_coef, args.clip_vloss, "none")
-            v_loss = (v_loss * mask).sum() / mask_sum
+                # Value loss
+                v_loss = value_loss(
+                    new_values[mask],
+                    batch["values"][mask],
+                    batch["returns"][mask],
+                    args.clip_coef,
+                    args.clip_vloss,
+                    "mean",
+                )
 
-            # Entropy loss
-            ent_loss = entropy_loss(dist.entropy(), "none")
-            ent_loss = (ent_loss * mask).sum() / mask_sum
+                # Entropy loss
+                ent_loss = entropy_loss(dist.entropy()[mask], "mean")
 
-            # Equation (9) in the paper
-            loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
+                # Equation (9) in the paper
+                loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
 
-            optimizer.zero_grad(set_to_none=True)
-            fabric.backward(loss)
-            if args.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
-            optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                fabric.backward(loss)
+                if args.max_grad_norm > 0.0:
+                    fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+                optimizer.step()
 
-            # Update metrics
-            aggregator.update("Loss/policy_loss", pg_loss.detach())
-            aggregator.update("Loss/value_loss", v_loss.detach())
-            aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                # Update metrics
+                aggregator.update("Loss/policy_loss", pg_loss.detach())
+                aggregator.update("Loss/value_loss", v_loss.detach())
+                aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
 def main():
     parser = HfArgumentParser(RecurrentPPOArgs)
     args: RecurrentPPOArgs = parser.parse_args_into_dataclasses()[0]
-    args.rollout_steps = 16
-    args.per_rank_batch_size = None
+    initial_ent_coef = copy.deepcopy(args.ent_coef)
+    initial_clip_coef = copy.deepcopy(args.clip_coef)
 
     if args.share_data:
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
@@ -182,7 +198,7 @@ def main():
         next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
-    for _ in range(1, num_updates + 1):
+    for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
@@ -260,32 +276,44 @@ def main():
         # 1. Split data into episodes (for every environment)
         episodes: List[TensorDictBase] = []
         for env_id in range(args.num_envs):
-            env_data = local_data[:, env_id]  # [T, *]
+            env_data = local_data[:, env_id]  # [N_steps, *]
             episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
             episode_ends = episode_ends.tolist()
-            if len(episode_ends) == 0 or episode_ends[-1] != args.rollout_steps - 1:
-                episode_ends.append(args.rollout_steps - 1)
+            episode_ends.append(args.rollout_steps)
             start = 0
             for ep_end_idx in episode_ends:
                 stop = ep_end_idx
+                # Do not include the done, since when we encounter a done it means that
+                # the episode has started
                 episode = env_data[start:stop]
                 if len(episode) > 0:
                     episodes.append(episode)
                 start = stop
-        # 2. Split every episode into chunks of length `per_rank_batch_size`
-        if args.per_rank_batch_size is not None:
+        # 2. Split every episode into sequences of length `per_rank_batch_size`
+        if args.per_rank_batch_size is not None and args.per_rank_batch_size > 0:
             sequences = list(itertools.chain.from_iterable([ep.split(args.per_rank_batch_size) for ep in episodes]))
         else:
             sequences = episodes
         padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
         train(fabric, agent, optimizer, padded_sequences, aggregator, args)
 
-        # Learning rate annealing
         if args.anneal_lr:
-            scheduler.step()
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
+            scheduler.step()
         else:
             fabric.log("Info/learning_rate", args.lr, global_step)
+
+        fabric.log("Info/clip_coef", args.clip_coef, global_step)
+        if args.anneal_clip_coef:
+            args.clip_coef = polynomial_decay(
+                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
+
+        fabric.log("Info/ent_coef", args.ent_coef, global_step)
+        if args.anneal_ent_coef:
+            args.ent_coef = polynomial_decay(
+                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
 
         # Log metrics
         metrics_dict = aggregator.compute()
