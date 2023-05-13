@@ -20,25 +20,27 @@ class RecurrentPPOAgent(nn.Module):
         self._actor_fc = MLP(
             input_dims=observation_dim,
             output_dim=0,
-            hidden_sizes=(64,),
+            hidden_sizes=(),
             activation=nn.ReLU,
             flatten_dim=2,
         )
         self._actor_rnn = nn.LSTM(input_size=self._actor_fc.output_dim, hidden_size=lstm_hidden_size, batch_first=False)
-        self._actor_logits = MLP(lstm_hidden_size, action_dim, flatten_dim=None)
+        self._actor_logits = MLP(
+            lstm_hidden_size, action_dim, (lstm_hidden_size * 2, lstm_hidden_size * 2), flatten_dim=None
+        )
 
         # Critic: Obs -> Feature -> LSTM -> Values
         self._critic_fc = MLP(
             input_dims=observation_dim,
             output_dim=0,
-            hidden_sizes=(64,),
+            hidden_sizes=(),
             activation=nn.ReLU,
             flatten_dim=2,
         )
         self._critic_rnn = nn.LSTM(
             input_size=self._critic_fc.output_dim, hidden_size=lstm_hidden_size, batch_first=False
         )
-        self._critic = MLP(lstm_hidden_size, 1, flatten_dim=None)
+        self._critic = MLP(lstm_hidden_size, 1, (lstm_hidden_size * 2, lstm_hidden_size * 2), flatten_dim=None)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]] = self.reset_hidden_states()

@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 from dataclasses import asdict
@@ -25,7 +26,7 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor
+from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 __all__ = ["main"]
 
@@ -94,6 +95,8 @@ def train(
 def main():
     parser = HfArgumentParser(PPOContinuousArgs)
     args: PPOContinuousArgs = parser.parse_args_into_dataclasses()[0]
+    initial_ent_coef = copy.deepcopy(args.ent_coef)
+    initial_clip_coef = copy.deepcopy(args.clip_coef)
 
     # Initialize Fabric
     fabric = Fabric()
@@ -179,7 +182,7 @@ def main():
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
         next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
-    for _ in range(1, num_updates + 1):
+    for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
@@ -252,15 +255,25 @@ def main():
         else:
             gathered_data = local_data
 
-        # Train the agent
         train(fabric, actor, critic, optimizer, gathered_data, aggregator, args)
 
-        # Learning rate annealing
         if args.anneal_lr:
-            scheduler.step()
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
+            scheduler.step()
         else:
             fabric.log("Info/learning_rate", args.lr, global_step)
+
+        fabric.log("Info/clip_coef", args.clip_coef, global_step)
+        if args.anneal_clip_coef:
+            args.clip_coef = polynomial_decay(
+                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
+
+        fabric.log("Info/ent_coef", args.ent_coef, global_step)
+        if args.anneal_ent_coef:
+            args.ent_coef = polynomial_decay(
+                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
 
         # Log metrics
         metrics_dict = aggregator.compute()
