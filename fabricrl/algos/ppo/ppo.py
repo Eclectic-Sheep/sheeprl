@@ -9,6 +9,7 @@ from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Categorical
@@ -192,7 +193,7 @@ def main():
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
         next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
-    for _ in range(1, num_updates + 1):
+    for step in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs * world_size
 
@@ -207,9 +208,7 @@ def main():
                 value = critic.module(next_obs)
 
             # Single environment step
-            obs, reward, done, truncated, info = envs.step(
-                step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)
-            )
+            obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
                 obs = torch.tensor(obs)  # [N_envs, N_obs]
@@ -284,6 +283,31 @@ def main():
         fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
+
+        # Checkpoint Model
+        state = {
+            "actor": actor,
+            "critic": critic,
+            "optimizer": optimizer,
+            "args": asdict(args),
+            "rb": rb,
+            "step": step,
+            "scheduler": scheduler if args.anneal_lr else None,
+        }
+        if fabric.world_size > 1:
+            checkpoint_collective = TorchCollective()
+            checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
+            gathered_rb = [None for _ in range(fabric.world_size)]
+            if fabric.global_rank == 0:
+                checkpoint_collective.gather_object(rb, gathered_rb)
+                state["rb"] = gathered_rb
+            else:
+                checkpoint_collective.gather_object(rb, None)
+
+        if fabric.global_rank == 0:
+            fabric.save(fabric.logger.log_dir + f"/checkpoint/ckpt_{step}.ckpt", state)
+        else:
+            fabric.save(None, {})
 
     envs.close()
     if fabric.is_global_zero:
