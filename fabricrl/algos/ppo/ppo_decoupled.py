@@ -383,19 +383,6 @@ def trainer(
                     aggregator.update("Loss/value_loss", v_loss.detach())
                     aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
-        if args.anneal_lr:
-            scheduler.step()
-
-        if args.anneal_clip_coef:
-            args.clip_coef = polynomial_decay(
-                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
-            )
-
-        if args.anneal_ent_coef:
-            args.ent_coef = polynomial_decay(
-                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
-            )
-
         # Send updated weights to the player
         metrics = aggregator.compute()
         aggregator.reset()
@@ -414,6 +401,19 @@ def trainer(
                     list(actor.parameters()) + list(critic.parameters())
                 ),
                 src=1,
+            )
+
+        if args.anneal_lr:
+            scheduler.step()
+
+        if args.anneal_clip_coef:
+            args.clip_coef = polynomial_decay(
+                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+            )
+
+        if args.anneal_ent_coef:
+            args.ent_coef = polynomial_decay(
+                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
 
