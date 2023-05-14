@@ -193,30 +193,29 @@ def main():
                 # Estimate critic value
                 value = critic.module(next_obs)
 
+            # Single environment step
+            obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+
+            with device:
+                obs = torch.tensor(obs)  # [N_envs, N_obs]
+                rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
+                done = done.view(args.num_envs, -1).float()
+
             # Update the step data
             step_data["dones"] = next_done
             step_data["values"] = value
             step_data["actions"] = action
             step_data["logprobs"] = logprob
+            step_data["rewards"] = rewards
             step_data["observations"] = next_obs
-
-            # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(
-                step_data["actions"].cpu().numpy().reshape(envs.action_space.shape)
-            )
-
-            with device:
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
-
-                # Update the observation
-                next_obs = torch.tensor(next_obs, dtype=torch.float32)
-                next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
-                )  # [N_envs, 1]
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
+
+            # Update the observation and done
+            next_obs = obs
+            next_done = done
 
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
