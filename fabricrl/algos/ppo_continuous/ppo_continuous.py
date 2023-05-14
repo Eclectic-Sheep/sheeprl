@@ -18,7 +18,6 @@ from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.ppo_continuous.agent import PPOContinuousActor
 from fabricrl.algos.ppo_continuous.args import PPOContinuousArgs
 from fabricrl.algos.ppo_continuous.utils import test
@@ -26,7 +25,7 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
+from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
 
 __all__ = ["main"]
 

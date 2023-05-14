@@ -24,12 +24,12 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env, test
+from fabricrl.algos.ppo.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
+from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
 
 __all__ = ["main"]
 

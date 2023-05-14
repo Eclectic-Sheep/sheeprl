@@ -19,13 +19,13 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.droq.agent import DROQAgent, DROQCritic
 from fabricrl.algos.droq.args import DROQArgs
-from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACActor
 from fabricrl.algos.sac.loss import entropy_loss, policy_loss
 from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.utils import make_env
 
 __all__ = ["main"]
 

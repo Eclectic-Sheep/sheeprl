@@ -1,7 +1,3 @@
-import os
-from typing import Optional
-
-import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +6,6 @@ from gymnasium.vector import SyncVectorEnv
 from lightning import Fabric
 
 from fabricrl.algos.ppo.args import PPOArgs
-from fabricrl.envs.wrappers import MaskVelocityWrapper
 
 
 @torch.no_grad()
@@ -36,29 +31,3 @@ def test(actor: nn.Module, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
-
-
-def make_env(
-    env_id: str,
-    seed: int,
-    idx: int,
-    capture_video: bool,
-    run_name: Optional[str] = None,
-    prefix: str = "",
-    mask_velocities: bool = False,
-):
-    def thunk():
-        env = gym.make(env_id)
-        if mask_velocities:
-            env = MaskVelocityWrapper(env)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if idx == 0 and run_name is not None:
-                env = gym.wrappers.RecordVideo(
-                    env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
-                )
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
-
-    return thunk
