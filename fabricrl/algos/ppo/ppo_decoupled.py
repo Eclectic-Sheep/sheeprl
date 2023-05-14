@@ -24,12 +24,12 @@ from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
 from fabricrl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from fabricrl.algos.ppo.utils import make_env, test
+from fabricrl.algos.ppo.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
+from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
 
 __all__ = ["main"]
 
@@ -418,6 +418,13 @@ def trainer(
 
 
 def main():
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices == "1":
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`lightning run model --devices=2 main.py ...`"
+        )
+
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
 
@@ -429,12 +436,6 @@ def main():
     # collected experiences with the trainers
     world_collective.create_group()
     global_rank = world_collective.rank
-
-    if world_collective.world_size == 1:
-        raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
-        )
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode

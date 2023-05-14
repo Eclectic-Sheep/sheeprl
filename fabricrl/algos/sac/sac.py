@@ -19,7 +19,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.ppo.utils import make_env
 from fabricrl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from fabricrl.algos.sac.args import SACArgs
 from fabricrl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
@@ -27,6 +26,7 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.utils import make_env
 
 __all__ = ["main"]
 

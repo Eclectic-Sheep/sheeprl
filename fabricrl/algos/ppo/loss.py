@@ -58,13 +58,13 @@ def value_loss(
 
 
 def entropy_loss(entropy: Tensor, reduction: str = "mean") -> Tensor:
-    entropy_loss = -entropy
+    ent_loss = -entropy
     reduction = reduction.lower()
     if reduction == "none":
-        return entropy_loss
+        return ent_loss
     elif reduction == "mean":
-        return entropy_loss.mean()
+        return ent_loss.mean()
     elif reduction == "sum":
-        return entropy_loss.sum()
+        return ent_loss.sum()
     else:
         raise ValueError(f"Unrecognized reduction: {reduction}")
