@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -252,6 +253,33 @@ def main():
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
+
+        # Checkpoint Model
+        if global_step % args.checkpoint_every == 0:
+            state = {
+                "agent": agent,
+                "qf_optimizer": qf_optimizer,
+                "actor_optimizer": actor_optimizer,
+                "alpha_optimizer": alpha_optimizer,
+                "args": asdict(args),
+                "rb": rb,
+                "global_step": global_step,
+            }
+            if fabric.world_size > 1:
+                checkpoint_collective = TorchCollective()
+                checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
+                gathered_rb = [None for _ in range(fabric.world_size)]
+                if fabric.global_rank == 0:
+                    checkpoint_collective.gather_object(rb, gathered_rb)
+                    state["rb"] = gathered_rb
+                else:
+                    checkpoint_collective.gather_object(rb, None)
+
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}.ckpt"
+            fabric.save(
+                ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
+                state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
+            )
 
     envs.close()
     if fabric.is_global_zero:

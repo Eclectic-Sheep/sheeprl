@@ -279,6 +279,21 @@ def main():
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
+        # Checkpoint Model
+        state = {
+            "actor": actor,
+            "critic": critic,
+            "optimizer": optimizer,
+            "args": asdict(args),
+            "update_step": update,
+            "scheduler": scheduler if args.anneal_lr else None,
+        }
+        ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}.ckpt"
+        fabric.save(
+            ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
+            state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
+        )
+
     envs.close()
     if fabric.is_global_zero:
         test(actor.module, envs, fabric, args)

@@ -10,7 +10,6 @@ from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Categorical
@@ -303,24 +302,14 @@ def main():
             "critic": critic,
             "optimizer": optimizer,
             "args": asdict(args),
-            "rb": rb,
-            "step": update,
+            "update_step": update,
             "scheduler": scheduler if args.anneal_lr else None,
         }
-        if fabric.world_size > 1:
-            checkpoint_collective = TorchCollective()
-            checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
-            gathered_rb = [None for _ in range(fabric.world_size)]
-            if fabric.global_rank == 0:
-                checkpoint_collective.gather_object(rb, gathered_rb)
-                state["rb"] = gathered_rb
-            else:
-                checkpoint_collective.gather_object(rb, None)
-
-        if fabric.global_rank == 0:
-            fabric.save(fabric.logger.log_dir + f"/checkpoint/ckpt_{update}.ckpt", state)
-        else:
-            fabric.save(None, {})
+        ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}.ckpt"
+        fabric.save(
+            ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
+            state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
+        )
 
     envs.close()
     if fabric.is_global_zero:
