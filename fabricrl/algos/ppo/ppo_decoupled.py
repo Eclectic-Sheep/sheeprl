@@ -45,6 +45,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Initialize Fabric object
     fabric = Fabric(loggers=logger)
+    if not _is_using_cli():
+        fabric.launch()
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -226,9 +228,9 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         aggregator.reset()
 
         # Checkpoint Model
-        if update % args.checkpoint_every == 0:
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = [None]
-            state = player_trainer_collective.broadcast_object_list(state, src=1)
+            player_trainer_collective.broadcast_object_list(state, src=1)
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state[0])
 
@@ -424,16 +426,18 @@ def trainer(
             )
 
         # Checkpoint Model
-        if update % args.checkpoint_every == 0:
-            state = {
-                "actor": actor.state_dict(),
-                "critic": critic.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "args": asdict(args),
-                "update_step": update,
-                "scheduler": scheduler.state_dict() if args.anneal_lr else None,
-            }
-            player_trainer_collective.broadcast_object_list([state], src=1)
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+            if global_rank == 1:
+                state = {
+                    "actor": actor.state_dict(),
+                    "critic": critic.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                player_trainer_collective.broadcast_object_list([state], src=1)
+            fabric.barrier()
 
 
 def main():

@@ -6,6 +6,8 @@ from unittest import mock
 
 import pytest
 import torch.distributed as dist
+from lightning import Fabric
+from lightning.fabric.fabric import _is_using_cli
 
 from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 
@@ -28,6 +30,22 @@ def mock_env_and_destroy(devices):
         dist.destroy_process_group()
 
 
+def check_checkpoint(algo: str, target_keys: set):
+    fabric = Fabric(accelerator="cpu")
+    if not _is_using_cli():
+        fabric.launch()
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    ckpt_path = f"{project_root}/logs/{algo}/"
+    experiment_list = os.listdir(ckpt_path)
+    assert len(experiment_list) > 0
+    ckpt_path += experiment_list[-1] + "/"
+    ckpt_path += os.listdir(ckpt_path)[-1] + "/version_0/checkpoint/"
+    assert len(os.listdir(ckpt_path)) == 1
+    state = fabric.load(ckpt_path + os.listdir(ckpt_path)[-1])
+    ckpt_keys = set(state.keys())
+    assert len(ckpt_keys.intersection(target_keys)) == len(ckpt_keys)
+
+
 @pytest.mark.timeout(60)
 def test_droq(standard_args):
     task = importlib.import_module("fabricrl.algos.droq.droq")
@@ -41,6 +59,11 @@ def test_droq(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint(
+            "droq", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
+        )
 
 
 @pytest.mark.timeout(60)
@@ -56,6 +79,11 @@ def test_sac(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint(
+            "sac", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
+        )
 
 
 @pytest.mark.timeout(60)
@@ -81,6 +109,13 @@ def test_sac_decoupled(standard_args):
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint(
+                "sac_decoupled",
+                {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"},
+            )
+
 
 @pytest.mark.timeout(60)
 def test_ppo(standard_args):
@@ -90,6 +125,9 @@ def test_ppo(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
 
 
 @pytest.mark.timeout(60)
@@ -109,6 +147,10 @@ def test_ppo_decoupled(standard_args):
                         "--standalone",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
+
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint("ppo_decoupled", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
 
 
 @pytest.mark.timeout(60)
@@ -138,6 +180,10 @@ def test_ppo_atari(standard_args):
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint("ppo_atari", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+
 
 @pytest.mark.timeout(60)
 def test_ppo_continuous(standard_args):
@@ -148,6 +194,9 @@ def test_ppo_continuous(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo_continuous", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+
 
 @pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args):
@@ -157,3 +206,6 @@ def test_ppo_recurrent(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo_recurrent", {"agent", "optimizer", "args", "update_step", "scheduler"})

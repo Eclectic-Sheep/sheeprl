@@ -54,7 +54,7 @@ class DROQCritic(nn.Module):
         return self.model(x)
 
 
-class DROQAgent:
+class DROQAgent(nn.Module):
     def __init__(
         self,
         actor: Union[SACActor, _FabricModule],

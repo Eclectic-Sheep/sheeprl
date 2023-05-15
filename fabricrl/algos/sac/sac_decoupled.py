@@ -35,13 +35,15 @@ __all__ = ["main"]
 def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
+        root_dir=os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
         name=run_name,
     )
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger)
+    if not _is_using_cli():
+        fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -169,7 +171,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         aggregator.reset()
 
         # Checkpoint Model
-        if global_step % args.checkpoint_every == 0:
+        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
             rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
             state = [None]
@@ -286,15 +288,18 @@ def trainer(
             )
 
         # Checkpoint Model
-        state = {
-            "agent": agent,
-            "qf_optimizer": qf_optimizer.state_dict(),
-            "actor_optimizer": actor_optimizer.state_dict(),
-            "alpha_optimizer": alpha_optimizer.state_dict(),
-            "args": asdict(args),
-            "global_step": global_step,
-        }
-        player_trainer_collective.broadcast_object_list([state], src=1)
+        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
+            if global_rank == 1:
+                state = {
+                    "agent": agent.state_dict(),
+                    "qf_optimizer": qf_optimizer.state_dict(),
+                    "actor_optimizer": actor_optimizer.state_dict(),
+                    "alpha_optimizer": alpha_optimizer.state_dict(),
+                    "args": asdict(args),
+                    "global_step": global_step,
+                }
+                player_trainer_collective.broadcast_object_list([state], src=1)
+            fabric.barrier()
 
 
 def main():

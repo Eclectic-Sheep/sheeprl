@@ -280,7 +280,7 @@ def main():
         aggregator.reset()
 
         # Checkpoint Model
-        if update % args.checkpoint_every == 0:
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = {
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
@@ -289,7 +289,8 @@ def main():
                 "update_step": update,
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+            log_dir = fabric.logger.log_dir if fabric.global_rank == 0 else ""
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
             fabric.save(
                 ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
                 state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},

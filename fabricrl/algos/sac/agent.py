@@ -144,7 +144,7 @@ class SACActor(nn.Module):
         return mean
 
 
-class SACAgent:
+class SACAgent(nn.Module):
     def __init__(
         self,
         actor: Union[SACActor, _FabricModule],

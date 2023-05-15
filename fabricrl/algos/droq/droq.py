@@ -255,11 +255,11 @@ def main():
         aggregator.reset()
 
         # Checkpoint Model
-        if global_step % args.checkpoint_every == 0:
+        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
             rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
             state = {
-                "agent": agent,
+                "agent": agent.state_dict(),
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
@@ -268,6 +268,7 @@ def main():
                 "global_step": global_step,
             }
             if fabric.world_size > 1:
+                # It is needed because gather() function is not implemented in Fabric
                 checkpoint_collective = TorchCollective()
                 checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
                 gathered_rb = [None for _ in range(fabric.world_size)]
@@ -276,8 +277,8 @@ def main():
                     state["rb"] = gathered_rb
                 else:
                     checkpoint_collective.gather_object(rb, None)
-
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
+            log_dir = fabric.logger.log_dir if fabric.global_rank == 0 else ""
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(
                 ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
                 state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
