@@ -252,11 +252,13 @@ def main():
 
         # Checkpoint Model
         if global_step % args.checkpoint_every == 0:
+            true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
             state = {
                 "agent": agent,
-                "qf_optimizer": qf_optimizer,
-                "actor_optimizer": actor_optimizer,
-                "alpha_optimizer": alpha_optimizer,
+                "qf_optimizer": qf_optimizer.state_dict(),
+                "actor_optimizer": actor_optimizer.state_dict(),
+                "alpha_optimizer": alpha_optimizer.state_dict(),
                 "args": asdict(args),
                 "rb": rb,
                 "global_step": global_step,
@@ -271,11 +273,12 @@ def main():
                 else:
                     checkpoint_collective.gather_object(rb, None)
 
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}.ckpt"
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(
                 ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
                 state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
             )
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
 
     envs.close()
     if fabric.is_global_zero:

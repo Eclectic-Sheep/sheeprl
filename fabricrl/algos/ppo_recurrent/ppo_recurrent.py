@@ -321,18 +321,19 @@ def main():
         aggregator.reset()
 
         # Checkpoint Model
-        state = {
-            "agent": agent,
-            "optimizer": optimizer,
-            "args": asdict(args),
-            "update_step": update,
-            "scheduler": scheduler if args.anneal_lr else None,
-        }
-        ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}.ckpt"
-        fabric.save(
-            ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
-            state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
-        )
+        if update % args.checkpoint_every == 0:
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "args": asdict(args),
+                "update_step": update,
+                "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+            }
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+            fabric.save(
+                ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
+                state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
+            )
 
     envs.close()
     if fabric.is_global_zero:

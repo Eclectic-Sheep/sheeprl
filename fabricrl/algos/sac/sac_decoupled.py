@@ -168,6 +168,18 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
+        # Checkpoint Model
+        if global_step % args.checkpoint_every == 0:
+            true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+            state = [None]
+            player_trainer_collective.broadcast_object_list(state, src=1)
+            state = state[0]
+            state["rb"] = rb
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
+            fabric.save(ckpt_path, state)
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
@@ -272,6 +284,17 @@ def trainer(
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), src=1
             )
+
+        # Checkpoint Model
+        state = {
+            "agent": agent,
+            "qf_optimizer": qf_optimizer.state_dict(),
+            "actor_optimizer": actor_optimizer.state_dict(),
+            "alpha_optimizer": alpha_optimizer.state_dict(),
+            "args": asdict(args),
+            "global_step": global_step,
+        }
+        player_trainer_collective.broadcast_object_list([state], src=1)
 
 
 def main():

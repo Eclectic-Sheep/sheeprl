@@ -134,7 +134,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
         next_done = torch.zeros(args.num_envs, 1).to(device)
 
-    for _ in range(1, num_updates + 1):
+    for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs
 
@@ -224,6 +224,13 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(metrics[0], global_step)
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
+
+        # Checkpoint Model
+        if update % args.checkpoint_every == 0:
+            state = [None]
+            state = player_trainer_collective.broadcast_object_list(state, src=1)
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+            fabric.save(ckpt_path, state[0])
 
     if args.share_data:
         world_collective.broadcast_object_list([-1], src=0)
@@ -415,6 +422,18 @@ def trainer(
             args.ent_coef = polynomial_decay(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
+
+        # Checkpoint Model
+        if update % args.checkpoint_every == 0:
+            state = {
+                "actor": actor.state_dict(),
+                "critic": critic.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "args": asdict(args),
+                "update_step": update,
+                "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+            }
+            player_trainer_collective.broadcast_object_list([state], src=1)
 
 
 def main():

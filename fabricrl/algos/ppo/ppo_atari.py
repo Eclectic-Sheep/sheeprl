@@ -455,6 +455,22 @@ def trainer(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
+        # Checkpoint Model
+        if update % args.checkpoint_every == 0:
+            state = {
+                "actor": actor.state_dict(),
+                "critic": critic.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "args": asdict(args),
+                "update_step": update,
+                "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+            }
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+            fabric.save(
+                ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 1 else None,
+                state if fabric.strategy == "fsdp" or fabric.global_rank == 1 else {},
+            )
+
 
 def main():
     devices = os.environ.get("LT_DEVICES", None)
