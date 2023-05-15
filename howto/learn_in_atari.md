@@ -115,10 +115,49 @@ def make_env(
     return thunk
 ```
 
-Once this is done, we are all set.
+The last thing to remember is to add the `ppo_atari` algorithm to the already known tasks under `./fabricrl/utils/registry.py`:
 
-We can train the model by running:
+```diff
+# Mapping of tasks with their relative algorithms.
+# A new task can be added as: tasks[module] = [..., algorithm]
+# where `module` and `algorithm` are respectively taken from fabricrl/algos/{module}/{algorithm}.py
+tasks: Dict[str, List[str]] = {
+    "droq": ["droq"],
+    "sac": ["sac", "sac_decoupled"],
+-   "ppo": ["ppo", "ppo_decoupled"],
++   "ppo": ["ppo", "ppo_decoupled", "ppo_atari"],
+    "ppo_continuous": ["ppo_continuous"],
+    "ppo_recurrent": ["ppo_recurrent"],
+}
+
+# A list representing the `decoupled` algorithms
+-decoupled_tasks: List[str] = ["sac_decoupled", "ppo_decoupled"]
++decoupled_tasks: List[str] = ["sac_decoupled", "ppo_decoupled", "ppo_atari"]
+```
+
+This will also print `ppo_atari` under the `Commands` section when running `python main.py`:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v0
+Usage: main.py [OPTIONS] COMMAND [ARGS]...
+
+  Fabric-RL zero-code command line utility.
+
+Options:
+  --fabricrl_help  Show this message and exit.
+
+Commands:
+  droq
+  ppo
+  ppo_atari
+  ppo_continuous
+  ppo_decoupled
+  ppo_recurrent
+  sac
+  sac_decoupled
+```
+
+Once this is done, we are all set. We can now train the model by running:
+
+```bash
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v4
 ```

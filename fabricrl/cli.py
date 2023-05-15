@@ -10,7 +10,7 @@ from unittest.mock import patch
 import click
 from lightning.fabric.fabric import _is_using_cli
 
-from fabricrl.utils.register import decoupled_tasks, tasks
+from fabricrl.utils.registry import decoupled_tasks, tasks
 
 CONTEXT_SETTINGS = dict(help_option_names=["--fabricrl_help"])
 

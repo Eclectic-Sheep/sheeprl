@@ -24,9 +24,8 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
-
-__all__ = ["main"]
 
 
 def train(
@@ -97,6 +96,7 @@ def train(
             aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
+@register_algorithm
 def main():
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
