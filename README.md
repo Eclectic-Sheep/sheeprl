@@ -77,8 +77,8 @@ The repository is structured as follows:
 
   * `data`: contains the implementation of the data buffers.
   * `envs`: contains the implementation of the environment wrappers.
-  * `models`: contains the implementation of the NN models (building blocks)
-  * `utils`: contains utility functions for all the algorithms.
+  * `models`: contains the implementation of the some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
+  * `utils`: contains utility functions for the framework.
 
 #### Coupled vs Decoupled
 In the coupled version of an algorithm, the agent interacts with the environment and executes the training loop. 
