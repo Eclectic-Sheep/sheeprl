@@ -88,13 +88,14 @@ def make_env(
     capture_video,
     run_name,
     prefix: str = "",
+    vector_env_idx: int = 0
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
-            if idx == 0:
-                env = gym.wrappers.RecordVideo(
+            if vector_env_idx == 0 and idx == 0:
+                env = gym.experimental.wrappers.RecordVideoV0(
                     env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
                 )
         env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
@@ -112,10 +113,4 @@ We can train the model by running:
 
 ```bash
 lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v0
-```
-
-:warning: **Note**: remember to install the Atari environments by running 
-```bash
-poetry add gymnasium[atari]
-poetry add gymnasium[accept-rom-license]
 ```

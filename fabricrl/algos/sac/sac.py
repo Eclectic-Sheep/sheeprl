@@ -113,6 +113,7 @@ def main():
                 logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=False,
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]

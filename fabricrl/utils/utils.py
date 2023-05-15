@@ -80,6 +80,7 @@ def make_env(
     run_name: Optional[str] = None,
     prefix: str = "",
     mask_velocities: bool = False,
+    vector_env_idx: int = 0,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
@@ -87,9 +88,11 @@ def make_env(
             env = MaskVelocityWrapper(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
-            if idx == 0 and run_name is not None:
-                env = gym.wrappers.RecordVideo(
-                    env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
+            if vector_env_idx == 0 and idx == 0 and run_name is not None:
+                env = gym.experimental.wrappers.RecordVideoV0(
+                    env,
+                    os.path.join(run_name, prefix + "_videos" if prefix else "videos"),
+                    disable_logger=True,
                 )
         env.action_space.seed(seed)
         env.observation_space.seed(seed)

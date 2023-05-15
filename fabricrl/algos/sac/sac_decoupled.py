@@ -58,6 +58,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
                 logger.log_dir,
                 "train",
                 mask_velocities=False,
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]

@@ -1,6 +1,7 @@
 import copy
 import os
 import time
+import warnings
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
@@ -42,20 +43,13 @@ if not _IS_ATARI_ROMS_AVAILABLE:
 __all__ = ["main"]
 
 
-def make_env(
-    env_id,
-    seed,
-    idx,
-    capture_video,
-    run_name,
-    prefix: str = "",
-):
+def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vector_env_idx: int = 0):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
-            if idx == 0:
-                env = gym.wrappers.RecordVideo(
+            if vector_env_idx == 0 and idx == 0:
+                env = gym.experimental.wrappers.RecordVideoV0(
                     env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
                 )
         env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
@@ -85,7 +79,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # Environment setup
     envs = SyncVectorEnv(
         [
-            make_env(args.env_id, args.seed + i, 0, args.capture_video, logger.log_dir, "train")
+            make_env(args.env_id, args.seed + i, 0, args.capture_video, logger.log_dir, "train", vector_env_idx=i)
             for i in range(args.num_envs)
         ]
     )
@@ -141,18 +135,16 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     start_time = time.time()
     single_global_step = int(args.num_envs * args.rollout_steps)
     num_updates = args.total_steps // single_global_step if not args.dry_run else 1
-    if not args.share_data:
-        if single_global_step < world_collective.world_size - 1:
-            raise RuntimeError(
-                "The number of trainers ({}) is greater than the available collected data ({}). ".format(
-                    world_collective.world_size - 1, single_global_step
-                )
-                + "Consider to lower the number of trainers at least to the size of available collected data"
+    if single_global_step < world_collective.world_size - 1:
+        raise RuntimeError(
+            "The number of trainers ({}) is greater than the available collected data ({}). ".format(
+                world_collective.world_size - 1, single_global_step
             )
-        chunks_sizes = [
-            len(chunk)
-            for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
-        ]
+            + "Consider to lower the number of trainers at least to the size of available collected data"
+        )
+    chunks_sizes = [
+        len(chunk) for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
+    ]
 
     # Broadcast num_updates to all the world
     update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
@@ -232,13 +224,10 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         local_data = rb.buffer.view(-1)
 
         # Send data to the training agents
-        if args.share_data:
-            world_collective.broadcast_object_list([local_data], src=0)
-        else:
-            # Split data in an even way, when possible
-            perm = torch.randperm(local_data.shape[0], device=device)
-            chunks = local_data[perm].split(chunks_sizes)
-            world_collective.scatter_object_list([None], [None] + chunks, src=0)
+        # Split data in an even way, when possible
+        perm = torch.randperm(local_data.shape[0], device=device)
+        chunks = local_data[perm].split(chunks_sizes)
+        world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
         # Gather metrics from the trainers to be plotted
         metrics = [None]
@@ -259,10 +248,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-    if args.share_data:
-        world_collective.broadcast_object_list([-1], src=0)
-    else:
-        world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+    world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
         test(torch.nn.Sequential(feature_extractor, actor), envs, fabric, args)
@@ -349,10 +335,7 @@ def trainer(
     while True:
         # Wait for data
         data = [None]
-        if args.share_data:
-            world_collective.broadcast_object_list(data, src=0)
-        else:
-            world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
+        world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             return
@@ -466,6 +449,12 @@ def main():
 
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+
+    if args.share_data:
+        warnings.warn(
+            "You have called the script with `--share_data=True`: "
+            "decoupled scripts splits collected data in an almost-even way between the number of trainers"
+        )
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
