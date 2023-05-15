@@ -67,7 +67,7 @@ critic = MLP(
 ).to(device)
 ```
 
-We need to remember to add these parameters to the list of parameters to be optimized and shared by Fabric.
+We need to remember to add these parameters to the list of parameters to be optimized and shared by Fabric
 
 ```diff
 +    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
@@ -78,7 +78,15 @@ We need to remember to add these parameters to the list of parameters to be opti
     )
 ```
 
-The last thing to remember is to correctly pre-process the observation coming from the environment, pratically redefining the `make_env` function, wrapping the environment with the `gymnasium.wrappers.atari_preprocess.AtariPreprocess` wrapper:
+and to extract the features every time before calling the actor or the critic
+
+```python
+features = feature_extractor(next_obs)
+actions_logits = actor(features)
+values = critic(features)
+```
+
+We also need to assure that we correctly pre-process the observation coming from the environment, pratically redefining the `make_env` function, wrapping the environment with the `gymnasium.wrappers.atari_preprocess.AtariPreprocess` wrapper:
 
 ```python
 def make_env(
