@@ -25,9 +25,8 @@ from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import make_env
-
-__all__ = ["main"]
 
 
 def train(
@@ -114,6 +113,7 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
+@register_algorithm
 def main():
     parser = HfArgumentParser(DROQArgs)
     args: DROQArgs = parser.parse_args_into_dataclasses()[0]

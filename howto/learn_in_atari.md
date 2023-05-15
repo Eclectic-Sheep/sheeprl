@@ -16,9 +16,9 @@ pip install gymnasium[accept-rom-license]
 For more information: https://gymnasium.farama.org/environments/atari/ 
 
 ## Step by step
-We start from `ppo_decoupled.py` and copy its code in the new `ppo_atari.py` file.
+We start from `ppo_decoupled.py` under the `./fabricrl/algos/ppo/` folder and copy its code in the new `ppo_atari.py` file.
 
-We decide to add a `feature_extractor` model that takes in input the observations as images and outputs a feature vector. To do this, we need to define a `torch.nn.Module` that uses `torch.nn.Conv2d` and `torch.nn.Linear` layers.
+We need to add a `feature_extractor` model that takes in input the observations as images and outputs a feature vector. To do this, we need to define a `torch.nn.Module` that uses `torch.nn.Conv2d` and `torch.nn.Linear` layers.
 
 We also need to define a `forward` method that takes in input the observations and returns the feature vector.
 
@@ -115,27 +115,34 @@ def make_env(
     return thunk
 ```
 
-The last thing to remember is to add the `ppo_atari` algorithm to the already known tasks under `./fabricrl/utils/registry.py`:
+The last two things to do are, first to decorate the `main` function with the `register_algorithm` decorator:
 
 ```diff
-# Mapping of tasks with their relative algorithms.
-# A new task can be added as: tasks[module] = [..., algorithm]
-# where `module` and `algorithm` are respectively taken from fabricrl/algos/{module}/{algorithm}.py
-tasks: Dict[str, List[str]] = {
-    "droq": ["droq"],
-    "sac": ["sac", "sac_decoupled"],
--   "ppo": ["ppo", "ppo_decoupled"],
-+   "ppo": ["ppo", "ppo_decoupled", "ppo_atari"],
-    "ppo_continuous": ["ppo_continuous"],
-    "ppo_recurrent": ["ppo_recurrent"],
-}
++from fabricrl.utils.registry import register_algorithm
+...
 
-# A list representing the `decoupled` algorithms
--decoupled_tasks: List[str] = ["sac_decoupled", "ppo_decoupled"]
-+decoupled_tasks: List[str] = ["sac_decoupled", "ppo_decoupled", "ppo_atari"]
+
++@register_algorithm(decoupled=True)
+def main():
+    ...
 ```
 
-This will also print `ppo_atari` under the `Commands` section when running `python main.py`:
+while the second is to import the `ppo_atari` module in the `./fabricrl/__init__.py`:
+
+```diff
+from dotenv import load_dotenv
+
+from fabricrl.algos.droq import droq
+from fabricrl.algos.ppo import ppo, ppo_decoupled
++from fabricrl.algos.ppo import ppo_atari
+from fabricrl.algos.ppo_continuous import ppo_continuous
+from fabricrl.algos.ppo_recurrent import ppo_recurrent
+from fabricrl.algos.sac import sac, sac_decoupled
+
+load_dotenv()
+```
+
+We should see `ppo_atari` under the `Commands` section when running `python main.py`:
 
 ```bash
 Usage: main.py [OPTIONS] COMMAND [ARGS]...

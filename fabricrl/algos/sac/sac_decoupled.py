@@ -26,9 +26,8 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import make_env
-
-__all__ = ["main"]
 
 
 @torch.no_grad()
@@ -275,6 +274,7 @@ def trainer(
             )
 
 
+@register_algorithm(decoupled=True)
 def main():
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]

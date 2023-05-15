@@ -30,9 +30,8 @@ from fabricrl.algos.ppo_recurrent.utils import test
 from fabricrl.data import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
-
-__all__ = ["main"]
 
 
 def train(
@@ -108,6 +107,7 @@ def train(
                 aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
+@register_algorithm(decoupled=True)
 def main():
     parser = HfArgumentParser(RecurrentPPOArgs)
     args: RecurrentPPOArgs = parser.parse_args_into_dataclasses()[0]
