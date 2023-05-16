@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "fabricrl"
+name = "sheeprl"
 version = "0.0.1"
 description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with research-friendly features"
 authors = [
@@ -7,13 +7,13 @@ authors = [
   "Davide Angioni <davide.angioni@orobix.com>",
   "Refik Can Malli <refikcan.malli@orobix.com>",
 ]
-packages = [{ include = "fabricrl" }]
+packages = [{ include = "sheeprl" }]
 keywords = ["reinforcement", "machine", "learning", "research"]
 license = "MIT"
 readme = "README.md"
 
 [tool.poetry.scripts]
-fabricrl = 'fabricrl.cli:run'
+sheeprl = 'sheeprl.cli:run'
 
 [tool.poetry.dependencies]
 python = ">=3.8,<3.10"

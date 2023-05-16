@@ -6,11 +6,13 @@ from unittest import mock
 
 import pytest
 import torch.distributed as dist
+from lightning import Fabric
+from lightning.fabric.fabric import _is_using_cli
 
-from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
+from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 
 
-@pytest.fixture(params=["1", "2"])
+@pytest.fixture(params=["1", "2", "3"])
 def devices(request):
     return request.param
 
@@ -28,9 +30,25 @@ def mock_env_and_destroy(devices):
         dist.destroy_process_group()
 
 
+def check_checkpoint(algo: str, target_keys: set):
+    fabric = Fabric(accelerator="cpu")
+    if not _is_using_cli():
+        fabric.launch()
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    ckpt_path = f"{project_root}/logs/{algo}/"
+    experiment_list = sorted(os.listdir(ckpt_path))
+    assert len(experiment_list) > 0
+    ckpt_path += experiment_list[-1] + "/"
+    ckpt_path += os.listdir(ckpt_path)[-1] + "/version_0/checkpoint/"
+    assert len(os.listdir(ckpt_path)) == 1
+    state = fabric.load(ckpt_path + os.listdir(ckpt_path)[-1])
+    ckpt_keys = set(state.keys())
+    assert len(ckpt_keys.intersection(target_keys)) == len(ckpt_keys)
+
+
 @pytest.mark.timeout(60)
 def test_droq(standard_args):
-    task = importlib.import_module("fabricrl.algos.droq.droq")
+    task = importlib.import_module("sheeprl.algos.droq.droq")
     args = standard_args + [
         "--per_rank_batch_size=1",
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
@@ -41,11 +59,16 @@ def test_droq(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint(
+            "droq", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
+        )
 
 
 @pytest.mark.timeout(60)
 def test_sac(standard_args):
-    task = importlib.import_module("fabricrl.algos.sac.sac")
+    task = importlib.import_module("sheeprl.algos.sac.sac")
     args = standard_args + [
         "--per_rank_batch_size=1",
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
@@ -56,14 +79,18 @@ def test_sac(standard_args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint(
+            "sac", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
+        )
 
 
 @pytest.mark.timeout(60)
 def test_sac_decoupled(standard_args):
-    task = importlib.import_module("fabricrl.algos.sac.sac_decoupled")
+    task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
     args = standard_args + [
         "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
     ]
@@ -81,21 +108,35 @@ def test_sac_decoupled(standard_args):
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint(
+                "sac_decoupled",
+                {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"},
+            )
+
 
 @pytest.mark.timeout(60)
 def test_ppo(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo")
-    args = standard_args + ["--rollout_steps=1", "--per_rank_batch_size=1"]
+    task = importlib.import_module("sheeprl.algos.ppo.ppo")
+    args = standard_args + [f"--rollout_steps={os.environ['LT_DEVICES']}", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
 
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+
 
 @pytest.mark.timeout(60)
 def test_ppo_decoupled(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo_decoupled")
-    args = standard_args + ["--rollout_steps=1", "--per_rank_batch_size=1"]
+    task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
+    args = standard_args + [
+        f"--rollout_steps={os.environ['LT_DEVICES']}",
+        "--per_rank_batch_size=1",
+        "--update_epochs=1",
+    ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
         from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
@@ -109,6 +150,10 @@ def test_ppo_decoupled(standard_args):
                         "--standalone",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
+
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint("ppo_decoupled", {"agent", "optimizer", "args", "update_step", "scheduler"})
 
 
 @pytest.mark.timeout(60)
@@ -118,9 +163,9 @@ def test_ppo_decoupled(standard_args):
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
 def test_ppo_atari(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo_atari")
+    task = importlib.import_module("sheeprl.algos.ppo.ppo_atari")
     args = standard_args + [
-        "--rollout_steps=1",
+        f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
         "--env_id=BreakoutNoFrameskip-v4",
     ]
@@ -138,22 +183,32 @@ def test_ppo_atari(standard_args):
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+            check_checkpoint("ppo_atari", {"agent", "optimizer", "args", "update_step", "scheduler"})
+
 
 @pytest.mark.timeout(60)
 def test_ppo_continuous(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo_continuous.ppo_continuous")
+    task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
     args = standard_args + ["--rollout_steps=1", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo_continuous", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
 
 
 @pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo_recurrent.ppo_recurrent")
-    args = standard_args + ["--rollout_steps=1", "--per_rank_batch_size=1"]
+    task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
+    args = standard_args + [f"--rollout_steps={os.environ['LT_DEVICES']}", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        check_checkpoint("ppo_recurrent", {"agent", "optimizer", "args", "update_step", "scheduler"})

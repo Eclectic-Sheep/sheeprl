@@ -1,7 +1,7 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to fabricrl called `sota`, so that we can train an agent simply with `python main.py sota --arg1=... --arg2=...` or accelerated by fabric with `lightning run model main.py sota --args1=... --arg2=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python main.py sota --arg1=... --arg2=...` or accelerated by fabric with `lightning run model main.py sota --args1=... --arg2=...`.  
 
-We start from creating a new folder called `sota` under `./fabricrl/algos/`, containing the following files:
+We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
 ```bash
 algos
@@ -21,8 +21,8 @@ To add some CLI arguments to our new algorithm we create the `SOTArgs` in the `a
 ```python
 from dataclasses import dataclass
 
-from fabricrl.algos.args import StandardArgs
-from fabricrl.utils.parser import Arg
+from sheeprl.algos.args import StandardArgs
+from sheeprl.utils.parser import Arg
 
 
 @dataclass
@@ -67,15 +67,15 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
-from fabricrl.algos.sota.args import SOTArgs
-from fabricrl.algos.sota.loss import loss1, loss2
-from fabricrl.algos.sota.utils import test
-from fabricrl.data import ReplayBuffer
-from fabricrl.models.models import MLP
-from fabricrl.utils.metric import MetricAggregator
-from fabricrl.utils.parser import HfArgumentParser
-from fabricrl.utils.registry import register_algorithm
-from fabricrl.utils.utils import make_env
+from sheeprl.algos.sota.args import SOTArgs
+from sheeprl.algos.sota.loss import loss1, loss2
+from sheeprl.algos.sota.utils import test
+from sheeprl.data import ReplayBuffer
+from sheeprl.models.models import MLP
+from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.parser import HfArgumentParser
+from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import make_env
 
 
 def train(
@@ -246,20 +246,20 @@ if __name__ == "__main__":
     main()
 ```
 
-To let the `register_algorithm` decorator add our new `sota` algorithm to the available algorithms registry we need to import it in `./fabricrl/__init__.py`: 
+To let the `register_algorithm` decorator add our new `sota` algorithm to the available algorithms registry we need to import it in `./sheeprl/__init__.py`: 
 
 ```diff
 from dotenv import load_dotenv
 
-from fabricrl.algos.droq import droq
-from fabricrl.algos.ppo import ppo, ppo_decoupled
-from fabricrl.algos.ppo_continuous import ppo_continuous
-from fabricrl.algos.ppo_recurrent import ppo_recurrent
-from fabricrl.algos.sac import sac, sac_decoupled
-+from fabricrl.algos.sota import sota
+from sheeprl.algos.droq import droq
+from sheeprl.algos.ppo import ppo, ppo_decoupled
+from sheeprl.algos.ppo_continuous import ppo_continuous
+from sheeprl.algos.ppo_recurrent import ppo_recurrent
+from sheeprl.algos.sac import sac, sac_decoupled
++from sheeprl.algos.sota import sota
 
 try:
-    from fabricrl.algos.ppo import ppo_atari
+    from sheeprl.algos.ppo import ppo_atari
 except ModuleNotFoundError:
     pass
 
@@ -269,7 +269,7 @@ load_dotenv()
 After doing that, when we run `python main.py` we should see `sota` under the `Commands` section:
 
 ```bash
-(fabricrl) ➜  fabric_rl git:(master) ✗ python main.py
+(sheeprl) ➜  fabric_rl git:(master) ✗ python main.py
 Usage: main.py [OPTIONS] COMMAND [ARGS]...
 
   Fabric-RL zero-code command line utility.
@@ -291,7 +291,7 @@ Commands:
 While if we run `python main.py sota -h` we should see the CLI arguments that we have defined in the `args.py`, plus the ones inherited from the `StandardArgs`:
 
 ```bash
-(fabricrl) ➜  fabric_rl git:(feature/registry) ✗ python main.py sota -h
+(sheeprl) ➜  fabric_rl git:(feature/registry) ✗ python main.py sota -h
 UserWarning: This script was launched without the Lightning CLI. Consider to launch the script with `lightning run model ...` to scale it with Fabric
   warnings.warn(
 usage: sota.py [-h] [--exp_name EXP_NAME] [--seed SEED] [--dry_run [DRY_RUN]] [--torch_deterministic [TORCH_DETERMINISTIC]]
