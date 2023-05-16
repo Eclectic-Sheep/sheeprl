@@ -288,7 +288,7 @@ Commands:
   sota
 ```
 
-While if we run `python main.py sota -h` we should see the CLI arguments that we have defined in the `args.py`:
+While if we run `python main.py sota -h` we should see the CLI arguments that we have defined in the `args.py`, plus the ones inherited from the `StandardArgs`:
 
 ```bash
 (fabricrl) ➜  fabric_rl git:(feature/registry) ✗ python main.py sota -h
