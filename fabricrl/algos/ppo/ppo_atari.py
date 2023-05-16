@@ -32,6 +32,7 @@ from fabricrl.models.models import MLP, NatureCNN
 from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 if not _IS_ATARI_AVAILABLE:
@@ -39,8 +40,6 @@ if not _IS_ATARI_AVAILABLE:
 
 if not _IS_ATARI_ROMS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_ATARI_ROMS_AVAILABLE))
-
-__all__ = ["main"]
 
 
 def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vector_env_idx: int = 0):
@@ -439,6 +438,7 @@ def trainer(
             )
 
 
+@register_algorithm(decoupled=True)
 def main():
     devices = os.environ.get("LT_DEVICES", None)
     if devices is None or devices == "1":

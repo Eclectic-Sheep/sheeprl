@@ -16,9 +16,9 @@ pip install gymnasium[accept-rom-license]
 For more information: https://gymnasium.farama.org/environments/atari/ 
 
 ## Step by step
-We start from `ppo_decoupled.py` and copy its code in the new `ppo_atari.py` file.
+We start from `ppo_decoupled.py` under the `./fabricrl/algos/ppo/` folder and copy its code in the new `ppo_atari.py` file.
 
-We decide to add a `feature_extractor` model that takes in input the observations as images and outputs a feature vector. To do this, we need to define a `torch.nn.Module` that uses `torch.nn.Conv2d` and `torch.nn.Linear` layers.
+We need to add a `feature_extractor` model that takes in input the observations as images and outputs a feature vector. To do this, we need to define a `torch.nn.Module` that uses `torch.nn.Conv2d` and `torch.nn.Linear` layers.
 
 We also need to define a `forward` method that takes in input the observations and returns the feature vector.
 
@@ -67,7 +67,7 @@ critic = MLP(
 ).to(device)
 ```
 
-We need to remember to add these parameters to the list of parameters to be optimized and shared by Fabric.
+We need to remember to add these parameters to the list of parameters to be optimized and shared by Fabric
 
 ```diff
 +    all_parameters = list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
@@ -78,7 +78,15 @@ We need to remember to add these parameters to the list of parameters to be opti
     )
 ```
 
-The last thing to remember is to correctly pre-process the observation coming from the environment, pratically redefining the `make_env` function, wrapping the environment with the `gymnasium.wrappers.atari_preprocess.AtariPreprocess` wrapper:
+and to extract the features every time before calling the actor or the critic
+
+```python
+features = feature_extractor(next_obs)
+actions_logits = actor(features)
+values = critic(features)
+```
+
+We also need to assure that we correctly pre-process the observation coming from the environment, pratically redefining the `make_env` function, wrapping the environment with the `gymnasium.wrappers.atari_preprocess.AtariPreprocess` wrapper:
 
 ```python
 def make_env(
@@ -107,10 +115,56 @@ def make_env(
     return thunk
 ```
 
-Once this is done, we are all set.
+The last two things to do are, first to decorate the `main` function with the `register_algorithm` decorator:
 
-We can train the model by running:
+```diff
++from fabricrl.utils.registry import register_algorithm
+...
+
+
++@register_algorithm(decoupled=True)
+def main():
+    ...
+```
+
+while the second is to import the `ppo_atari` module in the `./fabricrl/__init__.py`:
+
+```diff
+from dotenv import load_dotenv
+
+from fabricrl.algos.droq import droq
+from fabricrl.algos.ppo import ppo, ppo_decoupled
++from fabricrl.algos.ppo import ppo_atari
+from fabricrl.algos.ppo_continuous import ppo_continuous
+from fabricrl.algos.ppo_recurrent import ppo_recurrent
+from fabricrl.algos.sac import sac, sac_decoupled
+
+load_dotenv()
+```
+
+We should see `ppo_atari` under the `Commands` section when running `python main.py`:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v0
+Usage: main.py [OPTIONS] COMMAND [ARGS]...
+
+  Fabric-RL zero-code command line utility.
+
+Options:
+  --fabricrl_help  Show this message and exit.
+
+Commands:
+  droq
+  ppo
+  ppo_atari
+  ppo_continuous
+  ppo_decoupled
+  ppo_recurrent
+  sac
+  sac_decoupled
+```
+
+Once this is done, we are all set. We can now train the model by running:
+
+```bash
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v4
 ```

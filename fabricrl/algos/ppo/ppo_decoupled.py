@@ -30,9 +30,8 @@ from fabricrl.data import ReplayBuffer
 from fabricrl.models.models import MLP
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
-
-__all__ = ["main"]
 
 
 @torch.no_grad()
@@ -407,6 +406,7 @@ def trainer(
             )
 
 
+@register_algorithm(decoupled=True)
 def main():
     devices = os.environ.get("LT_DEVICES", None)
     if devices is None or devices == "1":
