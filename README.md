@@ -1,10 +1,6 @@
 # ⚡ Fabric RL
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
-<p align="center">
-  <img src="images/cli.gif">
-</p>
-
 ## Why
 We want to provide a framework for RL algorithms that is at the same time simple and scalable thanks to Lightning Fabric.
 
@@ -18,7 +14,14 @@ git clone <http-url>
 cd fabric_rl
 ```
 
-From inside the newly create folder run [Poetry](https://python-poetry.org) to create the virtual environment and install the dependencies:
+From inside the newly create folder run [Poetry](https://python-poetry.org) to install you preferred [PyTorch version](https://pytorch.org/get-started/locally/) (a version >=2.0 is required to properly run sheeprl):
+
+```bash
+poetry run pip install torch>=2.0
+```
+
+and then install the package with:
+
 ```bash
 poetry install
 ```
