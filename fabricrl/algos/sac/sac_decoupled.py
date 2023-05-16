@@ -26,9 +26,8 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import make_env
-
-__all__ = ["main"]
 
 
 @torch.no_grad()
@@ -60,6 +59,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
                 logger.log_dir,
                 "train",
                 mask_velocities=False,
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
@@ -302,6 +302,7 @@ def trainer(
             fabric.barrier()
 
 
+@register_algorithm(decoupled=True)
 def main():
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]

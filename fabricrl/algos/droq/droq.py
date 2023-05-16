@@ -26,9 +26,8 @@ from fabricrl.algos.sac.sac import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import make_env
-
-__all__ = ["main"]
 
 
 def train(
@@ -115,6 +114,7 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
+@register_algorithm()
 def main():
     parser = HfArgumentParser(DROQArgs)
     args: DROQArgs = parser.parse_args_into_dataclasses()[0]
@@ -148,6 +148,7 @@ def main():
                 logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=False,
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
@@ -268,7 +269,7 @@ def main():
                 "global_step": global_step,
             }
             if fabric.world_size > 1:
-                # It is needed because gather() function is not implemented in Fabric
+                # It is needed because gather_object() function is not implemented in Fabric
                 checkpoint_collective = TorchCollective()
                 checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
                 gathered_rb = [None for _ in range(fabric.world_size)]

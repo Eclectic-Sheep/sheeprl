@@ -27,9 +27,8 @@ from fabricrl.algos.sac.utils import test
 from fabricrl.data.buffers import ReplayBuffer
 from fabricrl.utils.metric import MetricAggregator
 from fabricrl.utils.parser import HfArgumentParser
+from fabricrl.utils.registry import register_algorithm
 from fabricrl.utils.utils import make_env
-
-__all__ = ["main"]
 
 
 def train(
@@ -81,6 +80,7 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
+@register_algorithm()
 def main():
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
@@ -114,6 +114,7 @@ def main():
                 logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=False,
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]

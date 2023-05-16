@@ -36,7 +36,7 @@ def check_checkpoint(algo: str, target_keys: set):
         fabric.launch()
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     ckpt_path = f"{project_root}/logs/{algo}/"
-    experiment_list = os.listdir(ckpt_path)
+    experiment_list = sorted(os.listdir(ckpt_path))
     assert len(experiment_list) > 0
     ckpt_path += experiment_list[-1] + "/"
     ckpt_path += os.listdir(ckpt_path)[-1] + "/version_0/checkpoint/"
