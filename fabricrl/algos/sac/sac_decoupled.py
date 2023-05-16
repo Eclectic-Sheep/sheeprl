@@ -287,7 +287,7 @@ def trainer(
                 torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), src=1
             )
 
-        # Checkpoint Model
+        # Checkpoint model on rank-0: send it everything
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == 1:
                 state = {
@@ -299,6 +299,7 @@ def trainer(
                     "global_step": global_step,
                 }
                 player_trainer_collective.broadcast_object_list([state], src=1)
+            # Fake save for the other ranks
             fabric.barrier()
 
 

@@ -10,6 +10,7 @@ from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Categorical
@@ -113,15 +114,28 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0
+    # Set logger only on rank-0 but share the logger directory: since we don't know
+    # what is happening during the `fabric.save()` method, at least we assure that all
+    # ranks save under the same named folder.
+    # As a plus, rank-0 sets the time uniquely for everyone
+    world_collective = TorchCollective()
+    if fabric.world_size > 1:
+        world_collective.setup()
+        world_collective.create_group()
     if rank == 0:
+        log_dir = os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        logger = TensorBoardLogger(
-            root_dir=os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-            name=run_name,
-        )
+        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
         fabric._loggers = [logger]
+        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
+        if fabric.world_size > 1:
+            world_collective.broadcast_object_list([log_dir], src=0)
+    else:
+        data = [None]
+        world_collective.broadcast_object_list(data, src=0)
+        log_dir = data[0]
+        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     envs = SyncVectorEnv(
@@ -297,7 +311,7 @@ def main():
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = {
                 "actor": actor.state_dict(),
@@ -308,11 +322,8 @@ def main():
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
             log_dir = fabric.logger.log_dir if fabric.global_rank == 0 else ""
-            ckpt_path = log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
-            fabric.save(
-                ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
-                state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
-            )
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
+            fabric.save(ckpt_path, state)
 
     envs.close()
     if fabric.is_global_zero:

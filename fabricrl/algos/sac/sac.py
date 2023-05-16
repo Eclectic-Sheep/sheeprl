@@ -94,14 +94,28 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0
+    # Set logger only on rank-0 but share the logger directory: since we don't know
+    # what is happening during the `fabric.save()` method, at least we assure that all
+    # ranks save under the same named folder.
+    # As a plus, rank-0 sets the time uniquely for everyone
+    world_collective = TorchCollective()
+    if fabric.world_size > 1:
+        world_collective.setup()
+        world_collective.create_group()
     if rank == 0:
+        log_dir = os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        logger = TensorBoardLogger(
-            root_dir=os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
-        )
+        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
         fabric._loggers = [logger]
+        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
+        if fabric.world_size > 1:
+            world_collective.broadcast_object_list([log_dir], src=0)
+    else:
+        data = [None]
+        world_collective.broadcast_object_list(data, src=0)
+        log_dir = data[0]
+        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     envs = gym.vector.SyncVectorEnv(
@@ -251,7 +265,7 @@ def main():
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
             rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
@@ -265,7 +279,8 @@ def main():
                 "global_step": global_step,
             }
             if fabric.world_size > 1:
-                # It is needed because gather() function is not implemented in Fabric
+                # We need to collect the buffers from all the ranks
+                # The collective it is needed because the `gather_object` function is not implemented in Fabric
                 checkpoint_collective = TorchCollective()
                 checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
                 gathered_rb = [None for _ in range(fabric.world_size)]
@@ -274,13 +289,8 @@ def main():
                     state["rb"] = gathered_rb
                 else:
                     checkpoint_collective.gather_object(rb, None)
-
-            log_dir = fabric.logger.log_dir if fabric.global_rank == 0 else ""
-            ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
-            fabric.save(
-                ckpt_path if fabric.strategy == "fsdp" or fabric.global_rank == 0 else None,
-                state if fabric.strategy == "fsdp" or fabric.global_rank == 0 else {},
-            )
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt")
+            fabric.save(ckpt_path, state)
             rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
 
     envs.close()

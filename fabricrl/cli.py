@@ -37,6 +37,12 @@ def register_command(command, task, name: Optional[str] = None):
     @functools.wraps(command)
     def wrapper(cli_args):
         with patch("sys.argv", [task.__file__] + list(cli_args)) as sys_argv_mock:
+            strategy = os.environ.get("LT_STRATEGY", None)
+            if strategy == "fsdp":
+                raise ValueError(
+                    "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
+                    "`lightning run model --strategy=... fabricrl.py ...`"
+                )
             if name in decoupled_tasks and not _is_using_cli():
                 import torch.distributed.run as torchrun
 

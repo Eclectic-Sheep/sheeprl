@@ -2,7 +2,6 @@ import copy
 import os
 import time
 import warnings
-from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 
@@ -18,10 +17,11 @@ from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
+from torch import Tensor
 from torch.distributed.algorithms.join import Join
 from torch.distributions import Categorical
 from torch.optim import Adam
-from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
+from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from fabricrl.algos.ppo.args import PPOArgs
@@ -58,6 +58,21 @@ def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vecto
         return env
 
     return thunk
+
+
+# Simple wrapper to let torch.distributed.algorithms.join.Join
+# correctly injects fake communication hooks when we are
+# working with uneven inputs
+class Agent(torch.nn.Module):
+    def __init__(self, feature_extractor, actor, critic) -> None:
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.actor = actor
+        self.critic = critic
+
+    def forward(self, obs: Tensor) -> Tensor:
+        feat = self.feature_extractor(obs)
+        return self.actor(feat), self.critic(feat)
 
 
 @torch.no_grad()
@@ -249,7 +264,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model on rank-0: send it everything
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = [None]
             player_trainer_collective.broadcast_object_list(state, src=1)
@@ -269,8 +284,6 @@ def trainer(
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
-    group_rank = global_rank - 1
-    group_world_size = world_collective.world_size - 1
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
@@ -294,25 +307,17 @@ def trainer(
         activation=torch.nn.ReLU,
     )
     critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
+    agent = Agent(feature_extractor, actor, critic)
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(
-        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
-        lr=args.lr,
-        eps=1e-4,
-    )
-    feature_extractor = fabric.setup_module(feature_extractor)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
+    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Send weights to rank-0, a.k.a. the player
     if global_rank == 1:
         player_trainer_collective.broadcast(
-            torch.nn.utils.convert_parameters.parameters_to_vector(
-                list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-            ),
-            src=1,
+            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
         )
 
     # Receive maximum number of updates from the player
@@ -352,25 +357,15 @@ def trainer(
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
-        if args.share_data:
-            sampler = DistributedSampler(
-                indexes, num_replicas=group_world_size, rank=group_rank, shuffle=True, seed=args.seed, drop_last=False
-            )
-        else:
-            sampler = RandomSampler(indexes)
-        sampler = BatchSampler(sampler, batch_size=args.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(RandomSampler(indexes), batch_size=args.per_rank_batch_size, drop_last=False)
 
         # The Join context is needed because there can be the possibility
         # that some ranks receive less data
-        with Join([actor._forward_module, critic._forward_module]) if not args.share_data else nullcontext():
-            for epoch in range(args.update_epochs):
-                if args.share_data:
-                    sampler.sampler.set_epoch(epoch)
+        with Join([agent._forward_module]):
+            for _ in range(args.update_epochs):
                 for batch_idxes in sampler:
                     batch = data[batch_idxes]
-                    features = feature_extractor(batch["observations"])
-                    actions_logits = actor(features)
-                    new_values = critic(features)
+                    actions_logits, new_values = agent(batch["observations"])
 
                     dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
@@ -403,9 +398,7 @@ def trainer(
                     optimizer.zero_grad(set_to_none=True)
                     fabric.backward(loss)
                     if args.max_grad_norm > 0.0:
-                        fabric.clip_gradients(feature_extractor, optimizer, max_norm=args.max_grad_norm)
-                        fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
-                        fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
+                        fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
                     optimizer.step()
 
                     # Update metrics
@@ -450,14 +443,14 @@ def trainer(
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == 1:
                 state = {
-                    "actor": actor.state_dict(),
-                    "critic": critic.state_dict(),
+                    "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "args": asdict(args),
                     "update_step": update,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
                 player_trainer_collective.broadcast_object_list([state], src=1)
+            # Fake save for the other ranks
             fabric.barrier()
 
 
