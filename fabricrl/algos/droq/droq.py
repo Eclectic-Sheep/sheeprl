@@ -113,7 +113,7 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
-@register_algorithm
+@register_algorithm()
 def main():
     parser = HfArgumentParser(DROQArgs)
     args: DROQArgs = parser.parse_args_into_dataclasses()[0]

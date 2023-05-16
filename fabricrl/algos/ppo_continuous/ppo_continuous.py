@@ -90,7 +90,7 @@ def train(
             aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
-@register_algorithm
+@register_algorithm()
 def main():
     parser = HfArgumentParser(PPOContinuousArgs)
     args: PPOContinuousArgs = parser.parse_args_into_dataclasses()[0]

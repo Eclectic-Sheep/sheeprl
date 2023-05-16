@@ -99,7 +99,7 @@ def train(
     aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm
+@register_algorithm()
 def main():
     parser = HfArgumentParser(SOTArgs)
     args: SOTArgs = parser.parse_args_into_dataclasses()[0]

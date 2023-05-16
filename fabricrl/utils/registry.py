@@ -1,5 +1,5 @@
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 # Mapping of tasks with their relative algorithms.
 # A new task can be added as: tasks[module] = [..., algorithm]
@@ -14,16 +14,16 @@ def _register(fn: Callable[..., Any], decoupled: bool = False) -> Callable[..., 
     # lookup containing module
     if fn.__module__ == "__main__":
         return fn
-    module_name_split = fn.__module__.split(".")
-    module_name, algorithm = module_name_split[-2:]
-    algos = tasks.get(module_name, None)
+    module_split = fn.__module__.split(".")
+    module, algorithm = module_split[-2:]
+    algos = tasks.get(module, None)
     if algos is None:
-        tasks[module_name] = [algorithm]
+        tasks[module] = [algorithm]
     else:
         if algorithm in algos:
             raise ValueError(f"The algorithm `{algorithm}` has already been registered!")
-        tasks[module_name].append(algorithm)
-    if decoupled:
+        tasks[module].append(algorithm)
+    if decoupled or "decoupled" in algorithm:
         decoupled_tasks.append(algorithm)
 
     # add the decorated function to __all__ in algorithm
@@ -36,7 +36,8 @@ def _register(fn: Callable[..., Any], decoupled: bool = False) -> Callable[..., 
     return fn
 
 
-def register_algorithm(fn: Optional[Callable[..., Any]] = None, decoupled: bool = False):
-    if fn:
-        return _register(fn, decoupled)
-    return _register
+def register_algorithm(decoupled: bool = False):
+    def inner_decorator(fn):
+        return _register(fn, decoupled=decoupled)
+
+    return inner_decorator

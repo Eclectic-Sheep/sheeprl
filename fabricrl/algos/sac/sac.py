@@ -79,7 +79,7 @@ def train(
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
-@register_algorithm
+@register_algorithm()
 def main():
     parser = HfArgumentParser(SACArgs)
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
