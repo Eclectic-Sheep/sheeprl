@@ -51,14 +51,14 @@ def test_replay_buffer_sample():
     assert s.shape == torch.Size([4, 1])
 
 
-def test_replay_buffer_sample_fail_full():
+def test_replay_buffer_sample_full():
     buf_size = 5
     n_envs = 1
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = TensorDict({"t": torch.rand(6, 1, 1)}, batch_size=[6, n_envs])
     rb.add(td1)
-    with pytest.raises(ValueError, match=f"larger than the replay buffer size"):
-        rb.sample(6)
+    s = rb.sample(6)
+    assert s.shape == torch.Size([6, 1])
 
 
 def test_replay_buffer_sample_one_element():

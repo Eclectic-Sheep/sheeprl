@@ -118,8 +118,6 @@ class ReplayBuffer:
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
-        if self._full and batch_size > self._buf.shape[0]:
-            raise ValueError(f"Batch size {batch_size} is larger than the replay buffer size ({self._buf.shape[0]})")
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
         if self._full:

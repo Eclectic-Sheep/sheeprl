@@ -91,7 +91,6 @@ def test_sac_decoupled(standard_args):
     task = importlib.import_module("fabricrl.algos.sac.sac_decoupled")
     args = standard_args + [
         "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
     ]
