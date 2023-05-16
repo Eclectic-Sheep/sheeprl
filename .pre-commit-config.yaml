@@ -1,0 +1,59 @@
+repos:
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.0.0-alpha.9-for-vscode
+    hooks:
+      - id: prettier
+        name: (prettier) Reformat YAML files with prettier
+        types: [yaml]
+
+  - repo: https://github.com/myint/autoflake
+    rev: v2.1.1
+    hooks:
+      - id: autoflake
+        name: Remove unused variables and imports
+        language: python
+        entry: autoflake
+        types: [python]
+        args:
+          [
+            "--in-place",
+            "--remove-all-unused-imports",
+            "--remove-unused-variables",
+            "--expand-star-imports",
+            "--ignore-init-module-imports",
+          ]
+        files: \.py$
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        name: (isort) Sorting import statements
+        args: [--settings-path=pyproject.toml]
+        language: python
+        types: [python]
+        files: \.py$
+
+  - repo: https://github.com/psf/black
+    rev: 23.3.0
+    hooks:
+      - id: black
+        name: (black) Format Python code
+        args: [--config=pyproject.toml]
+        language: python
+        types: [python]
+
+      - id: black-jupyter
+        name: (black-jupyter) Format jupyter notebooks
+        args: [--config=pyproject.toml]
+        language: python
+        types: [jupyter]
+
+  # - repo: https://github.com/econchick/interrogate
+  #   rev: 1.5.0
+  #   hooks:
+  #     - id: interrogate
+  #       name: (interrogate) docstring coverage
+  #       language: python
+  #       types: [python]
+  #       pass_filenames: false
