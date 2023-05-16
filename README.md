@@ -1,6 +1,10 @@
 # ⚡ Fabric RL
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
+<p align="center">
+  <img src="images/cli.gif">
+</p>
+
 ## Why
 We want to provide a framework for RL algorithms that is at the same time simple and scalable thanks to Lightning Fabric.
 
