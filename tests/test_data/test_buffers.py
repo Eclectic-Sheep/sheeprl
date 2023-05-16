@@ -2,7 +2,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from fabricrl.data.buffers import ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 
 
 def test_replay_buffer_wrong_buffer_size():

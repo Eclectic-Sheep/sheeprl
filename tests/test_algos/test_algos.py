@@ -9,7 +9,7 @@ import torch.distributed as dist
 from lightning import Fabric
 from lightning.fabric.fabric import _is_using_cli
 
-from fabricrl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
+from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 
 
 @pytest.fixture(params=["1", "2", "3"])
@@ -48,7 +48,7 @@ def check_checkpoint(algo: str, target_keys: set):
 
 @pytest.mark.timeout(60)
 def test_droq(standard_args):
-    task = importlib.import_module("fabricrl.algos.droq.droq")
+    task = importlib.import_module("sheeprl.algos.droq.droq")
     args = standard_args + [
         "--per_rank_batch_size=1",
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
@@ -68,7 +68,7 @@ def test_droq(standard_args):
 
 @pytest.mark.timeout(60)
 def test_sac(standard_args):
-    task = importlib.import_module("fabricrl.algos.sac.sac")
+    task = importlib.import_module("sheeprl.algos.sac.sac")
     args = standard_args + [
         "--per_rank_batch_size=1",
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
@@ -88,7 +88,7 @@ def test_sac(standard_args):
 
 @pytest.mark.timeout(60)
 def test_sac_decoupled(standard_args):
-    task = importlib.import_module("fabricrl.algos.sac.sac_decoupled")
+    task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
     args = standard_args + [
         "--per_rank_batch_size=1",
         "--learning_starts=0",
@@ -118,7 +118,7 @@ def test_sac_decoupled(standard_args):
 
 @pytest.mark.timeout(60)
 def test_ppo(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo")
+    task = importlib.import_module("sheeprl.algos.ppo.ppo")
     args = standard_args + [f"--rollout_steps={os.environ['LT_DEVICES']}", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -131,7 +131,7 @@ def test_ppo(standard_args):
 
 @pytest.mark.timeout(60)
 def test_ppo_decoupled(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo_decoupled")
+    task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
@@ -163,7 +163,7 @@ def test_ppo_decoupled(standard_args):
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
 def test_ppo_atari(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo.ppo_atari")
+    task = importlib.import_module("sheeprl.algos.ppo.ppo_atari")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
@@ -190,7 +190,7 @@ def test_ppo_atari(standard_args):
 
 @pytest.mark.timeout(60)
 def test_ppo_continuous(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo_continuous.ppo_continuous")
+    task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
     args = standard_args + ["--rollout_steps=1", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -203,7 +203,7 @@ def test_ppo_continuous(standard_args):
 
 @pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args):
-    task = importlib.import_module("fabricrl.algos.ppo_recurrent.ppo_recurrent")
+    task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
     args = standard_args + [f"--rollout_steps={os.environ['LT_DEVICES']}", "--per_rank_batch_size=1"]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:

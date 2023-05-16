@@ -16,7 +16,7 @@ pip install gymnasium[accept-rom-license]
 For more information: https://gymnasium.farama.org/environments/atari/ 
 
 ## Step by step
-We start from `ppo_decoupled.py` under the `./fabricrl/algos/ppo/` folder and copy its code in the new `ppo_atari.py` file.
+We start from `ppo_decoupled.py` under the `./sheeprl/algos/ppo/` folder and copy its code in the new `ppo_atari.py` file.
 
 We need to add a `feature_extractor` model that takes in input the observations as images and outputs a feature vector. To do this, we need to define a `torch.nn.Module` that uses `torch.nn.Conv2d` and `torch.nn.Linear` layers.
 
@@ -118,7 +118,7 @@ def make_env(
 The last two things to do are, first to decorate the `main` function with the `register_algorithm` decorator:
 
 ```diff
-+from fabricrl.utils.registry import register_algorithm
++from sheeprl.utils.registry import register_algorithm
 ...
 
 
@@ -127,17 +127,17 @@ def main():
     ...
 ```
 
-while the second is to import the `ppo_atari` module in the `./fabricrl/__init__.py`:
+while the second is to import the `ppo_atari` module in the `./sheeprl/__init__.py`:
 
 ```diff
 from dotenv import load_dotenv
 
-from fabricrl.algos.droq import droq
-from fabricrl.algos.ppo import ppo, ppo_decoupled
-+from fabricrl.algos.ppo import ppo_atari
-from fabricrl.algos.ppo_continuous import ppo_continuous
-from fabricrl.algos.ppo_recurrent import ppo_recurrent
-from fabricrl.algos.sac import sac, sac_decoupled
+from sheeprl.algos.droq import droq
+from sheeprl.algos.ppo import ppo, ppo_decoupled
++from sheeprl.algos.ppo import ppo_atari
+from sheeprl.algos.ppo_continuous import ppo_continuous
+from sheeprl.algos.ppo_recurrent import ppo_recurrent
+from sheeprl.algos.sac import sac, sac_decoupled
 
 load_dotenv()
 ```
