@@ -10,7 +10,7 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 First, clone the repo with:
 
 ```bash
-git clone <http-url>
+git clone https://github.com/Eclectic-Sheep/sheeprl.git
 cd fabric_rl
 ```
 
