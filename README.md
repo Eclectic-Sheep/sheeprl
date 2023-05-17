@@ -91,13 +91,13 @@ The repository is structured as follows:
 In the coupled version of an algorithm, the agent interacts with the environment and executes the training loop. 
 
 <p align="center">
-  <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/fabric_coupled.png">
+  <img src="./images/sheeprl_coupled.png">
 </p>
 
 In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
 
 <p align="center">
-  <img src="https://pl-public-data.s3.amazonaws.com/assets_lightning/examples/fabric/reinforcement-learning/ppo_fabric_decoupled.png">
+  <img src="./images/sheeprl_decoupled.png">
 </p>
 
 #### Coupled
