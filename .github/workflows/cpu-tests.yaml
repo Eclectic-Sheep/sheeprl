@@ -45,15 +45,7 @@ jobs:
         poetry install --no-interaction --with test
         poetry run pip install --force-reinstall "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
     
-    - name: Run tests on POSIX OS
-      if: ${{ (matrix.os == 'ubuntu-latest') || (matrix.os == 'macos-latest') }}
+    - name: Run tests
       run: |
-        source .venv/bin/activate
-        pytest --disable-pytest-warnings --strict-markers --color=yes
-    
-    - name: Run tests on Windows OS
-      if: ${{ matrix.os == 'windows-latest' }}
-      run: |
-        .venv\\Scripts\\activate.ps1
-        pytest --disable-pytest-warnings --strict-markers --color=yes
+        poetry run pytest --disable-pytest-warnings --strict-markers --color=yes
       
