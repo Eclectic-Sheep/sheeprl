@@ -16,7 +16,7 @@ readme = "README.md"
 sheeprl = 'sheeprl.cli:run'
 
 [tool.poetry.dependencies]
-python = ">=3.8,<3.10"
+python = ">=3.8,<3.11"
 gymnasium = { extras = ["box2d"], version = "^0.28.1" }
 moviepy = "^1.0.3"
 tensordict = "^0.1.0"
