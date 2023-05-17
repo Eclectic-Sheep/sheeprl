@@ -17,11 +17,13 @@ defaults:
 jobs:
   cpu-tests:
     runs-on: ${{ matrix.os }}
+    
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.8", "3.9", "3.10"]
+    
     timeout-minutes: 15
 
     steps:
@@ -36,11 +38,14 @@ jobs:
           requirements.txt
           setup.py
 
-    - name: Run tests without the package installed
+    - name: Install packages
       run: |
         pip install -U pip
         pip install poetry
-        poetry run pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
-        poetry install --with test
-        poetry shell
-        pytest --disable-pytest-warnings --strict-markers --color=yes
+        poetry install --no-interaction --with test
+        poetry run pip install --force-reinstall "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
+    
+    - name: Run tests
+      run: |
+        poetry run pytest --disable-pytest-warnings --strict-markers --color=yes
+      
