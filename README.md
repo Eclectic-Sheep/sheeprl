@@ -49,6 +49,12 @@ Once you trained an agent, a new folder called `logs` will be created, containin
 tensorboard --logdir logs
 ```
 
+<p align="center">
+  <video autoplay loop muted>
+    <source src="./assets/videos/tensorboard.mp4" type="video/mp4">
+  </video>
+</p>
+
 ### :nerd_face: More about running an algorithm
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
 
@@ -92,13 +98,13 @@ The repository is structured as follows:
 In the coupled version of an algorithm, the agent interacts with the environment and executes the training loop. 
 
 <p align="center">
-  <img src="./images/sheeprl_coupled.png">
+  <img src="./assets/images/sheeprl_coupled.png">
 </p>
 
 In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
 
 <p align="center">
-  <img src="./images/sheeprl_decoupled.png">
+  <img src="./assets/images/sheeprl_decoupled.png">
 </p>
 
 #### Coupled
