@@ -36,7 +36,7 @@ sheeprl.py ppo --env_id CartPole-v1
 
 One can check all the available algorithms with
 ```bash
-sheeprl.py --fabricrl_help
+sheeprl.py --sheeprl_help
 ```
 
 That's all it takes to train an agent with Sheep RL! 🎉

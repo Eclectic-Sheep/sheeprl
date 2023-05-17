@@ -269,7 +269,7 @@ load_dotenv()
 After doing that, when we run `python sheeprl.py` we should see `sota` under the `Commands` section:
 
 ```bash
-(sheeprl) ➜  fabric_rl git:(master) ✗ python sheeprl.py
+(sheeprl) ➜  sheeprl git:(main) ✗ python sheeprl.py
 Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
   Fabric-RL zero-code command line utility.
@@ -291,7 +291,7 @@ Commands:
 While if we run `python sheeprl.py sota -h` we should see the CLI arguments that we have defined in the `args.py`, plus the ones inherited from the `StandardArgs`:
 
 ```bash
-(sheeprl) ➜  fabric_rl git:(feature/registry) ✗ python sheeprl.py sota -h
+(sheeprl) ➜  sheeprl git:(main) ✗ python sheeprl.py sota -h
 UserWarning: This script was launched without the Lightning CLI. Consider to launch the script with `lightning run model ...` to scale it with Fabric
   warnings.warn(
 usage: sota.py [-h] [--exp_name EXP_NAME] [--seed SEED] [--dry_run [DRY_RUN]] [--torch_deterministic [TORCH_DETERMINISTIC]]

@@ -12,7 +12,7 @@ from lightning.fabric.fabric import _is_using_cli
 
 from sheeprl.utils.registry import decoupled_tasks, tasks
 
-CONTEXT_SETTINGS = dict(help_option_names=["--fabricrl_help"])
+CONTEXT_SETTINGS = dict(help_option_names=["--sheeprl_help"])
 
 
 @click.group(no_args_is_help=True, add_help_option=True, context_settings=CONTEXT_SETTINGS)
