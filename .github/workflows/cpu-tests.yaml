@@ -44,6 +44,6 @@ jobs:
         poetry install --with test
         if: ${{ (matrix.os == 'ubuntu-latest') || (matrix.os == 'macos-latest') }}
         run: source $(poetry env info --path)/bin/activate
-        if: ${{ maxtrix.os == 'windows-latest' }}
+        if: ${{ matrix.os == 'windows-latest' }}
         run: & ((poetry env info --path) + "\Scripts\activate.ps1")
         pytest --disable-pytest-warnings --strict-markers --color=yes
