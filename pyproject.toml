@@ -1,14 +1,14 @@
 [tool.poetry]
 name = "sheeprl"
-version = "0.0.1"
-description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with research-friendly features"
+version = "0.1.0"
+description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with production-friendly features"
 authors = [
   "Federico Belotti <federico.belotti@orobix.com>",
   "Davide Angioni <davide.angioni@orobix.com>",
   "Refik Can Malli <refikcan.malli@orobix.com>",
 ]
 packages = [{ include = "sheeprl" }]
-keywords = ["reinforcement", "machine", "learning", "research"]
+keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
 license = "MIT"
 readme = "README.md"
 
@@ -37,7 +37,7 @@ pytest-coverage = "^0.0"
 
 [tool.poetry.group.mujoco.dependencies]
 mujoco = "2.3.3"
-gymnasium = {extras = ["mujoco"], version = "^0.28.1"}
+gymnasium = { extras = ["mujoco"], version = "^0.28.1" }
 
 [build-system]
 requires = ["poetry-core"]
