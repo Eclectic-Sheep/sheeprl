@@ -1,4 +1,4 @@
-# ⚡ Fabric RL
+# ⚡ Sheep RL
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
 ## Why
@@ -38,9 +38,8 @@ One can check all the available algorithms with
 ```bash
 sheeprl.py --fabricrl_help
 ```
----
 
-That's all it takes to train an agent with Fabric RL! 🎉
+That's all it takes to train an agent with Sheep RL! 🎉
 
 ### :chart_with_upwards_trend: Check your results
 
