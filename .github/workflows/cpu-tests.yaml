@@ -43,16 +43,17 @@ jobs:
         pip install -U pip
         pip install poetry
         poetry run pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
-        poetry install --with test
+        poetry install --no-interaction --with test
     
-    - name: Activate poetry env on POSIX os
+    - name: Run tests on POSIX OS
       if: ${{ (matrix.os == 'ubuntu-latest') || (matrix.os == 'macos-latest') }}
-      run: source .venv/bin/activate
+      run: |
+        source .venv/bin/activate
+        pytest --disable-pytest-warnings --strict-markers --color=yes
     
-    - name: Activate poetry env on Windows os
+    - name: Run tests on Windows OS
       if: ${{ matrix.os == 'windows-latest' }}
-      run: .venv\Scripts\activate.ps1
-
-    - name: Run tests
-      run: pytest --disable-pytest-warnings --strict-markers --color=yes
+      run: |
+        .venv/Scripts/activate.ps1
+        pytest --disable-pytest-warnings --strict-markers --color=yes
       
