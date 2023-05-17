@@ -74,7 +74,7 @@ def polynomial_decay(
 
 def make_env(
     env_id: str,
-    seed: int,
+    seed: Optional[int],
     idx: int,
     capture_video: bool,
     run_name: Optional[str] = None,

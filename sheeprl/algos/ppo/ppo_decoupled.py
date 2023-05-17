@@ -246,7 +246,17 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
     if fabric.is_global_zero:
-        test(actor, envs, fabric, args)
+        test_env = make_env(
+            args.env_id,
+            None,
+            0,
+            args.capture_video,
+            fabric.logger.log_dir,
+            "test",
+            mask_velocities=args.mask_vel,
+            vector_env_idx=0,
+        )()
+        test(actor, test_env, fabric, args)
 
 
 def trainer(

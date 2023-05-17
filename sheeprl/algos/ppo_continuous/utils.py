@@ -1,5 +1,5 @@
+import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning import Fabric
 
 from sheeprl.algos.ppo.args import PPOArgs
@@ -7,11 +7,10 @@ from sheeprl.algos.ppo_continuous.agent import PPOContinuousActor
 
 
 @torch.no_grad()
-def test(actor: PPOContinuousActor, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
+def test(actor: PPOContinuousActor, env: gym.Env, fabric: Fabric, args: PPOArgs):
     actor.eval()
     done = False
     cumulative_rew = 0
-    env = envs.envs[0]
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).unsqueeze(0)
     while not done:
         # Act greedly through the environment

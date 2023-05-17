@@ -1,19 +1,18 @@
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gymnasium.vector import SyncVectorEnv
 from lightning import Fabric
 
 from sheeprl.algos.ppo.args import PPOArgs
 
 
 @torch.no_grad()
-def test(actor: nn.Module, envs: SyncVectorEnv, fabric: Fabric, args: PPOArgs):
+def test(actor: nn.Module, env: gym.Env, fabric: Fabric, args: PPOArgs):
     actor.eval()
     done = False
     cumulative_rew = 0
-    env = envs.envs[0]
     next_obs = torch.tensor(np.array(env.reset(seed=args.seed)[0]), device=fabric.device).unsqueeze(0)
     while not done:
         # Act greedly through the environment

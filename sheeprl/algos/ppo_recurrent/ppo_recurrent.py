@@ -349,7 +349,17 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, envs, fabric, args)
+        test_env = make_env(
+            args.env_id,
+            None,
+            0,
+            args.capture_video,
+            fabric.logger.log_dir,
+            "test",
+            mask_velocities=args.mask_vel,
+            vector_env_idx=0,
+        )()
+        test(agent.module, test_env, fabric, args)
 
 
 if __name__ == "__main__":
