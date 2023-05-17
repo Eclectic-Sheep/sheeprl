@@ -7,8 +7,6 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
     Gym environment observation wrapper used to mask velocity terms in
     observations. The intention is the make the MDP partially observable.
     Adapted from https://github.com/LiuWenlin595/FinalProject.
-
-    :param env: Gym environment
     """
 
     # Supported envs

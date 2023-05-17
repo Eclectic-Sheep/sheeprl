@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 
-from sheeprl.utils.parser import Arg, DataClassType
+from sheeprl.utils.parser import Arg
 
 
 @dataclass
-class StandardArgs(DataClassType):
+class StandardArgs:
     exp_name: str = Arg(default="default", help="the name of this experiment")
     seed: int = Arg(default=42, help="seed of the experiment")
     dry_run: bool = Arg(default=False, help="whether to dry-run the script and exit")

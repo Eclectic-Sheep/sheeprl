@@ -450,8 +450,6 @@ def trainer(
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
                 player_trainer_collective.broadcast_object_list([state], src=1)
-            # Fake save for the other ranks
-            fabric.barrier()
 
 
 @register_algorithm(decoupled=True)

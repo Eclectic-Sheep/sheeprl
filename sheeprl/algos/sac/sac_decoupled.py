@@ -170,7 +170,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
             rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
@@ -251,7 +251,7 @@ def trainer(
         )
 
     # Start training
-    global_step = 0
+    global_step = 1
     while True:
         # Wait for data
         data = [None]
@@ -299,8 +299,6 @@ def trainer(
                     "global_step": global_step,
                 }
                 player_trainer_collective.broadcast_object_list([state], src=1)
-            # Fake save for the other ranks
-            fabric.barrier()
 
 
 @register_algorithm(decoupled=True)
