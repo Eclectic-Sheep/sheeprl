@@ -1,4 +1,4 @@
-# ⚡ Sheep RL
+# ⚡ Sheep RL 🐑
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
 ## Why
