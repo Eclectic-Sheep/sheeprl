@@ -11,7 +11,7 @@ First, clone the repo with:
 
 ```bash
 git clone https://github.com/Eclectic-Sheep/sheeprl.git
-cd fabric_rl
+cd sheeprl
 ```
 
 From inside the newly create folder run [Poetry](https://python-poetry.org) to install you preferred [PyTorch version](https://pytorch.org/get-started/locally/) (a version >=2.0 is required to properly run sheeprl):
