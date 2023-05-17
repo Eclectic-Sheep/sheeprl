@@ -17,25 +17,26 @@ cd sheeprl
 From inside the newly create folder run [Poetry](https://python-poetry.org) to install you preferred [PyTorch version](https://pytorch.org/get-started/locally/) (a version >=2.0 is required to properly run sheeprl):
 
 ```bash
-poetry run pip install torch>=2.0
+poetry run pip install "torch>=2.0"
 ```
 
 and then install the package with:
 
 ```bash
 poetry install
+poetry shell
 ```
 
 Now you can use one of the already available algorithms, or create your own. 
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-main.py ppo --env_id CartPole-v1
+sheeprl.py ppo --env_id CartPole-v1
 ```
 
 One can check all the available algorithms with
 ```bash
-main.py --fabricrl_help
+sheeprl.py --fabricrl_help
 ```
 ---
 
@@ -53,19 +54,19 @@ What you run is the PPO algorithm with the default configuration. But you can al
 
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 ```bash
-main.py ppo --env_id CartPole-v1 --num_envs 8
+sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:
 
 ```bash
-main.py ppo -h
+sheeprl.py ppo -h
 ```
 
 ### Running with Lightning Fabric
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo --env_id CartPole-v1
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo --env_id CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).

@@ -1,5 +1,5 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python main.py sota --arg1=... --arg2=...` or accelerated by fabric with `lightning run model main.py sota --args1=... --arg2=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py sota --arg1=... --arg2=...` or accelerated by fabric with `lightning run model sheeprl.py sota --args1=... --arg2=...`.  
 
 We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
@@ -266,11 +266,11 @@ except ModuleNotFoundError:
 load_dotenv()
 ```
 
-After doing that, when we run `python main.py` we should see `sota` under the `Commands` section:
+After doing that, when we run `python sheeprl.py` we should see `sota` under the `Commands` section:
 
 ```bash
-(sheeprl) ➜  fabric_rl git:(master) ✗ python main.py
-Usage: main.py [OPTIONS] COMMAND [ARGS]...
+(sheeprl) ➜  fabric_rl git:(master) ✗ python sheeprl.py
+Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
   Fabric-RL zero-code command line utility.
 
@@ -288,10 +288,10 @@ Commands:
   sota
 ```
 
-While if we run `python main.py sota -h` we should see the CLI arguments that we have defined in the `args.py`, plus the ones inherited from the `StandardArgs`:
+While if we run `python sheeprl.py sota -h` we should see the CLI arguments that we have defined in the `args.py`, plus the ones inherited from the `StandardArgs`:
 
 ```bash
-(sheeprl) ➜  fabric_rl git:(feature/registry) ✗ python main.py sota -h
+(sheeprl) ➜  fabric_rl git:(feature/registry) ✗ python sheeprl.py sota -h
 UserWarning: This script was launched without the Lightning CLI. Consider to launch the script with `lightning run model ...` to scale it with Fabric
   warnings.warn(
 usage: sota.py [-h] [--exp_name EXP_NAME] [--seed SEED] [--dry_run [DRY_RUN]] [--torch_deterministic [TORCH_DETERMINISTIC]]

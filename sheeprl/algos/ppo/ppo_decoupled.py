@@ -440,7 +440,7 @@ def main():
     if devices is None or devices == "1":
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "`lightning run model --devices=2 sheeprl.py ...`"
         )
 
     parser = HfArgumentParser(PPOArgs)

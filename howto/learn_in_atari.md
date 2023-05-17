@@ -142,10 +142,10 @@ from sheeprl.algos.sac import sac, sac_decoupled
 load_dotenv()
 ```
 
-We should see `ppo_atari` under the `Commands` section when running `python main.py`:
+We should see `ppo_atari` under the `Commands` section when running `python sheeprl.py`:
 
 ```bash
-Usage: main.py [OPTIONS] COMMAND [ARGS]...
+Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
   Fabric-RL zero-code command line utility.
 
@@ -166,5 +166,5 @@ Commands:
 Once this is done, we are all set. We can now train the model by running:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v4
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo_atari --env_id PongNoFrameskip-v4
 ```

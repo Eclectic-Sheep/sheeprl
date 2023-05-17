@@ -328,7 +328,7 @@ def main():
     if world_collective.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "`lightning run model --devices=2 sheeprl.py ...`"
         )
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
