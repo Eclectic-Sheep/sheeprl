@@ -38,22 +38,23 @@ jobs:
           requirements.txt
           setup.py
 
-    - name: Install packages
+    - name: Install torch>=2.0
       run: |
         pip install -U pip
         pip install poetry
         poetry run pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
-        poetry install --no-interaction --with test
     
     - name: Run tests on POSIX OS
       if: ${{ (matrix.os == 'ubuntu-latest') || (matrix.os == 'macos-latest') }}
       run: |
         source .venv/bin/activate
+        poetry install --no-interaction --with test
         pytest --disable-pytest-warnings --strict-markers --color=yes
     
     - name: Run tests on Windows OS
       if: ${{ matrix.os == 'windows-latest' }}
       run: |
         .venv/Scripts/activate.ps1
+        poetry install --no-interaction --with test
         pytest --disable-pytest-warnings --strict-markers --color=yes
       
