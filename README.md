@@ -20,7 +20,7 @@ From inside the newly create folder run [Poetry](https://python-poetry.org) to i
 poetry run pip install "torch>=2.0"
 ```
 
-and then install the package with:
+and then install the package and activate the newly created environment with:
 
 ```bash
 poetry install
