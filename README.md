@@ -47,12 +47,7 @@ Once you trained an agent, a new folder called `logs` will be created, containin
 ```bash
 tensorboard --logdir logs
 ```
-
-<p align="center">
-  <video autoplay loop muted>
-    <source src="./assets/videos/tensorboard.mp4" type="video/mp4">
-  </video>
-</p>
+https://github.com/Eclectic-Sheep/sheeprl/assets/7341604/46ad4acd-180d-449d-b46a-25b4a1f038d9
 
 ### :nerd_face: More about running an algorithm
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
