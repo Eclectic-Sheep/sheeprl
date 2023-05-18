@@ -46,11 +46,10 @@ def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vecto
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if vector_env_idx == 0 and idx == 0:
-                env = gym.experimental.wrappers.RecordVideoV0(
-                    env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
-                )
+        if capture_video and vector_env_idx == 0 and idx == 0:
+            env = gym.experimental.wrappers.RecordVideoV0(
+                env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
+            )
         env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
         env = gym.wrappers.FrameStack(env, 4)
         env.action_space.seed(seed)
@@ -281,7 +280,6 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             args.capture_video,
             fabric.logger.log_dir,
             "test",
-            mask_velocities=args.mask_vel,
             vector_env_idx=0,
         )()
         test(torch.nn.Sequential(feature_extractor, actor), test_env, fabric, args)

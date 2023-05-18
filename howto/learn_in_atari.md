@@ -9,6 +9,7 @@ The code for this section is available in `algos/ppo/ppo_atari.py`.
 First we should install the Atari environments with:
 
 ```bash
+pip install gymnasium[other]
 pip install gymnasium[atari]
 pip install gymnasium[accept-rom-license]
 ```

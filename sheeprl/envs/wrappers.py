@@ -35,3 +35,23 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
 
     def observation(self, observation: np.ndarray) -> np.ndarray:
         return observation * self.mask
+
+
+class ActionRepeat(gym.Wrapper):
+    def __init__(self, env: gym.Env, amount: int = 1):
+        super().__init__(env)
+        self._env = env
+        self._amount = amount
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
+
+    def step(self, action):
+        done = False
+        total_reward = 0
+        current_step = 0
+        while current_step < self._amount and not done:
+            obs, reward, done, truncated, info = self._env.step(action)
+            total_reward += reward
+            current_step += 1
+        return obs, total_reward, done, truncated, info
