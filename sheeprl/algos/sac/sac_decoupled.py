@@ -179,9 +179,10 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
                 true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
                 rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
                 state["rb"] = rb
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state)
+            if args.checkpoint_buffer:
+                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
