@@ -179,7 +179,7 @@ def test_ppo_decoupled(standard_args):
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
 def test_ppo_atari(standard_args):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo_atari")
+    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",

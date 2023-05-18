@@ -1,7 +1,6 @@
 import copy
 import os
 import time
-import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta
 
@@ -24,9 +23,9 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.ppo.args import PPOArgs
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.ppo_pixel.args import PPOAtariArgs
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP, NatureCNN
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
@@ -42,7 +41,9 @@ if not _IS_ATARI_ROMS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_ATARI_ROMS_AVAILABLE))
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vector_env_idx: int = 0):
+def make_env(
+    env_id, seed, idx, capture_video, run_name, prefix: str = "", vector_env_idx: int = 0, frame_stack: int = 4
+):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -51,7 +52,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, prefix: str = "", vecto
                 env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
             )
         env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
-        env = gym.wrappers.FrameStack(env, 4)
+        env = gym.wrappers.FrameStack(env, frame_stack)
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         return env
@@ -75,7 +76,7 @@ class Agent(torch.nn.Module):
 
 
 @torch.no_grad()
-def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
 
     logger = TensorBoardLogger(
@@ -94,7 +95,16 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     # Environment setup
     envs = SyncVectorEnv(
         [
-            make_env(args.env_id, args.seed + i, 0, args.capture_video, logger.log_dir, "train", vector_env_idx=i)
+            make_env(
+                args.env_id,
+                args.seed + i,
+                0,
+                args.capture_video,
+                logger.log_dir,
+                "train",
+                vector_env_idx=i,
+                frame_stack=args.frame_stack,
+            )
             for i in range(args.num_envs)
         ]
     )
@@ -102,19 +112,11 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Create the actor and critic models
     features_dim = 512
-    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim).to(device)
+    feature_extractor = NatureCNN(in_channels=args.frame_stack, features_dim=features_dim).to(device)
     actor = MLP(
-        input_dims=features_dim,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(),
-        activation=torch.nn.ReLU,
+        input_dims=features_dim, output_dim=envs.single_action_space.n, hidden_sizes=(), activation=torch.nn.ReLU
     ).to(device)
-    critic = MLP(
-        input_dims=features_dim,
-        output_dim=1,
-        hidden_sizes=(),
-        activation=torch.nn.ReLU,
-    ).to(device)
+    critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU).to(device)
 
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(
@@ -275,7 +277,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     if fabric.is_global_zero:
         test_env = make_env(
             args.env_id,
-            None,
+            args.seed,
             0,
             args.capture_video,
             fabric.logger.log_dir,
@@ -286,7 +288,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
 
 def trainer(
-    args: PPOArgs,
+    args: PPOAtariArgs,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
@@ -309,10 +311,7 @@ def trainer(
     features_dim = 512
     feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim)
     actor = MLP(
-        input_dims=features_dim,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(),
-        activation=torch.nn.ReLU,
+        input_dims=features_dim, output_dim=envs.single_action_space.n, hidden_sizes=(), activation=torch.nn.ReLU
     )
     critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
     agent = Agent(feature_extractor, actor, critic)
@@ -469,14 +468,8 @@ def main():
             "`lightning run model --devices=2 sheeprl.py ...`"
         )
 
-    parser = HfArgumentParser(PPOArgs)
-    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
-
-    if args.share_data:
-        warnings.warn(
-            "You have called the script with `--share_data=True`: "
-            "decoupled scripts splits collected data in an almost-even way between the number of trainers"
-        )
+    parser = HfArgumentParser(PPOAtariArgs)
+    args: PPOAtariArgs = parser.parse_args_into_dataclasses()[0]
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
