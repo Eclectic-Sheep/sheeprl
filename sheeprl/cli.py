@@ -1,10 +1,10 @@
 """Adapted from https://github.com/Lightning-Universe/lightning-flash/blob/master/src/flash/__main__.py"""
 
-from contextlib import closing
 import functools
 import importlib
 import os
 import warnings
+from contextlib import closing
 from typing import Optional
 from unittest.mock import patch
 
@@ -59,7 +59,7 @@ def register_command(command, task, name: Optional[str] = None):
                     "--node-rank=0",
                     "--start-method=spawn",
                     "--master-addr=localhost",
-                    f"--master-port={master_port}"
+                    f"--master-port={master_port}",
                 ] + sys_argv_mock
                 torchrun.main(torchrun_args)
             else:

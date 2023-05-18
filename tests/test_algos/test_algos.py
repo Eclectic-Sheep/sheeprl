@@ -112,7 +112,7 @@ def test_sac_decoupled(standard_args):
                         "--node-rank=0",
                         "--start-method=spawn",
                         "--master-addr=localhost",
-                        f"--master-port={master_port}"
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
@@ -163,7 +163,7 @@ def test_ppo_decoupled(standard_args):
                         "--node-rank=0",
                         "--start-method=spawn",
                         "--master-addr=localhost",
-                        f"--master-port={master_port}"
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
@@ -203,7 +203,7 @@ def test_ppo_atari(standard_args):
                         "--node-rank=0",
                         "--start-method=spawn",
                         "--master-addr=localhost",
-                        f"--master-port={master_port}"
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
