@@ -28,17 +28,10 @@ from sheeprl.algos.ppo_pixel.args import PPOPixelContinuousArgs
 from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel_continuous
 from sheeprl.data import ReplayBuffer
 from sheeprl.envs.wrappers import ActionRepeat
-from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
-
-if not _IS_ATARI_AVAILABLE:
-    raise ModuleNotFoundError(str(_IS_ATARI_AVAILABLE))
-
-if not _IS_ATARI_ROMS_AVAILABLE:
-    raise ModuleNotFoundError(str(_IS_ATARI_ROMS_AVAILABLE))
 
 
 def make_env(
