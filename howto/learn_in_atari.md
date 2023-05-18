@@ -147,10 +147,10 @@ We should see `ppo_atari` under the `Commands` section when running `python shee
 ```bash
 Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
-  Fabric-RL zero-code command line utility.
+  SheepRL zero-code command line utility.
 
 Options:
-  --fabricrl_help  Show this message and exit.
+  --sheeprl_help  Show this message and exit.
 
 Commands:
   droq

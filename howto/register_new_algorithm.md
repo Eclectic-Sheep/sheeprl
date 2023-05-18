@@ -272,10 +272,10 @@ After doing that, when we run `python sheeprl.py` we should see `sota` under the
 (sheeprl) ➜  sheeprl git:(main) ✗ python sheeprl.py
 Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
-  Fabric-RL zero-code command line utility.
+  SheepRL zero-code command line utility.
 
 Options:
-  --fabricrl_help  Show this message and exit.
+  --sheeprl_help  Show this message and exit.
 
 Commands:
   droq
