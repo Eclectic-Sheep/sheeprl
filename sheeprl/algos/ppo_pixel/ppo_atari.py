@@ -42,7 +42,15 @@ if not _IS_ATARI_ROMS_AVAILABLE:
 
 
 def make_env(
-    env_id, seed, idx, capture_video, run_name, prefix: str = "", vector_env_idx: int = 0, frame_stack: int = 4
+    env_id,
+    seed,
+    idx,
+    capture_video,
+    run_name,
+    prefix: str = "",
+    vector_env_idx: int = 0,
+    frame_stack: int = 4,
+    screen_size: int = 64,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
@@ -51,7 +59,9 @@ def make_env(
             env = gym.experimental.wrappers.RecordVideoV0(
                 env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
             )
-        env = AtariPreprocessing(env, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True)
+        env = AtariPreprocessing(
+            env, screen_size=screen_size, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True
+        )
         env = gym.wrappers.FrameStack(env, frame_stack)
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
@@ -104,6 +114,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
                 "train",
                 vector_env_idx=i,
                 frame_stack=args.frame_stack,
+                screen_size=args.screen_size,
             )
             for i in range(args.num_envs)
         ]
@@ -112,7 +123,9 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
 
     # Create the actor and critic models
     features_dim = 512
-    feature_extractor = NatureCNN(in_channels=args.frame_stack, features_dim=features_dim).to(device)
+    feature_extractor = NatureCNN(
+        in_channels=args.frame_stack, features_dim=features_dim, screen_size=args.screen_size
+    ).to(device)
     actor = MLP(
         input_dims=features_dim, output_dim=envs.single_action_space.n, hidden_sizes=(), activation=torch.nn.ReLU
     ).to(device)
