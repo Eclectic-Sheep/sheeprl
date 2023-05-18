@@ -123,8 +123,16 @@ def main():
         world_collective.setup()
         world_collective.create_group()
     if rank == 0:
-        log_dir = os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        log_dir = (
+            os.path.join("logs", "ppo", args.log_dir)
+            if args.log_dir is not None
+            else os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        )
+        run_name = (
+            args.run_name
+            if args.run_name is not None
+            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        )
         logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
