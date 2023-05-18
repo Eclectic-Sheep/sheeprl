@@ -172,15 +172,16 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Checkpoint model
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
-            true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
             state = [None]
             player_trainer_collective.broadcast_object_list(state, src=1)
             state = state[0]
-            state["rb"] = rb
+            if args.checkpoint_buffer:
+                true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
+                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+                state["rb"] = rb
+                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state)
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()

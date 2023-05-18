@@ -282,11 +282,16 @@ def main():
                 "rb": [rb],
                 "global_step": global_step,
             }
-            if fabric.world_size > 1:
+            if fabric.world_size > 1 and args.checkpoint_buffer:
                 # We need to collect the buffers from all the ranks
                 # The collective it is needed because the `gather_object` function is not implemented in Fabric
                 checkpoint_collective = TorchCollective()
-                checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
+                # gloo is the torch.distributed backend that works on cpu
+                if rb.device == "cpu" or rb.device == torch.device("cpu"):
+                    backend = "gloo"
+                else:
+                    backend = "nccl"
+                checkpoint_collective.create_group(backend=backend, ranks=list(range(fabric.world_size)))
                 gathered_rb = [None for _ in range(fabric.world_size)]
                 if fabric.global_rank == 0:
                     checkpoint_collective.gather_object(rb, gathered_rb)
