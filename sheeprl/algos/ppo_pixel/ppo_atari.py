@@ -87,11 +87,16 @@ class Agent(torch.nn.Module):
 
 @torch.no_grad()
 def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
-
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo_atari", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+    log_dir = (
+        os.path.join("logs", "ppo_atari", args.log_dir)
+        if args.log_dir is not None
+        else os.path.join("logs", "ppo_atari", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
+    run_name = (
+        args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+    )
+
+    logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
