@@ -43,6 +43,10 @@ class ActionRepeat(gym.Wrapper):
         self._env = env
         self._amount = amount
 
+    @property
+    def action_repeat(self) -> int:
+        return self._amount
+
     def __getattr__(self, name):
         return getattr(self._env, name)
 
