@@ -1,5 +1,6 @@
 """Adapted from https://github.com/Lightning-Universe/lightning-flash/blob/master/src/flash/__main__.py"""
 
+from contextlib import closing
 import functools
 import importlib
 import os
@@ -17,7 +18,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["--sheeprl_help"])
 
 @click.group(no_args_is_help=True, add_help_option=True, context_settings=CONTEXT_SETTINGS)
 def run():
-    """Fabric-RL zero-code command line utility."""
+    """SheepRL zero-code command line utility."""
     if not _is_using_cli():
         warnings.warn(
             "This script was launched without the Lightning CLI. Consider to launch the script with "
@@ -45,13 +46,20 @@ def register_command(command, task, name: Optional[str] = None):
                 )
             if name in decoupled_tasks and not _is_using_cli():
                 import torch.distributed.run as torchrun
+                from torch.distributed.elastic.utils import get_socket_with_port
 
+                sock = get_socket_with_port()
+                with closing(sock):
+                    master_port = sock.getsockname()[1]
                 devices = os.environ.get("LT_DEVICES")
                 nproc_per_node = "2" if devices is None else devices
                 torchrun_args = [
                     f"--nproc_per_node={nproc_per_node}",
                     "--nnodes=1",
-                    "--standalone",
+                    "--node-rank=0",
+                    "--start-method=spawn",
+                    "--master-addr=localhost",
+                    f"--master-port={master_port}"
                 ] + sys_argv_mock
                 torchrun.main(torchrun_args)
             else:
