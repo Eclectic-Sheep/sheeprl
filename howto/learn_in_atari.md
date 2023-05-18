@@ -3,12 +3,13 @@ Atari games are harder to solve then basic gym environments, since they rely on 
 
 In this section, we will learn how to train an agent using a CNN model on Atari games.
 
-The code for this section is available in `algos/ppo/ppo_atari.py`.
+The code for this section is available in `algos/ppo_pixel/ppo_atari.py`.
 
 ## Install Atari environments
 First we should install the Atari environments with:
 
 ```bash
+pip install gymnasium[other]
 pip install gymnasium[atari]
 pip install gymnasium[accept-rom-license]
 ```

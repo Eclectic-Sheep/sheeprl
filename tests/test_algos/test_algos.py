@@ -202,7 +202,7 @@ def test_ppo_decoupled(standard_args):
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
 def test_ppo_atari(standard_args):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo_atari")
+    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
@@ -259,3 +259,38 @@ def test_ppo_recurrent(standard_args):
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint("ppo_recurrent", {"agent", "optimizer", "args", "update_step", "scheduler"})
+
+
+@pytest.mark.timeout(60)
+def test_ppo_pixel_continuous(standard_args):
+    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_pixel_continuous")
+    args = standard_args + [
+        f"--rollout_steps={os.environ['LT_DEVICES']}",
+        "--per_rank_batch_size=1",
+        "--update_epochs=1",
+    ]
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        import torch.distributed.run as torchrun
+        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
+        from torch.distributed.elastic.utils import get_socket_with_port
+
+        sock = get_socket_with_port()
+        with closing(sock):
+            master_port = sock.getsockname()[1]
+
+        for command in task.__all__:
+            if command == "main":
+                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
+                    torchrun_args = [
+                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
+                        "--nnodes=1",
+                        "--node-rank=0",
+                        "--start-method=spawn",
+                        "--master-addr=localhost",
+                        f"--master-port={master_port}",
+                    ] + sys.argv
+                    torchrun.main(torchrun_args)
+
+    if os.environ["LT_DEVICES"] != "1":
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
+            check_checkpoint("ppo_decoupled", {"agent", "optimizer", "args", "update_step", "scheduler"})
