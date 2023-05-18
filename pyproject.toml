@@ -41,6 +41,10 @@ autoflake = "^2.1.1"
 mujoco = "2.3.3"
 gymnasium = { extras = ["mujoco"], version = "^0.28.1" }
 
+
+[tool.poetry.group.atari.dependencies]
+gymnasium = {extras = ["atari", "accept-rom-license", "other"], version = "^0.28.1"}
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
