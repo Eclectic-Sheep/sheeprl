@@ -1,7 +1,7 @@
 import importlib
 import os
 import sys
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from unittest import mock
 
 import pytest
@@ -24,7 +24,7 @@ def standard_args():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}, clear=True) as _fixture:
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}) as _fixture:
         yield _fixture
     if dist.is_initialized():
         dist.destroy_process_group()
@@ -60,7 +60,7 @@ def test_droq(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint(
             "droq", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
         )
@@ -80,7 +80,7 @@ def test_sac(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint(
             "sac", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
         )
@@ -97,6 +97,11 @@ def test_sac_decoupled(standard_args):
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
         from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
+        from torch.distributed.elastic.utils import get_socket_with_port
+
+        sock = get_socket_with_port()
+        with closing(sock):
+            master_port = sock.getsockname()[1]
 
         for command in task.__all__:
             if command == "main":
@@ -104,12 +109,15 @@ def test_sac_decoupled(standard_args):
                     torchrun_args = [
                         f"--nproc_per_node={os.environ['LT_DEVICES']}",
                         "--nnodes=1",
-                        "--standalone",
+                        "--node-rank=0",
+                        "--start-method=spawn",
+                        "--master-addr=localhost",
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint(
                 "sac_decoupled",
                 {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"},
@@ -125,7 +133,7 @@ def test_ppo(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint("ppo", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
 
 
@@ -140,6 +148,11 @@ def test_ppo_decoupled(standard_args):
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
         from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
+        from torch.distributed.elastic.utils import get_socket_with_port
+
+        sock = get_socket_with_port()
+        with closing(sock):
+            master_port = sock.getsockname()[1]
 
         for command in task.__all__:
             if command == "main":
@@ -147,12 +160,15 @@ def test_ppo_decoupled(standard_args):
                     torchrun_args = [
                         f"--nproc_per_node={os.environ['LT_DEVICES']}",
                         "--nnodes=1",
-                        "--standalone",
+                        "--node-rank=0",
+                        "--start-method=spawn",
+                        "--master-addr=localhost",
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint("ppo_decoupled", {"agent", "optimizer", "args", "update_step", "scheduler"})
 
 
@@ -172,6 +188,11 @@ def test_ppo_atari(standard_args):
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
         from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
+        from torch.distributed.elastic.utils import get_socket_with_port
+
+        sock = get_socket_with_port()
+        with closing(sock):
+            master_port = sock.getsockname()[1]
 
         for command in task.__all__:
             if command == "main":
@@ -179,12 +200,15 @@ def test_ppo_atari(standard_args):
                     torchrun_args = [
                         f"--nproc_per_node={os.environ['LT_DEVICES']}",
                         "--nnodes=1",
-                        "--standalone",
+                        "--node-rank=0",
+                        "--start-method=spawn",
+                        "--master-addr=localhost",
+                        f"--master-port={master_port}",
                     ] + sys.argv
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint("ppo_atari", {"agent", "optimizer", "args", "update_step", "scheduler"})
 
 
@@ -197,7 +221,7 @@ def test_ppo_continuous(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint("ppo_continuous", {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
 
 
@@ -210,5 +234,5 @@ def test_ppo_recurrent(standard_args):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}, clear=True):
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint("ppo_recurrent", {"agent", "optimizer", "args", "update_step", "scheduler"})

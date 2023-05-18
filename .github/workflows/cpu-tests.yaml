@@ -42,10 +42,11 @@ jobs:
       run: |
         pip install -U pip
         pip install poetry
-        poetry install --no-interaction --with test
-        poetry run pip install --force-reinstall "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
+        poetry install
+        poetry run pip install --use-pep517 box2d-py==2.3.5
+        poetry run pip install torch --index-url https://download.pytorch.org/whl/cpu
     
     - name: Run tests
       run: |
-        poetry run pytest --disable-pytest-warnings --strict-markers --color=yes
+        poetry run python tests/run_tests.py
       
