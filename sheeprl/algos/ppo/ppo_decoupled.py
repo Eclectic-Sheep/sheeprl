@@ -51,7 +51,7 @@ class Agent(torch.nn.Module):
 @torch.no_grad()
 def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     root_dir = (
-        os.path.join("logs", "ppo_decoupled", args.root_dir)
+        args.root_dir
         if args.root_dir is not None
         else os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )

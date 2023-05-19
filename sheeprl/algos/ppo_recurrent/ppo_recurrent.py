@@ -139,7 +139,7 @@ def main():
         world_collective.create_group()
     if rank == 0:
         root_dir = (
-            os.path.join("logs", "ppo_recurrent", args.root_dir)
+            args.root_dir
             if args.root_dir is not None
             else os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )

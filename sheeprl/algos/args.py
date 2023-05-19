@@ -14,6 +14,6 @@ class StandardArgs:
     num_envs: int = Arg(default=4, help="the number of parallel game environments")
     root_dir: Optional[str] = Arg(
         default=None,
-        help="the name of the root folder of the log directory of this experiment, do not enter logs/<agent_name>",
+        help="the name of the root folder of the log directory of this experiment",
     )
     run_name: Optional[str] = Arg(default=None, help="the folder name of this run")

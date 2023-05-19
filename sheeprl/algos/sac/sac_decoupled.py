@@ -34,7 +34,7 @@ from sheeprl.utils.utils import make_env
 @torch.no_grad()
 def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     root_dir = (
-        os.path.join("logs", "sac_decoupled", args.root_dir)
+        args.root_dir
         if args.root_dir is not None
         else os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
