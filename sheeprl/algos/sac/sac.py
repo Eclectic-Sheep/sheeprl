@@ -103,9 +103,9 @@ def main():
         world_collective.setup()
         world_collective.create_group()
     if rank == 0:
-        log_dir = (
-            os.path.join("logs", "sac", args.log_dir)
-            if args.log_dir is not None
+        root_dir = (
+            os.path.join("logs", "sac", args.root_dir)
+            if args.root_dir is not None
             else os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
@@ -113,7 +113,7 @@ def main():
             if args.run_name is not None
             else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         )
-        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
+        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
@@ -292,7 +292,7 @@ def main():
                     # The collective it is needed because the `gather_object` function is not implemented in Fabric
                     checkpoint_collective = TorchCollective()
                     # gloo is the torch.distributed backend that works on cpu
-                    if rb.device == "cpu" or rb.device == torch.device("cpu"):
+                    if rb.device == torch.device("cpu"):
                         backend = "gloo"
                     else:
                         backend = "nccl"

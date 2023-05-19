@@ -32,18 +32,15 @@ from sheeprl.utils.utils import make_env
 
 @torch.no_grad()
 def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    log_dir = (
-        os.path.join("logs", "sac_decoupled", args.log_dir)
-        if args.log_dir is not None
+    root_dir = (
+        os.path.join("logs", "sac_decoupled", args.root_dir)
+        if args.root_dir is not None
         else os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
     run_name = (
         args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     )
-    logger = TensorBoardLogger(
-        root_dir=log_dir,
-        name=run_name,
-    )
+    logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric

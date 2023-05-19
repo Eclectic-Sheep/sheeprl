@@ -51,9 +51,9 @@ def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool =
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_droq(standard_args, checkpoint_buffer):
     task = importlib.import_module("sheeprl.algos.droq.droq")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "droq", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "droq", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -61,7 +61,7 @@ def test_droq(standard_args, checkpoint_buffer):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
-        "--log_dir=" + log_dir,
+        "--root_dir=" + root_dir,
         "--run_name=" + run_name,
     ]
     if checkpoint_buffer:
@@ -83,9 +83,9 @@ def test_droq(standard_args, checkpoint_buffer):
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac(standard_args, checkpoint_buffer):
     task = importlib.import_module("sheeprl.algos.sac.sac")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "sac", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "sac", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -93,7 +93,7 @@ def test_sac(standard_args, checkpoint_buffer):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
-        "--log_dir=" + log_dir,
+        "--root_dir=" + root_dir,
         "--run_name=" + run_name,
     ]
     if checkpoint_buffer:
@@ -115,16 +115,16 @@ def test_sac(standard_args, checkpoint_buffer):
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac_decoupled(standard_args, checkpoint_buffer):
     task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "sac_decoupled", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "sac_decoupled", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "--per_rank_batch_size=1",
         "--learning_starts=0",
         "--gradient_steps=1",
-        "--log_dir=" + log_dir,
+        "--root_dir=" + root_dir,
         "--run_name=" + run_name,
     ]
     if checkpoint_buffer:
@@ -163,15 +163,15 @@ def test_sac_decoupled(standard_args, checkpoint_buffer):
 @pytest.mark.timeout(60)
 def test_ppo(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo.ppo")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo"
-    ckpt_path = os.path.join("logs", "ppo", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -186,16 +186,16 @@ def test_ppo(standard_args):
 @pytest.mark.timeout(60)
 def test_ppo_decoupled(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo_decoupled"
-    ckpt_path = os.path.join("logs", "ppo_decoupled", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo_decoupled", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
         "--update_epochs=1",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -233,16 +233,16 @@ def test_ppo_decoupled(standard_args):
 )
 def test_ppo_atari(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo_atari"
-    ckpt_path = os.path.join("logs", "ppo_atari", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo_atari", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
         "--env_id=BreakoutNoFrameskip-v4",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -275,15 +275,15 @@ def test_ppo_atari(standard_args):
 @pytest.mark.timeout(60)
 def test_ppo_continuous(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo_continuous"
-    ckpt_path = os.path.join("logs", "ppo_continuous", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo_continuous", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "--rollout_steps=1",
         "--per_rank_batch_size=1",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -298,15 +298,15 @@ def test_ppo_continuous(standard_args):
 @pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo_recurrent"
-    ckpt_path = os.path.join("logs", "ppo_recurrent", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo_recurrent", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -321,16 +321,16 @@ def test_ppo_recurrent(standard_args):
 @pytest.mark.timeout(60)
 def test_ppo_pixel_continuous(standard_args):
     task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_pixel_continuous")
-    log_dir = os.environ["LT_DEVICES"]
+    root_dir = os.environ["LT_DEVICES"]
     run_name = "test_ppo_pixel_continuous"
-    ckpt_path = os.path.join("logs", "ppo_pixel_continuous", log_dir, run_name)
+    ckpt_path = os.path.join("logs", "ppo_pixel_continuous", root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
         "--update_epochs=1",
-        f"--log_dir={log_dir}",
+        f"--root_dir={root_dir}",
         f"--run_name={run_name}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
