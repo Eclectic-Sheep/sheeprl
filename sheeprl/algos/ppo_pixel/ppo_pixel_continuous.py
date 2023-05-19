@@ -28,6 +28,7 @@ from sheeprl.algos.ppo_pixel.args import PPOPixelContinuousArgs
 from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel_continuous
 from sheeprl.data import ReplayBuffer
 from sheeprl.envs.wrappers import ActionRepeat
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -83,7 +84,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -253,12 +254,26 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
 
         # Checkpoint model on rank-0: send it everything
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-            state = [None]
-            player_trainer_collective.broadcast_object_list(state, src=1)
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
-            fabric.save(ckpt_path, state[0])
+            fabric.call(
+                "on_checkpoint_player",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+            )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
+    # Last Checkpoint
+    if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+        ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+        fabric.call(
+            "on_checkpoint_player",
+            fabric=fabric,
+            player_trainer_collective=player_trainer_collective,
+            ckpt_path=ckpt_path,
+        )
+
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
@@ -283,7 +298,7 @@ def trainer(
     global_rank = world_collective.rank
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -340,6 +355,16 @@ def trainer(
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
+            # Last Checkpoint
+            if global_rank == 1:
+                state = {
+                    "agent": agent.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
         update += 1
@@ -435,7 +460,7 @@ def trainer(
                     "update_step": update,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                player_trainer_collective.broadcast_object_list([state], src=1)
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
 
 
 @register_algorithm(decoupled=True)
