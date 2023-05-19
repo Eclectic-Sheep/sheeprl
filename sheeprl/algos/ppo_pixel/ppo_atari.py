@@ -88,7 +88,7 @@ class Agent(torch.nn.Module):
 @torch.no_grad()
 def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     root_dir = (
-        os.path.join("logs", "ppo_atari", args.root_dir)
+        args.root_dir
         if args.root_dir is not None
         else os.path.join("logs", "ppo_atari", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )

@@ -71,7 +71,7 @@ def make_env(
 @torch.no_grad()
 def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     root_dir = (
-        os.path.join("logs", "ppo_pixel_continuous", args.root_dir)
+        args.root_dir
         if args.root_dir is not None
         else os.path.join("logs", "ppo_pixel_continuous", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
