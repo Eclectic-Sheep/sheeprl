@@ -401,7 +401,9 @@ def trainer(
                         "update_step": update,
                         "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                     }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                    fabric.call(
+                        "on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state
+                    )
             return
         data = make_tensordict(data, device=device)
         update += 1
