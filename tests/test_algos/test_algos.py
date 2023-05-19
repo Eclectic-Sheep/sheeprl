@@ -1,6 +1,8 @@
 import importlib
 import os
+import shutil
 import sys
+import time
 from contextlib import closing, nullcontext
 from unittest import mock
 
@@ -20,6 +22,11 @@ def devices(request):
 @pytest.fixture()
 def standard_args():
     return ["--num_envs=1", "--dry_run"]
+
+
+@pytest.fixture()
+def start_time():
+    return str(int(time.time()))
 
 
 @pytest.fixture(autouse=True)
@@ -49,11 +56,11 @@ def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool =
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_droq(standard_args, checkpoint_buffer):
+def test_droq(standard_args, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.droq.droq")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "droq", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "droq", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -77,15 +84,16 @@ def test_droq(standard_args, checkpoint_buffer):
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac(standard_args, checkpoint_buffer):
+def test_sac(standard_args, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.sac.sac")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "sac", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "sac", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -109,15 +117,16 @@ def test_sac(standard_args, checkpoint_buffer):
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_decoupled(standard_args, checkpoint_buffer):
+def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "sac_decoupled", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join("logs", "sac_decoupled", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -158,14 +167,15 @@ def test_sac_decoupled(standard_args, checkpoint_buffer):
             if checkpoint_buffer:
                 keys.add("rb")
             check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+            shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
-def test_ppo(standard_args):
+def test_ppo(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo.ppo")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
-    ckpt_path = os.path.join("logs", "ppo", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -181,14 +191,15 @@ def test_ppo(standard_args):
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
-def test_ppo_decoupled(standard_args):
+def test_ppo_decoupled(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_ppo_decoupled"
-    ckpt_path = os.path.join("logs", "ppo_decoupled", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -223,6 +234,7 @@ def test_ppo_decoupled(standard_args):
     if os.environ["LT_DEVICES"] != "1":
         with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+            shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -231,11 +243,11 @@ def test_ppo_decoupled(standard_args):
     reason="requires Atari games to be installed. "
     "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
 )
-def test_ppo_atari(standard_args):
+def test_ppo_atari(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo_atari", os.environ["LT_DEVICES"])
     run_name = "test_ppo_atari"
-    ckpt_path = os.path.join("logs", "ppo_atari", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -270,14 +282,15 @@ def test_ppo_atari(standard_args):
     if os.environ["LT_DEVICES"] != "1":
         with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+            shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
-def test_ppo_continuous(standard_args):
+def test_ppo_continuous(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo_continuous", os.environ["LT_DEVICES"])
     run_name = "test_ppo_continuous"
-    ckpt_path = os.path.join("logs", "ppo_continuous", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -293,14 +306,15 @@ def test_ppo_continuous(standard_args):
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
-def test_ppo_recurrent(standard_args):
+def test_ppo_recurrent(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
-    ckpt_path = os.path.join("logs", "ppo_recurrent", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -316,14 +330,15 @@ def test_ppo_recurrent(standard_args):
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
         check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
-def test_ppo_pixel_continuous(standard_args):
+def test_ppo_pixel_continuous(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_pixel_continuous")
-    root_dir = os.environ["LT_DEVICES"]
+    root_dir = os.path.join("pytest_" + start_time, "ppo_pixel_continuous", os.environ["LT_DEVICES"])
     run_name = "test_ppo_pixel_continuous"
-    ckpt_path = os.path.join("logs", "ppo_pixel_continuous", root_dir, run_name)
+    ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
@@ -358,3 +373,4 @@ def test_ppo_pixel_continuous(standard_args):
     if os.environ["LT_DEVICES"] != "1":
         with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+            shutil.rmtree("pytest_" + start_time)
