@@ -20,6 +20,8 @@ From inside the newly create folder run [Poetry](https://python-poetry.org) to i
 poetry run pip install "torch>=2.0"
 ```
 
+
+
 and then install the package and activate the newly created environment with:
 
 ```bash
@@ -31,12 +33,12 @@ Now you can use one of the already available algorithms, or create your own.
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-sheeprl.py ppo --env_id CartPole-v1
+python sheeprl.py ppo --env_id CartPole-v1
 ```
 
 One can check all the available algorithms with
 ```bash
-sheeprl.py --sheeprl_help
+python sheeprl.py --sheeprl_help
 ```
 
 That's all it takes to train an agent with Sheep RL! 🎉
@@ -54,7 +56,7 @@ What you run is the PPO algorithm with the default configuration. But you can al
 
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 ```bash
-sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
+python sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:

@@ -42,7 +42,7 @@ mujoco = "2.3.3"
 gymnasium = { extras = ["mujoco"], version = "^0.28.1" }
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["swig ==4.*", "poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
