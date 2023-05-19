@@ -52,9 +52,10 @@ class ActionRepeat(gym.Wrapper):
 
     def step(self, action):
         done = False
+        truncated = False
         total_reward = 0
         current_step = 0
-        while current_step < self._amount and not done:
+        while current_step < self._amount and not (done or truncated):
             obs, reward, done, truncated, info = self._env.step(action)
             total_reward += reward
             current_step += 1
