@@ -9,15 +9,18 @@ import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
+from lightning.fabric.accelerators import TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
+from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos import default_pg_timeout
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_continuous.agent import PPOContinuousActor
 from sheeprl.algos.ppo_continuous.args import PPOContinuousArgs
@@ -99,9 +102,15 @@ def main():
     initial_clip_coef = copy.deepcopy(args.clip_coef)
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        strategy = "auto"
+        devices = os.environ.get("LT_DEVICES")
+        if not TPUAccelerator.is_available() and devices != "1":
+            strategy = DDPStrategy(timeout=default_pg_timeout)
+        fabric = Fabric(strategy=strategy)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -114,8 +123,8 @@ def main():
     # As a plus, rank-0 sets the time uniquely for everyone
     world_collective = TorchCollective()
     if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
+        world_collective.setup(timeout=default_pg_timeout)
+        world_collective.create_group(timeout=default_pg_timeout)
     if rank == 0:
         log_dir = os.path.join("logs", "ppo_continuous", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"

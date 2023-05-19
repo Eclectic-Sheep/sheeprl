@@ -9,10 +9,12 @@ import gymnasium as gym
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from lightning.fabric.accelerators import TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
+from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
@@ -20,6 +22,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos import default_pg_timeout
 from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.args import SACArgs
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
@@ -86,9 +89,15 @@ def main():
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        strategy = "auto"
+        devices = os.environ.get("LT_DEVICES")
+        if not TPUAccelerator.is_available() and devices != "1":
+            strategy = DDPStrategy(timeout=default_pg_timeout)
+        fabric = Fabric(strategy=strategy)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -100,8 +109,8 @@ def main():
     # As a plus, rank-0 sets the time uniquely for everyone
     world_collective = TorchCollective()
     if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
+        world_collective.setup(timeout=default_pg_timeout)
+        world_collective.create_group(timeout=default_pg_timeout)
     if rank == 0:
         log_dir = os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"

@@ -23,6 +23,7 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos import default_pg_timeout
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.algos.ppo_pixel.args import PPOAtariArgs
@@ -95,7 +96,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, strategy=DDPStrategy(timeout=default_pg_timeout))
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -309,7 +310,7 @@ def trainer(
     global_rank = world_collective.rank
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg, timeout=default_pg_timeout))
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -488,23 +489,23 @@ def main():
     player_trainer_collective = TorchCollective()
     world_collective.setup(
         backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo",
-        timeout=timedelta(days=1),
+        timeout=default_pg_timeout,
     )
 
     # Create a global group, assigning it to the collective: used by the player to exchange
     # collected experiences with the trainers
-    world_collective.create_group(timeout=timedelta(days=1))
+    world_collective.create_group(timeout=default_pg_timeout)
     global_rank = world_collective.rank
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
-    player_trainer_collective.create_group(ranks=[0, 1], timeout=timedelta(days=1))
+    player_trainer_collective.create_group(ranks=[0, 1], timeout=default_pg_timeout)
 
     # Create a new group, without assigning it to the collective: in this way the trainers can
     # still communicate with the player through the global group, but they can optimize the agent
     # between themselves
     optimization_pg = world_collective.new_group(
-        ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
+        ranks=list(range(1, world_collective.world_size)), timeout=default_pg_timeout
     )
     if global_rank == 0:
         player(args, world_collective, player_trainer_collective)

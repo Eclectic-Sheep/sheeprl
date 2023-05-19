@@ -13,9 +13,11 @@ import gymnasium as gym
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
+from lightning.fabric.accelerators import TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
+from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, pad_sequence
 from torch.distributed.algorithms.join import Join
@@ -24,6 +26,7 @@ from torch.optim import Adam
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos import default_pg_timeout
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.args import RecurrentPPOArgs
@@ -119,9 +122,15 @@ def main():
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
 
     # Initialize Fabric
-    fabric = Fabric()
     if not _is_using_cli():
+        strategy = "auto"
+        devices = os.environ.get("LT_DEVICES")
+        if not TPUAccelerator.is_available() and devices != "1":
+            strategy = DDPStrategy(timeout=default_pg_timeout)
+        fabric = Fabric(strategy=strategy)
         fabric.launch()
+    else:
+        fabric = Fabric()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -134,8 +143,8 @@ def main():
     # As a plus, rank-0 sets the time uniquely for everyone
     world_collective = TorchCollective()
     if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
+        world_collective.setup(timeout=default_pg_timeout)
+        world_collective.create_group(timeout=default_pg_timeout)
     if rank == 0:
         log_dir = os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
