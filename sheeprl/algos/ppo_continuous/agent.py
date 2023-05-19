@@ -25,7 +25,7 @@ class PPOContinuousActor(nn.Module):
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
-    def forward(self, obs: Tensor, action: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def forward(self, obs: Tensor, action: Optional[Tensor] = None) -> Tuple[Tensor, Tensor, Tensor]:
         """Given an observation, it returns a sampled action (correctly rescaled to the environment action bounds),
         its log-prob and the entropy of the distribution
 
