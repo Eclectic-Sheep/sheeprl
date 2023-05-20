@@ -21,8 +21,8 @@ pip install .
 ```
 
 > **Note**
-> To install all the optional dependencies one can run
-> `pip install .[atari,mujoco,dev,test]`
+> 
+> To install all the optional dependencies one can run `pip install .[atari,mujoco,dev,test]`
 
 
 Now you can use one of the already available algorithms, or create your own. 
@@ -32,7 +32,7 @@ For example, to train a PPO agent on the CartPole environment, just run
 python sheeprl.py ppo --env_id CartPole-v1
 ```
 
-One can check all the available algorithms with
+You check all the available algorithms with
 ```bash
 python sheeprl.py --sheeprl_help
 ```
