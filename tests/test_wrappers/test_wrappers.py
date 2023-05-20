@@ -1,6 +1,7 @@
-import pytest
-from sheeprl.envs.wrappers import MaskVelocityWrapper
 import gymnasium as gym
+import pytest
+
+from sheeprl.envs.wrappers import MaskVelocityWrapper
 
 
 def test_mask_velocities_fail():

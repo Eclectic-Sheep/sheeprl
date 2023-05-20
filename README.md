@@ -14,29 +14,27 @@ git clone https://github.com/Eclectic-Sheep/sheeprl.git
 cd sheeprl
 ```
 
-From inside the newly create folder run [Poetry](https://python-poetry.org) to install you preferred [PyTorch version](https://pytorch.org/get-started/locally/) (a version >=2.0 is required to properly run sheeprl):
+From inside the newly create folder run
 
 ```bash
-poetry run pip install "torch>=2.0"
+pip install .
 ```
 
-and then install the package and activate the newly created environment with:
+> **Note**
+> 
+> To install all the optional dependencies one can run `pip install .[atari,mujoco,dev,test]`
 
-```bash
-poetry install
-poetry shell
-```
 
 Now you can use one of the already available algorithms, or create your own. 
 
 For example, to train a PPO agent on the CartPole environment, just run
 ```bash
-sheeprl.py ppo --env_id CartPole-v1
+python sheeprl.py ppo --env_id CartPole-v1
 ```
 
-One can check all the available algorithms with
+You check all the available algorithms with
 ```bash
-sheeprl.py --sheeprl_help
+python sheeprl.py --sheeprl_help
 ```
 
 That's all it takes to train an agent with Sheep RL! 🎉
@@ -54,13 +52,13 @@ What you run is the PPO algorithm with the default configuration. But you can al
 
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 ```bash
-sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
+python sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:
 
 ```bash
-sheeprl.py ppo -h
+python sheeprl.py ppo -h
 ```
 
 ### Running with Lightning Fabric
