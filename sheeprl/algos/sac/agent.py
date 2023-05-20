@@ -6,7 +6,6 @@ import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
-from torch.nn.parallel import DistributedDataParallel
 
 from sheeprl.models.models import MLP
 
@@ -160,15 +159,7 @@ class SACAgent(nn.Module):
         self._num_critics = len(critics)
         self._actor = actor
         self._qfs = nn.ModuleList(critics)
-        qfs_target = []
-        for critic in critics:
-            if isinstance(critic, (DistributedDataParallel, _FabricModule)):
-                qfs_target.append(copy.deepcopy(critic.module))
-            elif isinstance(critic, nn.Module):
-                qfs_target.append(copy.deepcopy(critic))
-            else:
-                raise ValueError("Every critic must be a subclass of `torch.nn.Module`")
-        self._qfs_target = nn.ModuleList(qfs_target)
+        self._qfs_target = copy.deepcopy(self._qfs)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
 

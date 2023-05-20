@@ -1,9 +1,9 @@
 import copy
-from math import prod
 import os
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
+from math import prod
 
 import gymnasium as gym
 import numpy as np
@@ -18,25 +18,20 @@ from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
-from torch import Tensor
 from torch.distributed.algorithms.join import Join
-from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
 from sheeprl.algos.ppo_pixel.agent import PPOAtariAgent
 from sheeprl.algos.ppo_pixel.args import PPOAtariArgs
+from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel
 from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP, NatureCNN
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel
-
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 if not _IS_ATARI_AVAILABLE:
