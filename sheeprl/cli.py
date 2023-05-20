@@ -39,14 +39,12 @@ def register_command(command, task, name: Optional[str] = None):
     def wrapper(cli_args):
         with patch("sys.argv", [task.__file__] + list(cli_args)) as sys_argv_mock:
             strategy = os.environ.get("LT_STRATEGY", None)
-            is_cli_being_used = _is_using_cli()
-            is_decoupled = name in decoupled_tasks
             if strategy == "fsdp":
                 raise ValueError(
                     "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
                     "`lightning run model --strategy=... sheeprl.py ...`"
                 )
-            if is_decoupled and not is_cli_being_used:
+            if name in decoupled_tasks and not _is_using_cli():
                 import torch.distributed.run as torchrun
                 from torch.distributed.elastic.utils import get_socket_with_port
 
@@ -64,13 +62,8 @@ def register_command(command, task, name: Optional[str] = None):
                     f"--master-port={master_port}",
                 ] + sys_argv_mock
                 torchrun.main(torchrun_args)
-            elif is_decoupled and strategy is not None:
-                raise ValueError(
-                    f"The strategy flag has been set with value `{strategy}`: "
-                    "when running decoupled algorithms with the Lightning CLI one must not set the strategy."
-                )
             else:
-                if not is_cli_being_used:
+                if not _is_using_cli():
                     devices = os.environ.get("LT_DEVICES")
                     if devices is None:
                         os.environ["LT_DEVICES"] = "1"

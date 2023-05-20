@@ -247,7 +247,6 @@ def test_ppo_pixel_continuous(standard_args):
         f"--rollout_steps={os.environ['LT_DEVICES']}",
         "--per_rank_batch_size=1",
         "--update_epochs=1",
-        "--env_id=LunarLanderContinuous-v2"
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
