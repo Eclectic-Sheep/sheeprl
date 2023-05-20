@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 import torch
@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Categorical, Normal
-from abc import ABC, abstractmethod
 
 from sheeprl.models.models import MLP, NatureCNN
 

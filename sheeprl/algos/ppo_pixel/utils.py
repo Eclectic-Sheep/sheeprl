@@ -2,8 +2,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 from lightning import Fabric
-from sheeprl.algos.ppo_pixel.agent import PPOPixelAgent
 
+from sheeprl.algos.ppo_pixel.agent import PPOPixelAgent
 from sheeprl.algos.ppo_pixel.args import PPOPixelContinuousArgs
 
 

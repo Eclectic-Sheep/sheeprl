@@ -1,6 +1,5 @@
 import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning import Fabric
 
 from sheeprl.algos.ppo.args import PPOArgs
