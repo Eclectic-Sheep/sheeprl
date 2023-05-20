@@ -89,6 +89,26 @@ def test_sac(standard_args):
 
 
 @pytest.mark.timeout(60)
+def test_sac_pixel_continuous(standard_args):
+    task = importlib.import_module("sheeprl.algos.sac_pixel.sac_pixel_continuous")
+    args = standard_args + [
+        "--per_rank_batch_size=1",
+        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
+        "--learning_starts=0",
+        "--gradient_steps=1",
+    ]
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
+        check_checkpoint(
+            "sac", {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "rb", "global_step"}
+        )
+
+
+@pytest.mark.timeout(60)
 def test_sac_decoupled(standard_args):
     task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
     args = standard_args + [

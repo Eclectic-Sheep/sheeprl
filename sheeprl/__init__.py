@@ -11,6 +11,7 @@ from sheeprl.algos.ppo_continuous import ppo_continuous
 from sheeprl.algos.ppo_pixel import ppo_pixel_continuous
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
 from sheeprl.algos.sac import sac, sac_decoupled
+from sheeprl.algos.sac_pixel import sac_pixel_continuous
 
 try:
     from sheeprl.algos.ppo_pixel import ppo_atari
