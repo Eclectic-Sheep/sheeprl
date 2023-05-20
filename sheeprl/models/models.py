@@ -158,7 +158,7 @@ class NatureCNN(nn.Module):
             Defaults to 64.
     """
 
-    def __init__(self, in_channels: int, features_dim: int, screen_size: int = 64):
+    def __init__(self, in_channels: int, features_dim: Optional[int], screen_size: int = 64):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
@@ -170,11 +170,21 @@ class NatureCNN(nn.Module):
             x = F.relu(self.conv2(x))
             x = F.relu(self.conv3(x))
             out_dim = x.flatten(1).shape[1]
-        self.fc = nn.Linear(out_dim, features_dim)
+        self._output_dim = out_dim
+        self.fc = None
+        if features_dim is not None:
+            self._output_dim = features_dim
+            self.fc = nn.Linear(out_dim, features_dim)
+
+    @property
+    def output_dim(self) -> int:
+        return self._output_dim
 
     def forward(self, x: Tensor) -> Tensor:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = F.relu(self.fc(x.flatten(1)))
-        return x
+        out = x.flatten(1)
+        if self.fc is not None:
+            out = F.relu(self.fc(out))
+        return out

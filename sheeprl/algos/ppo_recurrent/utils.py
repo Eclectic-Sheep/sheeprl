@@ -26,6 +26,9 @@ def test(agent: RecurrentPPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs):
         done = done or truncated
         cumulative_rew += reward
         next_obs = torch.tensor(next_obs, device=fabric.device).view(1, 1, -1)
+
+        if args.dry_run:
+            done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
