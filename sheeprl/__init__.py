@@ -18,3 +18,4 @@ except ModuleNotFoundError:
     pass
 
 load_dotenv()
+__version__ = "0.1.0"

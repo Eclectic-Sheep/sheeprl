@@ -9,7 +9,7 @@ import torch.distributed as dist
 from lightning import Fabric
 from lightning.fabric.fabric import _is_using_cli
 
-from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
+from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE, _IS_WINDOWS
 
 
 @pytest.fixture(params=["1", "2", "3"])
@@ -25,6 +25,8 @@ def standard_args():
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}) as _fixture:
+        if _IS_WINDOWS and devices != "1":
+            pytest.skip()
         yield _fixture
     if dist.is_initialized():
         dist.destroy_process_group()

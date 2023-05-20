@@ -41,12 +41,9 @@ jobs:
     - name: Install packages
       run: |
         pip install -U pip
-        pip install poetry
-        poetry install --with atari,test
-        poetry run pip install --use-pep517 box2d-py==2.3.5
-        poetry run pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install .[atari,test]
     
     - name: Run tests
       run: |
-        poetry run python tests/run_tests.py
+        python tests/run_tests.py
       
