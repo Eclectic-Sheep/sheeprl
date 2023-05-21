@@ -93,7 +93,8 @@ def main():
         fabric = Fabric(strategy=DDPStrategy(find_unused_parameters=True))
         fabric.launch()
     else:
-        fabric = Fabric()
+        os.environ.pop("LT_STRATEGY", None)
+        fabric = Fabric(strategy=DDPStrategy(find_unused_parameters=True))
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
@@ -141,15 +142,15 @@ def main():
         ]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
-    obs = np.array(envs.reset(seed=args.seed)[0])
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
+    in_channels = prod(envs.single_observation_space.shape[:-2])
     actor = fabric.setup_module(
         SACPixelContinuousActor(
-            in_channels=prod(obs.shape[:-2]),
-            features_dim=256,
-            screen_size=64,
+            in_channels=in_channels,
+            features_dim=args.features_dim,
+            screen_size=args.screen_size,
             action_dim=act_dim,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
@@ -158,7 +159,11 @@ def main():
     critics = [
         fabric.setup_module(
             SACPixelCritic(
-                in_channels=prod(obs.shape[:-2]), features_dim=256, screen_size=64, action_dim=act_dim, num_critics=1
+                in_channels=in_channels,
+                features_dim=args.features_dim,
+                screen_size=args.screen_size,
+                action_dim=act_dim,
+                num_critics=1,
             )
         )
         for _ in range(args.num_critics)
@@ -168,9 +173,9 @@ def main():
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
-        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
-        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
+        Adam(agent.qfs.parameters(), lr=args.q_lr),
+        Adam(agent.actor.parameters(), lr=args.policy_lr),
+        Adam([agent.log_alpha], lr=args.alpha_lr),
     )
 
     # Metrics
