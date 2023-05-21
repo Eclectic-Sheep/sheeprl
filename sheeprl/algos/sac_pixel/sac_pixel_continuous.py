@@ -1,5 +1,6 @@
 import os
 import time
+import warnings
 from dataclasses import asdict
 from datetime import datetime
 from math import prod
@@ -10,11 +11,12 @@ import numpy as np
 import torch
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
+from lightning.fabric.accelerators import TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
@@ -89,12 +91,25 @@ def main():
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    if not _is_using_cli():
-        fabric = Fabric(strategy=DDPStrategy(find_unused_parameters=True))
-        fabric.launch()
+    devices = os.environ.get("LT_DEVICES", None)
+    strategy = os.environ.get("LT_STRATEGY", None)
+    is_tpu_available = TPUAccelerator.is_available()
+    if strategy is not None:
+        warnings.warn(
+            "You are running the SAC-Pixel-Continuous algorithm through the Lightning CLI and you have specified a strategy: "
+            f"`lightning run model --strategy={strategy}`. This algorithm is run with the "
+            "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
+        )
+        os.environ.pop("LT_STRATEGY")
+    if is_tpu_available:
+        strategy = "auto"
     else:
-        os.environ.pop("LT_STRATEGY", None)
-        fabric = Fabric(strategy=DDPStrategy(find_unused_parameters=True))
+        strategy = DDPStrategy(find_unused_parameters=True)
+        if devices == "1":
+            strategy = SingleDeviceStrategy()
+    fabric = Fabric(strategy=strategy)
+    if not _is_using_cli():
+        fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(args.seed)
