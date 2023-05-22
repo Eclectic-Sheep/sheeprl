@@ -123,9 +123,17 @@ def main():
         world_collective.setup()
         world_collective.create_group()
     if rank == 0:
-        log_dir = os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
+        root_dir = (
+            args.root_dir
+            if args.root_dir is not None
+            else os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        )
+        run_name = (
+            args.run_name
+            if args.run_name is not None
+            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        )
+        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
@@ -321,7 +329,6 @@ def main():
                 "update_step": update,
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
-            log_dir = fabric.logger.log_dir if fabric.global_rank == 0 else ""
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
             fabric.save(ckpt_path, state)
 
