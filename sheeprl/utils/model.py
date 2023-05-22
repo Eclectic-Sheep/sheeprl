@@ -6,44 +6,52 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 from torch import nn
 
 ModuleType = Type[nn.Module]
-ArgsType = Union[Tuple[Any, ...], Dict[Any, Any], Sequence[Tuple[Any, ...]], Sequence[Dict[Any, Any]]]
+ArgType = Union[Tuple[Any, ...], Dict[Any, Any]]
+ArgsType = Union[ArgType, Sequence[ArgType]]
+
+
+def create_layer_with_args(layer_type: ModuleType, layer_args: Optional[ArgType]) -> nn.Module:
+    if isinstance(layer_args, tuple):
+        return layer_type(*layer_args)
+    elif isinstance(layer_args, dict):
+        return layer_type(**layer_args)
+    elif layer_args is None:
+        return layer_type()
+    else:
+        raise ValueError(f"layer_args must be None, tuple or dict, got {type(layer_args)}")
 
 
 def miniblock(
     input_size: int,
     output_size: int = 0,
+    layer_type: Type[nn.Linear] = nn.Linear,
+    layer_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
     dropout_layer: Optional[ModuleType] = None,
     dropout_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
     norm_layer: Optional[ModuleType] = None,
     norm_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
     activation: Optional[ModuleType] = None,
     act_args: Optional[Union[Tuple[Any, ...], Dict[Any, Any]]] = None,
-    linear_layer: Type[nn.Linear] = nn.Linear,
 ) -> List[nn.Module]:
     """Construct a miniblock with given input/output-size, norm layer and \
     activation function."""
-    layers: List[nn.Module] = [linear_layer(input_size, output_size)]
+    if layer_args is None:
+        layers: List[nn.Module] = [layer_type(input_size, output_size)]
+    elif isinstance(layer_args, tuple):
+        layers = [layer_type(input_size, output_size, *layer_args)]
+    elif isinstance(layer_args, dict):
+        layers = [layer_type(input_size, output_size, **layer_args)]
+    else:
+        raise ValueError(f"layer_args must be None, tuple or dict, got {type(layer_args)}")
+
     if dropout_layer is not None:
-        if isinstance(dropout_args, tuple):
-            layers += [dropout_layer(*dropout_args)]
-        elif isinstance(dropout_args, dict):
-            layers += [dropout_layer(**dropout_args)]
-        else:
-            layers += [dropout_layer()]
+        layers += [create_layer_with_args(dropout_layer, dropout_args)]
+
     if norm_layer is not None:
-        if isinstance(norm_args, tuple):
-            layers += [norm_layer(output_size, *norm_args)]
-        elif isinstance(norm_args, dict):
-            layers += [norm_layer(output_size, **norm_args)]
-        else:
-            layers += [norm_layer(output_size)]
+        layers += [create_layer_with_args(norm_layer, norm_args)]
+
     if activation is not None:
-        if isinstance(act_args, tuple):
-            layers += [activation(*act_args)]
-        elif isinstance(act_args, dict):
-            layers += [activation(**act_args)]
-        else:
-            layers += [activation()]
+        layers += [create_layer_with_args(activation, act_args)]
     return layers
 
 

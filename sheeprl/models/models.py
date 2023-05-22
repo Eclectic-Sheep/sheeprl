@@ -11,6 +11,27 @@ from torch import Tensor, nn
 from sheeprl.utils.model import ArgsType, ModuleType, miniblock
 
 
+def create_layers(layer_type: Union[ModuleType, Sequence[ModuleType]], layer_args: Optional[ArgsType], num_layers) -> Sequence[Optional[ModuleType]]:
+    if layer_type is None:
+        layers_list = [None] * num_layers
+        args_list = [None] * num_layers
+        return layers_list, args_list
+
+    if isinstance(layer_type, Sequence):
+        assert len(layer_type) == num_layers
+        layers_list = layer_type
+        if isinstance(layer_args, Sequence):
+            assert len(layer_args) == num_layers
+            args_list = layer_args
+        else:
+            args_list = [layer_args for _ in range(num_layers)]
+    else:
+        layers_list = [layer_type for _ in range(num_layers)]
+        args_list = [layer_args for _ in range(num_layers)]
+    return layers_list, args_list
+
+
+
 class MLP(nn.Module):
     """Simple MLP backbone.
 
@@ -60,21 +81,8 @@ class MLP(nn.Module):
         flatten_dim: Optional[int] = 1,
     ) -> None:
         super().__init__()
-        if dropout_layer:
-            if isinstance(dropout_layer, list):
-                assert len(dropout_layer) == len(hidden_sizes)
-                dropout_layer_list = dropout_layer
-                if isinstance(dropout_args, list):
-                    assert len(dropout_args) == len(hidden_sizes)
-                    dropout_args_list = dropout_args
-                else:
-                    dropout_args_list = [dropout_args for _ in range(len(hidden_sizes))]
-            else:
-                dropout_layer_list = [dropout_layer for _ in range(len(hidden_sizes))]
-                dropout_args_list = [dropout_args for _ in range(len(hidden_sizes))]
-        else:
-            dropout_layer_list = [None] * len(hidden_sizes)
-            dropout_args_list = [None] * len(hidden_sizes)
+        dropout_layer_list, dropout_args_list = create_layers(dropout_layer, dropout_args, len(hidden_sizes))
+
         if norm_layer:
             if isinstance(norm_layer, list):
                 assert len(norm_layer) == len(hidden_sizes)
