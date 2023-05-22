@@ -25,7 +25,7 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_pixel.agent import PPOPixelContinuousAgent
 from sheeprl.algos.ppo_pixel.args import PPOPixelContinuousArgs
-from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel_continuous
+from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel
 from sheeprl.data import ReplayBuffer
 from sheeprl.envs.wrappers import ActionRepeat
 from sheeprl.utils.callback import CheckpointCallback
@@ -45,17 +45,22 @@ def make_env(
     vector_env_idx: int = 0,
     action_repeat: int = 2,
     screen_size: int = 64,
+    frame_stack: int = 0,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = ActionRepeat(env, action_repeat)
-        if isinstance(env.observation_space, gym.spaces.Box) or len(env.observation_space.shape) < 3:
+        if len(env.observation_space.shape) < 3:
             env = gym.wrappers.PixelObservationWrapper(env)
             env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
             env.observation_space = env.observation_space["pixels"]
         env = gym.wrappers.ResizeObservation(env, (screen_size, screen_size))
         env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
-        env.observation_space = gym.spaces.Box(0, 255, (3, screen_size, screen_size), np.uint8)
+        env.observation_space = gym.spaces.Box(
+            0, 255, (env.observation_space.shape[2], screen_size, screen_size), np.uint8
+        )
+        if frame_stack > 0:
+            env = gym.wrappers.FrameStack(env, frame_stack)
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -103,6 +108,8 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
                 "train",
                 vector_env_idx=i,
                 screen_size=args.screen_size,
+                action_repeat=args.action_repeat,
+                frame_stack=args.frame_stack,
             )
             for i in range(args.num_envs)
         ]
@@ -114,7 +121,10 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
     features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
     agent = PPOPixelContinuousAgent(
-        in_channels=3, features_dim=features_dim, action_dim=act_dim, screen_size=args.screen_size
+        in_channels=prod(envs.single_observation_space.shape[:-2]),
+        features_dim=features_dim,
+        action_dim=act_dim,
+        screen_size=args.screen_size,
     )
 
     flattened_parameters = torch.empty_like(
@@ -165,7 +175,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device, dtype=torch.uint8)
+        next_obs = torch.tensor(np.array(envs.reset(seed=args.seed)[0]), device=device, dtype=torch.uint8)
         next_done = torch.zeros(args.num_envs, 1).to(device)
 
     for update in range(1, num_updates + 1):
@@ -173,6 +183,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment
+            next_obs = next_obs.flatten(start_dim=1, end_dim=-3)
             normalized_obs = next_obs / 255.0 - 0.5
             action, logprob, _, value = agent(normalized_obs)
 
@@ -180,7 +191,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
             obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
-                obs = torch.tensor(obs, dtype=torch.uint8)  # [N_envs, N_obs]
+                obs = torch.tensor(np.array(obs), dtype=torch.uint8)  # [N_envs, N_obs]
                 rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
                 done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
                 done = done.view(args.num_envs, -1).float()
@@ -210,6 +221,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
+        next_obs = next_obs.flatten(start_dim=1, end_dim=-3)
         normalized_next_obs = next_obs / 255.0 - 0.5
         next_values = agent.get_value(normalized_next_obs)
         returns, advantages = gae(
@@ -284,9 +296,11 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
             fabric.logger.log_dir,
             "test",
             vector_env_idx=0,
+            frame_stack=args.frame_stack,
             action_repeat=args.action_repeat,
+            screen_size=args.screen_size,
         )()
-        test_ppo_pixel_continuous(agent, test_env, fabric, args)
+        test_ppo_pixel(agent, test_env, fabric, args, normalize=True)
 
 
 def trainer(
@@ -306,12 +320,30 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None)])
+    envs = SyncVectorEnv(
+        [
+            make_env(
+                args.env_id,
+                0,
+                0,
+                False,
+                None,
+                action_repeat=args.action_repeat,
+                screen_size=args.screen_size,
+                frame_stack=args.frame_stack,
+            )
+        ]
+    )
 
     # Create the actor and critic models
     features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
-    agent = PPOPixelContinuousAgent(in_channels=3, features_dim=features_dim, action_dim=act_dim)
+    agent = PPOPixelContinuousAgent(
+        in_channels=prod(envs.single_observation_space.shape[:-2]),
+        features_dim=features_dim,
+        action_dim=act_dim,
+        screen_size=args.screen_size,
+    )
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
