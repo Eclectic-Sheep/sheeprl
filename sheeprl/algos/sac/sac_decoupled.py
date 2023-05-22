@@ -32,11 +32,15 @@ from sheeprl.utils.utils import make_env
 
 @torch.no_grad()
 def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")),
-        name=run_name,
+    root_dir = (
+        args.root_dir
+        if args.root_dir is not None
+        else os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
+    run_name = (
+        args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+    )
+    logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric
@@ -172,15 +176,17 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Checkpoint model
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
-            true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
             state = [None]
             player_trainer_collective.broadcast_object_list(state, src=1)
             state = state[0]
-            state["rb"] = rb
+            if args.checkpoint_buffer:
+                true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
+                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+                state["rb"] = rb
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state)
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+            if args.checkpoint_buffer:
+                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     envs.close()
