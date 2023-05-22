@@ -16,4 +16,7 @@ class PPOAtariArgs(PPOArgs):
 
 @dataclass
 class PPOPixelContinuousArgs(PPOAtariArgs):
-    env_id: str = Arg(default="CarRacing-v2", help="the id of the environment")
+    env_id: str = Arg(
+        default="CarRacing-v2",
+        help="the id of the environment. The environment observation space must be a single array, or a dict of arrays.",
+    )
