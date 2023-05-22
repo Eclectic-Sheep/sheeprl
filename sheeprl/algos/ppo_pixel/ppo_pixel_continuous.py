@@ -482,7 +482,7 @@ def trainer(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == 1:
                 state = {

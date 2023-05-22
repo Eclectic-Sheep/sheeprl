@@ -344,7 +344,7 @@ def main():
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run or update == num_updates:
             state = {
                 "agent": agent.state_dict(),

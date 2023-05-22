@@ -241,7 +241,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
             fabric.call(

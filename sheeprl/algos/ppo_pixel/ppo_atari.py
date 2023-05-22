@@ -389,18 +389,15 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-                if global_rank == 1:
-                    state = {
-                        "agent": agent.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "args": asdict(args),
-                        "update_step": update,
-                        "scheduler": scheduler.state_dict() if args.anneal_lr else None,
-                    }
-                    fabric.call(
-                        "on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state
-                    )
+            if global_rank == 1:
+                state = {
+                    "agent": agent.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
         update += 1
@@ -485,7 +482,7 @@ def trainer(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == 1:
                 state = {
