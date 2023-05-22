@@ -67,22 +67,23 @@ def train(
         agent.qfs_target_ema()
 
     # Update the actor
-    actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
-    qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
-    min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
-    actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-    actor_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(actor_loss)
-    actor_optimizer.step()
-    aggregator.update("Loss/policy_loss", actor_loss)
+    if global_step % args.actor_network_frequency == 0:
+        actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
+        qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
+        min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
+        actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+        actor_optimizer.zero_grad(set_to_none=True)
+        fabric.backward(actor_loss)
+        actor_optimizer.step()
+        aggregator.update("Loss/policy_loss", actor_loss)
 
-    # Update the entropy value
-    alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-    alpha_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
-    alpha_optimizer.step()
-    aggregator.update("Loss/alpha_loss", alpha_loss)
+        # Update the entropy value
+        alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
+        alpha_optimizer.zero_grad(set_to_none=True)
+        fabric.backward(alpha_loss)
+        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
+        alpha_optimizer.step()
+        aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
 @register_algorithm()
@@ -188,9 +189,9 @@ def main():
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr),
-        Adam(agent.actor.parameters(), lr=args.policy_lr),
-        Adam([agent.log_alpha], lr=args.alpha_lr),
+        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-5),
+        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-5),
+        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-5),
     )
 
     # Metrics

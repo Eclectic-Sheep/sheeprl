@@ -17,3 +17,4 @@ class SACPixelContinuousArgs(SACArgs):
         help="The features dimension after the convolutional layer. "
         "This will also be the dimension of the mlps for both the actor and the critic models",
     )
+    actor_network_frequency: int = Arg(default=2, help="the frequency of updates for the actor nerworks")

@@ -10,7 +10,7 @@ from torch import Tensor
 from sheeprl.models.models import MLP, NatureCNN
 
 LOG_STD_MAX = 2
-LOG_STD_MIN = -5
+LOG_STD_MIN = -10
 
 
 class SACPixelCritic(nn.Module):
