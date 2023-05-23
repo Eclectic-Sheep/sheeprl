@@ -102,28 +102,25 @@ def main():
     data_args_path = Path(train_args.data_dir) / "args.json"
     data_args = TextDataArgs.from_json(str(data_args_path))
 
-    # Setup Logger
-    logger = TensorBoardLogger(train_args.experiment_dir, name=train_args.experiment_name)
-
     # Setup Fabric
-    fabric = L.Fabric(
-        accelerator="auto",
-        loggers=logger,
-    )
+    fabric = L.Fabric(accelerator="auto")
     fabric.launch()
     fabric.seed_everything(train_args.seed + fabric.global_rank)
-    print(f"Fabric Rank: {fabric.global_rank}")
-    # Setup logging
+    fabric.print(f"Fabric Rank: {fabric.global_rank}")
+    # Setup for rank 0
     if fabric.is_global_zero:
+        # Setup Logger
+        logger = TensorBoardLogger(train_args.experiment_dir, name=train_args.experiment_name)
+        fabric._loggers = [logger]
+        # Save args
         os.makedirs(train_args.experiment_dir, exist_ok=True)
-
-    if fabric.is_global_zero:
         all_args = save_args_to_json(
             train_args=train_args,
             model_args=model_args,
             data_args=data_args,
             gen_args=gen_args,
         )
+        # Log hyperparameters
         fabric.logger.log_hyperparams(all_args)
 
     # Setup Tokenizer
@@ -141,6 +138,7 @@ def main():
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
     trainable_parameter_summary(fabric, model, show_names=False)
 
     # Setup Generation Config
