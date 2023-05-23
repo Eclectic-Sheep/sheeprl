@@ -63,6 +63,12 @@ atari = [
   "gymnasium[atari]==0.28.*",
   "gymnasium[other]==0.28.*",
 ]
+rlhf = [
+  "tqdm==4.65.0",
+  "datasets==2.12.*",
+  "transformers==4.29.*",
+  "gradio==3.28.3"
+]
 
 [tool.ruff]
 line-length = 120
