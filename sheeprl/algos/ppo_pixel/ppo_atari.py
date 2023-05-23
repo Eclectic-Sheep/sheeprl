@@ -3,8 +3,10 @@ import os
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
+from math import prod
 
 import gymnasium as gym
+import numpy as np
 import torch
 from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
@@ -16,18 +18,16 @@ from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
-from torch import Tensor
 from torch.distributed.algorithms.join import Join
-from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.ppo_pixel.agent import PPOAtariAgent
 from sheeprl.algos.ppo_pixel.args import PPOAtariArgs
+from sheeprl.algos.ppo_pixel.utils import test_ppo_pixel
 from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP, NatureCNN
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -51,6 +51,7 @@ def make_env(
     vector_env_idx: int = 0,
     frame_stack: int = 4,
     screen_size: int = 64,
+    action_repeat: int = 2,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
@@ -60,29 +61,24 @@ def make_env(
                 env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
             )
         env = AtariPreprocessing(
-            env, screen_size=screen_size, grayscale_obs=True, grayscale_newaxis=False, scale_obs=True
+            env,
+            screen_size=screen_size,
+            frame_skip=action_repeat,
+            grayscale_obs=True,
+            grayscale_newaxis=True,
+            scale_obs=True,
         )
-        env = gym.wrappers.FrameStack(env, frame_stack)
+        env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
+        env.observation_space = gym.spaces.Box(
+            0, 1, (env.observation_space.shape[2], screen_size, screen_size), np.float32
+        )
+        if frame_stack > 0:
+            env = gym.wrappers.FrameStack(env, frame_stack)
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         return env
 
     return thunk
-
-
-# Simple wrapper to let torch.distributed.algorithms.join.Join
-# correctly injects fake communication hooks when we are
-# working with uneven inputs
-class Agent(torch.nn.Module):
-    def __init__(self, feature_extractor, actor, critic) -> None:
-        super().__init__()
-        self.feature_extractor = feature_extractor
-        self.actor = actor
-        self.critic = critic
-
-    def forward(self, obs: Tensor) -> Tensor:
-        feat = self.feature_extractor(obs)
-        return self.actor(feat), self.critic(feat)
 
 
 @torch.no_grad()
@@ -120,36 +116,31 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
                 vector_env_idx=i,
                 frame_stack=args.frame_stack,
                 screen_size=args.screen_size,
+                action_repeat=args.action_repeat,
             )
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported")
 
     # Create the actor and critic models
     features_dim = 512
-    feature_extractor = NatureCNN(
-        in_channels=args.frame_stack, features_dim=features_dim, screen_size=args.screen_size
-    ).to(device)
-    actor = MLP(
-        input_dims=features_dim, output_dim=envs.single_action_space.n, hidden_sizes=(), activation=torch.nn.ReLU
-    ).to(device)
-    critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU).to(device)
+    agent = PPOAtariAgent(
+        in_channels=prod(envs.single_observation_space.shape[:-2]),
+        features_dim=features_dim,
+        action_dim=envs.single_action_space.n,
+        screen_size=args.screen_size,
+    )
 
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(
-            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-        ),
-        device=device,
+        torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), device=device
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    torch.nn.utils.convert_parameters.vector_to_parameters(
-        flattened_parameters,
-        list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
-    )
+    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
     # Metrics
     with device:
@@ -187,7 +178,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
+        next_obs = torch.tensor(np.array(envs.reset(seed=args.seed)[0]), device=device)
         next_done = torch.zeros(args.num_envs, 1).to(device)
 
     for update in range(1, num_updates + 1):
@@ -195,20 +186,14 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
             global_step += args.num_envs
 
             # Sample an action given the observation received by the environment
-            features = feature_extractor(next_obs)
-            actions_logits = actor(features)
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
-            action = dist.sample()
-            logprob = dist.log_prob(action)
-
-            # Compute the value of the current observation
-            value = critic(features)
+            next_obs = next_obs.flatten(start_dim=1, end_dim=-3)
+            action, logprob, _, value = agent(next_obs)
 
             # Single environment step
             obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
-                obs = torch.tensor(obs)  # [N_envs, N_obs]
+                obs = torch.tensor(np.array(obs))  # [N_envs, N_obs]
                 rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
                 done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
                 done = done.view(args.num_envs, -1).float()
@@ -238,8 +223,8 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        next_features = feature_extractor(next_obs)
-        next_values = critic(next_features)
+        next_obs = next_obs.flatten(start_dim=1, end_dim=-3)
+        next_values = agent.get_value(next_obs)
         returns, advantages = gae(
             rb["rewards"],
             rb["values"],
@@ -272,10 +257,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
-        torch.nn.utils.convert_parameters.vector_to_parameters(
-            flattened_parameters,
-            list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters()),
-        )
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
@@ -301,8 +283,11 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
             fabric.logger.log_dir,
             "test",
             vector_env_idx=0,
+            frame_stack=args.frame_stack,
+            action_repeat=args.action_repeat,
+            screen_size=args.screen_size,
         )()
-        test(torch.nn.Sequential(feature_extractor, actor), test_env, fabric, args)
+        test_ppo_pixel(agent, test_env, fabric, args, normalize=False)
 
 
 def trainer(
@@ -322,17 +307,29 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None)])
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    envs = SyncVectorEnv(
+        [
+            make_env(
+                args.env_id,
+                0,
+                0,
+                False,
+                None,
+                action_repeat=args.action_repeat,
+                screen_size=args.screen_size,
+                frame_stack=args.frame_stack,
+            )
+        ]
+    )
 
     # Create the actor and critic models
     features_dim = 512
-    feature_extractor = NatureCNN(in_channels=4, features_dim=features_dim)
-    actor = MLP(
-        input_dims=features_dim, output_dim=envs.single_action_space.n, hidden_sizes=(), activation=torch.nn.ReLU
+    agent = PPOAtariAgent(
+        in_channels=prod(envs.single_observation_space.shape[:-2]),
+        features_dim=features_dim,
+        action_dim=envs.single_action_space.n,
+        screen_size=args.screen_size,
     )
-    critic = MLP(input_dims=features_dim, output_dim=1, hidden_sizes=(), activation=torch.nn.ReLU)
-    agent = Agent(feature_extractor, actor, critic)
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
@@ -390,15 +387,14 @@ def trainer(
             for _ in range(args.update_epochs):
                 for batch_idxes in sampler:
                     batch = data[batch_idxes]
-                    actions_logits, new_values = agent(batch["observations"])
+                    _, new_logprobs, entropies, new_values = agent(batch["observations"], batch["actions"])
 
-                    dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist.log_prob(batch["actions"]),
+                        new_logprobs,
                         batch["logprobs"],
                         batch["advantages"],
                         args.clip_coef,
@@ -416,7 +412,7 @@ def trainer(
                     )
 
                     # Entropy loss
-                    entropy = entropy_loss(dist.entropy(), reduction=args.loss_reduction)
+                    entropy = entropy_loss(entropies, reduction=args.loss_reduction)
 
                     # Equation (9) in the paper
                     loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * entropy
@@ -445,10 +441,7 @@ def trainer(
                 [metrics], src=1
             )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
-                torch.nn.utils.convert_parameters.parameters_to_vector(
-                    list(feature_extractor.parameters()) + list(actor.parameters()) + list(critic.parameters())
-                ),
-                src=1,
+                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
             )
 
         if args.anneal_lr:
@@ -488,6 +481,7 @@ def main():
 
     parser = HfArgumentParser(PPOAtariArgs)
     args: PPOAtariArgs = parser.parse_args_into_dataclasses()[0]
+    args.frame_stack = 0
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()

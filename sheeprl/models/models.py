@@ -302,7 +302,15 @@ class NatureCNN(CNN):
         with torch.no_grad():
             x = self.model(torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device))
             out_dim = x.flatten(1).shape[1]
-        self.fc = nn.Linear(out_dim, features_dim)
+        self._output_dim = out_dim
+        self.fc = None
+        if features_dim is not None:
+            self._output_dim = features_dim
+            self.fc = nn.Linear(out_dim, features_dim)
+
+    @property
+    def output_dim(self) -> int:
+        return self._output_dim
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.model(x)
