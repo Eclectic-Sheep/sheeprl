@@ -26,6 +26,8 @@ from sheeprl.algos.rlhf.utils import (
     trainable_parameter_summary,
 )
 from sheeprl.utils.parser import HfArgumentParser
+from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import EmptyInitOnDevice
 
 __all__ = ["main"]
 
@@ -78,7 +80,7 @@ def generate(
     model.train()
     return generated_text
 
-
+@register_algorithm()
 def main():
     # Retrieve arguments
     if len(sys.argv) > 1:
@@ -126,7 +128,7 @@ def main():
     # Setup Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
     # Setup Model and Tokenizer
-    with fabric.init_module():
+    with EmptyInitOnDevice(fabric.device):
         model = CasualModel.from_checkpoint(device=fabric.device, model_args=model_args)
         model = model.to(fabric.device)
         if model_args.apply_lora:

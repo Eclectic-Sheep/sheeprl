@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 import gymnasium as gym
 import torch
 from torch import Tensor
-
+from torch.utils._device import _device_constructors
 from sheeprl.envs.wrappers import MaskVelocityWrapper
 
 
@@ -99,3 +99,41 @@ def make_env(
         return env
 
     return thunk
+
+
+# Taken from https://github.com/Lightning-AI/lit-parrot/blob/main/lit_parrot/utils.py
+class EmptyInitOnDevice(torch.overrides.TorchFunctionMode):
+    def __init__(self, device=None, dtype=None):
+        """
+        Create tensors with given device and dtype and don't run initialization
+           (but instead use "empty tensors", i.e. uninitialized memory).
+
+            device: `torch.device` to work with
+            dtype: `torch.dtype` to work with
+
+        Example::
+            with EmptyInitOnDevice("cuda", dtype=torch.bfloat16):
+               model = ...
+            model.load_state_dict(torch.load('checkpoint.pth'))
+        """
+        self.device = device
+        self.dtype = dtype
+
+    def __enter__(self):
+        return super().__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return super().__exit__(exc_type, exc_val, exc_tb)
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if getattr(func, "__module__", None) == "torch.nn.init":
+            if "tensor" in kwargs:
+                return kwargs["tensor"]
+            else:
+                return args[0]
+        if self.device is not None and func in _device_constructors() and kwargs.get("device") is None:
+            kwargs["device"] = self.device
+        if self.dtype is not None and func in _device_constructors() and kwargs.get("dtype") is None:
+            kwargs["dtype"] = self.dtype
+        return func(*args, **kwargs)
