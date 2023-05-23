@@ -183,7 +183,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
                 fabric=fabric,
                 player_trainer_collective=player_trainer_collective,
                 ckpt_path=ckpt_path,
-                rb=rb if args.checkpoint_buffer else None,
+                replay_buffer=rb if args.checkpoint_buffer else None,
             )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
@@ -195,7 +195,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         fabric=fabric,
         player_trainer_collective=player_trainer_collective,
         ckpt_path=ckpt_path,
-        rb=rb if args.checkpoint_buffer else None,
+        replay_buffer=rb if args.checkpoint_buffer else None,
     )
 
     envs.close()

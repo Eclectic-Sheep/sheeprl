@@ -294,7 +294,7 @@ def main():
                 fabric=fabric,
                 ckpt_path=ckpt_path,
                 state=state,
-                rb=rb if args.checkpoint_buffer else None,
+                replay_buffer=rb if args.checkpoint_buffer else None,
             )
 
     envs.close()
