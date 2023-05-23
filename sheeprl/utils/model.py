@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from torch import nn
 
 ModuleType = Optional[Type[nn.Module]]
-ArgType = Optional[Tuple[Any, ...], Dict[Any, Any]]
+ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
 ArgsType = Union[ArgType, List[ArgType]]
 
 

@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+import warnings
 from math import prod
 from typing import Optional, Sequence, Union, no_type_check
 
@@ -53,12 +54,18 @@ class MLP(nn.Module):
         norm_args: Optional[ArgsType] = None,
         activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
         act_args: Optional[ArgsType] = None,
-        flatten_dim: Optional[int] = 1,
+        flatten_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         num_layers = len(hidden_sizes)
         if num_layers < 1 and output_dim is None:
             raise ValueError("The number of layers should be at least 1.")
+
+        if isinstance(input_dims, Sequence) and flatten_dim is None:
+            warnings.warn(
+                "input_dims is a sequence, but flatten_dim is not specified. "
+                "Be careful to flatten the input data correctly before the forward."
+            )
 
         dropout_layer_list, dropout_args_list = create_layers(dropout_layer, dropout_args, num_layers)
         norm_layer_list, norm_args_list = create_layers(norm_layer, norm_args, num_layers)
