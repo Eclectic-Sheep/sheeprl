@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import pytest
 import torch
 from torch import nn
@@ -16,12 +18,12 @@ def input_dims() -> int:
 
 
 @pytest.fixture()
-def multidimensional_input_dims() -> tuple[int, int, int]:
+def multidimensional_input_dims() -> Tuple[int, int, int]:
     return (5, 4, 6)
 
 
 @pytest.fixture()
-def hidden_sizes() -> tuple[int, int]:
+def hidden_sizes() -> Tuple[int, int]:
     return (64, 256)
 
 

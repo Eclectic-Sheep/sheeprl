@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import pytest
 import torch
 from torch import nn
@@ -16,17 +18,17 @@ def input_channels() -> int:
 
 
 @pytest.fixture()
-def hidden_channels() -> tuple[int, int]:
+def hidden_channels() -> Tuple[int, int]:
     return (64, 256)
 
 
 @pytest.fixture()
-def layer_args() -> tuple[int, int]:
+def layer_args() -> Tuple[int, int]:
     return [{"kernel_size": 3}, {"kernel_size": 5}]
 
 
 @pytest.fixture()
-def image_shape() -> tuple[int, int]:
+def image_shape() -> Tuple[int, int]:
     return (28, 28)
 
 
