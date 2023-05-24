@@ -159,7 +159,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
 
     # Global variables
     global_step = 0
-    start_time = time.time()
+    start_time = time.perf_counter()
     single_global_step = int(args.num_envs * args.rollout_steps)
     num_updates = args.total_steps // single_global_step if not args.dry_run else 1
     if single_global_step < world_collective.world_size - 1:
@@ -261,7 +261,7 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
         # Log metrics
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(metrics[0], global_step)
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()

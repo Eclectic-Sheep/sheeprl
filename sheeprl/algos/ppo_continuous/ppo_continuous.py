@@ -190,7 +190,7 @@ def main():
 
     # Global variables
     global_step = 0
-    start_time = time.time()
+    start_time = time.perf_counter()
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
     num_updates = args.total_steps // single_global_rollout if not args.dry_run else 1
 
@@ -299,7 +299,7 @@ def main():
 
         # Log metrics
         metrics_dict = aggregator.compute()
-        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+        fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
