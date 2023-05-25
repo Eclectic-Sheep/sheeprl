@@ -146,7 +146,8 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        step_data["next_observations"] = real_next_obs
+        if not args.sample_next_obs:
+            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
@@ -155,9 +156,10 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Send data to the training agents
         if global_step > args.learning_starts:
-            chunks = rb.sample(args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1)).split(
-                args.gradient_steps * args.per_rank_batch_size
-            )
+            chunks = rb.sample(
+                args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1),
+                sample_next_obs=args.sample_next_obs,
+            ).split(args.gradient_steps * args.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted

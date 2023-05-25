@@ -131,6 +131,11 @@ class ReplayBuffer:
             batch_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_size,), device=self.device)]
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
+            if max_pos_to_sample == 0:
+                raise RuntimeError(
+                    "You want to sample the next observations, but one sample has been added to the buffer. "
+                    "Make sure that at least two samples are added."
+                )
             batch_idxes = torch.randint(0, max_pos_to_sample, size=(batch_size,), device=self.device)
         sample = self._get_samples(batch_idxes, sample_next_obs=sample_next_obs).unsqueeze(-1)
         if clone:

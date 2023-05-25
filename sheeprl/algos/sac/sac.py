@@ -229,7 +229,8 @@ def main():
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        step_data["next_observations"] = real_next_obs
+        if not args.sample_next_obs:
+            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
@@ -239,7 +240,9 @@ def main():
         # Train the agent
         if global_step > args.learning_starts:
             # We sample one time to reduce the communications between processes
-            sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)  # [G*B, 1]
+            sample = rb.sample(
+                args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
+            )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
             gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
             if fabric.world_size > 1:
