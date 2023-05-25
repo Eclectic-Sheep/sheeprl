@@ -68,7 +68,7 @@ class SACActor(nn.Module):
                 Defaults to 1.0.
         """
         super().__init__()
-        self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_dim=None)
+        self.model = MLP(input_dims=observation_dim, hidden_sizes=(256, 256), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
