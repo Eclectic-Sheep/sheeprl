@@ -239,5 +239,5 @@ class SACAgent(nn.Module):
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs.parameters(), self.qfs_target.parameters()):
+        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
