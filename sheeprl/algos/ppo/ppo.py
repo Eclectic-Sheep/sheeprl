@@ -23,6 +23,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -105,7 +106,7 @@ def main():
     initial_clip_coef = copy.deepcopy(args.clip_coef)
 
     # Initialize Fabric
-    fabric = Fabric()
+    fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -320,7 +321,7 @@ def main():
         aggregator.reset()
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run or update == num_updates:
             state = {
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
@@ -330,7 +331,7 @@ def main():
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
+            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero:
