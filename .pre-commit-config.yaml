@@ -1,11 +1,4 @@
 repos:
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.0.0-alpha.9-for-vscode
-    hooks:
-      - id: prettier
-        name: (prettier) Reformat YAML files with prettier
-        types: [yaml]
-
   - repo: https://github.com/myint/autoflake
     rev: v2.1.1
     hooks:
