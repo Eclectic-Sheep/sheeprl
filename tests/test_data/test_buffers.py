@@ -137,3 +137,13 @@ def test_replay_buffer_sample_one_element():
     assert sample["observations"] == td1["observations"]
     with pytest.raises(RuntimeError):
         rb.sample(1, sample_next_obs=True)
+
+
+def test_replay_buffer_sample_fail():
+    buf_size = 1
+    n_envs = 1
+    rb = ReplayBuffer(buf_size, n_envs)
+    with pytest.raises(ValueError, match="No sample has been added to the buffer"):
+        rb.sample(1)
+    with pytest.raises(ValueError, match="Batch size must be greater than 0"):
+        rb.sample(-1)
