@@ -128,7 +128,7 @@ def main():
         root_dir = (
             args.root_dir
             if args.root_dir is not None
-            else os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+            else os.path.join("logs", "sac_pixel_continuous", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
             args.run_name
