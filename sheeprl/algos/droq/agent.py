@@ -35,6 +35,7 @@ class DROQCritic(nn.Module):
             dropout_layer=nn.Dropout if dropout > 0 else None,
             dropout_args={"p": dropout} if dropout > 0 else None,
             norm_layer=nn.LayerNorm,
+            norm_args={"normalized_shape": 256},
             activation=nn.ReLU,
             flatten_dim=None,
         )
