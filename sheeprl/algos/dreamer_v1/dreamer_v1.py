@@ -275,7 +275,7 @@ def train(
         # ] (15 rows)
         # torch.ones_like(done_mask[:1]) = [
         #   [ [1.], ..., [1.] ]
-        # ] (1 row and 2500 columns)
+        # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
         # done_mask[:-2] = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
@@ -285,7 +285,7 @@ def train(
         #   [ [.99], ..., [.99] ],
         #   ...,
         #   [ [.99], ..., [.99] ],
-        # ] (14 rows)
+        # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
         # torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
