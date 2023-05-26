@@ -312,6 +312,9 @@ def train(
     # critic optimization step
     critic_optimizer.zero_grad(set_to_none=True)
     # compute the value loss
+    # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
+    # it is necessary to remove the last dimension properly match the shapes
+    # for the log prob
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
@@ -466,7 +469,7 @@ def main():
     expl_decay_steps = state["expl_decay_steps"] if args.checkpoint_path else 0
 
     # Global variables
-    start_time = time.time()
+    start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
     step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
     num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
@@ -575,7 +578,7 @@ def main():
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
