@@ -148,3 +148,125 @@ class ReplayBuffer:
 
     def __setitem__(self, key: str, t: Tensor) -> None:
         self.buffer.set(key, t, inplace=True)
+
+
+class SequentialReplayBuffer(ReplayBuffer):
+    """A replay buffer which internally uses a TensorDict and returns sequential samples.
+
+    Args:
+        buffer_size (int): The buffer size.
+        n_envs (int, optional): The number of environments. Defaults to 1.
+        device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
+    """
+
+    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[device, str] = "cpu"):
+        super().__init__(buffer_size, n_envs, device)
+
+    def sample(
+        self,
+        batch_size: int,
+        sample_next_obs: bool = False,
+        clone: bool = False,
+        sequence_length: int = 1,
+        n_samples: int = 1,
+    ) -> TensorDictBase:
+        """Sample elements from the sequential replay buffer,
+        each one is a sequence of a consecutive items.
+
+        Custom sampling when using memory efficient variant,
+        as the first element of the sequence cannot be in a position
+        greater than (pos - sequence_length) % buffer_size.
+        See comments in the code for more information.
+
+        Args:
+            batch_size (int): batch_size (int): Number of element to sample
+            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+                Defaults to False.
+            clone (bool): whether to clone the sampled TensorDict.
+            sequence_length (int): the length of the sequence of each element. Defaults to 1.
+            n_samples (int): the number of samples to perform. Defaults to 1.
+
+        Returns:
+            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [n_samples, sequence_length, batch_size]
+        """
+        # the batch_size can be fused with the number of samples to have single batch size
+        batch_dim = batch_size * n_samples
+
+        # Controls
+        if batch_dim <= 0:
+            raise ValueError("Batch size must be greater than 0")
+        if not self._full and self._pos == 0:
+            raise ValueError(
+                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+            )
+        if batch_dim > self._buf.shape[0]:
+            raise ValueError(
+                f"n_samples * batch size ({batch_dim}) is larger than the replay buffer size ({self._buf.shape[0]})"
+            )
+        if not self._full and self._pos - sequence_length + 1 < 1:
+            raise ValueError(f"too long sequence length ({sequence_length})")
+        if self.full and sequence_length > self._buf.shape[0]:
+            raise ValueError(f"too long sequence length ({sequence_length})")
+
+        # Do not sample the element with index `self.pos` as the transitions is invalid
+        if self._full:
+            # when the buffer is full, it is necessary to avoid the starting index between (self.pos - sequence_length)
+            # and self.pos, so it is possible to sample the starting index between (0, self.pos - sequence_length) and
+            # between (self.pos, self.buffer_size)
+            first_range_end = self._pos - sequence_length + 1  # end of the first range
+            # end of the second range, if the first range is empty, then the second range ends
+            # in (buffer_size + (self._pos - sequence_length + 1)), otherwise the sequence will contain
+            # invalid values
+            second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
+            valid_idxes = torch.tensor(
+                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)),
+                device=self.device,
+            )
+            if len(valid_idxes) < batch_dim:
+                raise ValueError(
+                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), check also sequence_length"
+                )
+            # start_idxes are the indices of the first elements of the sequences
+            start_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_dim,), device=self.device)]
+        else:
+            # when the buffer is not full, we need to start the sequence so that it does not go out of bounds
+            start_idxes = torch.randint(0, self._pos - sequence_length + 1, size=(batch_dim,), device=self.device)
+
+        # chunk_length contains the relative indices of the sequence (0, 1, ..., sequence_length-1)
+        chunk_length = torch.arange(sequence_length, device=self.device).reshape(1, -1)
+        idxes = (start_idxes.reshape(-1, 1) + chunk_length) % self.buffer_size
+
+        # (n_samples, sequence_length, batch_size)
+        sample = self._get_samples(idxes).reshape(n_samples, batch_size, sequence_length).permute(0, -1, -2)
+        if clone:
+            return sample.clone()
+        return sample
+
+    def _get_samples(self, batch_idxes: Tensor, sample_next_obs: bool = False) -> TensorDictBase:
+        """Retrieves the items and return the TensorDict of sampled items.
+
+        Args:
+            batch_idxes (Tensor): the indices to retrieve of dimension (batch_dim, sequence_length).
+            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+                Defaults to False.
+
+        Returns:
+            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [batch_dim, sequence_length]
+        """
+        unflatten_shape = batch_idxes.shape
+        # each sequence must come from the same environment
+        env_idxes = (
+            torch.randint(0, self.n_envs, size=(unflatten_shape[0],)).view(-1, 1).repeat(1, unflatten_shape[1]).view(-1)
+        )
+        # retrieve the items by flattening the indices
+        # (b1_s1, b1_s2, b1_s3, ..., bn_s1, bn_s2, bn_s3, ...)
+        # where bm_sk is the k-th elements in the sequence of the m-th batch
+        sample = self._buf[batch_idxes.flatten(), env_idxes]
+        # properly reshape the items:
+        # [
+        #   [b1_s1, b1_s2, ...],
+        #   [b2_s1, b2_s2, ...],
+        #   ...,
+        #   [bn_s1, bn_s2, ...]
+        # ]
+        return sample.view(*unflatten_shape)
