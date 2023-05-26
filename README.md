@@ -135,7 +135,7 @@ This flexibility makes it very simple to implement, with the single class `Repla
 ### :mag: Technical details
 The tensor's shape in the TensorDict are `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
 
-For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` must be specified. For example, for PPO, the `buffer_size` must be `T * B`, where `T` is the number of timesteps and `B` is the number of parallel environments.
+For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` must be specified. For example, for PPO, the `buffer_size` must be `[T, B]`, where `T` is the number of timesteps and `B` is the number of parallel environments.
 
 ## :bow: Contributing
 The best way to contribute is by opening an issue to discuss a new feature or a bug, or by opening a PR to fix a bug or to add a new feature.
