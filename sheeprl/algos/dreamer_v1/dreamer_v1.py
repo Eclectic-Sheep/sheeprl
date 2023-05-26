@@ -345,6 +345,7 @@ def main():
         state = fabric.load(args.checkpoint_path)
         state["args"]["checkpoint_path"] = args.checkpoint_path
         args = DreamerV1Args(**state["args"])
+        args.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
@@ -594,6 +595,7 @@ def main():
                 "expl_decay_steps": expl_decay_steps,
                 "args": asdict(args),
                 "global_step": global_step * fabric.world_size,
+                "batch_size": args.per_rank_batch_size * fabric.world_size,
             }
             ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.call(
