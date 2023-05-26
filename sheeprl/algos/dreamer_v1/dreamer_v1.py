@@ -292,7 +292,7 @@ def train(
         #   [ [.9801], ..., [.9801] ],
         #   ...,
         #   [ [.8775], ..., [.8775] ],
-        # ] (15 rows)
+        # ] (14 rows)
         discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0)
 
     # actor optimization step
