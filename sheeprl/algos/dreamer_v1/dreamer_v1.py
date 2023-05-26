@@ -341,6 +341,11 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
+    if args.checkpoint_path:
+        state = fabric.load(args.checkpoint_path)
+        state["args"]["checkpoint_path"] = args.checkpoint_path
+        args = DreamerV1Args(**state["args"])
+
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.
@@ -360,6 +365,9 @@ def main():
             if args.run_name is not None
             else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         )
+        if args.checkpoint_path:
+            root_dir = "/".join(args.checkpoint_path.split("/")[:-4])
+            run_name = args.checkpoint_path.split("/")[-4]
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
@@ -386,7 +394,16 @@ def main():
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
 
-    world_model, actor, critic = build_models(fabric, action_dim, observation_shape, is_continuous, args)
+    world_model, actor, critic = build_models(
+        fabric,
+        action_dim,
+        observation_shape,
+        is_continuous,
+        args,
+        state["world_model"] if args.checkpoint_path else None,
+        state["actor"] if args.checkpoint_path else None,
+        state["critic"] if args.checkpoint_path else None,
+    )
     player = Player(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
@@ -401,10 +418,15 @@ def main():
     )
 
     # Optimizers
+    world_optimizer = Adam(world_model.parameters(), lr=args.world_lr)
+    actor_optimizer = Adam(actor.parameters(), lr=args.actor_lr)
+    critic_optimizer = Adam(critic.parameters(), lr=args.critic_lr)
+    if args.checkpoint_path:
+        world_optimizer.load_state_dict(state["world_optimizer"])
+        actor_optimizer.load_state_dict(state["actor_optimizer"])
+        critic_optimizer.load_state_dict(state["critic_optimizer"])
     world_optimizer, actor_optimizer, critic_optimizer = fabric.setup_optimizers(
-        Adam(world_model.parameters(), lr=args.world_lr),
-        Adam(actor.parameters(), lr=args.actor_lr),
-        Adam(critic.parameters(), lr=args.critic_lr),
+        world_optimizer, actor_optimizer, critic_optimizer
     )
 
     # Metrics
@@ -432,21 +454,32 @@ def main():
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
     )
     rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu")
+    if args.checkpoint_path and args.checkpoint_buffer:
+        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
+            rb = state["rb"][fabric.global_rank]
+        elif isinstance(state["rb"], SequentialReplayBuffer):
+            rb = state["rb"]
+        else:
+            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
     step_data = TensorDict({}, batch_size=[args.num_envs], device="cpu")
-    expl_decay_steps = 0
+    expl_decay_steps = state["expl_decay_steps"] if args.checkpoint_path else 0
 
     # Global variables
     start_time = time.time()
-    step_before_training = (
-        args.train_every // (args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    )
-    num_updates = (
-        int(args.total_steps // (args.num_envs * fabric.world_size * args.action_repeat)) if not args.dry_run else 1
-    )
-    args.learning_starts = (
-        (args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat)) if not args.dry_run else 0
-    )
-    args.max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
+    start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
+    step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
+    learning_starts = (args.learning_starts // (fabric.world_size * args.action_repeat)) if not args.dry_run else 0
+    if args.checkpoint_path and not args.checkpoint_buffer:
+        learning_starts = start_step + args.learning_starts // int(fabric.world_size * args.action_repeat)
+    max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
+    if args.checkpoint_path:
+        player.expl_amount = polynomial_decay(
+            expl_decay_steps,
+            initial=args.expl_amount,
+            final=args.expl_min,
+            max_decay_steps=max_step_expl_decay,
+        )
 
     # Get the first environment observation and start the optimization
     obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
@@ -457,9 +490,9 @@ def main():
     rb.add(step_data[None, ...])
     player.init_states()
 
-    for global_step in range(1, num_updates + 1):
+    for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step < args.learning_starts:
+        if global_step < learning_starts and args.checkpoint_path is None:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
                 actions = F.one_hot(torch.tensor(actions), action_dim).numpy()
@@ -510,7 +543,7 @@ def main():
         step_before_training -= 1
 
         # Train the agent
-        if global_step > args.learning_starts and step_before_training <= 0:
+        if global_step > learning_starts and step_before_training <= 0:
             fabric.barrier()
             local_data = rb.sample(
                 args.per_rank_batch_size,
@@ -538,7 +571,7 @@ def main():
                     expl_decay_steps,
                     initial=args.expl_amount,
                     final=args.expl_min,
-                    max_decay_steps=args.max_step_expl_decay,
+                    max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
@@ -560,7 +593,7 @@ def main():
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "args": asdict(args),
-                "global_step": global_step,
+                "global_step": global_step * fabric.world_size,
             }
             ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.call(
