@@ -250,10 +250,10 @@ def test(player: "Player", fabric: Fabric, args: DreamerV1Args):
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
     """
-    env: gym.Env = make_env(args.env_id, None, 0, args, fabric.logger.log_dir, "test")
+    env: gym.Env = make_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test")
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=None)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)
+    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)
     player.init_states()
     while not done:
         # Act greedly through the environment
