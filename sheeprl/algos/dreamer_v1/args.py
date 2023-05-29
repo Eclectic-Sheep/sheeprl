@@ -46,7 +46,7 @@ class DreamerV1Args(StandardArgs):
     actor_min_std: float = Arg(default=1e-4, help="the minimum standard deviation for the actions")
     clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
-    cnn_depth: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
+    cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="ELU",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",

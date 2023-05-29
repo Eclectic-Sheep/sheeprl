@@ -389,8 +389,8 @@ def build_models(
         The critic (_FabricModule).
     """
     n_obs_channels = 1 if args.grayscale_obs else 3
-    if args.cnn_depth <= 0:
-        raise ValueError(f"cnn_depth must be greater than zero, given {args.cnn_depth}")
+    if args.cnn_channels_multiplier <= 0:
+        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
 
@@ -412,7 +412,7 @@ def build_models(
     encoder = nn.Sequential(
         CNN(
             input_channels=n_obs_channels,
-            hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_depth).tolist(),
+            hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
             layer_args={"kernel_size": 4, "stride": 2},
             activation=cnn_act,
         ),
@@ -446,7 +446,7 @@ def build_models(
         nn.Unflatten(1, (encoder_output_size, 1, 1)),
         DeCNN(
             input_channels=encoder_output_size,
-            hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_depth).tolist() + [n_obs_channels],
+            hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
             layer_args=[
                 {"kernel_size": 5, "stride": 2},
                 {"kernel_size": 5, "stride": 2},

@@ -397,8 +397,8 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "--env_id=" + env_id,
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,
-        "--dense_units=32",
-        "--cnn_depth=8",
+        "--dense_units=8",
+        "--cnn_channels_multiplier=2",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
