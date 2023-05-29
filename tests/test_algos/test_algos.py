@@ -419,6 +419,7 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
             "expl_decay_steps",
             "args",
             "global_step",
+            "batch_size",
         }
         if checkpoint_buffer:
             keys.add("rb")

@@ -311,9 +311,7 @@ class Player(nn.Module):
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
 
-        self.actions = torch.zeros(1, num_envs, self.action_dim, device=self.device)
-        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size, device=self.device)
-        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.init_states()
 
     def init_states(self) -> None:
         """
