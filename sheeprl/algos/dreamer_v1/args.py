@@ -65,7 +65,9 @@ class DreamerV1Args(StandardArgs):
         default=2, help="the number of environments to be batched during a single Dreamer_v1 epoch"
     )
     action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
-    max_episode_steps: int = Arg(default=1000, help="the maximum duration in terms of number of steps of an episode")
+    max_episode_steps: int = Arg(
+        default=1000, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+    )
     atari_noop_max: int = Arg(
         default=30,
         help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
