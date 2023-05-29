@@ -24,6 +24,7 @@ from sheeprl.algos.sac.args import SACArgs
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -44,7 +45,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -104,7 +105,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
-    start_time = time.time()
+    start_time = time.perf_counter()
     num_updates = int(args.total_steps // args.num_envs) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
@@ -170,25 +171,33 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
             torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
             fabric.log_dict(metrics[0], global_step)
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
         # Checkpoint model
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
-            state = [None]
-            player_trainer_collective.broadcast_object_list(state, src=1)
-            state = state[0]
-            if args.checkpoint_buffer:
-                true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
-                state["rb"] = rb
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
-            fabric.save(ckpt_path, state)
-            if args.checkpoint_buffer:
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+            fabric.call(
+                "on_checkpoint_player",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                replay_buffer=rb if args.checkpoint_buffer else None,
+            )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
+    # Last Checkpoint
+    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{num_updates}_{fabric.global_rank}.ckpt"
+    fabric.call(
+        "on_checkpoint_player",
+        fabric=fabric,
+        player_trainer_collective=player_trainer_collective,
+        ckpt_path=ckpt_path,
+        replay_buffer=rb if args.checkpoint_buffer else None,
+    )
+
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
@@ -214,7 +223,7 @@ def trainer(
     global_rank - 1
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -274,6 +283,17 @@ def trainer(
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
+            # Last Checkpoint
+            if global_rank == 1:
+                state = {
+                    "agent": agent.state_dict(),
+                    "qf_optimizer": qf_optimizer.state_dict(),
+                    "actor_optimizer": actor_optimizer.state_dict(),
+                    "alpha_optimizer": alpha_optimizer.state_dict(),
+                    "args": asdict(args),
+                    "global_step": global_step,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
         sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
@@ -314,7 +334,7 @@ def trainer(
                     "args": asdict(args),
                     "global_step": global_step,
                 }
-                player_trainer_collective.broadcast_object_list([state], src=1)
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
 
 
 @register_algorithm(decoupled=True)

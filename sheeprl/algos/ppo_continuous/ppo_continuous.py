@@ -24,6 +24,7 @@ from sheeprl.algos.ppo_continuous.args import PPOContinuousArgs
 from sheeprl.algos.ppo_continuous.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -99,7 +100,7 @@ def main():
     initial_clip_coef = copy.deepcopy(args.clip_coef)
 
     # Initialize Fabric
-    fabric = Fabric()
+    fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -189,7 +190,7 @@ def main():
 
     # Global variables
     global_step = 0
-    start_time = time.time()
+    start_time = time.perf_counter()
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
     num_updates = args.total_steps // single_global_rollout if not args.dry_run else 1
 
@@ -298,12 +299,12 @@ def main():
 
         # Log metrics
         metrics_dict = aggregator.compute()
-        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+        fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run or update == num_updates:
             state = {
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
@@ -313,7 +314,7 @@ def main():
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
+            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero:
