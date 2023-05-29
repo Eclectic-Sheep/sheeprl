@@ -20,6 +20,92 @@ from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import make_env
 
 
+def visit_softmax_temperature(num_moves, training_steps):
+    if training_steps < 500e3:
+        return 1.0
+    elif training_steps < 750e3:
+        return 0.5
+    else:
+        return 0.25
+
+
+def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float = 19652, pb_c_init: float = 1.25) -> float:
+    pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
+    pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+
+    prior_score = pb_c * child.prior
+    if child.visit_count > 0:
+        value_score = child.reward + discount * min_max_stats.normalize(child.value())
+    else:
+        value_score = 0
+    return prior_score + value_score
+
+class Node:
+    """A Node in the MCTS tree"""
+    def __init__(self, prior: float = 1.0, image: BaseTensor = None):
+        self.image = image
+        self.prior = prior
+        self.value_sum = 0.0
+        self.visit_count = 0
+        self.children = {}
+
+    def expanded(self) -> bool:
+        return len(self.children) > 0
+
+    def value(self) -> float:
+        if self.visit_count == 0:
+            return 0.0
+        return self.value_sum / self.visit_count
+
+    def mcts(self, network: MuzeroNetwork, num_simulations: int):
+        """Runs MCTS for num_simulations"""
+        # initilize
+        hidden_state, policy_logits = network.initial_inference(self.image)
+
+        policy = {a: math.exp(network.policy_logits[a]) for a in range(len(policy_logits))}
+        policy_sum = sum(policy.values())
+        for action, p in policy.items():
+            self.children[action] = Node(p / policy_sum)
+        self.add_exploration_noise()
+
+        # expand
+        min_max_stats = MinMaxStats(config.known_bounds)
+
+        for _ in range(config.num_simulations):
+            actions = []
+            node = self
+            search_path = [node]
+
+            while node.expanded():
+                action, node = select_child(config, node, min_max_stats)
+                actions.append(action)
+                search_path.append(node)
+
+            parent = search_path[-2]
+            network_output = network.recurrent_inference(parent.hidden_state, history.last_action())
+            node.hidden_state = network_output.hidden_state
+            node.reward = network_output.reward
+            policy = {a: math.exp(network_output.policy_logits[a]) for a in actions}
+            policy_sum = sum(policy.values())
+            for action, p in policy.items():
+                node.children[action] = Node(p / policy_sum)
+
+            for node in reversed(search_path):
+                node.value_sum += value
+                node.visit_count += 1
+                min_max_stats.update(node.value())
+
+                value = node.reward + discount * value
+        return self.children
+
+
+    def select_child(self, config: MuzeroArgs, min_max_stats: MinMaxStats):
+        """Selects a child of node, balancing exploration and exploitation"""
+        _, action, child = max(
+            (ucb_score(config, self, child, min_max_stats), action, child) for action, child in self.children.items()
+        )
+        return action, child
+
 @torch.no_grad()
 def player(
     args: MuzeroArgs,
@@ -70,9 +156,9 @@ def player(
         device=device,
     )
 
-    # Receive the first weights from the rank-1, a.k.a. the first of the trainers
+    # Receive the first weights from the rank-0, a.k.a. the trainer
     # In this way we are sure that before the first iteration everyone starts with the same parameters
-    player_trainer_collective.broadcast(flattened_parameters, src=1)
+    player_trainer_collective.broadcast(flattened_parameters, src=0)
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, network.parameters())
 
     # Metrics
@@ -86,7 +172,7 @@ def player(
         )
 
     # Local data
-    rb = MuzeroBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = TrajectoryReplayBuffer(args.rollout_steps, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -109,87 +195,72 @@ def player(
     update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
     world_collective.broadcast(update_t, src=0)
 
-    with device:
-        # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
-        next_done = torch.zeros(args.num_envs, 1).to(device)
-
     for update in range(1, num_updates + 1):
-        for _ in range(0, args.rollout_steps):
-            global_step += args.num_envs
+        # reset the episode at every update
+        with device:
+            # Get the first environment observation and start the optimization
+            obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
+        for step in range(0, args.max_trajectory_len):
+            global_step += 1
+            node = Node(prior=0, image=obs)
 
-            # Sample an action given the observation received by the environment
-            actions_logits = actor(next_obs)
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
-            action = dist.sample()
-            logprob = dist.log_prob(action)
-
-            # Compute the value of the current observation
-            value = critic(next_obs)
-
-            # Store the current step data
-            step_data["dones"] = next_done
-            step_data["values"] = value
-            step_data["actions"] = action
-            step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
+            # start MCTS
+            node.mcts(next_obs, network, args)
+            visits_count = torch.tensor([child.visit_count for child in node.children.values()])
+            temperature = visit_softmax_temperature(num_moves=step, training_steps=network.training_steps())
+            visits_count = visits_count / temperature
+            action = torch.distributions.Categorical(logits=visits_count).sample()
 
             # Single environment step
             next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
-            with device:
-                next_obs = torch.tensor(next_obs)
-                next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
-                )  # [N_envs, 1]
+            # Store the current step data
+            step_data = TensorDict(
+                {
+                    "visits_counts": visits_count,
+                    "actions": action,
+                    "observations": obs,
+                    "rewards": reward,
+                    "node_values": node.value,
+                },
+                batch_size=1
+            )
 
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+            # Update observation
+            with device:
+                obs = torch.tensor(next_obs)
 
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
                     if agent_final_info is not None and "episode" in agent_final_info:
                         fabric.print(
-                            f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                            f"Rank-{rank}: global_step={global_step}, reward={agent_final_info['episode']['r'][0]}"
                         )
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
-
-        # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        next_values = critic(next_obs)
-        returns, advantages = gae(
-            rb["rewards"],
-            rb["values"],
-            rb["dones"],
-            next_values,
-            next_done,
-            args.rollout_steps,
-            args.gamma,
-            args.gae_lambda,
-        )
-
-        # Add returns and advantages to the buffer
-        rb["returns"] = returns.float()
-        rb["advantages"] = advantages.float()
+            if done:
+                break
+        # After episode is done
+        # TODO Add trajectory to the buffer and broadcast
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
 
-        # Send data to the training agents
-        # Split data in an even way, when possible
+        # TODO Send data to the training agent
+        # Collecting from all players
         perm = torch.randperm(local_data.shape[0], device=device)
         chunks = local_data[perm].split(chunks_sizes)
         world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
-        # Gather metrics from the trainers to be plotted
+        # Gather metrics from the trainer to be plotted
         metrics = [None]
-        player_trainer_collective.broadcast_object_list(metrics, src=1)
+        player_trainer_collective.broadcast_object_list(metrics, src=0)
 
-        # Wait the trainers to finish
-        player_trainer_collective.broadcast(flattened_parameters, src=1)
+        # Wait the trainer to finish
+        player_trainer_collective.broadcast(flattened_parameters, src=0)
 
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(
@@ -202,7 +273,7 @@ def player(
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint Model # TODO move to the trainer
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = [None]
             player_trainer_collective.broadcast_object_list(state, src=1)
