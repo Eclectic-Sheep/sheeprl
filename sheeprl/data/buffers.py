@@ -181,13 +181,14 @@ class TrajectoryReplayBuffer:
 
     def add(self, trajectory: Trajectory):
         self._buffer.append(trajectory)
-        if len(self._buffer) > self.max_num_trajectories:
+        if len(self) > self.max_num_trajectories:
             self._buffer.pop(0)
 
     def sample(self, batch_size: int, sequence_length: int) -> LazyStackedTensorDict:
-        trajectories = random.sample(self._buffer, batch_size)
-        trajectories = [t for t in trajectories if len(t) >= sequence_length]
-        if len(trajectories) == 0:
+        valid_trajectories = [t for t in self.buffer if len(t) >= sequence_length]
+        if len(valid_trajectories) == 0:
             raise RuntimeError("No trajectories of length {} found".format(sequence_length))
+
+        trajectories = random.choices(valid_trajectories, k=batch_size)
         positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
         return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)])

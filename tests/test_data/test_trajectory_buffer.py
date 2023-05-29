@@ -58,3 +58,21 @@ def test_sample_multiple_trajectories(trajectory, trajectory2):
     assert sample.valid_keys == ["obs", "rew"]
     assert sample["obs"].shape == (2, 4, 3)
     assert sample["rew"].shape == (2, 4, 1)
+
+
+def test_with_shorter_than_sequence_length_trajectory(trajectory):
+    buffer = TrajectoryReplayBuffer(max_num_trajectories=5)
+    short_traj = Trajectory({"obs": torch.rand(3, 3), "rew": torch.rand(3, 1)}, batch_size=3)
+    buffer.add(short_traj)
+    buffer.add(trajectory)
+    sample = buffer.sample(batch_size=2, sequence_length=4)
+    assert len(sample == 2)
+    assert sample.shape == (2, 4)
+
+
+def test_with_no_long_enough_trajectory():
+    buffer = TrajectoryReplayBuffer(max_num_trajectories=5)
+    short_traj = Trajectory({"obs": torch.rand(3, 3), "rew": torch.rand(3, 1)}, batch_size=3)
+    buffer.add(short_traj)
+    with pytest.raises(RuntimeError):
+        sample = buffer.sample(batch_size=2, sequence_length=4)
