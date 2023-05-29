@@ -1,4 +1,5 @@
 import os
+import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -255,7 +256,6 @@ def train(
         done_mask,
         last_values=predicted_values[-1],
         horizon=args.horizon,
-        gamma=args.gamma,
         lmbda=args.lmbda,
     )
 
@@ -349,6 +349,7 @@ def main():
         state["args"]["checkpoint_path"] = args.checkpoint_path
         args = DreamerV1Args(**state["args"])
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        ckpt_path = pathlib.Path(args.checkpoint_path)
 
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
@@ -370,8 +371,8 @@ def main():
             else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
         )
         if args.checkpoint_path:
-            root_dir = "/".join(args.checkpoint_path.split("/")[:-4])
-            run_name = args.checkpoint_path.split("/")[-4]
+            root_dir = ckpt_path.parent.parent
+            run_name = "resume_from_checkpoint"
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir

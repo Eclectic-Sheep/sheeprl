@@ -129,7 +129,6 @@ def compute_lambda_values(
     done_mask: Tensor,
     last_values: Tensor,
     horizon: int = 15,
-    gamma: float = 0.99,
     lmbda: float = 0.95,
 ) -> Tensor:
     """
@@ -142,8 +141,6 @@ def compute_lambda_values(
         last_values (Tensor): the next values for the last state in the horzon.
         horizon: (int, optional): the horizon of imagination.
             Default to 15.
-        gamma (float, optional): the discout gamma factor for the lambda values computation.
-            Default to 0.99.
         lmbda (float, optional): the discout lmbda factor for the lambda values computation.
             Default to 0.95.
 

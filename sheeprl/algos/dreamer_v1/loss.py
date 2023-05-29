@@ -84,7 +84,5 @@ def reconstruction_loss(
     state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl_divergence(p, q).mean())
     if qc is not None and dones is not None:
         continue_loss = continue_scale_factor * F.binary_cross_entropy(qc.probs, dones)
-
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
-
     return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
