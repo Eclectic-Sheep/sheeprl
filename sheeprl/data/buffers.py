@@ -1,8 +1,9 @@
+import random
 import typing
-from typing import Union
+from typing import Optional, Union
 
 import torch
-from tensordict import TensorDict
+from tensordict import LazyStackedTensorDict, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
 
@@ -25,13 +26,13 @@ class ReplayBuffer:
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
-        self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
+        self._buffer = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
         self._pos = 0
         self._full = False
 
     @property
     def buffer(self) -> TensorDictBase:
-        return self._buf
+        return self._buffer
 
     @property
     def buffer_size(self) -> int:
@@ -91,7 +92,7 @@ class ReplayBuffer:
             )
         else:
             idxes = torch.tensor(range(self._pos, next_pos), device=self.device)
-        self._buf[idxes, :] = data
+        self._buffer[idxes, :] = data
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
@@ -136,15 +137,57 @@ class ReplayBuffer:
 
     def _get_samples(self, batch_idxes: Tensor, sample_next_obs: bool = False) -> TensorDictBase:
         env_idxes = torch.randint(0, self.n_envs, size=(len(batch_idxes),))
-        buf = self._buf[batch_idxes, env_idxes]
+        buf = self._buffer[batch_idxes, env_idxes]
         if sample_next_obs:
-            buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
+            buf["next_observations"] = self._buffer["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
         if not isinstance(key, str):
             raise TypeError("`key` must be a string")
-        return self._buf.get(key)
+        return self._buffer.get(key)
 
     def __setitem__(self, key: str, t: Tensor) -> None:
         self.buffer.set(key, t, inplace=True)
+
+
+class Trajectory(TensorDict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __len__(self):
+        return self.shape[0]
+
+    def sample(self, position: int, num_samples: int) -> Optional[TensorDictBase]:
+        if len(self) < position + num_samples:
+            return
+        return self[position : position + num_samples]
+
+
+class TrajectoryReplayBuffer:
+    def __init__(self, max_num_trajectories: int):
+        self._buffer = []
+        self.max_num_trajectories = max_num_trajectories
+
+    @property
+    def buffer(self):
+        return self._buffer
+
+    def __len__(self):
+        return len(self._buffer)
+
+    def __getitem__(self, index: int):
+        return self._buffer[index]
+
+    def add(self, trajectory: Trajectory):
+        self._buffer.append(trajectory)
+        if len(self._buffer) > self.max_num_trajectories:
+            self._buffer.pop(0)
+
+    def sample(self, batch_size: int, sequence_length: int) -> LazyStackedTensorDict:
+        trajectories = random.sample(self._buffer, batch_size)
+        trajectories = [t for t in trajectories if len(t) >= sequence_length]
+        if len(trajectories) == 0:
+            raise RuntimeError("No trajectories of length {} found".format(sequence_length))
+        positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
+        return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)])
