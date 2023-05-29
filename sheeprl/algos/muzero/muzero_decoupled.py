@@ -42,7 +42,7 @@ def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: f
 
 class Node:
     """A Node in the MCTS tree"""
-    def __init__(self, prior: float = 1.0, image: BaseTensor = None):
+    def __init__(self, prior: float = 0.0, image: BaseTensor = None):
         self.image = image
         self.prior = prior
         self.value_sum = 0.0
@@ -82,7 +82,7 @@ class Node:
                 search_path.append(node)
 
             parent = search_path[-2]
-            network_output = network.recurrent_inference(parent.hidden_state, history.last_action())
+            network_output = network.recurrent_inference(parent.hidden_state, action)
             node.hidden_state = network_output.hidden_state
             node.reward = network_output.reward
             policy = {a: math.exp(network_output.policy_logits[a]) for a in actions}

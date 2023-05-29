@@ -22,7 +22,7 @@ At this point, we can apply <o>add_exploration_noise</o> to the root, which adds
 
 #### MCTS
 MCTS explores the possible path (sequences of actions) starting from the root node, in order to decide what action to perform next.
-Using <r>known_bounds</r> on the possible value of nodes, it does a <r>num_simulations</r>, where each simulation ends when a leaf node is encountered (leaf node = no children).
+Using <r>known_bounds</r> on the possible value of nodes, it does a <r>num_simulations</r>, where each simulation ends when a node not yet <o>expanded</o> is encountered (expanded = its children has been computed).
 In MCTS, the way we <o>select_child</o> as the next node, is by using the <o>ucb_score</o>.
 The <o>ucb_score</o> is computed using the <g>parent, child, min_max_stats</g> and the <r>pb_c_base</r> and <r>pb_c_init</r> and <r>discount</r> hyperparameters.
 

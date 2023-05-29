@@ -15,3 +15,11 @@ It stores the `Trajectory` class, which is a TensorDict with an additional sampl
 
 Right now each Trajectory is sampled with the same probability. Later one could add the weights of the trajectories to the `add` method and sample with the weights in the `random.choices` call in the `sample` method.
 
+We add the `TrajectoryReplayBuffer` to the `data/buffer.py` file.
+
+# MCTS
+For the MCTS algorithm, we needed to add some extra classes and auxiliary functions like `Node`, `visit_softmax_temperature` and `ucb_score`.
+
+The `Node` class represents a node in the MCTS tree. It stores the prior probability of the action, the visit count, the value sum and the children of the node, which are the actions that can be taken from the current state.
+It also has some extra methods like `has_child` and `value`, to quickly check if the node is a leaf node and to get the *target* value of the node, based on its visit_count.
+
