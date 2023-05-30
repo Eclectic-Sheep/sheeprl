@@ -223,7 +223,7 @@ def main():
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
-    start_time = time.time()
+    start_time = time.perf_counter()
     num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
@@ -275,7 +275,7 @@ def main():
         # Train the agent
         if global_step > args.learning_starts:
             train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, rb, aggregator, args)
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
