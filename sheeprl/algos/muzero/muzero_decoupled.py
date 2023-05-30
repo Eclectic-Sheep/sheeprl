@@ -3,6 +3,8 @@ import time
 import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta
+import math
+from typing import Optional
 
 import gymnasium as gym
 import torch
@@ -20,7 +22,30 @@ from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import make_env
 
 
-def visit_softmax_temperature(num_moves, training_steps):
+class MinMaxStats:
+    """A class that holds the min-max values of the tree."""
+
+    def __init__(self):
+        self.maximum = float("inf")
+        self.minimum = -float("inf")
+
+    def update(self, value: float):
+        self.maximum = max(self.maximum, value)
+        self.minimum = min(self.minimum, value)
+
+    def normalize(self, value: float) -> float:
+        if self.maximum > self.minimum:
+            # We normalize only when we have set the maximum and minimum values.
+            return (value - self.minimum) / (self.maximum - self.minimum)
+        return value
+
+
+def visit_softmax_temperature(training_steps: int) -> float:
+    """Scale the temperature of the softmax action selection by the number of moves played in the game.
+
+    Args:
+        training_steps (int): The number of time the network's weight have been updated (an optimizer.step()).
+    """
     if training_steps < 500e3:
         return 1.0
     elif training_steps < 750e3:
@@ -29,7 +54,114 @@ def visit_softmax_temperature(num_moves, training_steps):
         return 0.25
 
 
-def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float = 19652, pb_c_init: float = 1.25) -> float:
+class Node:
+    """A Node in the MCTS tree.
+
+    It is used to store the statistics of the node and its children, in order to progress the MCTS search and store the
+    backpropagation values.
+
+    Attributes:
+        prior (float): The prior probability of the node.
+        image (torch.Tensor): The image of the node.
+        hidden_state (Optional[torch.Tensor]): The hidden state of the node.
+        reward (float): The reward of the node.
+        value_sum (float): The sum of the values of the node.
+        visit_count (int): The number of times the node has been visited.
+        children (dict[int, Node]): The children of the node, one for each action where actions are represented as integers
+            running from 0 to num_actions - 1.
+    """
+    def __init__(self, prior: float, image: torch.Tensor = None):
+        """A Node in the MCTS tree.
+
+        Args:
+            prior (float): The prior probability of the node.
+            image (torch.Tensor): The image of the node.
+                The image is used to create the initial hidden state for the network in MCTS.
+                Hence, it is needed only for the starting node of every MCTS search.
+        """
+        self.prior: float = prior
+        self.image: torch.Tensor = image
+
+        self.hidden_state: Optional[torch.Tensor] = None
+        self.reward: float = 0.0
+        self.value_sum: float = 0.0
+        self.visit_count: int = 0
+        self.children: dict[int, Node] = {}
+
+    def expanded(self) -> bool:
+        """Returns True if the node is already expanded, False otherwise.
+
+        When a node is visited for the first time, the search stops, the node gets expanded to compute its children, and
+        then the `backpropagate` phase of MCTS starts. If a node is already expanded, instead, the search continues
+        until an unvisited node is reached.
+        """
+        return len(self.children) > 0
+
+    def value(self) -> float:
+        """Returns the value of the node."""
+        if self.visit_count == 0:
+            return 0.0
+        return self.value_sum / self.visit_count
+
+    def mcts(self, network: torch.nn.Module, num_simulations: int, discount: float = 0.997) -> dict[int, "Node"]:
+        """Runs MCTS for num_simulations"""
+        # Initialize the hidden state and compute the actor's policy logits
+        hidden_state, policy_logits = network.initial_inference(self.image)
+
+        # Use the actor's policy to initialize the children of the node.
+        # The policy results are used as prior probabilities.
+        policy = {a: math.exp(policy_logits[a]) for a in range(len(policy_logits))}
+        policy_sum = sum(policy.values())
+        for action, p in policy.items():
+            self.children[action] = Node(p / policy_sum)
+        self.add_exploration_noise()
+
+        # Expand until an unvisited node (i.e. not yet expanded) is reached
+        min_max_stats = MinMaxStats()
+
+        for _ in range(num_simulations):
+            node = self
+            search_path = [node]
+
+            while node.expanded():
+                # Select the child with the highest UCB score
+                _, imagined_action, child = max(
+                    (ucb_score(
+                        parent=node,
+                        child=child,
+                        min_max_stats=min_max_stats,
+                        discount=discount,
+                        pb_c_base = 19652,
+                        pb_c_init = 1.25
+                    ),
+                    action, child
+                )
+                for action, child in node.children.items()
+                )
+                search_path.append(node)
+
+            # When a path from the starting node to an unvisited node is found, expand the unvisited node
+            parent = search_path[-2]
+            hidden_state, reward, policy_logits, value = network.recurrent_inference(parent.hidden_state, imagined_action)
+            node.hidden_state = hidden_state
+            node.reward = reward
+            policy = {a_id: math.exp(a_logit) for a_id, a_logit in enumerate(policy_logits)}
+            policy_sum = sum(policy.values())
+            for action, p in policy.items():
+                node.children[action] = Node(p / policy_sum)
+
+            # Backpropagate the search path to update the nodes' statistics
+            for node in reversed(search_path):
+                node.value_sum += value
+                node.visit_count += 1
+                min_max_stats.update(node.value())
+
+                value = node.reward + discount * value
+
+
+def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float, pb_c_init: float) -> float:
+    """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
+    normalize the node value."""
     pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
     pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
 
@@ -40,71 +172,6 @@ def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: f
         value_score = 0
     return prior_score + value_score
 
-class Node:
-    """A Node in the MCTS tree"""
-    def __init__(self, prior: float = 0.0, image: BaseTensor = None):
-        self.image = image
-        self.prior = prior
-        self.value_sum = 0.0
-        self.visit_count = 0
-        self.children = {}
-
-    def expanded(self) -> bool:
-        return len(self.children) > 0
-
-    def value(self) -> float:
-        if self.visit_count == 0:
-            return 0.0
-        return self.value_sum / self.visit_count
-
-    def mcts(self, network: MuzeroNetwork, num_simulations: int):
-        """Runs MCTS for num_simulations"""
-        # initilize
-        hidden_state, policy_logits = network.initial_inference(self.image)
-
-        policy = {a: math.exp(network.policy_logits[a]) for a in range(len(policy_logits))}
-        policy_sum = sum(policy.values())
-        for action, p in policy.items():
-            self.children[action] = Node(p / policy_sum)
-        self.add_exploration_noise()
-
-        # expand
-        min_max_stats = MinMaxStats(config.known_bounds)
-
-        for _ in range(config.num_simulations):
-            actions = []
-            node = self
-            search_path = [node]
-
-            while node.expanded():
-                action, node = select_child(config, node, min_max_stats)
-                actions.append(action)
-                search_path.append(node)
-
-            parent = search_path[-2]
-            network_output = network.recurrent_inference(parent.hidden_state, action)
-            node.hidden_state = network_output.hidden_state
-            node.reward = network_output.reward
-            policy = {a: math.exp(network_output.policy_logits[a]) for a in actions}
-            policy_sum = sum(policy.values())
-            for action, p in policy.items():
-                node.children[action] = Node(p / policy_sum)
-
-            for node in reversed(search_path):
-                node.value_sum += value
-                node.visit_count += 1
-                min_max_stats.update(node.value())
-
-                value = node.reward + discount * value
-        return self.children
-
-
-    def select_child(self, config: MuzeroArgs, min_max_stats: MinMaxStats):
-        """Selects a child of node, balancing exploration and exploitation"""
-        _, action, child = max(
-            (ucb_score(config, self, child, min_max_stats), action, child) for action, child in self.children.items()
-        )
-        return action, child
 
 @torch.no_grad()
 def player(
@@ -199,15 +266,18 @@ def player(
         # reset the episode at every update
         with device:
             # Get the first environment observation and start the optimization
-            obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
+            obs: torch.Tensor = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
+
         for step in range(0, args.max_trajectory_len):
             global_step += 1
             node = Node(prior=0, image=obs)
 
             # start MCTS
-            node.mcts(next_obs, network, args)
+            node.mcts(network, num_simulations, discount)
+
+            # Select action based on the visit count distribution and the temperature
             visits_count = torch.tensor([child.visit_count for child in node.children.values()])
-            temperature = visit_softmax_temperature(num_moves=step, training_steps=network.training_steps())
+            temperature = visit_softmax_temperature(training_steps=network.training_steps())
             visits_count = visits_count / temperature
             action = torch.distributions.Categorical(logits=visits_count).sample()
 
@@ -241,8 +311,9 @@ def player(
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
-            if done:
+            if done or truncated:
                 break
+
         # After episode is done
         # TODO Add trajectory to the buffer and broadcast
 
