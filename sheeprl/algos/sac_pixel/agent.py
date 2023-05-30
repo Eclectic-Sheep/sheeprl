@@ -1,16 +1,106 @@
 import copy
+from math import prod
 from typing import Sequence, SupportsFloat, Tuple, Union
 
 import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
-from torch import Tensor
+from torch import Size, Tensor
 
-from sheeprl.models.models import MLP, NatureCNN
+from sheeprl.models.models import CNN, MLP, DeCNN
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
+
+
+class Encoder(CNN):
+    """Encoder network from https://arxiv.org/abs/1910.01741
+
+    Args:
+        in_channels (int): the input channels to the first convolutional layer
+        features_dim (int): the features dimension in output from the last convolutional layer
+        screen_size (int, optional): the dimension of the input image as a single integer.
+            Needed to extract the features and compute the output dimension after all the
+            convolutional layers.
+            Defaults to 64.
+    """
+
+    def __init__(self, in_channels: int, features_dim: int, screen_size: int = 64):
+        super().__init__(
+            in_channels,
+            [32, 32, 32, 32],
+            layer_args=[
+                {"kernel_size": 3, "stride": 2},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+            ],
+        )
+
+        with torch.no_grad():
+            x: Tensor = self.model(
+                torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device)
+            )
+            self._conv_output_shape = x.shape[1:]
+            flattened_conv_output_dim = x.flatten(1).shape[1]
+        self.fc = MLP(
+            input_dims=flattened_conv_output_dim,
+            hidden_sizes=(features_dim,),
+            activation=nn.Tanh,
+            norm_layer=nn.LayerNorm,
+            norm_args={"normalized_shape": features_dim},
+        )
+        self._output_dim = features_dim
+
+    @property
+    def conv_output_shape(self) -> Size:
+        return self._conv_output_shape
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.model(x)
+        x = self.fc(x.flatten(1))
+        return x
+
+
+class Decoder(DeCNN):
+    """Decoder network from https://arxiv.org/abs/1910.01741
+
+    Args:
+        encoder_conv_output_shape (Size): the output shape of the encoder convolutional layer
+        features_dim (int): the features dimension in output from the last convolutional layer
+        out_channels (int, optional): the number of channels of the generated image.
+            Defaults to 3
+        screen_size (int, optional): the dimension of the input image as a single integer.
+            Needed to extract the features and compute the output dimension after all the
+            convolutional layers.
+            Defaults to 64
+    """
+
+    def __init__(
+        self, encoder_conv_output_shape: Size, features_dim: int, out_channels: int = 3, screen_size: int = 64
+    ):
+        super().__init__(
+            32,
+            [32, 32, 32],
+            layer_args=[
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+            ],
+        )
+        self.fc = MLP(input_dims=features_dim, hidden_sizes=(prod(encoder_conv_output_shape),))
+        self.to_obs = nn.ConvTranspose2d(
+            super().output_dim, out_channels=out_channels, kernel_size=3, stride=2, output_padding=1
+        )
+        self._output_dim = Size([out_channels, screen_size, screen_size])
+        self._encoder_conv_output_shape = encoder_conv_output_shape
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.fc(x).view(-1, *self._encoder_conv_output_shape)
+        x = self.model(x)
+        x = self.to_obs(x)
+        return x
 
 
 class SACPixelCritic(nn.Module):
@@ -18,14 +108,7 @@ class SACPixelCritic(nn.Module):
         self, in_channels: int, features_dim: int, action_dim: int, screen_size: int = 64, num_critics: int = 1
     ):
         super().__init__()
-        self.feature_extractor = NatureCNN(in_channels=in_channels, features_dim=None, screen_size=screen_size)
-        self.after_conv = MLP(
-            input_dims=self.feature_extractor.output_dim,
-            output_dim=0,
-            hidden_sizes=(features_dim,),
-            activation=nn.Tanh,
-            norm_layer=nn.LayerNorm,
-        )
+        self.feature_extractor = Encoder(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
         self.model = MLP(
             input_dims=features_dim + action_dim,
             output_dim=num_critics,
@@ -38,7 +121,6 @@ class SACPixelCritic(nn.Module):
         features = self.feature_extractor(obs)
         if detach_encoder_features:
             features = features.detach()
-        x = self.after_conv(features)
         x = torch.cat([x, action], -1)
         return self.model(x)
 
@@ -54,17 +136,8 @@ class SACPixelContinuousActor(nn.Module):
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
         super().__init__()
-        self.feature_extractor = NatureCNN(in_channels=in_channels, features_dim=None, screen_size=screen_size)
-        self.after_conv = MLP(
-            input_dims=self.feature_extractor.output_dim,
-            output_dim=0,
-            hidden_sizes=(features_dim,),
-            activation=nn.Tanh,
-            norm_layer=nn.LayerNorm,
-        )
-        self.model = MLP(
-            input_dims=features_dim, output_dim=0, hidden_sizes=(features_dim, features_dim), flatten_dim=None
-        )
+        self.feature_extractor = Encoder(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
+        self.model = MLP(input_dims=features_dim, hidden_sizes=(features_dim, features_dim), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
@@ -87,7 +160,6 @@ class SACPixelContinuousActor(nn.Module):
         features = self.feature_extractor(obs)
         if detach_encoder_features:
             features = features.detach()
-        x = self.after_conv(features)
         x = self.model(x)
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
