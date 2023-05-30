@@ -25,6 +25,7 @@ from sheeprl.algos.sac.args import SACArgs
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -86,7 +87,7 @@ def main():
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
+    fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -187,7 +188,7 @@ def main():
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
-    start_time = time.time()
+    start_time = time.perf_counter()
     num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
@@ -269,12 +270,16 @@ def main():
                     global_step,
                     args,
                 )
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
+        if (
+            (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0)
+            or args.dry_run
+            or global_step == num_updates
+        ):
             state = {
                 "agent": agent.state_dict(),
                 "qf_optimizer": qf_optimizer.state_dict(),
@@ -283,30 +288,14 @@ def main():
                 "args": asdict(args),
                 "global_step": global_step,
             }
-            if args.checkpoint_buffer:
-                true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
-                state["rb"] = rb
-                if fabric.world_size > 1:
-                    # We need to collect the buffers from all the ranks
-                    # The collective it is needed because the `gather_object` function is not implemented in Fabric
-                    checkpoint_collective = TorchCollective()
-                    # gloo is the torch.distributed backend that works on cpu
-                    if rb.device == torch.device("cpu"):
-                        backend = "gloo"
-                    else:
-                        backend = "nccl"
-                    checkpoint_collective.create_group(backend=backend, ranks=list(range(fabric.world_size)))
-                    gathered_rb = [None for _ in range(fabric.world_size)]
-                    if fabric.global_rank == 0:
-                        checkpoint_collective.gather_object(rb, gathered_rb)
-                        state["rb"] = gathered_rb
-                    else:
-                        checkpoint_collective.gather_object(rb, None)
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
-            if args.checkpoint_buffer:
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+            fabric.call(
+                "on_checkpoint_coupled",
+                fabric=fabric,
+                ckpt_path=ckpt_path,
+                state=state,
+                replay_buffer=rb if args.checkpoint_buffer else None,
+            )
 
     envs.close()
     if fabric.is_global_zero:

@@ -61,6 +61,7 @@ mujoco = [
 ]
 atari = [
   "gymnasium[atari]==0.28.*",
+  "gymnasium[accept-rom-license]==0.28.*",
   "gymnasium[other]==0.28.*",
 ]
 rlhf = [
