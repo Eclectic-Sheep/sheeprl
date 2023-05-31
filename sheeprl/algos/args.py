@@ -17,3 +17,4 @@ class StandardArgs:
         help="the name of the root folder of the log directory of this experiment",
     )
     run_name: Optional[str] = Arg(default=None, help="the folder name of this run")
+    action_repeat: int = Arg(default=1, help="the number of action repeat")
