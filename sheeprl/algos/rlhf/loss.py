@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 
-def reward_loss(
+def reward_loss_last_token(
     chosen: torch.Tensor,
     rejected: torch.Tensor,
     chosen_rewards: torch.Tensor,
@@ -15,8 +15,6 @@ def reward_loss(
     pad_mask_chosen = chosen != pad_token_id  # (B, T)
     pad_mask_rejected = rejected != pad_token_id  # (B, T)
     total_pad_mask = pad_mask_chosen | pad_mask_rejected  # (B, T)
-    diff_mask = chosen != rejected  # (B, T)
-    total_mask = total_pad_mask & diff_mask  # (B, T)
 
     last_token_idx = torch.argmax(torch.cumsum(total_pad_mask, dim=1) * total_pad_mask, dim=1, keepdim=True)
     chosen_last_rewards = torch.gather(chosen_rewards, dim=-1, index=last_token_idx).squeeze(-1)
@@ -25,7 +23,7 @@ def reward_loss(
     return -F.logsigmoid(filtered_rewards).mean(), chosen_last_rewards, rejected_last_rewards
 
 
-def reward_loss_loop(
+def reward_loss(
     chosen: torch.Tensor,
     rejected: torch.Tensor,
     chosen_rewards: torch.Tensor,
