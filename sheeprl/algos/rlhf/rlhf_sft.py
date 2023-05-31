@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
+
+if not _IS_TRANSFORMERS_AVAILABLE:
+    raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.args import OPT, GenerationArgs, ModelArgs, SFTArgs, TextDataArgs
@@ -25,14 +29,16 @@ from sheeprl.algos.rlhf.utils import (
     save_args_to_json,
     trainable_parameter_summary,
 )
+
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import EmptyInitOnDevice
 
+
 __all__ = ["main"]
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate(
     model: CasualModel,
     train_args: SFTArgs,
@@ -62,7 +68,7 @@ def evaluate(
     return average_loss
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def generate(
     model: CasualModel,
     tokenizer: PreTrainedTokenizer,
@@ -79,6 +85,7 @@ def generate(
     generated_text = tokenizer.decode(generated[0])
     model.train()
     return generated_text
+
 
 @register_algorithm()
 def main():

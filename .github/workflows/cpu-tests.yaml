@@ -41,7 +41,7 @@ jobs:
     - name: Install packages
       run: |
         pip install -U pip
-        pip install .[atari,test]
+        pip install .[atari,rlhf,test]
     
     - name: Run tests
       run: |
