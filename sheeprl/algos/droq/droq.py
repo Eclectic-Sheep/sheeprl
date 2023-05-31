@@ -172,6 +172,7 @@ def main():
                 "train",
                 mask_velocities=False,
                 vector_env_idx=i,
+                action_repeat=args.action_repeat,
             )
             for i in range(args.num_envs)
         ]
@@ -218,14 +219,20 @@ def main():
         )
 
     # Local data
-    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
+    buffer_size = (
+        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
+    )
     rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
+    num_updates = (
+        int(args.total_steps // (args.num_envs * fabric.world_size * args.action_repeat)) if not args.dry_run else 1
+    )
+    args.learning_starts = (
+        args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    )
 
     with device:
         # Get the first environment observation and start the optimization

@@ -84,7 +84,7 @@ def miniblock(
 
 
 def create_layers(
-    layer_type: [ModuleType, List[ModuleType]], layer_args: Optional[ArgsType], num_layers: int
+    layer_type: Union[ModuleType, List[ModuleType]], layer_args: Optional[ArgsType], num_layers: int
 ) -> Tuple[List[ModuleType], ArgsType]:
     """Create a list of layers with given layer type and arguments.
 
