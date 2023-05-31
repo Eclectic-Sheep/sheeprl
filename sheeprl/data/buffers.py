@@ -213,7 +213,7 @@ class SequentialReplayBuffer(ReplayBuffer):
             # when the buffer is full, it is necessary to avoid the starting index between (self.pos - sequence_length)
             # and self.pos, so it is possible to sample the starting index between (0, self.pos - sequence_length) and
             # between (self.pos, self.buffer_size)
-            first_range_end = self._pos - sequence_length + 1  # end of the first range
+            first_range_end = self._pos - sequence_length + 1
             # end of the second range, if the first range is empty, then the second range ends
             # in (buffer_size + (self._pos - sequence_length + 1)), otherwise the sequence will contain
             # invalid values
