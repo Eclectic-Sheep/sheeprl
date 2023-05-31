@@ -82,9 +82,9 @@ class MetricAggregator:
         reduced_metrics = {}
         if self.metrics:
             for k, v in self.metrics.items():
-                reduced = v.compute().tolist()
+                reduced = v.compute()
                 if v._update_called:
-                    reduced_metrics[k] = reduced
+                    reduced_metrics[k] = reduced.tolist()
         return reduced_metrics
 
 
