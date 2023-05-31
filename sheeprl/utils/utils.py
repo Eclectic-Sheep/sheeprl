@@ -5,7 +5,7 @@ import gymnasium as gym
 import torch
 from torch import Tensor
 
-from sheeprl.envs.wrappers import MaskVelocityWrapper
+from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper
 
 
 @torch.no_grad()
@@ -81,11 +81,13 @@ def make_env(
     prefix: str = "",
     mask_velocities: bool = False,
     vector_env_idx: int = 0,
+    action_repeat: int = 1,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         if mask_velocities:
             env = MaskVelocityWrapper(env)
+        env = ActionRepeat(env, action_repeat)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
             if vector_env_idx == 0 and idx == 0 and run_name is not None:

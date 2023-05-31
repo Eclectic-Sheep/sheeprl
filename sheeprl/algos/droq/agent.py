@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.nn.parallel import DistributedDataParallel
 
 from sheeprl.algos.sac.agent import SACActor
 from sheeprl.models.models import MLP
@@ -84,15 +83,20 @@ class DROQAgent(nn.Module):
         self._num_critics = len(critics)
         self._actor = actor
         self._qfs = nn.ModuleList(critics)
-        qfs_target = []
+
+        # Create target critic unwrapping the DDP module from the critics to prevent
+        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
+        # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
+        # This happens when we're using the decoupled version of SAC for example
+        qfs_unwrapped_modules = []
         for critic in critics:
-            if isinstance(critic, (DistributedDataParallel, _FabricModule)):
-                qfs_target.append(copy.deepcopy(critic.module))
-            elif isinstance(critic, nn.Module):
-                qfs_target.append(copy.deepcopy(critic))
+            if getattr(critic, "module"):
+                critic_module = critic.module
             else:
-                raise ValueError("Every critic must be a subclass of `torch.nn.Module`")
-        self._qfs_target = nn.ModuleList(qfs_target)
+                critic_module = critic
+            qfs_unwrapped_modules.append(critic_module)
+        self._qfs_unwrapped = nn.ModuleList(qfs_unwrapped_modules)
+        self._qfs_target = copy.deepcopy(self._qfs_unwrapped)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
 
@@ -110,6 +114,10 @@ class DROQAgent(nn.Module):
     @property
     def qfs(self) -> nn.ModuleList:
         return self._qfs
+
+    @property
+    def qfs_unwrapped(self) -> nn.ModuleList:
+        return self._qfs_unwrapped
 
     @property
     def actor(self) -> Union[SACActor, _FabricModule]:
@@ -162,5 +170,7 @@ class DROQAgent(nn.Module):
 
     @torch.no_grad()
     def qfs_target_ema(self, critic_idx: int) -> None:
-        for param, target_param in zip(self.qfs[critic_idx].parameters(), self.qfs_target[critic_idx].parameters()):
+        for param, target_param in zip(
+            self.qfs_unwrapped[critic_idx].parameters(), self.qfs_target[critic_idx].parameters()
+        ):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)

@@ -40,6 +40,8 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
 class ActionRepeat(gym.Wrapper):
     def __init__(self, env: gym.Env, amount: int = 1):
         super().__init__(env)
+        if amount <= 0:
+            raise ValueError("`amount` should be a positive integer")
         self._env = env
         self._amount = amount
 
