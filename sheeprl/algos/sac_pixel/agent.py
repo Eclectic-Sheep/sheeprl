@@ -105,39 +105,42 @@ class Decoder(DeCNN):
 
 class SACPixelCritic(nn.Module):
     def __init__(
-        self, in_channels: int, features_dim: int, action_dim: int, screen_size: int = 64, num_critics: int = 1
+        self,
+        encoder: Union[Encoder, _FabricModule],
+        action_dim: int,
+        hidden_dim: int = 256,
+        num_critics: int = 1,
     ):
         super().__init__()
-        self.feature_extractor = Encoder(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
+        self.encoder = encoder
         self.model = MLP(
-            input_dims=features_dim + action_dim,
+            input_dims=encoder.output_dim + action_dim,
             output_dim=num_critics,
-            hidden_sizes=(features_dim, features_dim),
+            hidden_sizes=(hidden_dim, hidden_dim),
             activation=nn.ReLU,
             flatten_dim=None,
         )
 
     def forward(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
-        features = self.feature_extractor(obs)
+        features = self.encoder(obs)
         if detach_encoder_features:
             features = features.detach()
-        x = torch.cat([x, action], -1)
+        x = torch.cat([features, action], -1)
         return self.model(x)
 
 
 class SACPixelContinuousActor(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        features_dim: int,
+        encoder: Union[Encoder, _FabricModule],
         action_dim: int,
-        screen_size: int = 64,
+        hidden_dim: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
         super().__init__()
-        self.feature_extractor = Encoder(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
-        self.model = MLP(input_dims=features_dim, hidden_sizes=(features_dim, features_dim), flatten_dim=None)
+        self.encoder = encoder
+        self.model = MLP(input_dims=encoder.output_dim, hidden_sizes=(hidden_dim, hidden_dim), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
@@ -157,10 +160,10 @@ class SACPixelContinuousActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        features = self.feature_extractor(obs)
+        features = self.encoder(obs)
         if detach_encoder_features:
             features = features.detach()
-        x = self.model(x)
+        x = self.model(features)
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
@@ -224,20 +227,21 @@ class SACPixelAgent(nn.Module):
         critics: Sequence[Union[SACPixelCritic, _FabricModule]],
         target_entropy: float,
         alpha: float = 1.0,
-        tau: float = 0.005,
+        tau: float = 0.01,
+        encoder_tau: float = 0.05,
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
         # Tie encoder weights between actor and first critic
-        for actor_conv, critic_conv in zip(actor.feature_extractor.children(), critics[0].feature_extractor.children()):
-            actor_conv.weight = critic_conv.weight
-            actor_conv.bias = critic_conv.bias
+        for actor_layer, critic_layer in zip(actor.encoder.modules(), critics[0].encoder.modules()):
+            if isinstance(actor_layer, nn.Conv2d) and isinstance(actor_layer, nn.Conv2d):
+                actor_layer.weight = critic_layer.weight
+                actor_layer.bias = critic_layer.bias
         for i in range(1, len(critics)):
-            for c0_conv, ci_conv in zip(
-                critics[0].feature_extractor.children(), critics[i].feature_extractor.children()
-            ):
-                ci_conv.weight = c0_conv.weight
-                ci_conv.bias = c0_conv.bias
+            for c0_layer, ci_layer in zip(critics[0].encoder.modules(), critics[i].encoder.modules()):
+                if isinstance(c0_layer, nn.Conv2d) and isinstance(ci_layer, nn.Conv2d):
+                    ci_layer.weight = c0_layer.weight
+                    ci_layer.bias = c0_layer.bias
 
         # Actor and critics
         self._num_critics = len(critics)
@@ -266,6 +270,7 @@ class SACPixelAgent(nn.Module):
 
         # EMA tau
         self._tau = tau
+        self._encoder_tau = encoder_tau
 
     @property
     def num_critics(self) -> int:
@@ -323,5 +328,16 @@ class SACPixelAgent(nn.Module):
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
-            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+        for i in range(self.num_critics):
+            for param, target_param in zip(
+                self.qfs_unwrapped[i].model.parameters(), self.qfs_target[i].model.parameters()
+            ):
+                target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+
+    @torch.no_grad()
+    def qfs_target_encoder_ema(self) -> None:
+        for i in range(self.num_critics):
+            for param, target_param in zip(
+                self.qfs_unwrapped[i].encoder.parameters(), self.qfs_target[i].encoder.parameters()
+            ):
+                target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)

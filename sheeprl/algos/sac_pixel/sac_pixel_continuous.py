@@ -4,11 +4,12 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime
 from math import prod
-from typing import Optional
+from typing import Optional, Union
 
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import TPUAccelerator
@@ -17,6 +18,7 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
+from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam, Optimizer
@@ -26,9 +28,9 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo_pixel.ppo_pixel_continuous import make_env
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_pixel.agent import SACPixelAgent, SACPixelContinuousActor, SACPixelCritic
+from sheeprl.algos.sac_pixel.agent import Decoder, Encoder, SACPixelAgent, SACPixelContinuousActor, SACPixelCritic
 from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
-from sheeprl.algos.sac_pixel.utils import test_sac_pixel
+from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -38,9 +40,13 @@ from sheeprl.utils.registry import register_algorithm
 def train(
     fabric: Fabric,
     agent: SACPixelAgent,
+    encoder: Union[Encoder, _FabricModule],
+    decoder: Union[Decoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
+    encoder_optimizer: Optimizer,
+    decoder_optimizer: Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
     global_step: int,
@@ -48,8 +54,8 @@ def train(
     group: Optional[CollectibleGroup] = None,
 ):
     data = data.to(fabric.device)
-    normalized_obs = data["observations"] / 255.0 - 0.5
-    normalized_next_obs = data["next_observations"] / 255.0 - 0.5
+    normalized_obs = data["observations"] / 255.0
+    normalized_next_obs = data["next_observations"] / 255.0
 
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
@@ -65,6 +71,7 @@ def train(
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
         agent.qfs_target_ema()
+        agent.qfs_target_encoder_ema()
 
     # Update the actor
     if global_step % args.actor_network_frequency == 0:
@@ -84,6 +91,20 @@ def train(
         agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
         alpha_optimizer.step()
         aggregator.update("Loss/alpha_loss", alpha_loss)
+
+    # Update the decoder
+    if global_step % args.decoder_update_freq == 0:
+        hidden = encoder(normalized_obs)
+        reconstruction = decoder(hidden)
+        reconstruction_loss = F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)
+        if args.decoder_l2_lambda > 0.0:
+            reconstruction_loss = reconstruction_loss + (0.5 * hidden.pow(2).sum(1)).mean()
+        encoder_optimizer.zero_grad(set_to_none=True)
+        decoder_optimizer.zero_grad(set_to_none=True)
+        fabric.backward(reconstruction_loss)
+        encoder_optimizer.step()
+        decoder_optimizer.step()
+        aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
 
 
 @register_algorithm()
@@ -107,7 +128,7 @@ def main():
     else:
         strategy = DDPStrategy(find_unused_parameters=True)
         if devices == "1":
-            strategy = SingleDeviceStrategy()
+            strategy = SingleDeviceStrategy(device="cuda:0")
     fabric = Fabric(strategy=strategy)
     if not _is_using_cli():
         fabric.launch()
@@ -170,11 +191,22 @@ def main():
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
     in_channels = prod(envs.single_observation_space.shape[:-2])
-    actor = fabric.setup_module(
-        SACPixelContinuousActor(
-            in_channels=in_channels,
+    target_entropy = -act_dim
+    encoder = fabric.setup_module(
+        Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
+    )
+    decoder = fabric.setup_module(
+        Decoder(
+            encoder.conv_output_shape,
             features_dim=args.features_dim,
             screen_size=args.screen_size,
+            out_channels=in_channels,
+        )
+    )
+    actor = fabric.setup_module(
+        SACPixelContinuousActor(
+            encoder=encoder.module,
+            hidden_dim=args.hidden_dim,
             action_dim=act_dim,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
@@ -183,23 +215,33 @@ def main():
     critics = [
         fabric.setup_module(
             SACPixelCritic(
-                in_channels=in_channels,
-                features_dim=args.features_dim,
-                screen_size=args.screen_size,
+                encoder=encoder.module,
+                hidden_dim=args.hidden_dim,
                 action_dim=act_dim,
                 num_critics=1,
             )
         )
         for _ in range(args.num_critics)
     ]
-    target_entropy = -act_dim
-    agent = SACPixelAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
+    agent = SACPixelAgent(
+        actor,
+        critics,
+        target_entropy,
+        alpha=args.alpha,
+        tau=args.tau,
+        encoder_tau=args.encoder_tau,
+        device=fabric.device,
+    )
 
     # Optimizers
-    qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-5),
-        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-5),
-        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-5),
+    qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
+        Adam(agent.qfs.parameters(), lr=args.q_lr),
+        Adam(agent.actor.parameters(), lr=args.policy_lr),
+        Adam([agent.log_alpha], lr=args.alpha_lr, betas=(0.5, 0.999)),
+        # optimizer for critic encoder for reconstruction loss
+        Adam(encoder.parameters(), lr=args.encoder_lr),
+        # optimizer for decoder
+        Adam(decoder.parameters(), lr=args.decoder_lr, weight_decay=args.decoder_wd),
     )
 
     # Metrics
@@ -212,6 +254,7 @@ def main():
                 "Loss/value_loss": MeanMetric(),
                 "Loss/policy_loss": MeanMetric(),
                 "Loss/alpha_loss": MeanMetric(),
+                "Loss/reconstruction_loss": MeanMetric(),
             }
         )
 
@@ -222,8 +265,12 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
+    num_updates = (
+        int(args.total_steps // (args.num_envs * fabric.world_size * args.action_repeat)) if not args.dry_run else 1
+    )
+    args.learning_starts = (
+        args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    )
 
     # Get the first environment observation and start the optimization
     obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
@@ -232,7 +279,7 @@ def main():
         # Sample an action given the observation received by the environment
         with torch.no_grad():
             obs = obs.flatten(start_dim=1, end_dim=-3)
-            normalized_obs = obs / 255.0 - 0.5
+            normalized_obs = obs / 255.0
             actions, _ = actor.module(normalized_obs.to(device))
             actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
@@ -263,7 +310,8 @@ def main():
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        step_data["next_observations"] = real_next_obs
+        if not args.sample_next_obs:
+            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
@@ -273,7 +321,9 @@ def main():
         # Train the agent
         if global_step > args.learning_starts:
             # We sample one time to reduce the communications between processes
-            sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)  # [G*B, 1]
+            sample = rb.sample(
+                args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
+            )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
             gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
             if fabric.world_size > 1:
@@ -296,9 +346,13 @@ def main():
                 train(
                     fabric,
                     agent,
+                    encoder,
+                    decoder,
                     actor_optimizer,
                     qf_optimizer,
                     alpha_optimizer,
+                    encoder_optimizer,
+                    decoder_optimizer,
                     gathered_data[batch_idxes],
                     aggregator,
                     global_step,
@@ -312,9 +366,13 @@ def main():
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             state = {
                 "agent": agent.state_dict(),
+                "encoder": encoder.state_dict(),
+                "decoder": decoder.state_dict(),
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
+                "encoder_optimizer": encoder_optimizer.state_dict(),
+                "decoder_optimizer": decoder_optimizer.state_dict(),
                 "args": asdict(args),
                 "global_step": global_step,
             }
