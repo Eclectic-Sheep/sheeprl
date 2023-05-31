@@ -25,3 +25,6 @@ class SACArgs(StandardArgs):
     gradient_steps: int = Arg(default=1, help="the number of gradient steps per each environment interaction")
     checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
+    sample_next_obs: bool = Arg(
+        default=False, help="whether or not to sample the next observations from the gathered observations"
+    )

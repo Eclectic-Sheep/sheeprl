@@ -85,13 +85,16 @@ class ReplayBuffer:
             )
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if next_pos < self._pos or (self._pos + data_len >= self._buffer_size and self._pos == 0):
+        if next_pos < self._pos or (data_len >= self._buffer_size and not self._full):
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
             )
         else:
             idxes = torch.tensor(range(self._pos, next_pos), device=self.device)
-        self._buf[idxes, :] = data
+        if data_len > self._buffer_size:
+            self._buf[idxes, :] = data[-self._buffer_size - next_pos :]
+        else:
+            self._buf[idxes, :] = data
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
@@ -118,17 +121,22 @@ class ReplayBuffer:
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
-        # Do not sample the element with index `self.pos` as the transitions is invalid
-        # (we use only one array to store `obs` and `next_obs`)
         if self._full:
-            if sample_next_obs:
-                batch_idxes = (
-                    torch.randint(1, self._buffer_size, size=(batch_size,), device=self.device) + self._pos
-                ) % self._buffer_size
-            else:
-                batch_idxes = torch.randint(0, self._buffer_size, size=(batch_size,), device=self.device)
+            first_range_end = self._pos - 1 if sample_next_obs else self._pos
+            second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
+            valid_idxes = torch.tensor(
+                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)),
+                device=self.device,
+            )
+            batch_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_size,), device=self.device)]
         else:
-            batch_idxes = torch.randint(0, self._pos, size=(batch_size,), device=self.device)
+            max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
+            if max_pos_to_sample == 0:
+                raise RuntimeError(
+                    "You want to sample the next observations, but one sample has been added to the buffer. "
+                    "Make sure that at least two samples are added."
+                )
+            batch_idxes = torch.randint(0, max_pos_to_sample, size=(batch_size,), device=self.device)
         sample = self._get_samples(batch_idxes, sample_next_obs=sample_next_obs).unsqueeze(-1)
         if clone:
             return sample.clone()
