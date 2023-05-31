@@ -91,11 +91,11 @@ def generate(
 def main():
     # Retrieve arguments
     if len(sys.argv) > 1:
-        parser = HfArgumentParser([SFTArgs, ModelArgs, TextDataArgs, GenerationArgs])
+        parser = HfArgumentParser([SFTArgs, ModelArgs, GenerationArgs])
         dataclasses = parser.parse_args_into_dataclasses()
         train_args: SFTArgs = dataclasses[0]
         model_args: ModelArgs = dataclasses[1]
-        gen_args: GenerationArgs = dataclasses[3]
+        gen_args: GenerationArgs = dataclasses[2]
     else:
         train_args = SFTArgs(data_dir="data/Dahoas/static-hh")
         model_args = OPT()
@@ -134,9 +134,12 @@ def main():
 
     # Setup Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-    # Setup Model and Tokenizer
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    # Setup Model
     with EmptyInitOnDevice(fabric.device):
-        model = CasualModel.from_checkpoint(device=fabric.device, model_args=model_args)
+        model = CasualModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
         model = model.to(fabric.device)
         if model_args.apply_lora:
             add_lora(model, model_args)
@@ -145,9 +148,6 @@ def main():
             for param in model.parameters():
                 param.requires_grad = True
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
     trainable_parameter_summary(fabric, model, show_names=False)
 
     # Setup Generation Config
@@ -213,19 +213,19 @@ def main():
             data_iterator = iter(train_dataloader)
         is_accumulating = (k) % train_args.gradient_accumulation_steps != 0
         last_step = k == num_training_steps - 1
+
+        # Setup learning rate
+        lr = lr_scheduler.get_lr(it=k)
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr
+
+        # Setup batch data
         batch = next(data_iterator)
         input_ids = batch["input_ids"]  # type: ignore[index]
         attention_mask = batch["attention_mask"]  # type: ignore[index]
         targets = batch["targets"] if train_args.use_targets else input_ids  # type: ignore[index]
 
-        # Setup learning rate
-
-        lr = lr_scheduler.get_lr(it=k)
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
-
         # Forward and Backward Pass
-
         t0 = time.time()
         with fabric.no_backward_sync(model, enabled=is_accumulating):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
@@ -239,7 +239,7 @@ def main():
 
         dt = time.time() - t0
         if not is_accumulating:
-            fabric.clip_gradients(model, optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=False)
+            fabric.clip_gradients(model, optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         if k > 0 and (k % train_args.eval_interval == 0 or last_step):
