@@ -72,6 +72,10 @@ def reward_loss(
         if divergence_ind > end_ind:
             continue
 
+        if divergence_ind == end_ind:
+            # If the divergence index is the same as the end index, we want to include the last token
+            divergence_ind -= 1
+
         # Get the rewards for the chosen and rejected sequences after the divergence index
         chosen_filtered_rewards = chosen_complete_rewards[divergence_ind:end_ind]
         rejected_filtered_rewards = rejected_complete_rewards[divergence_ind:end_ind]
