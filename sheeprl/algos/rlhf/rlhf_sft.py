@@ -102,11 +102,12 @@ def main():
         gen_args = GenerationArgs()
         # custom args if not using command line
         train_args.learning_rate = 5e-5
-        train_args.epochs = 10
+        train_args.epochs = 3
         train_args.lr_warmup_steps = 200
         train_args.micro_batch_size = 32
         train_args.mini_batch_size = 32
         train_args.save_interval = 3000
+        model_args.disable_dropout = False
 
     data_args_path = Path(train_args.data_dir) / "args.json"
     data_args = TextDataArgs.from_json(str(data_args_path))
@@ -119,7 +120,7 @@ def main():
     # Setup for rank 0
     if fabric.is_global_zero:
         # Setup Logger
-        logger = TensorBoardLogger(train_args.experiment_dir, name=train_args.experiment_name)
+        logger = TensorBoardLogger(train_args.experiment_dir)
         fabric._loggers = [logger]
         # Save args
         os.makedirs(train_args.experiment_dir, exist_ok=True)
