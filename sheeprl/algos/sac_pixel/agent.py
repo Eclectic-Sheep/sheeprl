@@ -212,9 +212,8 @@ class SACPixelContinuousActor(nn.Module):
         Returns:
             action
         """
-        features = self.feature_extractor(obs)
-        x = self.after_conv(features)
-        x = self.model(x)
+        features = self.encoder(obs)
+        x = self.model(features)
         mean = self.fc_mean(x)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return mean
