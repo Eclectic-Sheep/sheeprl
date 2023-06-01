@@ -1,6 +1,6 @@
 import copy
 from math import prod
-from typing import Sequence, SupportsFloat, Tuple, Union
+from typing import List, SupportsFloat, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -103,30 +103,39 @@ class Decoder(DeCNN):
         return x
 
 
-class SACPixelCritic(nn.Module):
+class SACPixelQFunction(nn.Module):
     def __init__(
         self,
-        encoder: Union[Encoder, _FabricModule],
+        input_dim: int,
         action_dim: int,
         hidden_dim: int = 256,
-        num_critics: int = 1,
+        output_dim: int = 1,
     ):
         super().__init__()
-        self.encoder = encoder
         self.model = MLP(
-            input_dims=encoder.output_dim + action_dim,
-            output_dim=num_critics,
+            input_dims=input_dim + action_dim,
+            output_dim=output_dim,
             hidden_sizes=(hidden_dim, hidden_dim),
             activation=nn.ReLU,
             flatten_dim=None,
         )
 
+    def forward(self, obs: Tensor, action: Tensor) -> Tensor:
+        x = torch.cat([obs, action], -1)
+        return self.model(x)
+
+
+class SACPixelCritic(nn.Module):
+    def __init__(self, encoder: Union[Encoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.qfs = nn.ModuleList(qfs)
+
     def forward(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
         features = self.encoder(obs)
         if detach_encoder_features:
             features = features.detach()
-        x = torch.cat([features, action], -1)
-        return self.model(x)
+        return torch.cat([self.qfs[i](features, action) for i in range(len(self.qfs))], dim=-1)
 
 
 class SACPixelContinuousActor(nn.Module):
@@ -223,7 +232,7 @@ class SACPixelAgent(nn.Module):
     def __init__(
         self,
         actor: Union[SACPixelContinuousActor, _FabricModule],
-        critics: Sequence[Union[SACPixelCritic, _FabricModule]],
+        critic: Union[SACPixelCritic, _FabricModule],
         target_entropy: float,
         alpha: float = 1.0,
         tau: float = 0.01,
@@ -231,36 +240,28 @@ class SACPixelAgent(nn.Module):
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
-        # Tie encoder weights between actor and first critic
-        for actor_layer, critic_layer in zip(actor.encoder.modules(), critics[0].encoder.modules()):
-            if isinstance(actor_layer, nn.Conv2d) and isinstance(actor_layer, nn.Conv2d):
+        # Tie encoder weights between actor and critic
+        for actor_layer, critic_layer in zip(actor.encoder.modules(), critic.encoder.modules()):
+            if isinstance(actor_layer, nn.Conv2d) and isinstance(critic_layer, nn.Conv2d):
                 actor_layer.weight = critic_layer.weight
                 actor_layer.bias = critic_layer.bias
-        for i in range(1, len(critics)):
-            for c0_layer, ci_layer in zip(critics[0].encoder.modules(), critics[i].encoder.modules()):
-                if isinstance(c0_layer, nn.Conv2d) and isinstance(ci_layer, nn.Conv2d):
-                    ci_layer.weight = c0_layer.weight
-                    ci_layer.bias = c0_layer.bias
 
         # Actor and critics
-        self._num_critics = len(critics)
+        self._num_critics = len(critic.qfs)
         self._actor = actor
-        self._qfs = nn.ModuleList(critics)
+        self._critic = critic
 
         # Create target critic unwrapping the DDP module from the critics to prevent
         # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
         # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
         # This happens when we're using the decoupled version of SACPixel for example
-        qfs_unwrapped_modules = []
-        for critic in critics:
-            if getattr(critic, "module"):
-                critic_module = critic.module
-            else:
-                critic_module = critic
-            qfs_unwrapped_modules.append(critic_module)
-        self._qfs_unwrapped = nn.ModuleList(qfs_unwrapped_modules)
-        self._qfs_target = copy.deepcopy(self._qfs_unwrapped)
-        for p in self._qfs_target.parameters():
+        if hasattr(critic, "module"):
+            critic_module = critic.module
+        else:
+            critic_module = critic
+        self._critic_unwrapped = critic_module
+        self._critic_target = copy.deepcopy(self._critic_unwrapped)
+        for p in self._critic_target.parameters():
             p.requires_grad = False
 
         # Automatic entropy tuning
@@ -276,20 +277,20 @@ class SACPixelAgent(nn.Module):
         return self._num_critics
 
     @property
-    def qfs(self) -> nn.ModuleList:
-        return self._qfs
+    def critic(self) -> Union[SACPixelCritic, _FabricModule]:
+        return self._critic
 
     @property
-    def qfs_unwrapped(self) -> nn.ModuleList:
-        return self._qfs_unwrapped
+    def critic_unwrapped(self) -> SACPixelCritic:
+        return self._critic_unwrapped
 
     @property
     def actor(self) -> Union[SACPixelContinuousActor, _FabricModule]:
         return self._actor
 
     @property
-    def qfs_target(self) -> nn.ModuleList:
-        return self._qfs_target
+    def critic_target(self) -> SACPixelCritic:
+        return self._critic_target
 
     @property
     def alpha(self) -> float:
@@ -310,11 +311,11 @@ class SACPixelAgent(nn.Module):
         return self.actor.get_greedy_actions(obs)
 
     def get_q_values(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
-        return torch.cat([self.qfs[i](obs, action, detach_encoder_features) for i in range(len(self.qfs))], dim=-1)
+        return self.critic(obs, action, detach_encoder_features)
 
     @torch.no_grad()
     def get_target_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
-        return torch.cat([self.qfs_target[i](obs, action) for i in range(len(self.qfs))], dim=-1)
+        return self.critic_target(obs, action)
 
     @torch.no_grad()
     def get_next_target_q_values(self, next_obs: Tensor, rewards: Tensor, dones: Tensor, gamma: float):
@@ -326,17 +327,13 @@ class SACPixelAgent(nn.Module):
         return next_qf_value
 
     @torch.no_grad()
-    def qfs_target_ema(self) -> None:
-        for i in range(self.num_critics):
-            for param, target_param in zip(
-                self.qfs_unwrapped[i].model.parameters(), self.qfs_target[i].model.parameters()
-            ):
-                target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+    def critic_target_ema(self) -> None:
+        for param, target_param in zip(self.critic_unwrapped.qfs.parameters(), self.critic_target.qfs.parameters()):
+            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
 
     @torch.no_grad()
-    def qfs_target_encoder_ema(self) -> None:
-        for i in range(self.num_critics):
-            for param, target_param in zip(
-                self.qfs_unwrapped[i].encoder.parameters(), self.qfs_target[i].encoder.parameters()
-            ):
-                target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)
+    def critic_target_encoder_ema(self) -> None:
+        for param, target_param in zip(
+            self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters()
+        ):
+            target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)

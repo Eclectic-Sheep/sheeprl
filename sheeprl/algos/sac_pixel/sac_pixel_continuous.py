@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 import warnings
@@ -28,7 +29,14 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo_pixel.ppo_pixel_continuous import make_env
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_pixel.agent import Decoder, Encoder, SACPixelAgent, SACPixelContinuousActor, SACPixelCritic
+from sheeprl.algos.sac_pixel.agent import (
+    Decoder,
+    Encoder,
+    SACPixelAgent,
+    SACPixelContinuousActor,
+    SACPixelCritic,
+    SACPixelQFunction,
+)
 from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
 from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
@@ -41,7 +49,6 @@ from sheeprl.utils.registry import register_algorithm
 def train(
     fabric: Fabric,
     agent: SACPixelAgent,
-    encoder: Union[Encoder, _FabricModule],
     decoder: Union[Decoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
@@ -71,8 +78,8 @@ def train(
 
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
-        agent.qfs_target_ema()
-        agent.qfs_target_encoder_ema()
+        agent.critic_target_ema()
+        agent.critic_target_encoder_ema()
 
     # Update the actor
     if global_step % args.actor_network_frequency == 0:
@@ -95,7 +102,7 @@ def train(
 
     # Update the decoder
     if global_step % args.decoder_update_freq == 0:
-        hidden = encoder(normalized_obs)
+        hidden = agent.critic.encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)
         if args.decoder_l2_lambda > 0.0:
@@ -184,7 +191,8 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("Only continuous action space is supported")
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -203,27 +211,21 @@ def main():
     )
     actor = fabric.setup_module(
         SACPixelContinuousActor(
-            encoder=encoder.module,
+            encoder=copy.deepcopy(encoder.module),
             hidden_dim=args.hidden_dim,
             action_dim=act_dim,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
-    critics = [
-        fabric.setup_module(
-            SACPixelCritic(
-                encoder=encoder.module,
-                hidden_dim=args.hidden_dim,
-                action_dim=act_dim,
-                num_critics=1,
-            )
-        )
+    qfs = [
+        SACPixelQFunction(input_dim=encoder.output_dim, action_dim=act_dim, hidden_dim=args.hidden_dim, output_dim=1)
         for _ in range(args.num_critics)
     ]
+    critic = fabric.setup_module(SACPixelCritic(encoder=encoder.module, qfs=qfs))
     agent = SACPixelAgent(
         actor,
-        critics,
+        critic,
         target_entropy,
         alpha=args.alpha,
         tau=args.tau,
@@ -233,12 +235,10 @@ def main():
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr),
+        Adam(agent.critic.parameters(), lr=args.q_lr),
         Adam(agent.actor.parameters(), lr=args.policy_lr),
         Adam([agent.log_alpha], lr=args.alpha_lr, betas=(0.5, 0.999)),
-        # optimizer for critic encoder for reconstruction loss
-        Adam(encoder.parameters(), lr=args.encoder_lr),
-        # optimizer for decoder
+        Adam(agent.critic.encoder.parameters(), lr=args.encoder_lr),
         Adam(decoder.parameters(), lr=args.decoder_lr, weight_decay=args.decoder_wd),
     )
 
@@ -344,7 +344,6 @@ def main():
                 train(
                     fabric,
                     agent,
-                    encoder,
                     decoder,
                     actor_optimizer,
                     qf_optimizer,
