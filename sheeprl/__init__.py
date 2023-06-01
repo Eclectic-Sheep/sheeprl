@@ -1,9 +1,11 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
-
-from dotenv import load_dotenv
 
 from sheeprl.algos.droq import droq
 from sheeprl.algos.ppo import ppo, ppo_decoupled
@@ -18,5 +20,5 @@ try:
 except ModuleNotFoundError:
     pass
 
-load_dotenv()
+
 __version__ = "0.1.0"
