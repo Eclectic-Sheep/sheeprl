@@ -13,12 +13,12 @@ import torch
 import torch.nn.functional as F
 from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
-from lightning.fabric.accelerators import TPUAccelerator
+from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
@@ -121,6 +121,7 @@ def main():
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
+    devices = os.environ.get("LT_DEVICES", None)
     strategy = os.environ.get("LT_STRATEGY", None)
     is_tpu_available = TPUAccelerator.is_available()
     if strategy is not None:
@@ -134,6 +135,8 @@ def main():
         strategy = "auto"
     else:
         strategy = DDPStrategy(find_unused_parameters=True)
+        if devices == "1":
+            strategy = SingleDeviceStrategy(device="cuda:0" if CUDAAccelerator.is_available() else "cpu")
     fabric = Fabric(strategy=strategy, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
