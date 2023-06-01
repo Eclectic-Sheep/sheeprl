@@ -148,7 +148,19 @@ def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
                 task.__dict__[command]()
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+        keys = {
+            "agent",
+            "encoder",
+            "decoder",
+            "qf_optimizer",
+            "actor_optimizer",
+            "alpha_optimizer",
+            "encoder_optimizer",
+            "decoder_optimizer",
+            "args",
+            "global_step",
+            "batch_size",
+        }
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(ckpt_path, keys, checkpoint_buffer)
