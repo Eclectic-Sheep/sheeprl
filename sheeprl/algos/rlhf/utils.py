@@ -96,3 +96,10 @@ def save_args_to_json(
     with open(os.path.join(train_args.experiment_dir, "args.json"), "w") as f:
         json.dump(args, f, indent=4)
     return args
+
+
+def get_last_checkpoint_path(experimet_dir: str):
+    model_dir = os.path.join(experimet_dir, "model")
+    checkpoints = [os.path.join(model_dir, f) for f in os.listdir(model_dir) if f.endswith(".pt")]
+    checkpoints = sorted(checkpoints, key=lambda x: int(x.split(".")[-2].split("-")[-1]))
+    return checkpoints[-1]

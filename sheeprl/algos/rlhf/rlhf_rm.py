@@ -97,6 +97,7 @@ def main():
         train_args.mini_batch_size = 16
         train_args.eval_interval = 50
         train_args.mini_batch_size = 16
+        model_args.disable_dropout = False
 
     data_args_path = Path(train_args.data_dir) / "args.json"
     data_args = TextDataArgs.from_json(str(data_args_path))
@@ -109,7 +110,7 @@ def main():
     # Setup for rank 0
     if fabric.is_global_zero:
         # Setup Logger
-        logger = TensorBoardLogger(train_args.experiment_dir, name=train_args.experiment_name)
+        logger = TensorBoardLogger(train_args.experiment_dir)
         fabric._loggers = [logger]
         # Save args
         os.makedirs(train_args.experiment_dir, exist_ok=True)
