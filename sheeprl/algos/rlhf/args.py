@@ -33,7 +33,6 @@ class TrainArgs:
     gradient_accumulation_steps: int = Arg(
         help="Number of gradient accumulation steps. It will be calculated automatically.", init=False
     )
-    use_aim: bool = Arg(default=True, help="Whether to use aim logger. If False, it will use tensorboard logger")
     weight_decay: float = Arg(default=0.0, help="Weight decay value")
 
     def __post_init__(self):
@@ -76,7 +75,7 @@ class RMArgs(TrainArgs):
 @dataclass
 class PPOArgs(TrainArgs):
     experiment_name: str = Arg(default="rlhf-ppo", help="Name of the experiment")
-    batch_size: int = Arg(default=128, help="Rollout batch size for PPO")
+    rollout_size: int = Arg(default=128, help="Rollout size for PPO")
     ppo_epochs: int = Arg(
         default=4, help="Number of ppo epochs to training. `ppo_step` will be called `ppo_epochs` times"
     )
@@ -124,8 +123,8 @@ class ModelArgs:
         default=True, help="Freeze transformer weights. If False, transformer weights will be updated during training."
     )
     disable_dropout: bool = Arg(
-        default=True,
-        help="Whether to disable dropout layers in the model. Disabling dropout layers helps stabilizing training during PPO training.",
+        default=False,
+        help="Whether to disable dropout layers in the model. During SFT dropout allows not to overfit to the dataset. However, Disabling dropout layers helps stabilizing training during PPO training since `log_ratio` for the first iteration becomes one. ",
     )
     apply_lora: bool = Arg(
         default=False,
