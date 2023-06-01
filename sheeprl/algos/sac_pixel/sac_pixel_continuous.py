@@ -17,7 +17,7 @@ from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
+from lightning.fabric.strategies import DDPStrategy
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
@@ -32,6 +32,7 @@ from sheeprl.algos.sac_pixel.agent import Decoder, Encoder, SACPixelAgent, SACPi
 from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
 from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -113,7 +114,6 @@ def main():
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    devices = os.environ.get("LT_DEVICES", None)
     strategy = os.environ.get("LT_STRATEGY", None)
     is_tpu_available = TPUAccelerator.is_available()
     if strategy is not None:
@@ -127,9 +127,7 @@ def main():
         strategy = "auto"
     else:
         strategy = DDPStrategy(find_unused_parameters=True)
-        if devices == "1":
-            strategy = SingleDeviceStrategy(device="cuda:0")
-    fabric = Fabric(strategy=strategy)
+    fabric = Fabric(strategy=strategy, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -374,32 +372,17 @@ def main():
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
                 "args": asdict(args),
-                "global_step": global_step,
+                "global_step": global_step * fabric.world_size,
+                "batch_size": args.per_rank_batch_size * fabric.world_size,
             }
-            if args.checkpoint_buffer:
-                true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
-                state["rb"] = rb
-                if fabric.world_size > 1:
-                    # We need to collect the buffers from all the ranks
-                    # The collective it is needed because the `gather_object` function is not implemented in Fabric
-                    checkpoint_collective = TorchCollective()
-                    # gloo is the torch.distributed backend that works on cpu
-                    if rb.device == torch.device("cpu"):
-                        backend = "gloo"
-                    else:
-                        backend = "nccl"
-                    checkpoint_collective.create_group(backend=backend, ranks=list(range(fabric.world_size)))
-                    gathered_rb = [None for _ in range(fabric.world_size)]
-                    if fabric.global_rank == 0:
-                        checkpoint_collective.gather_object(rb, gathered_rb)
-                        state["rb"] = gathered_rb
-                    else:
-                        checkpoint_collective.gather_object(rb, None)
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
-            if args.checkpoint_buffer:
-                rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+            fabric.call(
+                "on_checkpoint_coupled",
+                fabric=fabric,
+                ckpt_path=ckpt_path,
+                state=state,
+                replay_buffer=rb if args.checkpoint_buffer else None,
+            )
 
     envs.close()
     if fabric.is_global_zero:
