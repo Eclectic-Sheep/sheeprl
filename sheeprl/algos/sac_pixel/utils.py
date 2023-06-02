@@ -1,16 +1,25 @@
+from typing import TYPE_CHECKING
+
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
 
-from sheeprl.algos.sac_pixel.agent import SACPixelContinuousActor
 from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
+
+if TYPE_CHECKING:
+    from sheeprl.algos.sac_pixel.agent import SACPixelContinuousActor
 
 
 @torch.no_grad()
 def test_sac_pixel(
-    actor: SACPixelContinuousActor, env: gym.Env, fabric: Fabric, args: SACPixelContinuousArgs, normalize: bool = False
+    actor: "SACPixelContinuousActor",
+    env: gym.Env,
+    fabric: Fabric,
+    args: SACPixelContinuousArgs,
+    normalize: bool = False,
 ):
     actor.eval()
     done = False
@@ -45,3 +54,18 @@ def preprocess_obs(obs: Tensor, bits: int = 8):
     obs = obs + torch.rand_like(obs) / bins
     obs = obs - 0.5
     return obs
+
+
+def weight_init(m: nn.Module):
+    """Custom weight init for Conv2D and Linear layers."""
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight.data)
+        m.bias.data.fill_(0.0)
+    elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        # delta-orthogonal init from https://arxiv.org/pdf/1806.05393.pdf
+        assert m.weight.size(2) == m.weight.size(3)
+        m.weight.data.fill_(0.0)
+        m.bias.data.fill_(0.0)
+        mid = m.weight.size(2) // 2
+        gain = nn.init.calculate_gain("relu")
+        nn.init.orthogonal_(m.weight.data[:, :, mid, mid], gain)

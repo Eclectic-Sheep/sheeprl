@@ -8,6 +8,7 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
+from sheeprl.algos.sac_pixel.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN
 
 LOG_STD_MAX = 2
@@ -58,10 +59,10 @@ class Encoder(CNN):
         return self._conv_output_shape
 
     def forward(self, x: Tensor, detach_encoder_features: bool = False) -> Tensor:
-        x = self.model(x)
+        x = self.model(x).flatten(1)
         if detach_encoder_features:
             x = x.detach()
-        x = self.fc(x.flatten(1))
+        x = self.fc(x)
         return x
 
 
@@ -133,6 +134,9 @@ class SACPixelCritic(nn.Module):
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
 
+        # Orthogonal init
+        self.apply(weight_init)
+
     def forward(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
         features = self.encoder(obs, detach_encoder_features)
         return torch.cat([self.qfs[i](features, action) for i in range(len(self.qfs))], dim=-1)
@@ -157,6 +161,9 @@ class SACPixelContinuousActor(nn.Module):
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
+        # Orthogonal init
+        self.apply(weight_init)
+
     def forward(self, obs: Tensor, detach_encoder_features: bool = False) -> Tuple[Tensor, Tensor]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
@@ -173,8 +180,10 @@ class SACPixelContinuousActor(nn.Module):
         x = self.model(features)
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
-        std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
-        return self.get_actions_and_log_probs(mean, std)
+        # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+        log_std = torch.tanh(log_std)
+        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+        return self.get_actions_and_log_probs(mean, log_std.exp())
 
     def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
@@ -330,7 +339,7 @@ class SACPixelAgent(nn.Module):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
 
     @torch.no_grad()
-    def critic_target_encoder_ema(self) -> None:
+    def critic_encoder_target_ema(self) -> None:
         for param, target_param in zip(
             self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters()
         ):
