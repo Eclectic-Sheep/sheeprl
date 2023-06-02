@@ -79,7 +79,7 @@ def train(
     # Update the target networks with EMA
     if global_step % args.target_network_frequency == 0:
         agent.critic_target_ema()
-        agent.critic_target_encoder_ema()
+        agent.critic_encoder_target_ema()
 
     # Update the actor
     if global_step % args.actor_network_frequency == 0:
@@ -201,31 +201,29 @@ def main():
     act_dim = prod(envs.single_action_space.shape)
     in_channels = prod(envs.single_observation_space.shape[:-2])
     target_entropy = -act_dim
-    encoder = fabric.setup_module(
-        Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
+    encoder = Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
+    decoder = Decoder(
+        encoder.conv_output_shape,
+        features_dim=args.features_dim,
+        screen_size=args.screen_size,
+        out_channels=in_channels,
     )
-    decoder = fabric.setup_module(
-        Decoder(
-            encoder.conv_output_shape,
-            features_dim=args.features_dim,
-            screen_size=args.screen_size,
-            out_channels=in_channels,
-        )
-    )
-    actor = fabric.setup_module(
-        SACPixelContinuousActor(
-            encoder=copy.deepcopy(encoder.module),
-            hidden_dim=args.hidden_dim,
-            action_dim=act_dim,
-            action_low=envs.single_action_space.low,
-            action_high=envs.single_action_space.high,
-        )
+    actor = SACPixelContinuousActor(
+        encoder=copy.deepcopy(encoder),
+        hidden_dim=args.hidden_dim,
+        action_dim=act_dim,
+        action_low=envs.single_action_space.low,
+        action_high=envs.single_action_space.high,
     )
     qfs = [
         SACPixelQFunction(input_dim=encoder.output_dim, action_dim=act_dim, hidden_dim=args.hidden_dim, output_dim=1)
         for _ in range(args.num_critics)
     ]
-    critic = fabric.setup_module(SACPixelCritic(encoder=encoder.module, qfs=qfs))
+    critic = SACPixelCritic(encoder=encoder, qfs=qfs)
+    encoder = fabric.setup_module(encoder)
+    decoder = fabric.setup_module(decoder)
+    actor = fabric.setup_module(actor)
+    critic = fabric.setup_module(critic)
     agent = SACPixelAgent(
         actor,
         critic,
@@ -266,18 +264,13 @@ def main():
 
     # Global variables
     start_time = time.time()
-    num_updates = (
-        int(args.total_steps // (args.num_envs * fabric.world_size * args.action_repeat)) if not args.dry_run else 1
-    )
-    args.learning_starts = (
-        args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    )
+    num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
+    args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
     # Get the first environment observation and start the optimization
     obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        # Sample an action given the observation received by the environment
         with torch.no_grad():
             obs = obs.flatten(start_dim=1, end_dim=-3)
             normalized_obs = obs / 255.0
@@ -320,7 +313,7 @@ def main():
         obs = real_next_obs
 
         # Train the agent
-        if global_step > args.learning_starts:
+        if global_step >= args.learning_starts:
             # We sample one time to reduce the communications between processes
             sample = rb.sample(
                 args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
