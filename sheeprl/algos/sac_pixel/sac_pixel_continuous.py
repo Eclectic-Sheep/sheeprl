@@ -120,8 +120,6 @@ def train(
 def main():
     parser = HfArgumentParser(SACPixelContinuousArgs)
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
-    args.sample_next_obs = True
-    args.env_id = "dmc_walker_walk"
 
     # Initialize Fabric
     devices = os.environ.get("LT_DEVICES", None)
