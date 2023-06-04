@@ -104,9 +104,10 @@ def train(
     if global_step % args.decoder_update_freq == 0:
         hidden = agent.critic.encoder(normalized_obs)
         reconstruction = decoder(hidden)
-        reconstruction_loss = F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)
-        if args.decoder_l2_lambda > 0.0:
-            reconstruction_loss = reconstruction_loss + (0.5 * hidden.pow(2).sum(1)).mean()
+        reconstruction_loss = (
+            F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)  # Reconstruction
+            + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
+        )
         encoder_optimizer.zero_grad(set_to_none=True)
         decoder_optimizer.zero_grad(set_to_none=True)
         fabric.backward(reconstruction_loss)
@@ -119,6 +120,8 @@ def train(
 def main():
     parser = HfArgumentParser(SACPixelContinuousArgs)
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
+    args.sample_next_obs = True
+    args.env_id = "dmc_walker_walk"
 
     # Initialize Fabric
     devices = os.environ.get("LT_DEVICES", None)
@@ -201,6 +204,10 @@ def main():
     act_dim = prod(envs.single_action_space.shape)
     in_channels = prod(envs.single_observation_space.shape[:-2])
     target_entropy = -act_dim
+
+    # Define the encoder and decoder and setup them with fabric.
+    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
+    # we do not need it wrapped with the strategy inside actor and critic
     encoder = Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
     decoder = Decoder(
         encoder.conv_output_shape,
@@ -208,8 +215,13 @@ def main():
         screen_size=args.screen_size,
         out_channels=in_channels,
     )
+    encoder = fabric.setup_module(encoder)
+    decoder = fabric.setup_module(decoder)
+
+    # Setup actor and critic. Those will initialize with orthogonal weights
+    # both the actor and critic
     actor = SACPixelContinuousActor(
-        encoder=copy.deepcopy(encoder),
+        encoder=copy.deepcopy(encoder.module),
         hidden_dim=args.hidden_dim,
         action_dim=act_dim,
         action_low=envs.single_action_space.low,
@@ -219,11 +231,11 @@ def main():
         SACPixelQFunction(input_dim=encoder.output_dim, action_dim=act_dim, hidden_dim=args.hidden_dim, output_dim=1)
         for _ in range(args.num_critics)
     ]
-    critic = SACPixelCritic(encoder=encoder, qfs=qfs)
-    encoder = fabric.setup_module(encoder)
-    decoder = fabric.setup_module(decoder)
+    critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # The agent will tied convolutional weights between the encoder actor and critic
     agent = SACPixelAgent(
         actor,
         critic,
@@ -239,7 +251,7 @@ def main():
         Adam(agent.critic.parameters(), lr=args.q_lr),
         Adam(agent.actor.parameters(), lr=args.policy_lr),
         Adam([agent.log_alpha], lr=args.alpha_lr, betas=(0.5, 0.999)),
-        Adam(agent.critic.encoder.parameters(), lr=args.encoder_lr),
+        Adam(encoder.parameters(), lr=args.encoder_lr),
         Adam(decoder.parameters(), lr=args.decoder_lr, weight_decay=args.decoder_wd),
     )
 
@@ -271,11 +283,14 @@ def main():
     obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        with torch.no_grad():
-            obs = obs.flatten(start_dim=1, end_dim=-3)
-            normalized_obs = obs / 255.0
-            actions, _ = actor.module(normalized_obs.to(device))
-            actions = actions.cpu().numpy()
+        obs = obs.flatten(start_dim=1, end_dim=-3)
+        if global_step < args.learning_starts:
+            actions = envs.action_space.sample()
+        else:
+            with torch.no_grad():
+                normalized_obs = obs / 255.0
+                actions, _ = actor.module(normalized_obs.to(device))
+                actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
@@ -313,44 +328,46 @@ def main():
         obs = real_next_obs
 
         # Train the agent
-        if global_step >= args.learning_starts:
-            # We sample one time to reduce the communications between processes
-            sample = rb.sample(
-                args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
-            )  # [G*B, 1]
-            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
-            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
-            if fabric.world_size > 1:
-                dist_sampler: DistributedSampler = DistributedSampler(
-                    range(len(gathered_data)),
-                    num_replicas=fabric.world_size,
-                    rank=fabric.global_rank,
-                    shuffle=True,
-                    seed=args.seed,
-                    drop_last=False,
-                )
-                sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            else:
-                sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            for batch_idxes in sampler:
-                train(
-                    fabric,
-                    agent,
-                    decoder,
-                    actor_optimizer,
-                    qf_optimizer,
-                    alpha_optimizer,
-                    encoder_optimizer,
-                    decoder_optimizer,
-                    gathered_data[batch_idxes],
-                    aggregator,
-                    global_step,
-                    args,
-                )
+        if global_step >= args.learning_starts - 1:
+            training_steps = args.learning_starts if global_step == args.learning_starts else 1
+            for _ in range(training_steps):
+                # We sample one time to reduce the communications between processes
+                sample = rb.sample(
+                    args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
+                )  # [G*B, 1]
+                gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+                gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+                if fabric.world_size > 1:
+                    dist_sampler: DistributedSampler = DistributedSampler(
+                        range(len(gathered_data)),
+                        num_replicas=fabric.world_size,
+                        rank=fabric.global_rank,
+                        shuffle=True,
+                        seed=args.seed,
+                        drop_last=False,
+                    )
+                    sampler: BatchSampler = BatchSampler(
+                        sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                else:
+                    sampler = BatchSampler(
+                        sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                for batch_idxes in sampler:
+                    train(
+                        fabric,
+                        agent,
+                        decoder,
+                        actor_optimizer,
+                        qf_optimizer,
+                        alpha_optimizer,
+                        encoder_optimizer,
+                        decoder_optimizer,
+                        gathered_data[batch_idxes],
+                        aggregator,
+                        global_step,
+                        args,
+                    )
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
