@@ -197,10 +197,13 @@ def main():
         obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        # Sample an action given the observation received by the environment
-        with torch.no_grad():
-            actions, _ = actor.module(obs)
-            actions = actions.cpu().numpy()
+        if global_step < args.learning_starts:
+            actions = envs.action_space.sample()
+        else:
+            # Sample an action given the observation received by the environment
+            with torch.no_grad():
+                actions, _ = actor.module(obs)
+                actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
@@ -238,41 +241,43 @@ def main():
         obs = real_next_obs
 
         # Train the agent
-        if global_step > args.learning_starts:
-            # We sample one time to reduce the communications between processes
-            sample = rb.sample(
-                args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
-            )  # [G*B, 1]
-            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
-            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
-            if fabric.world_size > 1:
-                dist_sampler: DistributedSampler = DistributedSampler(
-                    range(len(gathered_data)),
-                    num_replicas=fabric.world_size,
-                    rank=fabric.global_rank,
-                    shuffle=True,
-                    seed=args.seed,
-                    drop_last=False,
-                )
-                sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            else:
-                sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            for batch_idxes in sampler:
-                train(
-                    fabric,
-                    agent,
-                    actor_optimizer,
-                    qf_optimizer,
-                    alpha_optimizer,
-                    gathered_data[batch_idxes],
-                    aggregator,
-                    global_step,
-                    args,
-                )
+        if global_step >= args.learning_starts - 1:
+            training_steps = args.learning_starts if global_step == args.learning_starts - 1 else 1
+            for _ in range(training_steps):
+                # We sample one time to reduce the communications between processes
+                sample = rb.sample(
+                    args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
+                )  # [G*B, 1]
+                gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+                gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+                if fabric.world_size > 1:
+                    dist_sampler: DistributedSampler = DistributedSampler(
+                        range(len(gathered_data)),
+                        num_replicas=fabric.world_size,
+                        rank=fabric.global_rank,
+                        shuffle=True,
+                        seed=args.seed,
+                        drop_last=False,
+                    )
+                    sampler: BatchSampler = BatchSampler(
+                        sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                else:
+                    sampler = BatchSampler(
+                        sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                for batch_idxes in sampler:
+                    train(
+                        fabric,
+                        agent,
+                        actor_optimizer,
+                        qf_optimizer,
+                        alpha_optimizer,
+                        gathered_data[batch_idxes],
+                        aggregator,
+                        global_step,
+                        args,
+                    )
         aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()

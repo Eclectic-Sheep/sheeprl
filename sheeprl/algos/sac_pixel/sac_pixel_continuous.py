@@ -327,7 +327,7 @@ def main():
 
         # Train the agent
         if global_step >= args.learning_starts - 1:
-            training_steps = args.learning_starts if global_step == args.learning_starts else 1
+            training_steps = args.learning_starts if global_step == args.learning_starts - 1 else 1
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
