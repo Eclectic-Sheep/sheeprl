@@ -166,7 +166,7 @@ class SACAgent(nn.Module):
         # This happens when we're using the decoupled version of SAC for example
         qfs_unwrapped_modules = []
         for critic in critics:
-            if getattr(critic, "module"):
+            if hasattr(critic, "module"):
                 critic_module = critic.module
             else:
                 critic_module = critic

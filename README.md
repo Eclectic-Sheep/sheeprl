@@ -1,4 +1,10 @@
 # ⚡ SheepRL 🐑
+
+<p align="center">
+  <img src="./assets/images/logo.png" style="width:40%">
+</p>
+
+## What
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
 
 ## Why
@@ -93,7 +99,7 @@ In the coupled version of an algorithm, the agent interacts with the environment
   <img src="./assets/images/sheeprl_coupled.png">
 </p>
 
-In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [collectives](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
+In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [distributed collectives, adopting the abstraction provided by Fabric's TorchCollective](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
 
 <p align="center">
   <img src="./assets/images/sheeprl_decoupled.png">

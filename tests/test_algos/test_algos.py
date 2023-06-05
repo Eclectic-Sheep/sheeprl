@@ -124,6 +124,51 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
+def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
+    task = importlib.import_module("sheeprl.algos.sac_pixel.sac_pixel_continuous")
+    root_dir = os.path.join("pytest_" + start_time, "sac", os.environ["LT_DEVICES"])
+    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "--per_rank_batch_size=1",
+        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
+        "--learning_starts=0",
+        "--gradient_steps=1",
+        "--root_dir=" + root_dir,
+        "--run_name=" + run_name,
+    ]
+    if checkpoint_buffer:
+        args.append("--checkpoint_buffer")
+
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
+        keys = {
+            "agent",
+            "encoder",
+            "decoder",
+            "qf_optimizer",
+            "actor_optimizer",
+            "alpha_optimizer",
+            "encoder_optimizer",
+            "decoder_optimizer",
+            "args",
+            "global_step",
+            "batch_size",
+        }
+        if checkpoint_buffer:
+            keys.add("rb")
+        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+        shutil.rmtree("pytest_" + start_time)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
     root_dir = os.path.join("pytest_" + start_time, "sac_decoupled", os.environ["LT_DEVICES"])
