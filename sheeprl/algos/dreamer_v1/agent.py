@@ -226,11 +226,13 @@ class Actor(nn.Module):
             mean = self.mean_scale * torch.tanh(mean / self.mean_scale)
             std = F.softplus(std + self.raw_init_std) + self.min_std
             actions_dist = Normal(mean, std)
-            actions_dist = TransformedDistribution(actions_dist, TanhTransform())
+            actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             if is_training:
-                actions = Independent(actions_dist, 1).rsample()
+                actions = actions_dist.rsample()
             else:
-                actions = torch.tanh(mean)
+                sample = actions_dist.sample((100,))
+                log_prob = actions_dist.log_prob(sample)
+                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
         else:
             actions_dist = OneHotCategorical(logits=out)
             if is_training:
