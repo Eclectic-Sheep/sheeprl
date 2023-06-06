@@ -5,7 +5,19 @@
 </p>
 
 ## What
-An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
+An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
+The algorithms sheeped by sheeprl out-of-the-box are:
+
+| Algorithm  | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
+|------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+| A2C        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| A3C        | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
+| PPO        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC        | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ       | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
+| Dreamer-V1 | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+
+and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
 ## Why
 We want to provide a framework for RL algorithms that is at the same time simple and scalable thanks to Lightning Fabric.
