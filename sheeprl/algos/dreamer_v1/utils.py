@@ -41,43 +41,57 @@ def make_env(
     Returns:
         The callable function that initializes the environment.
     """
-    env_spec = gym.spec(env_id).entry_point
-    if "mujoco" in env_spec:
-        try:
-            env = gym.make(env_id, render_mode="rgb_array", terminate_when_unhealthy=False)
-        except:
-            env = gym.make(env_id, render_mode="rgb_array")
-        env.frame_skip = 0
-    else:
-        env = gym.make(env_id, render_mode="rgb_array")
-    if "atari" in gym.spec(env_id).entry_point:
-        if args.atari_noop_max < 0:
-            raise ValueError(
-                f"Negative value of atart_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
-            )
-        env = gym.wrappers.AtariPreprocessing(
-            env,
-            noop_max=args.atari_noop_max,
+    if "dmc" in env_id.lower():
+        from sheeprl.envs.dmc import DMCWrapper
+
+        _, domain, task = env_id.lower().split("_")
+        env = DMCWrapper(
+            domain,
+            task,
+            from_pixels=True,
+            height=64,
+            width=64,
             frame_skip=args.action_repeat,
-            screen_size=64,
-            grayscale_obs=args.grayscale_obs,
-            scale_obs=False,
-            terminal_on_life_loss=True,
-            grayscale_newaxis=True,
+            seed=seed,
         )
     else:
-        env = ActionRepeat(env, args.action_repeat)
-        if isinstance(env.observation_space, gym.spaces.Box) or len(env.observation_space.shape) < 3:
-            env = gym.wrappers.PixelObservationWrapper(env)
-            env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
-            env.observation_space = env.observation_space["pixels"]
-        env = gym.wrappers.ResizeObservation(env, (64, 64))
-        if args.grayscale_obs:
-            env = gym.wrappers.GrayScaleObservation(env, keep_dim=True)
-    env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
-    env.observation_space = gym.spaces.Box(
-        0, 255, (env.observation_space.shape[-1], *env.observation_space.shape[:2]), np.uint8
-    )
+        env_spec = gym.spec(env_id).entry_point
+        if "mujoco" in env_spec:
+            try:
+                env = gym.make(env_id, render_mode="rgb_array", terminate_when_unhealthy=False)
+            except:
+                env = gym.make(env_id, render_mode="rgb_array")
+            env.frame_skip = 0
+        else:
+            env = gym.make(env_id, render_mode="rgb_array")
+        if "atari" in env_spec:
+            if args.atari_noop_max < 0:
+                raise ValueError(
+                    f"Negative value of atart_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
+                )
+            env = gym.wrappers.AtariPreprocessing(
+                env,
+                noop_max=args.atari_noop_max,
+                frame_skip=args.action_repeat,
+                screen_size=64,
+                grayscale_obs=args.grayscale_obs,
+                scale_obs=False,
+                terminal_on_life_loss=True,
+                grayscale_newaxis=True,
+            )
+        else:
+            env = ActionRepeat(env, args.action_repeat)
+            if isinstance(env.observation_space, gym.spaces.Box) or len(env.observation_space.shape) < 3:
+                env = gym.wrappers.PixelObservationWrapper(env)
+                env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
+                env.observation_space = env.observation_space["pixels"]
+            env = gym.wrappers.ResizeObservation(env, (64, 64))
+            if args.grayscale_obs:
+                env = gym.wrappers.GrayScaleObservation(env, keep_dim=True)
+        env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
+        env.observation_space = gym.spaces.Box(
+            0, 255, (env.observation_space.shape[-1], *env.observation_space.shape[:2]), np.uint8
+        )
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
     if args.max_episode_steps > 0:
