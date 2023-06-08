@@ -242,6 +242,30 @@ def test_ppo(standard_args, start_time):
 
 
 @pytest.mark.timeout(60)
+def test_a2c(standard_args, start_time):
+    task = importlib.import_module("sheeprl.algos.a2c.a2c")
+    root_dir = os.path.join("pytest_" + start_time, "a2c", os.environ["LT_DEVICES"])
+    run_name = "test_a2c"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        f"--rollout_steps={os.environ['LT_DEVICES']}",
+        "--per_rank_batch_size=1",
+        f"--root_dir={root_dir}",
+        f"--run_name={run_name}",
+    ]
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
+        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
+
+
+@pytest.mark.timeout(60)
 def test_ppo_decoupled(standard_args, start_time):
     task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
     root_dir = os.path.join("pytest_" + start_time, "ppo_decoupled", os.environ["LT_DEVICES"])
