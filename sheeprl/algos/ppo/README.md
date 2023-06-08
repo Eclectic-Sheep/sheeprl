@@ -25,27 +25,15 @@ def value_loss(
 Advantages and logprobs are used to compute the *policy loss*, using also the logprobs from the updated model.
 
 ```python
-def policy_loss(
-    new_logprobs: Tensor,
-    logprobs: Tensor,
-    advantages: Tensor,
-    clip_coef: float,
-    reduction: str = "mean",
-) -> Tensor:
-    logratio = new_logprobs - logprobs
+def policy_loss(dist: torch.distributions.Distribution, batch: TensorDict, clip_coef: float) -> Tensor:
+    new_logprobs = dist.log_prob(batch["actions"])
+    logratio = new_logprobs - batch["logprobs"]
     ratio = logratio.exp()
+    advantages: Tensor = batch["advantages"]
 
     pg_loss1 = advantages * ratio
     pg_loss2 = advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-    pg_loss = -torch.min(pg_loss1, pg_loss2)
-    reduction = reduction.lower()
-    if reduction == "none":
-        return pg_loss
-    elif reduction == "mean":
-        return pg_loss.mean()
-    elif reduction == "sum":
-        return pg_loss.sum()
-    else:
-        raise ValueError(f"Unrecognized reduction: {reduction}")
+    pg_loss = torch.min(pg_loss1, pg_loss2).mean()
+    return pg_loss
 ```
 
