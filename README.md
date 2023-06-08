@@ -157,3 +157,12 @@ For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` m
 
 ## :bow: Contributing
 The best way to contribute is by opening an issue to discuss a new feature or a bug, or by opening a PR to fix a bug or to add a new feature.
+
+## :mailbox_with_no_mail: Contacts
+
+You can contact us for any further questions or discussions:
+
+* Federico Belotti: federico.belotti@orobix.com
+* Davide Angioni: davide.angioni@orobix.com
+* Refik Can Malli: refikcan.malli@orobix.com
+* Michele Milesi: michele.milesi@orobix.com
