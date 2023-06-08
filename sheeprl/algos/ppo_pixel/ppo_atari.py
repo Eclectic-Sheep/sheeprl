@@ -126,10 +126,9 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
         raise ValueError("Only discrete action space is supported")
 
     # Create the actor and critic models
-    features_dim = 512
     agent = PPOAtariAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=envs.single_action_space.n,
         screen_size=args.screen_size,
     )
@@ -338,10 +337,9 @@ def trainer(
     )
 
     # Create the actor and critic models
-    features_dim = 512
     agent = PPOAtariAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=envs.single_action_space.n,
         screen_size=args.screen_size,
     )

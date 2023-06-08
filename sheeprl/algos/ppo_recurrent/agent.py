@@ -9,7 +9,17 @@ from sheeprl.models.models import MLP
 
 
 class RecurrentPPOAgent(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, lstm_hidden_size: int = 64, num_envs: int = 1):
+    def __init__(
+        self,
+        observation_dim: int,
+        action_dim: int,
+        lstm_hidden_size: int = 64,
+        actor_hidden_sizes: int = 128,
+        actor_pre_lstm_hidden_sizes: Optional[int] = None,
+        critic_hidden_sizes: int = 128,
+        critic_pre_lstm_hidden_sizes: Optional[int] = None,
+        num_envs: int = 1,
+    ):
         super().__init__()
         self.observation_dim = observation_dim
         self.action_dim = action_dim
@@ -17,16 +27,36 @@ class RecurrentPPOAgent(nn.Module):
         self.num_envs = num_envs
 
         # Actor: Obs -> Feature -> LSTM -> Logits
-        self._actor_fc = nn.Flatten(start_dim=2)
-        self._actor_rnn = nn.LSTM(input_size=observation_dim, hidden_size=lstm_hidden_size, batch_first=False)
+        if actor_pre_lstm_hidden_sizes is None:
+            self._actor_fc = nn.Flatten(start_dim=2)
+            lstm_input_size = observation_dim
+        else:
+            self._actor_fc = MLP(
+                input_dims=observation_dim,
+                output_dim=lstm_hidden_size,
+                hidden_sizes=(actor_pre_lstm_hidden_sizes,),
+                flatten_dim=2,
+            )
+            lstm_input_size = self._actor_fc.output_dim
+        self._actor_rnn = nn.LSTM(input_size=lstm_input_size, hidden_size=lstm_hidden_size, batch_first=False)
         self._actor_logits = MLP(
-            lstm_hidden_size, action_dim, (lstm_hidden_size * 2, lstm_hidden_size * 2), flatten_dim=None
+            lstm_hidden_size, action_dim, (actor_hidden_sizes, actor_hidden_sizes), flatten_dim=None
         )
 
         # Critic: Obs -> Feature -> LSTM -> Values
-        self._critic_fc = nn.Flatten(start_dim=2)
-        self._critic_rnn = nn.LSTM(input_size=observation_dim, hidden_size=lstm_hidden_size, batch_first=False)
-        self._critic = MLP(lstm_hidden_size, 1, (lstm_hidden_size * 2, lstm_hidden_size * 2), flatten_dim=None)
+        if critic_pre_lstm_hidden_sizes is None:
+            self._critic_fc = nn.Flatten(start_dim=2)
+            lstm_input_size = observation_dim
+        else:
+            self._critic_fc = MLP(
+                input_dims=observation_dim,
+                output_dim=lstm_hidden_size,
+                hidden_sizes=(actor_pre_lstm_hidden_sizes,),
+                flatten_dim=2,
+            )
+            lstm_input_size = self._critic_fc.output_dim
+        self._critic_rnn = nn.LSTM(input_size=lstm_input_size, hidden_size=lstm_hidden_size, batch_first=False)
+        self._critic = MLP(lstm_hidden_size, 1, (critic_hidden_sizes, critic_hidden_sizes), flatten_dim=None)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]] = self.reset_hidden_states()

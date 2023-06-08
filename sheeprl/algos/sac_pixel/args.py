@@ -32,3 +32,5 @@ class SACPixelContinuousArgs(SACArgs):
     target_network_frequency: int = Arg(default=2, help="the frequency of updates for the target nerworks")
     tau: float = Arg(default=0.01, help="target smoothing coefficient for the critic ema")
     encoder_tau: float = Arg(default=0.05, help="target smoothing coefficient for the critic encoder ema")
+    actor_hidden_sizes: int = Arg(default=1024, help="the dimension of the hidden sizes of the actor network")
+    critic_hidden_sizes: int = Arg(default=1024, help="the dimension of the hidden sizes of the critic network")

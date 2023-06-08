@@ -111,14 +111,14 @@ class SACPixelQFunction(nn.Module):
         self,
         input_dim: int,
         action_dim: int,
-        hidden_dim: int = 256,
+        hidden_sizes: int = 256,
         output_dim: int = 1,
     ):
         super().__init__()
         self.model = MLP(
             input_dims=input_dim + action_dim,
             output_dim=output_dim,
-            hidden_sizes=(hidden_dim, hidden_dim),
+            hidden_sizes=(hidden_sizes, hidden_sizes),
             activation=nn.ReLU,
             flatten_dim=None,
         )
@@ -147,13 +147,13 @@ class SACPixelContinuousActor(nn.Module):
         self,
         encoder: Union[Encoder, _FabricModule],
         action_dim: int,
-        hidden_dim: int = 256,
+        hidden_sizes: int = 1024,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
         super().__init__()
         self.encoder = encoder
-        self.model = MLP(input_dims=encoder.output_dim, hidden_sizes=(hidden_dim, hidden_dim), flatten_dim=None)
+        self.model = MLP(input_dims=encoder.output_dim, hidden_sizes=(hidden_sizes, hidden_sizes), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 

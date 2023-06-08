@@ -14,7 +14,7 @@ LOG_STD_MIN = -5
 
 
 class DROQCritic(nn.Module):
-    def __init__(self, observation_dim: int, num_critics: int = 1, dropout: float = 0.0):
+    def __init__(self, observation_dim: int, hidden_sizes: int = 256, num_critics: int = 1, dropout: float = 0.0):
         """The DroQ critic with Dropout and LayerNorm layers. The architecture is the one specified in
         https://arxiv.org/abs/2110.02034
 
@@ -24,6 +24,8 @@ class DROQCritic(nn.Module):
                 This is useful if one wants to have a single shared backbone that outputs
                 `num_critics` critic values.
                 Defaults to 1.
+            hidden_sizes (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
             dropout (float, optional): the dropout probability for every layer.
                 Defaults to 0.0.
         """
@@ -31,11 +33,11 @@ class DROQCritic(nn.Module):
         self.model = MLP(
             input_dims=observation_dim,
             output_dim=num_critics,
-            hidden_sizes=(256, 256),
+            hidden_sizes=(hidden_sizes, hidden_sizes),
             dropout_layer=nn.Dropout if dropout > 0 else None,
             dropout_args={"p": dropout} if dropout > 0 else None,
             norm_layer=nn.LayerNorm,
-            norm_args={"normalized_shape": 256},
+            norm_args={"normalized_shape": hidden_sizes},
             activation=nn.ReLU,
             flatten_dim=None,
         )

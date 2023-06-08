@@ -162,8 +162,13 @@ def main():
     # Create the actor and critic models
     act_dim = prod(envs.single_action_space.shape)
     obs_dim = prod(envs.single_observation_space.shape)
-    actor = PPOContinuousActor(observation_dim=obs_dim, action_dim=act_dim)
-    critic = MLP(input_dims=obs_dim, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU)
+    actor = PPOContinuousActor(observation_dim=obs_dim, action_dim=act_dim, hidden_sizes=args.actor_hidden_sizes)
+    critic = MLP(
+        input_dims=obs_dim,
+        output_dim=1,
+        hidden_sizes=(args.critic_hidden_sizes, args.critic_hidden_sizes),
+        activation=torch.nn.ReLU,
+    )
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)

@@ -169,13 +169,13 @@ def main():
     actor = MLP(
         input_dims=envs.single_observation_space.shape,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(args.actor_hidden_sizes, args.actor_hidden_sizes),
         activation=torch.nn.ReLU,
     )
     critic = MLP(
         input_dims=envs.single_observation_space.shape,
         output_dim=1,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(args.critic_hidden_sizes, args.critic_hidden_sizes),
         activation=torch.nn.ReLU,
     )
 

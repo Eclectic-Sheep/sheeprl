@@ -77,6 +77,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
+        hidden_sizes=args.actor_hidden_sizes,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     ).to(device)
@@ -247,12 +248,15 @@ def trainer(
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
+            hidden_sizes=args.actor_hidden_sizes,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
-        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
+        fabric.setup_module(
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_sizes=args.critic_hidden_sizes, num_critics=1)
+        )
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim

@@ -220,13 +220,15 @@ def main():
     # both the actor and critic
     actor = SACPixelContinuousActor(
         encoder=copy.deepcopy(encoder.module),
-        hidden_dim=args.hidden_dim,
         action_dim=act_dim,
+        hidden_sizes=args.actor_hidden_sizes,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     )
     qfs = [
-        SACPixelQFunction(input_dim=encoder.output_dim, action_dim=act_dim, hidden_dim=args.hidden_dim, output_dim=1)
+        SACPixelQFunction(
+            input_dim=encoder.output_dim, action_dim=act_dim, hidden_sizes=args.critic_hidden_sizes, output_dim=1
+        )
         for _ in range(args.num_critics)
     ]
     critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)

@@ -182,7 +182,16 @@ def main():
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)
     agent = fabric.setup_module(
-        RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n, num_envs=args.num_envs)
+        RecurrentPPOAgent(
+            observation_dim=obs_dim,
+            action_dim=envs.single_action_space.n,
+            lstm_hidden_size=args.lstm_hidden_size,
+            actor_hidden_sizes=args.actor_hidden_sizes,
+            actor_pre_lstm_hidden_sizes=args.actor_pre_lstm_hidden_sizes,
+            critic_hidden_sizes=args.critic_hidden_sizes,
+            critic_pre_lstm_hidden_sizes=args.critic_pre_lstm_hidden_sizes,
+            num_envs=args.num_envs,
+        )
     )
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
