@@ -1,7 +1,7 @@
 # ⚡ SheepRL 🐑
 
 <p align="center">
-  <img src="./assets/images/logo.png" style="width:40%">
+  <img src="./assets/images/logo.svg" style="width:40%">
 </p>
 
 ## What
