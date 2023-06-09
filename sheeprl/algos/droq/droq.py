@@ -187,7 +187,7 @@ def main():
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
-            hidden_sizes=args.actor_hidden_sizes,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
@@ -196,7 +196,7 @@ def main():
         fabric.setup_module(
             DROQCritic(
                 observation_dim=obs_dim + act_dim,
-                hidden_sizes=args.critic_hidden_sizes,
+                hidden_size=args.critic_hidden_size,
                 num_critics=1,
                 dropout=args.dropout,
             )

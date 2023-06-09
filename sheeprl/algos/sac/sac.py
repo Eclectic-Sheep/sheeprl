@@ -151,14 +151,14 @@ def main():
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
-            hidden_sizes=args.actor_hidden_sizes,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
         fabric.setup_module(
-            SACCritic(observation_dim=obs_dim + act_dim, hidden_sizes=args.critic_hidden_sizes, num_critics=1)
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=args.critic_hidden_size, num_critics=1)
         )
         for _ in range(args.num_critics)
     ]

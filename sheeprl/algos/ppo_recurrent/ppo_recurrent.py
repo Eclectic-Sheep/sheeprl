@@ -186,10 +186,10 @@ def main():
             observation_dim=obs_dim,
             action_dim=envs.single_action_space.n,
             lstm_hidden_size=args.lstm_hidden_size,
-            actor_hidden_sizes=args.actor_hidden_sizes,
-            actor_pre_lstm_hidden_sizes=args.actor_pre_lstm_hidden_sizes,
-            critic_hidden_sizes=args.critic_hidden_sizes,
-            critic_pre_lstm_hidden_sizes=args.critic_pre_lstm_hidden_sizes,
+            actor_hidden_size=args.actor_hidden_size,
+            actor_pre_lstm_hidden_size=args.actor_pre_lstm_hidden_size,
+            critic_hidden_size=args.critic_hidden_size,
+            critic_pre_lstm_hidden_size=args.critic_pre_lstm_hidden_size,
             num_envs=args.num_envs,
         )
     )

@@ -16,12 +16,12 @@ class RecurrentPPOArgs(PPOArgs):
         default=False, help="If present the recurrent state will be reset when a done is received"
     )
     lstm_hidden_size: int = Arg(default=64, help="the dimension of the LSTM hidden size")
-    actor_pre_lstm_hidden_sizes: Optional[int] = Arg(
+    actor_pre_lstm_hidden_size: Optional[int] = Arg(
         default=64,
         help="the dimension of the hidden sizes of the pre-lstm single-layer actor network. "
         "If None, no pre-lstm network will be used",
     )
-    critic_pre_lstm_hidden_sizes: Optional[int] = Arg(
+    critic_pre_lstm_hidden_size: Optional[int] = Arg(
         default=64,
         help="the dimension of the hidden sizes of the pre-lstm single-layer critic network. "
         "If None, no pre-lstm network will be used",

@@ -156,8 +156,8 @@ def main():
     # Create the actor and critic models
     obs_dim = prod(envs.single_observation_space.shape)
     act_dim = envs.single_action_space.n
-    actor = MLP(input_dims=obs_dim, hidden_sizes=(args.actor_hidden_sizes, args.actor_hidden_sizes), output_dim=act_dim)
-    critic = MLP(input_dims=obs_dim, hidden_sizes=(args.critic_hidden_sizes, args.critic_hidden_sizes), output_dim=1)
+    actor = MLP(input_dims=obs_dim, hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size), output_dim=act_dim)
+    critic = MLP(input_dims=obs_dim, hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size), output_dim=1)
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(params=list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)

@@ -6,8 +6,8 @@ from sheeprl.utils.parser import Arg
 
 @dataclass
 class A2CArgs(StandardArgs):
-    actor_hidden_sizes: int = Arg(default=128, help="the dimension of the hidden sizes of the actor network")
-    critic_hidden_sizes: int = Arg(default=128, help="the dimension of the hidden sizes of the critic network")
+    actor_hidden_size: int = Arg(default=128, help="the dimension of the hidden sizes of the actor network")
+    critic_hidden_size: int = Arg(default=128, help="the dimension of the hidden sizes of the critic network")
     per_rank_batch_size: int = Arg(default=64, help="the batch size for each rank")
     total_steps: int = Arg(default=2**16, help="total timesteps of the experiments")
     rollout_steps: int = Arg(default=128, help="the number of steps to run in each environment per policy rollout")
