@@ -58,7 +58,7 @@ def trainer(
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
     if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
         params = torch.ones(4) * 2
-        print(f"Trainer {world_collective.rank}: " f"Sending updated params to a player and to all other trainers...")
+        print(f"Trainer {world_collective.rank}: " f"Sending updated params to all players...")
         players_trainer_collective.broadcast(params, src=world_collective.world_size - 1)  # broadcast uses global rank
 
     print(f"Trainer {world_collective.rank}: Waiting for collected data from buffer...")
