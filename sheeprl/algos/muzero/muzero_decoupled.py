@@ -1,9 +1,9 @@
+import math
 import os
 import time
 import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta
-import math
 from typing import Optional
 
 import gymnasium as gym
@@ -12,10 +12,14 @@ from lightning import Fabric
 from lightning_fabric.fabric import _is_using_cli
 from lightning_fabric.loggers import TensorBoardLogger
 from lightning_fabric.plugins.collectives import TorchCollective
-from tensordict import TensorDict
+from tensordict import TensorDict, TensorDictBase, make_tensordict
+from torch.optim import Adam
 from torchmetrics import MeanMetric
 
+from sheeprl.algos.muzero.agent import RecurrentMuzero
 from sheeprl.algos.muzero.args import MuzeroArgs
+from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
+from sheeprl.data.buffers import TrajectoryReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -70,6 +74,7 @@ class Node:
         children (dict[int, Node]): The children of the node, one for each action where actions are represented as integers
             running from 0 to num_actions - 1.
     """
+
     def __init__(self, prior: float, image: torch.Tensor = None):
         """A Node in the MCTS tree.
 
@@ -103,10 +108,10 @@ class Node:
             return 0.0
         return self.value_sum / self.visit_count
 
-    def mcts(self, network: torch.nn.Module, num_simulations: int, discount: float = 0.997) -> dict[int, "Node"]:
+    def mcts(self, agent: torch.nn.Module, num_simulations: int, discount: float = 0.997) -> dict[int, "Node"]:
         """Runs MCTS for num_simulations"""
         # Initialize the hidden state and compute the actor's policy logits
-        hidden_state, policy_logits = network.initial_inference(self.image)
+        hidden_state, policy_logits = agent.initial_inference(self.image)
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
@@ -126,23 +131,25 @@ class Node:
             while node.expanded():
                 # Select the child with the highest UCB score
                 _, imagined_action, child = max(
-                    (ucb_score(
-                        parent=node,
-                        child=child,
-                        min_max_stats=min_max_stats,
-                        discount=discount,
-                        pb_c_base = 19652,
-                        pb_c_init = 1.25
-                    ),
-                    action, child
-                )
-                for action, child in node.children.items()
+                    (
+                        ucb_score(
+                            parent=node,
+                            child=child,
+                            min_max_stats=min_max_stats,
+                            discount=discount,
+                            pb_c_base=19652,
+                            pb_c_init=1.25,
+                        ),
+                        action,
+                        child,
+                    )
+                    for action, child in node.children.items()
                 )
                 search_path.append(node)
 
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             parent = search_path[-2]
-            hidden_state, reward, policy_logits, value = network.recurrent_inference(parent.hidden_state, imagined_action)
+            hidden_state, reward, policy_logits, value = agent.recurrent_inference(parent.hidden_state, imagined_action)
             node.hidden_state = hidden_state
             node.reward = reward
             policy = {a_id: math.exp(a_logit) for a_id, a_logit in enumerate(policy_logits)}
@@ -159,7 +166,9 @@ class Node:
                 value = node.reward + discount * value
 
 
-def ucb_score(parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float, pb_c_init: float) -> float:
+def ucb_score(
+    parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float, pb_c_init: float
+) -> float:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
     pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
@@ -202,7 +211,7 @@ def player(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = make_env(
+    env = make_env(
         args.env_id,
         args.seed + rank,
         0,
@@ -212,21 +221,21 @@ def player(
         mask_velocities=args.mask_vel,
         vector_env_idx=rank,
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
+    if not isinstance(env.action_space, gym.spaces.Discrete):
         raise ValueError("Only discrete action space is supported")
 
-    # Create the actor and critic models
-    network = MuzeroNetwork()
+    # Create the model
+    agent = RecurrentMuzero(num_actions=env.action_space.n).to(device)
 
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(network.parameters()),
+        torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
         device=device,
     )
 
     # Receive the first weights from the rank-0, a.k.a. the trainer
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=0)
-    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, network.parameters())
+    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
     # Metrics
     with device:
@@ -239,8 +248,7 @@ def player(
         )
 
     # Local data
-    rb = TrajectoryReplayBuffer(args.rollout_steps, args.num_envs, device=device)
-    step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
+    rb = TrajectoryReplayBuffer(max_num_trajectories=500)
 
     # Global variables
     global_step = 0
@@ -266,34 +274,34 @@ def player(
         # reset the episode at every update
         with device:
             # Get the first environment observation and start the optimization
-            obs: torch.Tensor = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
+            obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device)
 
         for step in range(0, args.max_trajectory_len):
             global_step += 1
             node = Node(prior=0, image=obs)
 
             # start MCTS
-            node.mcts(network, num_simulations, discount)
+            node.mcts(agent, num_simulations, discount)
 
             # Select action based on the visit count distribution and the temperature
             visits_count = torch.tensor([child.visit_count for child in node.children.values()])
-            temperature = visit_softmax_temperature(training_steps=network.training_steps())
+            temperature = visit_softmax_temperature(training_steps=agent.training_steps())
             visits_count = visits_count / temperature
             action = torch.distributions.Categorical(logits=visits_count).sample()
 
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
 
             # Store the current step data
             step_data = TensorDict(
                 {
-                    "visits_counts": visits_count,
+                    "policies": visits_count,
                     "actions": action,
                     "observations": obs,
                     "rewards": reward,
-                    "node_values": node.value,
+                    "values": node.value,
                 },
-                batch_size=1
+                batch_size=1,
             )
 
             # Update observation
@@ -334,9 +342,7 @@ def player(
         player_trainer_collective.broadcast(flattened_parameters, src=0)
 
         # Convert back the parameters
-        torch.nn.utils.convert_parameters.vector_to_parameters(
-            flattened_parameters, list(actor.parameters()) + list(critic.parameters())
-        )
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
@@ -352,19 +358,162 @@ def player(
             fabric.save(ckpt_path, state[0])
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
-    envs.close()
-    if fabric.is_global_zero:
-        test_env = make_env(
-            args.env_id,
-            None,
-            0,
-            args.capture_video,
-            fabric.logger.log_dir,
-            "test",
-            mask_velocities=args.mask_vel,
-            vector_env_idx=0,
-        )()
-        test(actor, test_env, fabric, args)
+    env.close()
+    # if fabric.is_global_zero:
+    #     test_env = make_env(
+    #         args.env_id,
+    #         None,
+    #         0,
+    #         args.capture_video,
+    #         fabric.logger.log_dir,
+    #         "test",
+    #         mask_velocities=args.mask_vel,
+    #         vector_env_idx=0,
+    #     )()
+    #     test(agent, test_env, fabric, args)
+
+
+def trainer(
+    args: MuzeroArgs,
+    world_collective: TorchCollective,
+    player_trainer_collective: TorchCollective,
+):
+    global_rank = world_collective.rank
+
+    # Initialize Fabric
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
+    if not _is_using_cli():
+        fabric.launch()
+    device = fabric.device
+    fabric.seed_everything(args.seed)
+    torch.backends.cudnn.deterministic = args.torch_deterministic
+
+    # Environment setup
+    env = make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)
+    assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
+
+    agent = RecurrentMuzero(num_actions=env.action_space.n)
+
+    # Define the agent and the optimizer and setup them with Fabric
+    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
+    agent = fabric.setup_module(agent)
+    optimizer = fabric.setup_optimizers(optimizer)
+
+    # Send weights to rank-1, a.k.a. the first player
+    if global_rank == 0:
+        player_trainer_collective.broadcast(
+            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
+            src=1,
+        )
+
+    # Receive maximum number of updates from the player
+    num_updates = torch.zeros(1, device=device)
+    world_collective.broadcast(num_updates, src=0)
+    num_updates = num_updates.item()
+
+    # Linear learning rate scheduler
+    if args.anneal_lr:
+        from torch.optim.lr_scheduler import PolynomialLR
+
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+
+    # Metrics
+    with fabric.device:
+        aggregator = MetricAggregator(
+            {
+                "Loss/value_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/policy_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/entropy_loss": MeanMetric(process_group=optimization_pg),
+            }
+        )
+
+    # Start training
+    update = 0
+
+    while True:
+        # Wait for data
+        data = [None]
+        world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=1)
+        data = data[0]
+        if not isinstance(data, TensorDictBase) and data == -1:
+            # Last Checkpoint
+            if global_rank == 0:
+                state = {
+                    "agent": agent.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+            return
+        data = make_tensordict(data, device=device)
+        update += 1
+
+        for _ in range(args.update_epochs):
+            batch = buffer.sample(batch_size=batch_size, sequence_length=sequence_length)
+
+            target_rewards = batch["rewards"]
+            target_values = batch["values"]
+            target_policies = batch["policies"]
+            observations = batch["observations"]
+            actions = batch["actions"]
+
+            # TODO check here, not completely correct, a for loop is needed
+            hidden_state_0, policy_0, value_0 = agent.initial_inference(observations)
+            hidden_states, rewards, policies, values = agent.recurrent_inference(hidden_state_0, actions)
+            # Policy loss
+            pg_loss = policy_loss(policies, target_policies)
+            # Value loss
+            v_loss = value_loss(values, target_values)
+            # Reward loss
+            ent_loss = reward_loss(rewards, target_rewards)
+
+            # Equation (9) in the paper
+            loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
+
+            optimizer.zero_grad(set_to_none=True)
+            fabric.backward(loss)
+            if args.max_grad_norm > 0.0:
+                fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
+            optimizer.step()
+
+            # Update metrics
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
+            aggregator.update("Loss/entropy_loss", ent_loss.detach())
+
+        # Send updated weights to the player
+        metrics = aggregator.compute()
+        aggregator.reset()
+        if global_rank == 1:
+            if args.anneal_lr:
+                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+            else:
+                metrics["Info/learning_rate"] = args.lr
+
+            player_trainer_collective.broadcast_object_list(
+                [metrics], src=1
+            )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
+            player_trainer_collective.broadcast(
+                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
+                src=1,
+            )
+
+        if args.anneal_lr:
+            scheduler.step()
+
+        # Checkpoint model on rank-0: send it everything
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+            if global_rank == 1:
+                state = {
+                    "agent": agent.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
 
 
 @register_algorithm(decoupled=True)

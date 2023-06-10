@@ -43,8 +43,8 @@ class GruMlpDynamics(torch.nn.Module):
 class Predictor(torch.nn.Module):
     def __init__(self, hidden_state_size=256, num_actions=4):
         super().__init__()
-        self.mlp1 = MLP(input_dims=hidden_state_size, output_dim=num_actions)
-        self.mlp2 = MLP(input_dims=hidden_state_size, output_dim=1)
+        self.mlp1 = torch.nn.Linear(in_features=hidden_state_size, out_features=num_actions)
+        self.mlp2 = torch.nn.Linear(in_features=hidden_state_size, out_features=1)
 
     def forward(self, x):
         return self.mlp1(x), self.mlp2(x)
@@ -59,21 +59,24 @@ class RecurrentMuzero(MuzeroAgent):
 
 
 if __name__ == "__main__":
+    batch_size = 5
+    sequence_len = 8
     agent = RecurrentMuzero()
-    observation = torch.rand(1, 3, 64, 64)
+    observation = torch.rand(batch_size, 3, 64, 64)
     hidden_state, policy_logits, value = agent.initial_inference(observation)
     print(hidden_state.shape)
     print(policy_logits.shape)
     print(value.shape)
-    action = torch.randint(0, 4, (1, 1)).to(torch.float32)
+    hidden_state = hidden_state.resize(1, batch_size, 256)
+    action = torch.randint(0, 4, (sequence_len, batch_size, 1)).to(torch.float32)
     next_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action, hidden_state)
     print(next_hidden_state.shape)
     print(reward.shape)
     print(policy_logits.shape)
     print(value.shape)
-    action2 = torch.randint(0, 4, (1, 1)).to(torch.float32)
-    last_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action2, next_hidden_state)
-    print(last_hidden_state.shape)
-    print(reward.shape)
-    print(policy_logits.shape)
-    print(value.shape)
+    # action2 = torch.randint(0, 4, (1, 1)).to(torch.float32)
+    # last_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action2, next_hidden_state)
+    # print(last_hidden_state.shape)
+    # print(reward.shape)
+    # print(policy_logits.shape)
+    # print(value.shape)
