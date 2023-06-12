@@ -1,7 +1,6 @@
 import math
 import os
 import time
-import warnings
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Optional
@@ -12,14 +11,15 @@ from lightning import Fabric
 from lightning_fabric.fabric import _is_using_cli
 from lightning_fabric.loggers import TensorBoardLogger
 from lightning_fabric.plugins.collectives import TorchCollective
-from tensordict import TensorDict, TensorDictBase, make_tensordict
+from lightning_fabric.strategies import DDPStrategy
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.muzero.agent import RecurrentMuzero
 from sheeprl.algos.muzero.args import MuzeroArgs
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
-from sheeprl.data.buffers import TrajectoryReplayBuffer
+from sheeprl.data.buffers import Trajectory, TrajectoryReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -108,7 +108,7 @@ class Node:
             return 0.0
         return self.value_sum / self.visit_count
 
-    def mcts(self, agent: torch.nn.Module, num_simulations: int, discount: float = 0.997) -> dict[int, "Node"]:
+    def mcts(self, agent: torch.nn.Module, num_simulations: int, discount: float = 0.997):
         """Runs MCTS for num_simulations"""
         # Initialize the hidden state and compute the actor's policy logits
         hidden_state, policy_logits = agent.initial_inference(self.image)
@@ -186,15 +186,15 @@ def ucb_score(
 def player(
     args: MuzeroArgs,
     world_collective: TorchCollective,
-    player_trainer_collective: TorchCollective,
-    workers_collective: TorchCollective,
+    buffer_players_collective: TorchCollective,
+    players_trainer_collective: TorchCollective,
 ):
     rank = world_collective.rank
 
     root_dir = (
         args.root_dir
         if args.root_dir is not None
-        else os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        else os.path.join("logs", "muzero_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
     run_name = (
         args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
@@ -234,7 +234,7 @@ def player(
 
     # Receive the first weights from the rank-0, a.k.a. the trainer
     # In this way we are sure that before the first iteration everyone starts with the same parameters
-    player_trainer_collective.broadcast(flattened_parameters, src=0)
+    players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
     # Metrics
@@ -248,26 +248,27 @@ def player(
         )
 
     # Local data
-    rb = TrajectoryReplayBuffer(max_num_trajectories=500)
+    rb = TrajectoryReplayBuffer(max_num_trajectories=1)
 
     # Global variables
     global_step = 0
     start_time = time.time()
     single_global_step = int(args.num_envs * args.rollout_steps)
     num_updates = args.total_steps // single_global_step if not args.dry_run else 1
-    if single_global_step < world_collective.world_size - 1:
-        raise RuntimeError(
-            "The number of trainers ({}) is greater than the available collected data ({}). ".format(
-                world_collective.world_size - 1, single_global_step
-            )
-            + "Consider to lower the number of trainers at least to the size of available collected data"
-        )
-    chunks_sizes = [
-        len(chunk) for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
-    ]
+    # if single_global_step < world_collective.world_size - 1:
+    #     raise RuntimeError(
+    #         "The number of trainers ({}) is greater than the available collected data ({}). ".format(
+    #             world_collective.world_size - 1, single_global_step
+    #         )
+    #         + "Consider to lower the number of trainers at least to the size of available collected data"
+    #     )
+    # chunks_sizes = [
+    #     len(chunk) for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
+    # ]
 
     # Broadcast num_updates to all the world
     update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
+
     world_collective.broadcast(update_t, src=0)
 
     for update in range(1, num_updates + 1):
@@ -281,7 +282,7 @@ def player(
             node = Node(prior=0, image=obs)
 
             # start MCTS
-            node.mcts(agent, num_simulations, discount)
+            node.mcts(agent, args.num_simulations, args.discount)
 
             # Select action based on the visit count distribution and the temperature
             visits_count = torch.tensor([child.visit_count for child in node.children.values()])
@@ -293,7 +294,7 @@ def player(
             next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
 
             # Store the current step data
-            step_data = TensorDict(
+            step_data = Trajectory(
                 {
                     "policies": visits_count,
                     "actions": action,
@@ -322,24 +323,18 @@ def player(
             if done or truncated:
                 break
 
-        # After episode is done
-        # TODO Add trajectory to the buffer and broadcast
+        # After episode is done, send data to the buffer
+        buffer_players_collective.gather_object(step_data, None, dst=0)
 
         # Flatten the batch
-        local_data = rb.buffer.view(-1)
-
-        # TODO Send data to the training agent
-        # Collecting from all players
-        perm = torch.randperm(local_data.shape[0], device=device)
-        chunks = local_data[perm].split(chunks_sizes)
-        world_collective.scatter_object_list([None], [None] + chunks, src=0)
+        rb.buffer.view(-1)
 
         # Gather metrics from the trainer to be plotted
         metrics = [None]
-        player_trainer_collective.broadcast_object_list(metrics, src=0)
+        players_trainer_collective.broadcast_object_list(metrics, src=world_collective.world_size - 1)
 
         # Wait the trainer to finish
-        player_trainer_collective.broadcast(flattened_parameters, src=0)
+        players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
 
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
@@ -353,7 +348,7 @@ def player(
         # Checkpoint Model # TODO move to the trainer
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             state = [None]
-            player_trainer_collective.broadcast_object_list(state, src=1)
+            players_trainer_collective.broadcast_object_list(state, src=1)
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state[0])
 
@@ -376,7 +371,9 @@ def player(
 def trainer(
     args: MuzeroArgs,
     world_collective: TorchCollective,
-    player_trainer_collective: TorchCollective,
+    buffer_trainers_collective: TorchCollective,
+    players_trainer_collective: TorchCollective,
+    optimization_pg,
 ):
     global_rank = world_collective.rank
 
@@ -400,15 +397,15 @@ def trainer(
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Send weights to rank-1, a.k.a. the first player
-    if global_rank == 0:
-        player_trainer_collective.broadcast(
+    if global_rank == players_trainer_collective.world_size - 1:
+        players_trainer_collective.broadcast(
             torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
-            src=1,
+            src=world_collective.world_size - 1,
         )
 
     # Receive maximum number of updates from the player
     num_updates = torch.zeros(1, device=device)
-    world_collective.broadcast(num_updates, src=0)
+    world_collective.broadcast(num_updates, src=1)
     num_updates = num_updates.item()
 
     # Linear learning rate scheduler
@@ -432,10 +429,10 @@ def trainer(
 
     while True:
         # Wait for data
-        data = [None]
-        world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=1)
-        data = data[0]
-        if not isinstance(data, TensorDictBase) and data == -1:
+        received_batch = [None]
+        buffer_trainers_collective.scatter_object_list(received_batch, None, src=0)
+        batch = received_batch[0]
+        if not isinstance(batch, Trajectory) and batch == -1:
             # Last Checkpoint
             if global_rank == 0:
                 state = {
@@ -445,13 +442,13 @@ def trainer(
                     "update_step": update,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
             return
-        data = make_tensordict(data, device=device)
+        # data = make_tensordict(data, device=device)
         update += 1
 
         for _ in range(args.update_epochs):
-            batch = buffer.sample(batch_size=batch_size, sequence_length=sequence_length)
+            # batch = buffer.sample(batch_size=batch_size, sequence_length=sequence_length)
 
             target_rewards = batch["rewards"]
             target_values = batch["values"]
@@ -459,18 +456,25 @@ def trainer(
             observations = batch["observations"]
             actions = batch["actions"]
 
-            # TODO check here, not completely correct, a for loop is needed
-            hidden_state_0, policy_0, value_0 = agent.initial_inference(observations)
-            hidden_states, rewards, policies, values = agent.recurrent_inference(hidden_state_0, actions)
+            hidden_state_0, policy_0, value_0 = agent.initial_inference(observations[:, 0, :])
             # Policy loss
-            pg_loss = policy_loss(policies, target_policies)
+            pg_loss = policy_loss(policy_0, target_policies[0])
             # Value loss
-            v_loss = value_loss(values, target_values)
+            v_loss = value_loss(value_0, target_values[0])
             # Reward loss
-            ent_loss = reward_loss(rewards, target_rewards)
+            r_loss = 0
 
-            # Equation (9) in the paper
-            loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
+            for sequence_idx in range(1, args.batch_sequence_length):
+                hidden_states, rewards, policies, values = agent.recurrent_inference(hidden_state_0, actions)
+                # Policy loss
+                pg_loss += policy_loss(policies, target_policies[:, sequence_idx])
+                # Value loss
+                v_loss += value_loss(values, target_values[:, sequence_idx])
+                # Reward loss
+                r_loss += reward_loss(rewards, target_rewards[:, sequence_idx])
+
+            # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
+            loss = pg_loss + v_loss + r_loss
 
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
@@ -481,7 +485,7 @@ def trainer(
             # Update metrics
             aggregator.update("Loss/policy_loss", pg_loss.detach())
             aggregator.update("Loss/value_loss", v_loss.detach())
-            aggregator.update("Loss/entropy_loss", ent_loss.detach())
+            aggregator.update("Loss/entropy_loss", r_loss.detach())
 
         # Send updated weights to the player
         metrics = aggregator.compute()
@@ -492,12 +496,12 @@ def trainer(
             else:
                 metrics["Info/learning_rate"] = args.lr
 
-            player_trainer_collective.broadcast_object_list(
-                [metrics], src=1
-            )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
-            player_trainer_collective.broadcast(
+            players_trainer_collective.broadcast_object_list(
+                [metrics], src=world_collective.world_size - 1
+            )  # Broadcast metrics: fake send with object list between players and trainer
+            players_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
-                src=1,
+                src=world_collective.world_size - 1,
             )
 
         if args.anneal_lr:
@@ -513,29 +517,55 @@ def trainer(
                     "update_step": update,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+
+
+def buffer(
+    world_collective: TorchCollective,
+    buffer_players_collective: TorchCollective,
+    buffer_trainers_collective: TorchCollective,
+):
+    """Buffer process.
+    Receive data from the players and send it to the trainers.
+
+    Args:
+        world_collective: collective for the world group.
+        buffer_players_collective: collective for the players group and the buffer, for receiving the collected data.
+            The first rank is for the buffer.
+        buffer_trainers_collective: collective for the buffer and the trainers, for sending the collected data.
+            The first rank is for the buffer.
+    """
+    print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
+    buffers = [None for _ in range(buffer_players_collective.world_size)]
+    buffer_players_collective.gather_object([None], buffers, dst=0)  # gather_object uses global rank
+    for i, b in enumerate(buffers):
+        print(f"Buffer-{i}:", b)
+
+    print(f"Buffer {world_collective.rank}: Sending collected data to trainers...")
+    sampled_buffers = [torch.ones(4) * i for i in range(buffer_trainers_collective.world_size - 1)]
+    buffer_trainers_collective.scatter_object_list(
+        [None], [None] + sampled_buffers, src=0
+    )  # scatter_object_list uses global rank
 
 
 @register_algorithm(decoupled=True)
 def main():
-    devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices == "1":
-        raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 sheeprl.py ...`"
-        )
+    # Ranks semantic:
+    # rank-0 -> buffer
+    # rank-1, ..., rank-num_players -> players
+    # rank-(num_players+1), ..., rank-(num_players+num_trainers) -> trainers
 
     parser = HfArgumentParser(MuzeroArgs)
     args: MuzeroArgs = parser.parse_args_into_dataclasses()[0]
 
-    if args.share_data:
-        warnings.warn(
-            "You have called the script with `--share_data=True`: "
-            "decoupled scripts splits collected data in an almost-even way between the number of trainers"
+    devices = os.environ.get("LT_DEVICES", None)
+    if devices is None or devices in ("1", "2"):
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 2: "
+            "`lightning run model --devices=3 sheeprl.py ...`"
         )
 
     world_collective = TorchCollective()
-    player_trainer_collective = TorchCollective()
     world_collective.setup(
         backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo",
         timeout=timedelta(days=1),
@@ -546,19 +576,40 @@ def main():
     world_collective.create_group(timeout=timedelta(days=1))
     global_rank = world_collective.rank
 
-    # Create a group between rank-0 (trainer) and rank-1 (player), assigning it to the collective:
-    # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
-    player_trainer_collective.create_group(ranks=[0, 1], timeout=timedelta(days=1))
-
-    # Create a new group, without assigning it to the collective: in this way the trainers can
-    # still communicate with the player through the global group, but they can optimize the agent
-    # between themselves
-
-    # NOTE: here we have many players and a single trainer, as opposed to other decoupled scripts
-    workers_pg = world_collective.new_group(
-        ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
+    # Trainers collective to train the model in paraller with all the other trainers, needed for the optimization_pg
+    trainers_collective = TorchCollective()
+    trainers_collective.create_group(
+        ranks=list(range(args.num_players + 1, args.num_players + args.num_trainers + 1)),
+        timeout=timedelta(days=1),
     )
+    optimization_pg = trainers_collective.group
+
+    # Players-Buffer collective, to share data between players and buffer
+    buffer_players_collective = TorchCollective()
+    buffer_players_collective.create_group(ranks=list(range(0, args.num_players + 1)), timeout=timedelta(days=1))
+
+    # Trainers-Buffer collective, to share data between buffer and trainers
+    buffer_trainers_collective = TorchCollective()
+    buffer_trainers_collective.create_group(
+        ranks=[0] + list(range(args.num_players + 1, args.num_players + args.num_trainers + 1)),
+        timeout=timedelta(days=1),
+    )
+
+    # Trainer-Players collective, to share the updated parameters between trainer and players
+    players_trainer_collective = TorchCollective()
+    players_trainer_collective.create_group(
+        ranks=list(range(1, args.num_players + 1)) + [args.num_players + args.num_trainers],
+        timeout=timedelta(days=1),
+    )
+
     if global_rank == 0:
-        trainer(args, world_collective, player_trainer_collective)
+        buffer(world_collective, buffer_players_collective, buffer_trainers_collective)
+    elif 1 <= global_rank <= args.num_players:
+        player(world_collective, buffer_players_collective, players_trainer_collective)
     else:
-        player(args, world_collective, player_trainer_collective, workers_pg)
+        trainer(
+            world_collective,
+            buffer_trainers_collective,
+            players_trainer_collective,
+            optimization_pg,
+        )
