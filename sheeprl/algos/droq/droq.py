@@ -230,7 +230,7 @@ def main():
     buffer_size = (
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
     )
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
