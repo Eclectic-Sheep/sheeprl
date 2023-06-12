@@ -24,6 +24,7 @@ from sheeprl.algos.a2c.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
+from sheeprl.optim.tf_rmsprop import RMSpropTF
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -160,7 +161,11 @@ def main():
     critic = MLP(input_dims=obs_dim, hidden_sizes=(args.critic_hidden_sizes, args.critic_hidden_sizes), output_dim=1)
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(params=list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
+    params = list(actor.parameters()) + list(critic.parameters())
+    if args.use_rmsprop:
+        optimizer = RMSpropTF(params=params, lr=args.lr, eps=1e-4)
+    else:
+        optimizer = Adam(params=params, lr=args.lr, eps=1e-4)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)

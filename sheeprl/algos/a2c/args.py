@@ -28,3 +28,6 @@ class A2CArgs(StandardArgs):
     vf_coef: float = Arg(default=1.0, help="coefficient of the value function")
     max_grad_norm: float = Arg(default=0.0, help="the maximum norm for the gradient clipping")
     checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
+    use_rmsprop: bool = Arg(
+        default=True, help="whether to use the Tensorflow modified version version of the RMSProp optimizer"
+    )
