@@ -101,7 +101,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Local data
     buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables

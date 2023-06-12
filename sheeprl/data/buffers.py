@@ -166,6 +166,8 @@ class ReplayBuffer:
 
     def _get_samples(self, batch_idxes: Tensor, sample_next_obs: bool = False) -> TensorDictBase:
         env_idxes = torch.randint(0, self.n_envs, size=(len(batch_idxes),))
+        if self._buf is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         buf = self._buf[batch_idxes, env_idxes]
         if sample_next_obs:
             buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
