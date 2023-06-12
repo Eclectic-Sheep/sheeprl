@@ -1,11 +1,23 @@
 # ⚡ SheepRL 🐑
 
 <p align="center">
-  <img src="./assets/images/logo.png" style="width:40%">
+  <img src="./assets/images/logo.svg" style="width:40%">
 </p>
 
 ## What
-An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).
+An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
+The algorithms sheeped by sheeprl out-of-the-box are:
+
+| Algorithm  | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
+|------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+| A2C        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| A3C        | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
+| PPO        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC        | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ       | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
+| Dreamer-V1 | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+
+and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
 ## Why
 We want to provide a framework for RL algorithms that is at the same time simple and scalable thanks to Lightning Fabric.
@@ -145,3 +157,12 @@ For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` m
 
 ## :bow: Contributing
 The best way to contribute is by opening an issue to discuss a new feature or a bug, or by opening a PR to fix a bug or to add a new feature.
+
+## :mailbox_with_no_mail: Contacts
+
+You can contact us for any further questions or discussions:
+
+* Federico Belotti: federico.belotti@orobix.com
+* Davide Angioni: davide.angioni@orobix.com
+* Refik Can Malli: refikcan.malli@orobix.com
+* Michele Milesi: michele.milesi@orobix.com

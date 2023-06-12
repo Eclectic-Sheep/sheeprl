@@ -4,6 +4,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from math import prod
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -36,11 +37,11 @@ from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def make_env(
-    env_id,
-    seed,
-    idx,
-    capture_video,
-    run_name,
+    env_id: str,
+    seed: Optional[int],
+    idx: int,
+    capture_video: bool,
+    run_name: str,
     prefix: str = "",
     vector_env_idx: int = 0,
     action_repeat: int = 2,
@@ -48,17 +49,31 @@ def make_env(
     frame_stack: int = 0,
 ):
     def thunk():
-        env = gym.make(env_id, render_mode="rgb_array")
-        env = ActionRepeat(env, action_repeat)
-        if len(env.observation_space.shape) < 3:
-            env = gym.wrappers.PixelObservationWrapper(env)
-            env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
-            env.observation_space = env.observation_space["pixels"]
-        env = gym.wrappers.ResizeObservation(env, (screen_size, screen_size))
-        env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
-        env.observation_space = gym.spaces.Box(
-            0, 255, (env.observation_space.shape[2], screen_size, screen_size), np.uint8
-        )
+        if "dmc" in env_id.lower():
+            from sheeprl.envs.dmc import DMCWrapper
+
+            _, domain, task = env_id.lower().split("_")
+            env = DMCWrapper(
+                domain,
+                task,
+                from_pixels=True,
+                height=screen_size,
+                width=screen_size,
+                frame_skip=action_repeat,
+                seed=seed,
+            )
+        else:
+            env = gym.make(env_id, render_mode="rgb_array")
+            env = ActionRepeat(env, action_repeat)
+            if len(env.observation_space.shape) < 3:
+                env = gym.wrappers.PixelObservationWrapper(env)
+                env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
+                env.observation_space = env.observation_space["pixels"]
+            env = gym.wrappers.ResizeObservation(env, (screen_size, screen_size))
+            env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
+            env.observation_space = gym.spaces.Box(
+                0, 255, (env.observation_space.shape[2], screen_size, screen_size), np.uint8
+            )
         if frame_stack > 0:
             env = gym.wrappers.FrameStack(env, frame_stack)
         env.action_space.seed(seed)
@@ -118,11 +133,10 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
         raise ValueError("Only continuous action space is supported")
 
     # Create the actor and critic models
-    features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
     agent = PPOPixelContinuousAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=act_dim,
         screen_size=args.screen_size,
     )
@@ -336,11 +350,10 @@ def trainer(
     )
 
     # Create the actor and critic models
-    features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
     agent = PPOPixelContinuousAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=act_dim,
         screen_size=args.screen_size,
     )

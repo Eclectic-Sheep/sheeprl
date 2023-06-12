@@ -6,18 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "sheeprl"
 description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with production-friendly features"
 authors = [
-  {name = "Federico Belotti", email = "federico.belotti@orobix.com"},
-  {name = "Davide Angioni", email = "davide.angioni@orobix.com"},
-  {name = "Refik Can Malli", email = "refikcan.malli@orobix.com"},
-  {name = "Michele Milesi", email = "michele.milesi@orobix.com"},
+  { name = "Federico Belotti", email = "federico.belotti@orobix.com" },
+  { name = "Davide Angioni", email = "davide.angioni@orobix.com" },
+  { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
+  { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
 ]
 keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
-license = {file = "LICENSE"}
-readme = {file = "README.md", content-type = "text/markdown"}
+license = { file = "LICENSE" }
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.8,<3.11"
-classifiers = [
-  "Programming Language :: Python"
-]
+classifiers = ["Programming Language :: Python"]
 dependencies = [
   "gymnasium[box2d]==0.28.*",
   "moviepy==1.0.*",
@@ -25,7 +23,7 @@ dependencies = [
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
   "lightning==2.0.*",
-  "lightning-utilities<0.9"
+  "lightning-utilities<0.9",
 ]
 dynamic = ["version"]
 
@@ -43,22 +41,16 @@ homepage = "https://eclecticsheep.ai"
 repository = "https://github.com/Eclectic-Sheep/sheeprl"
 
 [project.optional-dependencies]
-test = [
-  "pytest==7.3.1",
-  "pytest-timeout==2.1.0",
-  "pytest-coverage"
-]
+test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage"]
 dev = [
   "pre-commit==2.20.0",
   "mypy==1.2.0",
   "black==23.3.0",
   "isort==5.12.0",
-  "autoflake==2.1.1"
+  "autoflake==2.1.1",
 ]
-mujoco = [
-  "mujoco==2.3.3",
-  "gymnasium[mujoco]==0.28.*",
-]
+mujoco = ["mujoco==2.3.3", "gymnasium[mujoco]==0.28.*"]
+dmc = ["dm_control==1.0.11"]
 atari = [
   "gymnasium[atari]==0.28.*",
   "gymnasium[accept-rom-license]==0.28.*",

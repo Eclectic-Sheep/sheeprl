@@ -77,6 +77,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
+        hidden_size=args.actor_hidden_size,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     ).to(device)
@@ -114,10 +115,13 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        # Sample an action given the observation received by the environment
-        with torch.no_grad():
-            actions, _ = actor(obs)
-            actions = actions.cpu().numpy()
+        if global_step < args.learning_starts:
+            actions = envs.action_space.sample()
+        else:
+            # Sample an action given the observation received by the environment
+            with torch.no_grad():
+                actions, _ = actor(obs)
+                actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
@@ -155,11 +159,12 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         obs = next_obs
 
         # Send data to the training agents
-        if global_step > args.learning_starts:
+        if global_step >= args.learning_starts - 1:
+            training_steps = args.learning_starts if global_step == args.learning_starts - 1 else 1
             chunks = rb.sample(
-                args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1),
+                training_steps * args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1),
                 sample_next_obs=args.sample_next_obs,
-            ).split(args.gradient_steps * args.per_rank_batch_size)
+            ).split(training_steps * args.gradient_steps * args.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
@@ -243,12 +248,15 @@ def trainer(
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
-        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
+        fabric.setup_module(
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=args.critic_hidden_size, num_critics=1)
+        )
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim

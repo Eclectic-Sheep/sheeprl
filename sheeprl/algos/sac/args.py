@@ -14,7 +14,7 @@ class SACArgs(StandardArgs):
     buffer_size: int = Arg(default=int(1e6), help="the replay memory buffer size")
     gamma: float = Arg(default=0.99, help="the discount factor gamma")
     tau: float = Arg(default=0.005, help="target smoothing coefficient")
-    alpha: float = Arg(default=1.0, help="Entropy regularization coefficient")
+    alpha: float = Arg(default=1.0, help="entropy regularization coefficient")
     per_rank_batch_size: int = Arg(default=256, help="the batch size of sample from the reply memory for every rank")
     learning_starts: int = Arg(default=100, help="timestep to start learning")
     num_critics: int = Arg(default=2, help="the number of critics")
@@ -28,3 +28,5 @@ class SACArgs(StandardArgs):
     sample_next_obs: bool = Arg(
         default=False, help="whether or not to sample the next observations from the gathered observations"
     )
+    actor_hidden_size: int = Arg(default=256, help="the dimension of the hidden sizes of the actor network")
+    critic_hidden_size: int = Arg(default=256, help="the dimension of the hidden sizes of the critic network")
