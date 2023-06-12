@@ -1,3 +1,25 @@
+"""
+The following snippet is a template for the architecture of a distributed RL algorithm.
+The main function is responsible for spawning the processes for the buffer, players, and trainers. There processes are
+defined in the functions buffer, player, and trainer, respectively.
+The buffer process is responsible for collecting the data from the players, sampling batches and sending each batch to
+ the trainers.
+The player process is responsible for playing the game and collecting the data from the environment.
+The trainer process is responsible for receiving the data from the buffer, performing optimization, and sending the
+updated parameters to the players.
+
+The number of players and trainers is defined by the user by specifying the value of the `num_players` and `num_trainers`
+variables. The number of buffers is always 1.
+In total there are `num_players` + `num_trainers` + 1 processes.
+
+Processes communicate through collectives. The collectives are defined in the main function and passed to the processes
+as arguments. A schema of the collectives can be found is the `assets/images/architecture_template.png` file.
+
+To run this script, execute the following command:
+`lightning run model --devices=<num_processes> examples/architecture_template.py`
+where num_processes is computed as descrbed above.
+"""
+
 import os
 import time
 from datetime import timedelta
@@ -126,8 +148,7 @@ def main():
         timeout=timedelta(days=1),
     )
 
-    # Create a global group, assigning it to the collective: used by the player to exchange
-    # collected experiences with the trainers
+    # Create a global group for all the processes
     world_collective.create_group(timeout=timedelta(days=1))
     global_rank = world_collective.rank
 
