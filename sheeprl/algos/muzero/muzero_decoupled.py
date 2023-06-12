@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning import Fabric
 from lightning_fabric.fabric import _is_using_cli
@@ -108,7 +109,22 @@ class Node:
             return 0.0
         return self.value_sum / self.visit_count
 
-    def mcts(self, agent: torch.nn.Module, num_simulations: int, discount: float = 0.997):
+    def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
+        """Add exploration noise to the prior probabilities."""
+        actions = list(self.children.keys())
+        noise = np.random.dirichlet([dirichlet_alpha] * len(actions))
+        frac = exploration_fraction
+        for a, n in zip(actions, noise):
+            self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
+
+    def mcts(
+        self,
+        agent: torch.nn.Module,
+        num_simulations: int,
+        gamma: float = 0.997,
+        dirichlet_alpha: float = 0.25,
+        exploration_fraction: float = 0.25,
+    ):
         """Runs MCTS for num_simulations"""
         # Initialize the hidden state and compute the actor's policy logits
         hidden_state, policy_logits = agent.initial_inference(self.image)
@@ -119,7 +135,7 @@ class Node:
         policy_sum = sum(policy.values())
         for action, p in policy.items():
             self.children[action] = Node(p / policy_sum)
-        self.add_exploration_noise()
+        self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
         min_max_stats = MinMaxStats()
@@ -136,7 +152,7 @@ class Node:
                             parent=node,
                             child=child,
                             min_max_stats=min_max_stats,
-                            discount=discount,
+                            gamma=gamma,
                             pb_c_base=19652,
                             pb_c_init=1.25,
                         ),
@@ -147,27 +163,27 @@ class Node:
                 )
                 search_path.append(node)
 
-            # When a path from the starting node to an unvisited node is found, expand the unvisited node
-            parent = search_path[-2]
-            hidden_state, reward, policy_logits, value = agent.recurrent_inference(parent.hidden_state, imagined_action)
-            node.hidden_state = hidden_state
-            node.reward = reward
-            policy = {a_id: math.exp(a_logit) for a_id, a_logit in enumerate(policy_logits)}
-            policy_sum = sum(policy.values())
-            for action, p in policy.items():
-                node.children[action] = Node(p / policy_sum)
+        # When a path from the starting node to an unvisited node is found, expand the unvisited node
+        parent = search_path[-2]
+        hidden_state, reward, policy_logits, value = agent.recurrent_inference(parent.hidden_state, imagined_action)
+        node.hidden_state = hidden_state
+        node.reward = reward
+        policy = {a_id: math.exp(a_logit) for a_id, a_logit in enumerate(policy_logits)}
+        policy_sum = sum(policy.values())
+        for action, p in policy.items():
+            node.children[action] = Node(p / policy_sum)
 
-            # Backpropagate the search path to update the nodes' statistics
-            for node in reversed(search_path):
-                node.value_sum += value
-                node.visit_count += 1
-                min_max_stats.update(node.value())
+        # Backpropagate the search path to update the nodes' statistics
+        for node in reversed(search_path):
+            node.value_sum += value
+            node.visit_count += 1
+            min_max_stats.update(node.value())
 
-                value = node.reward + discount * value
+            value = node.reward + gamma * value
 
 
 def ucb_score(
-    parent: Node, child: Node, min_max_stats: MinMaxStats, discount: float, pb_c_base: float, pb_c_init: float
+    parent: Node, child: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float
 ) -> float:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
@@ -176,7 +192,7 @@ def ucb_score(
 
     prior_score = pb_c * child.prior
     if child.visit_count > 0:
-        value_score = child.reward + discount * min_max_stats.normalize(child.value())
+        value_score = child.reward + gamma * min_max_stats.normalize(child.value())
     else:
         value_score = 0
     return prior_score + value_score
@@ -247,24 +263,14 @@ def player(
             }
         )
 
-    # Local data
-    rb = TrajectoryReplayBuffer(max_num_trajectories=1)
-
     # Global variables
     global_step = 0
     start_time = time.time()
-    single_global_step = int(args.num_envs * args.rollout_steps)
-    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
-    # if single_global_step < world_collective.world_size - 1:
-    #     raise RuntimeError(
-    #         "The number of trainers ({}) is greater than the available collected data ({}). ".format(
-    #             world_collective.world_size - 1, single_global_step
-    #         )
-    #         + "Consider to lower the number of trainers at least to the size of available collected data"
-    #     )
-    # chunks_sizes = [
-    #     len(chunk) for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
-    # ]
+    # Global variables
+    start_time = time.perf_counter()
+
+    num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
+    args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
     # Broadcast num_updates to all the world
     update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
@@ -277,12 +283,13 @@ def player(
             # Get the first environment observation and start the optimization
             obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device)
 
+        steps_data = Trajectory({}, batch_size=(1, 1))
         for step in range(0, args.max_trajectory_len):
             global_step += 1
             node = Node(prior=0, image=obs)
 
             # start MCTS
-            node.mcts(agent, args.num_simulations, args.discount)
+            node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
 
             # Select action based on the visit count distribution and the temperature
             visits_count = torch.tensor([child.visit_count for child in node.children.values()])
@@ -294,15 +301,21 @@ def player(
             next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
 
             # Store the current step data
-            step_data = Trajectory(
-                {
-                    "policies": visits_count,
-                    "actions": action,
-                    "observations": obs,
-                    "rewards": reward,
-                    "values": node.value,
-                },
-                batch_size=1,
+            steps_data = torch.cat(
+                [
+                    steps_data,
+                    Trajectory(
+                        {
+                            "policies": visits_count.reshape(1, 1, -1),
+                            "actions": action.reshape(1, 1, -1),
+                            "observations": obs.reshape(1, 1, -1),
+                            "rewards": reward.reshape(1, 1, -1),
+                            "values": torch.tensor([node.value]).reshape(1, 1, -1),
+                        },
+                        batch_size=(1, 1),
+                    ),
+                ],
+                dim=-1,
             )
 
             # Update observation
@@ -318,16 +331,11 @@ def player(
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
-            # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
             if done or truncated:
                 break
 
         # After episode is done, send data to the buffer
-        buffer_players_collective.gather_object(step_data, None, dst=0)
-
-        # Flatten the batch
-        rb.buffer.view(-1)
+        buffer_players_collective.gather_object(steps_data, None, dst=0)
 
         # Gather metrics from the trainer to be plotted
         metrics = [None]
@@ -392,7 +400,7 @@ def trainer(
     agent = RecurrentMuzero(num_actions=env.action_space.n)
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
+    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4, weight_decay=args.weight_decay)
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
@@ -410,9 +418,9 @@ def trainer(
 
     # Linear learning rate scheduler
     if args.anneal_lr:
-        from torch.optim.lr_scheduler import PolynomialLR
+        from torch.optim.lr_scheduler import StepLR
 
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        scheduler = StepLR(optimizer=optimizer, step_size=args.decay_period, gamma=args.decay_factor)
 
     # Metrics
     with fabric.device:
@@ -462,9 +470,9 @@ def trainer(
             # Value loss
             v_loss = value_loss(value_0, target_values[0])
             # Reward loss
-            r_loss = 0
+            r_loss = torch.tensor(0.0, device=device)
 
-            for sequence_idx in range(1, args.batch_sequence_length):
+            for sequence_idx in range(1, args.chunk_sequence_len):
                 hidden_states, rewards, policies, values = agent.recurrent_inference(hidden_state_0, actions)
                 # Policy loss
                 pg_loss += policy_loss(policies, target_policies[:, sequence_idx])
@@ -478,8 +486,6 @@ def trainer(
 
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
-            if args.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
             optimizer.step()
 
             # Update metrics
@@ -521,6 +527,7 @@ def trainer(
 
 
 def buffer(
+    args: MuzeroArgs,
     world_collective: TorchCollective,
     buffer_players_collective: TorchCollective,
     buffer_trainers_collective: TorchCollective,
@@ -535,17 +542,22 @@ def buffer(
         buffer_trainers_collective: collective for the buffer and the trainers, for sending the collected data.
             The first rank is for the buffer.
     """
-    print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
-    buffers = [None for _ in range(buffer_players_collective.world_size)]
-    buffer_players_collective.gather_object([None], buffers, dst=0)  # gather_object uses global rank
-    for i, b in enumerate(buffers):
-        print(f"Buffer-{i}:", b)
+    rb = TrajectoryReplayBuffer(max_num_trajectories=args.buffer_capacity)
+    while True:
+        print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
+        steps_data = [None for _ in range(buffer_players_collective.world_size)]
+        buffer_players_collective.gather_object([None], steps_data, dst=0)  # gather_object uses global rank
+        for traj in steps_data:
+            rb.add(traj)
 
-    print(f"Buffer {world_collective.rank}: Sending collected data to trainers...")
-    sampled_buffers = [torch.ones(4) * i for i in range(buffer_trainers_collective.world_size - 1)]
-    buffer_trainers_collective.scatter_object_list(
-        [None], [None] + sampled_buffers, src=0
-    )  # scatter_object_list uses global rank
+        print(f"Buffer {world_collective.rank}: Sending collected data to trainers...")
+        sampled_buffers = [
+            rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
+            for _ in range(buffer_trainers_collective.world_size - 1)
+        ]
+        buffer_trainers_collective.scatter_object_list(
+            [None], [None] + sampled_buffers, src=0
+        )  # scatter_object_list uses global rank
 
 
 @register_algorithm(decoupled=True)
@@ -603,11 +615,12 @@ def main():
     )
 
     if global_rank == 0:
-        buffer(world_collective, buffer_players_collective, buffer_trainers_collective)
+        buffer(args, world_collective, buffer_players_collective, buffer_trainers_collective)
     elif 1 <= global_rank <= args.num_players:
-        player(world_collective, buffer_players_collective, players_trainer_collective)
+        player(args, world_collective, buffer_players_collective, players_trainer_collective)
     else:
         trainer(
+            args,
             world_collective,
             buffer_trainers_collective,
             players_trainer_collective,

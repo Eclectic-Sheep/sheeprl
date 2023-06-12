@@ -27,6 +27,13 @@ def test_add_multiple_trajectories(trajectory, trajectory2):
     assert len(buffer) == 2
 
 
+def test_add_none_trajectory(trajectory):
+    buffer = TrajectoryReplayBuffer(max_num_trajectories=5)
+    buffer.add(trajectory)
+    buffer.add(None)
+    assert len(buffer) == 1
+
+
 def test_overflow_trajectories(trajectory, trajectory2):
     buffer = TrajectoryReplayBuffer(max_num_trajectories=1)
     buffer.add(trajectory)

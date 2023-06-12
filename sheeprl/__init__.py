@@ -8,6 +8,7 @@ if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
 
 from sheeprl.algos.droq import droq
+from sheeprl.algos.muzero import muzero_decoupled
 from sheeprl.algos.ppo import ppo, ppo_decoupled
 from sheeprl.algos.ppo_continuous import ppo_continuous
 from sheeprl.algos.ppo_pixel import ppo_pixel_continuous

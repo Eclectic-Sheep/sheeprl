@@ -187,7 +187,11 @@ class TrajectoryReplayBuffer:
     def __getitem__(self, index: int):
         return self._buffer[index]
 
-    def add(self, trajectory: Trajectory):
+    def add(self, trajectory: Optional[Trajectory]):
+        if trajectory is None:
+            return
+        if not isinstance(trajectory, Trajectory):
+            raise TypeError("Trajectory must be an instance of Trajectory")
         self._buffer.append(trajectory)
         if len(self) > self.max_num_trajectories:
             self._buffer.pop(0)
