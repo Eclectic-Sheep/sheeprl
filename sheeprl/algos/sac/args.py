@@ -28,3 +28,5 @@ class SACArgs(StandardArgs):
     sample_next_obs: bool = Arg(
         default=False, help="whether or not to sample the next observations from the gathered observations"
     )
+    actor_hidden_size: int = Arg(default=256, help="the dimension of the hidden sizes of the actor network")
+    critic_hidden_size: int = Arg(default=256, help="the dimension of the hidden sizes of the critic network")
