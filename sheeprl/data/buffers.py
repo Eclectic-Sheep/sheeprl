@@ -1,20 +1,27 @@
 import typing
-from typing import Union
+from typing import Optional, Sequence, Union
 
 import torch
-from tensordict import TensorDict
+from tensordict import TensorDict, MemmapTensor
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[device, str] = "cpu"):
+    def __init__(
+        self,
+        buffer_size: int,
+        n_envs: int = 1,
+        device: Union[device, str] = "cpu",
+        memmap: bool = False,
+    ):
         """A replay buffer which internally uses a TensorDict.
 
         Args:
             buffer_size (int): The buffer size.
             n_envs (int, optional): The number of environments. Defaults to 1.
             device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
+            memmap (bool, optional): Whether to memory-mapping the buffer
         """
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
@@ -25,12 +32,16 @@ class ReplayBuffer:
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
-        self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
+        self._memmap = memmap
+        if self._memmap:
+            self._buf = None
+        else:
+            self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
         self._pos = 0
         self._full = False
 
     @property
-    def buffer(self) -> TensorDictBase:
+    def buffer(self) -> Optional[TensorDictBase]:
         return self._buf
 
     @property
@@ -92,9 +103,20 @@ class ReplayBuffer:
         else:
             idxes = torch.tensor(range(self._pos, next_pos), device=self.device)
         if data_len > self._buffer_size:
-            self._buf[idxes, :] = data[-self._buffer_size - next_pos :]
+            data_to_store = data[-self._buffer_size - next_pos :]
         else:
-            self._buf[idxes, :] = data
+            data_to_store = data
+        if self._memmap and self._buf is None:
+            self._buf = TensorDict(
+                {
+                    k: MemmapTensor((self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype, device=v.device)
+                    for k, v in data_to_store.items()
+                },
+                batch_size=[self._buffer_size, self._n_envs],
+                device=self.device,
+            )
+            self._buf.memmap_()
+        self._buf[idxes, :] = data_to_store
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
