@@ -14,12 +14,14 @@ LOG_STD_MIN = -5
 
 
 class SACCritic(nn.Module):
-    def __init__(self, observation_dim: int, num_critics: int = 1):
+    def __init__(self, observation_dim: int, hidden_size: int = 256, num_critics: int = 1):
         """The SAC critic. The architecture is the one specified in https://arxiv.org/abs/1812.05905
 
         Args:
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
+            hidden_size (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
             num_critics (int, optional): the number of critic values to output.
                 This is useful if one wants to have a single shared backbone that outputs
                 `num_critics` critic values.
@@ -29,7 +31,7 @@ class SACCritic(nn.Module):
         self.model = MLP(
             input_dims=observation_dim,
             output_dim=num_critics,
-            hidden_sizes=(256, 256),
+            hidden_sizes=(hidden_size, hidden_size),
             activation=nn.ReLU,
             flatten_dim=None,
         )
@@ -53,6 +55,7 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
+        hidden_size: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
@@ -62,13 +65,15 @@ class SACActor(nn.Module):
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
+            hidden_size (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
             action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
                 Defaults to -1.0.
             action_high (Union[SupportsFloat, NDArray], optional): the action higher bound.
                 Defaults to 1.0.
         """
         super().__init__()
-        self.model = MLP(input_dims=observation_dim, hidden_sizes=(256, 256), flatten_dim=None)
+        self.model = MLP(input_dims=observation_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
