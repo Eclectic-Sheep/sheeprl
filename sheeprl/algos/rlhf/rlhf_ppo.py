@@ -288,8 +288,8 @@ def main():
                         ppo_args=train_args,
                         num_new_tokens=gen_args.max_new_tokens,
                     )
-                    fabric.backward(policy_loss)
-                    fabric.backward(value_loss)
+                    fabric.backward(policy_loss / train_args.gradient_accumulation_steps)
+                    fabric.backward(value_loss / train_args.gradient_accumulation_steps)
                 if not is_accumulating:
                     fabric.clip_gradients(
                         actor_model, actor_optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True
@@ -324,7 +324,7 @@ def main():
             if isinstance(iterator, tqdm):
                 description = f"iter {k}"
                 for key, value in metrics.items():
-                    if isinstance(value, float) and "train/" in key:
+                    if isinstance(value, float):
                         fabric.log(key, value, step=k)
                         if "train/" in key:
                             description += f", {key.replace('train/','')} {value:.2f}"
