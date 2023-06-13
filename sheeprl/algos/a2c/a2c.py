@@ -14,14 +14,14 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
-from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
+from sheeprl.algos.a2c.agent import A2CActor
 
 from sheeprl.algos.a2c.args import A2CArgs
 from sheeprl.algos.a2c.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.a2c.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.optim.tf_rmsprop import RMSpropTF
@@ -34,7 +34,7 @@ from sheeprl.utils.utils import gae, make_env, normalize_tensor, polynomial_deca
 
 def train(
     fabric: Fabric,
-    actor: torch.nn.Module,
+    actor: A2CActor,
     critic: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
@@ -50,22 +50,19 @@ def train(
         batch = data[batch_idxes]
 
         # Actor-Critic forward
-        actions_logits = actor(batch["observations"])
+        _, logprobs, entropy = actor(batch["observations"], batch["actions"])
         values = critic(batch["observations"])
 
-        dist = Categorical(logits=actions_logits.unsqueeze(-2))
         if args.normalize_advantages:
             batch["advantages"] = normalize_tensor(batch["advantages"])
 
         # Policy loss
-        logprobs = dist.log_prob(batch["actions"])
         pg_loss = policy_loss(logprobs, batch["advantages"], args.loss_reduction)
 
         # Value loss
         v_loss = value_loss(values, batch["returns"], args.loss_reduction)
 
         # Entropy loss
-        entropy = dist.entropy()
         ent_loss = entropy_loss(entropy, args.loss_reduction)
 
         # Aggregate the sum of the loss. In here one can use the context manager from fabric
@@ -151,21 +148,28 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+    if isinstance(envs.single_action_space, gym.spaces.Discrete):
+        continuous = False
+    elif isinstance(envs.single_action_space, gym.spaces.Box):
+        continuous = True
+    else:
+        raise ValueError("Only discrete and continuous action space is supported")
 
     # Create the actor and critic models
     obs_dim = prod(envs.single_observation_space.shape)
-    act_dim = envs.single_action_space.n
-    actor = MLP(input_dims=obs_dim, hidden_sizes=(args.actor_hidden_sizes, args.actor_hidden_sizes), output_dim=act_dim)
-    critic = MLP(input_dims=obs_dim, hidden_sizes=(args.critic_hidden_sizes, args.critic_hidden_sizes), output_dim=1)
+    if continuous:
+        act_dim = prod(envs.single_action_space.shape)
+    else:
+        act_dim = envs.single_action_space.n
+    actor = A2CActor(obs_dim, act_dim, hidden_size=args.actor_hidden_size, continuous=continuous)
+    critic = MLP(input_dims=obs_dim, hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size), output_dim=1)
 
     # Define the agent and the optimizer and setup them with Fabric
     params = list(actor.parameters()) + list(critic.parameters())
     if args.use_rmsprop:
-        optimizer = RMSpropTF(params=params, lr=args.lr, eps=1e-4)
+        optimizer = RMSpropTF(params=params, lr=args.lr, eps=1e-5)
     else:
-        optimizer = Adam(params=params, lr=args.lr, eps=1e-4)
+        optimizer = Adam(params=params, lr=args.lr, eps=1e-5)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -210,9 +214,7 @@ def main():
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                action_logits = actor.module(next_obs)
-                dist = Categorical(logits=action_logits.unsqueeze(-2))
-                action = dist.sample()
+                action, _, _ = actor.module(next_obs)
 
                 # Estimate critic value
                 value = critic.module(next_obs)
