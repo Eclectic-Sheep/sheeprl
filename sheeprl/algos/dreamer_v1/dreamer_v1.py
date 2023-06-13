@@ -458,7 +458,7 @@ def main():
     buffer_size = (
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
     )
-    rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu")
+    rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]

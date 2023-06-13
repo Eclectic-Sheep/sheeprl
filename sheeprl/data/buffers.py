@@ -1,8 +1,8 @@
 import typing
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
 import torch
-from tensordict import TensorDict, MemmapTensor
+from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
 
@@ -191,8 +191,14 @@ class SequentialReplayBuffer(ReplayBuffer):
         device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
     """
 
-    def __init__(self, buffer_size: int, n_envs: int = 1, device: Union[device, str] = "cpu"):
-        super().__init__(buffer_size, n_envs, device)
+    def __init__(
+        self,
+        buffer_size: int,
+        n_envs: int = 1,
+        device: Union[device, str] = "cpu",
+        memmap: bool = False,
+    ):
+        super().__init__(buffer_size, n_envs, device, memmap)
 
     def sample(
         self,
