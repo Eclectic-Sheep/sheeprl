@@ -220,13 +220,15 @@ def main():
     # both the actor and critic
     actor = SACPixelContinuousActor(
         encoder=copy.deepcopy(encoder.module),
-        hidden_dim=args.hidden_dim,
         action_dim=act_dim,
+        hidden_size=args.actor_hidden_size,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     )
     qfs = [
-        SACPixelQFunction(input_dim=encoder.output_dim, action_dim=act_dim, hidden_dim=args.hidden_dim, output_dim=1)
+        SACPixelQFunction(
+            input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=args.critic_hidden_size, output_dim=1
+        )
         for _ in range(args.num_critics)
     ]
     critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)
@@ -269,7 +271,7 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device="cpu")
+    rb = ReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device="cpu")
 
     # Global variables

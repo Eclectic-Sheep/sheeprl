@@ -184,7 +184,7 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -213,7 +213,6 @@ def main():
                 action_logits = actor.module(next_obs)
                 dist = Categorical(logits=action_logits.unsqueeze(-2))
                 action = dist.sample()
-                logprob = dist.log_prob(action)
 
                 # Estimate critic value
                 value = critic.module(next_obs)
@@ -231,7 +230,6 @@ def main():
             step_data["dones"] = next_done
             step_data["values"] = value
             step_data["actions"] = action
-            step_data["logprobs"] = logprob
             step_data["rewards"] = rewards
             step_data["observations"] = next_obs
 

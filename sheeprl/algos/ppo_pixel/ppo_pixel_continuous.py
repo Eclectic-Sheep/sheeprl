@@ -133,11 +133,10 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
         raise ValueError("Only continuous action space is supported")
 
     # Create the actor and critic models
-    features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
     agent = PPOPixelContinuousAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=act_dim,
         screen_size=args.screen_size,
     )
@@ -162,7 +161,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -351,11 +350,10 @@ def trainer(
     )
 
     # Create the actor and critic models
-    features_dim = 512
     act_dim = prod(envs.single_action_space.shape)
     agent = PPOPixelContinuousAgent(
         in_channels=prod(envs.single_observation_space.shape[:-2]),
-        features_dim=features_dim,
+        features_dim=args.features_dim,
         action_dim=act_dim,
         screen_size=args.screen_size,
     )

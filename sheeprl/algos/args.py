@@ -18,3 +18,8 @@ class StandardArgs:
     )
     run_name: Optional[str] = Arg(default=None, help="the folder name of this run")
     action_repeat: int = Arg(default=1, help="the number of action repeat")
+    memmap_buffer: bool = Arg(
+        default=False,
+        help="whether to move the buffer to the shared memory. "
+        "Useful for pixel-based off-policy methods with large buffer size (>=1e6).",
+    )

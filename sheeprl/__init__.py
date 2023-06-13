@@ -7,7 +7,6 @@ from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
 
-from sheeprl.algos.a2c import a2c
 from sheeprl.algos.droq import droq
 from sheeprl.algos.ppo import ppo, ppo_decoupled
 from sheeprl.algos.ppo_continuous import ppo_continuous

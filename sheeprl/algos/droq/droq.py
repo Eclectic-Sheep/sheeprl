@@ -187,12 +187,20 @@ def main():
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
-        fabric.setup_module(DROQCritic(observation_dim=obs_dim + act_dim, num_critics=1, dropout=args.dropout))
+        fabric.setup_module(
+            DROQCritic(
+                observation_dim=obs_dim + act_dim,
+                hidden_size=args.critic_hidden_size,
+                num_critics=1,
+                dropout=args.dropout,
+            )
+        )
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim
@@ -222,7 +230,7 @@ def main():
     buffer_size = (
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
     )
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables

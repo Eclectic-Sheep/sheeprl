@@ -162,8 +162,13 @@ def main():
     # Create the actor and critic models
     act_dim = prod(envs.single_action_space.shape)
     obs_dim = prod(envs.single_observation_space.shape)
-    actor = PPOContinuousActor(observation_dim=obs_dim, action_dim=act_dim)
-    critic = MLP(input_dims=obs_dim, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU)
+    actor = PPOContinuousActor(observation_dim=obs_dim, action_dim=act_dim, hidden_size=args.actor_hidden_size)
+    critic = MLP(
+        input_dims=obs_dim,
+        output_dim=1,
+        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
+        activation=torch.nn.ReLU,
+    )
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
@@ -185,7 +190,7 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
