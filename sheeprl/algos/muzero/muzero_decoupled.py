@@ -8,11 +8,12 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 import torch
+from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning import Fabric
+from lightning.fabric.strategies import DDPStrategy
 from lightning_fabric.fabric import _is_using_cli
 from lightning_fabric.loggers import TensorBoardLogger
 from lightning_fabric.plugins.collectives import TorchCollective
-from lightning_fabric.strategies import DDPStrategy
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
@@ -25,6 +26,46 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import make_env
+
+
+def make_env(
+    env_id,
+    seed,
+    idx,
+    capture_video,
+    run_name,
+    prefix: str = "",
+    vector_env_idx: int = 0,
+    frame_stack: int = 1,
+    screen_size: int = 64,
+    action_repeat: int = 1,
+):
+    def thunk():
+        env = gym.make(env_id, render_mode="rgb_array", frameskip=1)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if capture_video and vector_env_idx == 0 and idx == 0:
+            env = gym.experimental.wrappers.RecordVideoV0(
+                env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
+            )
+        env = AtariPreprocessing(
+            env,
+            screen_size=screen_size,
+            frame_skip=action_repeat,
+            grayscale_obs=False,
+            grayscale_newaxis=True,
+            scale_obs=True,
+        )
+        env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
+        env.observation_space = gym.spaces.Box(
+            0, 1, (env.observation_space.shape[2], screen_size, screen_size), np.float32
+        )
+        if frame_stack > 0:
+            env = gym.wrappers.FrameStack(env, frame_stack)
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
+        return env
+
+    return thunk
 
 
 class MinMaxStats:
@@ -90,7 +131,7 @@ class Node:
 
         self.hidden_state: Optional[torch.Tensor] = None
         self.reward: float = 0.0
-        self.value_sum: float = 0.0
+        self.value_sum: torch.tensor = 0.0
         self.visit_count: int = 0
         self.children: dict[int, Node] = {}
 
@@ -127,20 +168,21 @@ class Node:
     ):
         """Runs MCTS for num_simulations"""
         # Initialize the hidden state and compute the actor's policy logits
-        hidden_state, policy_logits = agent.initial_inference(self.image)
+        hidden_state, policy_logits, _ = agent.initial_inference(self.image)
+        self.hidden_state = hidden_state
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
-        policy = {a: math.exp(policy_logits[a]) for a in range(len(policy_logits))}
-        policy_sum = sum(policy.values())
-        for action, p in policy.items():
-            self.children[action] = Node(p / policy_sum)
+        normalized_policy = torch.exp(policy_logits)
+        normalized_policy = normalized_policy / torch.sum(normalized_policy)
+        for action in range(normalized_policy.numel()):
+            self.children[action] = Node(normalized_policy[:, action].item())
         self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
         min_max_stats = MinMaxStats()
 
-        for _ in range(num_simulations):
+        for sim_num in range(num_simulations):
             node = self
             search_path = [node]
 
@@ -161,17 +203,20 @@ class Node:
                     )
                     for action, child in node.children.items()
                 )
-                search_path.append(node)
+                search_path.append(child)
+                node = child
 
         # When a path from the starting node to an unvisited node is found, expand the unvisited node
         parent = search_path[-2]
-        hidden_state, reward, policy_logits, value = agent.recurrent_inference(parent.hidden_state, imagined_action)
+        hidden_state, reward, policy_logits, value = agent.recurrent_inference(
+            torch.tensor([imagined_action]).view(1, 1, 1).to(dtype=torch.float32), parent.hidden_state
+        )
         node.hidden_state = hidden_state
         node.reward = reward
-        policy = {a_id: math.exp(a_logit) for a_id, a_logit in enumerate(policy_logits)}
-        policy_sum = sum(policy.values())
-        for action, p in policy.items():
-            node.children[action] = Node(p / policy_sum)
+        normalized_policy = torch.exp(policy_logits)
+        normalized_policy = normalized_policy / torch.sum(normalized_policy)
+        for action in range(normalized_policy.numel()):
+            self.children[action] = Node(normalized_policy.squeeze()[action].item())
 
         # Backpropagate the search path to update the nodes' statistics
         for node in reversed(search_path):
@@ -234,9 +279,9 @@ def player(
         args.capture_video,
         logger.log_dir,
         "train",
-        mask_velocities=args.mask_vel,
+        frame_stack=1,
         vector_env_idx=rank,
-    )
+    )()
     if not isinstance(env.action_space, gym.spaces.Discrete):
         raise ValueError("Only discrete action space is supported")
 
@@ -250,7 +295,9 @@ def player(
 
     # Receive the first weights from the rank-0, a.k.a. the trainer
     # In this way we are sure that before the first iteration everyone starts with the same parameters
+    print("PLAYER WAITING FOR INITIAL PARAMS")
     players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
+    print("OK!! PLAYER RECEIVED INITIAL PARAMS")
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
     # Metrics
@@ -272,18 +319,17 @@ def player(
     num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
-    # Broadcast num_updates to all the world
-    update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
-
-    world_collective.broadcast(update_t, src=0)
-
     for update in range(1, num_updates + 1):
+        print("PLAYER STARTING TO PLAY")
+        print(f"Player is playing update num {update} / {num_updates + 1}")
         # reset the episode at every update
         with device:
             # Get the first environment observation and start the optimization
-            obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device)
+            obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).view(
+                1, 3, 64, 64
+            )  # shape (C, H, W)
 
-        steps_data = Trajectory({}, batch_size=(1, 1))
+        steps_data = None
         for step in range(0, args.max_trajectory_len):
             global_step += 1
             node = Node(prior=0, image=obs)
@@ -293,7 +339,7 @@ def player(
 
             # Select action based on the visit count distribution and the temperature
             visits_count = torch.tensor([child.visit_count for child in node.children.values()])
-            temperature = visit_softmax_temperature(training_steps=agent.training_steps())
+            temperature = visit_softmax_temperature(training_steps=agent.training_steps)
             visits_count = visits_count / temperature
             action = torch.distributions.Categorical(logits=visits_count).sample()
 
@@ -301,26 +347,33 @@ def player(
             next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
 
             # Store the current step data
-            steps_data = torch.cat(
-                [
-                    steps_data,
-                    Trajectory(
-                        {
-                            "policies": visits_count.reshape(1, 1, -1),
-                            "actions": action.reshape(1, 1, -1),
-                            "observations": obs.reshape(1, 1, -1),
-                            "rewards": reward.reshape(1, 1, -1),
-                            "values": torch.tensor([node.value]).reshape(1, 1, -1),
-                        },
-                        batch_size=(1, 1),
-                    ),
-                ],
-                dim=-1,
-            )
-
-            # Update observation
-            with device:
-                obs = torch.tensor(next_obs)
+            if steps_data is None:
+                steps_data = Trajectory(
+                    {
+                        "policies": visits_count.reshape(1, 1, -1),
+                        "actions": action.reshape(1, 1, -1),
+                        "observations": obs.unsqueeze(0),
+                        "rewards": torch.tensor([reward]).reshape(1, 1, -1),
+                        "values": node.value_sum.reshape(1, 1, -1),
+                    },
+                    batch_size=(1, 1),
+                )
+            else:
+                steps_data = torch.cat(
+                    [
+                        steps_data,
+                        Trajectory(
+                            {
+                                "policies": visits_count.reshape(1, 1, -1),
+                                "actions": action.reshape(1, 1, -1),
+                                "observations": obs.unsqueeze(0),
+                                "rewards": torch.tensor([reward]).reshape(1, 1, -1),
+                                "values": node.value_sum.reshape(1, 1, -1),
+                            },
+                            batch_size=(1, 1),
+                        ),
+                    ],
+                )
 
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
@@ -333,23 +386,31 @@ def player(
 
             if done or truncated:
                 break
+            else:
+                with device:
+                    obs = torch.tensor(next_obs).view(1, 3, 64, 64)
 
+        agent.training_steps += 1
         # After episode is done, send data to the buffer
+        print("PLAYER SENDING DATA!")
         buffer_players_collective.gather_object(steps_data, None, dst=0)
+        print("OK!! PLAYER SENT DATA!")
 
         # Gather metrics from the trainer to be plotted
-        metrics = [None]
-        players_trainer_collective.broadcast_object_list(metrics, src=world_collective.world_size - 1)
+        # metrics = [None]
+        # players_trainer_collective.broadcast_object_list(metrics, src=world_collective.world_size - 1)
 
         # Wait the trainer to finish
+        print("PLAYER WAITING FOR PARAMS")
         players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
+        print("OK!! PLAYER RECEIVED PARAMS")
 
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
-        fabric.log_dict(metrics[0], global_step)
+        # fabric.log_dict(metrics[0], global_step)
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
@@ -360,7 +421,7 @@ def player(
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state[0])
 
-    world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+    # world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
     env.close()
     # if fabric.is_global_zero:
     #     test_env = make_env(
@@ -394,7 +455,7 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    env = make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)
+    env = make_env(args.env_id, 0, 0, False, None, frame_stack=1)()
     assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = RecurrentMuzero(num_actions=env.action_space.n)
@@ -405,16 +466,13 @@ def trainer(
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Send weights to rank-1, a.k.a. the first player
-    if global_rank == players_trainer_collective.world_size - 1:
+    print("TRAINER SENDING INITIAL PARAMS")
+    if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
         players_trainer_collective.broadcast(
             torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
             src=world_collective.world_size - 1,
         )
-
-    # Receive maximum number of updates from the player
-    num_updates = torch.zeros(1, device=device)
-    world_collective.broadcast(num_updates, src=1)
-    num_updates = num_updates.item()
+        print("OK! TRAINER SENT INITIAL PARAMS")
 
     # Linear learning rate scheduler
     if args.anneal_lr:
@@ -437,34 +495,38 @@ def trainer(
 
     while True:
         # Wait for data
+        print("TRAINER WAITING FOR DATA")
         received_batch = [None]
         buffer_trainers_collective.scatter_object_list(received_batch, None, src=0)
+        print("OK!! TRAINER RECEIVED DATA")
         batch = received_batch[0]
-        if not isinstance(batch, Trajectory) and batch == -1:
-            # Last Checkpoint
-            if global_rank == 0:
-                state = {
-                    "agent": agent.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "args": asdict(args),
-                    "update_step": update,
-                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
-                }
-                fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
-            return
+        # if not isinstance(batch, Trajectory) and batch == -1:
+        #     # Last Checkpoint
+        #     if global_rank == 0:
+        #         state = {
+        #             "agent": agent.state_dict(),
+        #             "optimizer": optimizer.state_dict(),
+        #             "args": asdict(args),
+        #             "update_step": update,
+        #             "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+        #         }
+        #         fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+        #     return
         # data = make_tensordict(data, device=device)
         update += 1
 
         for _ in range(args.update_epochs):
             # batch = buffer.sample(batch_size=batch_size, sequence_length=sequence_length)
 
-            target_rewards = batch["rewards"]
-            target_values = batch["values"]
-            target_policies = batch["policies"]
-            observations = batch["observations"]
-            actions = batch["actions"]
+            target_rewards = batch["rewards"].squeeze()
+            target_values = batch["values"].squeeze()
+            target_policies = batch["policies"].squeeze()
+            observations = batch["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
+            actions = batch["actions"].squeeze(2)
 
-            hidden_state_0, policy_0, value_0 = agent.initial_inference(observations[:, 0, :])
+            hidden_state_0, policy_0, value_0 = agent.initial_inference(
+                observations[0]
+            )  # in shape should be (N, C, H, W)
             # Policy loss
             pg_loss = policy_loss(policy_0, target_policies[0])
             # Value loss
@@ -473,19 +535,22 @@ def trainer(
             r_loss = torch.tensor(0.0, device=device)
 
             for sequence_idx in range(1, args.chunk_sequence_len):
-                hidden_states, rewards, policies, values = agent.recurrent_inference(hidden_state_0, actions)
+                hidden_states, rewards, policies, values = agent.recurrent_inference(
+                    actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32), hidden_state_0
+                )  # action should be (1, N, 1)
                 # Policy loss
-                pg_loss += policy_loss(policies, target_policies[:, sequence_idx])
+                pg_loss += policy_loss(policies.squeeze(), target_policies[sequence_idx])
                 # Value loss
-                v_loss += value_loss(values, target_values[:, sequence_idx])
+                v_loss += value_loss(values.squeeze(), target_values[sequence_idx])
                 # Reward loss
-                r_loss += reward_loss(rewards, target_rewards[:, sequence_idx])
+                r_loss += reward_loss(rewards.squeeze(), target_rewards[sequence_idx])
 
             # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
             loss = pg_loss + v_loss + r_loss
 
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
+            print("UPDATING")
             optimizer.step()
 
             # Update metrics
@@ -496,19 +561,21 @@ def trainer(
         # Send updated weights to the player
         metrics = aggregator.compute()
         aggregator.reset()
-        if global_rank == 1:
+        print("TRAINER SENDING UPDATED PARAMS")
+        if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
             if args.anneal_lr:
                 metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
             else:
                 metrics["Info/learning_rate"] = args.lr
 
-            players_trainer_collective.broadcast_object_list(
-                [metrics], src=world_collective.world_size - 1
-            )  # Broadcast metrics: fake send with object list between players and trainer
+            # players_trainer_collective.broadcast_object_list(
+            #    [metrics], src=world_collective.world_size - 1
+            # )  # Broadcast metrics: fake send with object list between players and trainer
             players_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
                 src=world_collective.world_size - 1,
             )
+        print("OK!! TRAINER SENT UPDATED PARAMS")
 
         if args.anneal_lr:
             scheduler.step()
@@ -546,7 +613,7 @@ def buffer(
     while True:
         print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
         steps_data = [None for _ in range(buffer_players_collective.world_size)]
-        buffer_players_collective.gather_object([None], steps_data, dst=0)  # gather_object uses global rank
+        buffer_players_collective.gather_object(None, steps_data, dst=0)  # gather_object uses global rank
         for traj in steps_data:
             rb.add(traj)
 

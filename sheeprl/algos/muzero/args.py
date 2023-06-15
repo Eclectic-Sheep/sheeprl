@@ -16,7 +16,8 @@ class MuzeroArgs(StandardArgs):
     mask_vel: bool = Arg(default=False, help="Whether to mask the velocity of in the observation.")
     # players
     total_steps: int = Arg(default=1e6, help="Total timesteps of the experiments.")
-    max_trajectory_len: int = Arg(default=27000, help="The maximum length of a trajectory.")
+    learning_starts: int = Arg(default=100, help="timestep to start learning")
+    max_trajectory_len: int = Arg(default=1000, help="The maximum length of a trajectory.")
     num_simulations: int = Arg(default=50, help="The number of MCTS simulations to run for each action.")
     gamma: float = Arg(default=0.997, help="The discount factor.")
     dirichlet_alpha: float = Arg(default=0.25, help="The alpha parameter of the Dirichlet distribution.")

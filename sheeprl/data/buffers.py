@@ -190,9 +190,9 @@ class TrajectoryReplayBuffer:
     def add(self, trajectory: Optional[Trajectory]):
         if trajectory is None:
             return
-        if not isinstance(trajectory, Trajectory):
+        if not isinstance(trajectory, TensorDict):
             raise TypeError("Trajectory must be an instance of Trajectory")
-        self._buffer.append(trajectory)
+        self._buffer.append(Trajectory(trajectory))  # convert to trajectory if tensordict
         if len(self) > self.max_num_trajectories:
             self._buffer.pop(0)
 
@@ -212,4 +212,4 @@ class TrajectoryReplayBuffer:
 
         trajectories = random.choices(valid_trajectories, k=batch_size)
         positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
-        return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)])
+        return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)], dim=1)

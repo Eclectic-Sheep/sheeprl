@@ -11,11 +11,12 @@ class MuzeroAgent(torch.nn.Module):
         self.representation: torch.nn.Module
         self.prediction: torch.nn.Module
         self.dynamics: torch.nn.Module
+        self.training_steps: int = 0
 
     def initial_inference(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden_state = self.representation(observation)
         policy_logits, value = self.prediction(hidden_state)
-        return hidden_state, policy_logits, value
+        return hidden_state.unsqueeze(0), policy_logits, value
 
     def recurrent_inference(
         self, action: torch.Tensor, hidden_state: torch.Tensor
@@ -59,20 +60,41 @@ class RecurrentMuzero(MuzeroAgent):
 
 
 if __name__ == "__main__":
-    batch_size = 5
-    sequence_len = 8
+    batch_size = 32
+    sequence_len = 5
     agent = RecurrentMuzero()
-    observation = torch.rand(batch_size, 3, 64, 64)
+    # Player:
+    print("Player:")
+    observation = torch.rand(1, 3, 64, 64)
     hidden_state, policy_logits, value = agent.initial_inference(observation)
+    print("Initial inference:")
     print(hidden_state.shape)
     print(policy_logits.shape)
     print(value.shape)
-    hidden_state = hidden_state.resize(1, batch_size, 256)
-    action = torch.randint(0, 4, (sequence_len, batch_size, 1)).to(torch.float32)
-    next_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action, hidden_state)
-    print(next_hidden_state.shape)
-    print(reward.shape)
+
+    action = torch.rand(1, 1, 1)
+    hidden_state, policy_logits, reward, value = agent.recurrent_inference(action, hidden_state)
+    print("Recurrent inference:")
+    print(hidden_state.shape)
     print(policy_logits.shape)
+    print(reward.shape)
+    print(value.shape)
+
+    ## Trainer:
+    print("Trainer:")
+    observation = torch.rand(batch_size, 3, 64, 64)
+    hidden_state, policy_logits, value = agent.initial_inference(observation)
+    print("Initial inference:")
+    print(hidden_state.shape)
+    print(policy_logits.shape)
+    print(value.shape)
+
+    action = torch.rand(1, batch_size, 1)
+    hidden_state, policy_logits, reward, value = agent.recurrent_inference(action, hidden_state)
+    print("Recurrent inference:")
+    print(hidden_state.shape)
+    print(policy_logits.shape)
+    print(reward.shape)
     print(value.shape)
     # action2 = torch.randint(0, 4, (1, 1)).to(torch.float32)
     # last_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action2, next_hidden_state)
