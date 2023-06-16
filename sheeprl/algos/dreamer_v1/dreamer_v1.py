@@ -31,7 +31,9 @@ from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import polynomial_decay
 
-os.environ["MUJOCO_GL"] = "osmesa"
+# Decomment the following two lines if you cannot start an experiment with DMC environments
+# os.environ["PYOPENGL_PLATFORM"] = ""
+# os.environ["MUJOCO_GL"] = "osmesa"
 
 
 def train(
