@@ -96,7 +96,6 @@ def main():
         train_args.micro_batch_size = 16
         train_args.mini_batch_size = 16
         train_args.eval_interval = 50
-        train_args.mini_batch_size = 16
         model_args.disable_dropout = False
 
     data_args_path = Path(train_args.data_dir) / "args.json"

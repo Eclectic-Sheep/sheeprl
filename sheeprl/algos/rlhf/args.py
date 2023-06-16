@@ -201,24 +201,24 @@ class TextDataArgs:
         return cls(**data_args)
 
 
-@dataclass
-class Anthropic_HH(TextDataArgs):
-    text_data_class: str = Arg(default="HHData", help="Name of the text data class. It will be loaded from `data.py`")
-    dataset_name: str = Arg(default="Dahoas/static-hh", help="Name of the huggingface dataset.")
+# @dataclass
+# class Anthropic_HH(TextDataArgs):
+#     text_data_class: str = Arg(default="HHData", help="Name of the text data class. It will be loaded from `data.py`")
+#     dataset_name: str = Arg(default="Dahoas/static-hh", help="Name of the huggingface dataset.")
 
 
-@dataclass
-class Summarization(TextDataArgs):
-    text_data_class: str = Arg(
-        default="SummarizationData", help="Name of the text data class. It will be loaded from `data.py`"
-    )
-    dataset_name: str = Arg(default="CarperAI/openai_summarize_comparisons", help="Name of the huggingface dataset.")
-    max_prompt_length: int = Arg(
-        default=400, help="Maximum length of the prompt sequence. Prompts are longer in summarization task."
-    )
-    max_length: int = Arg(
-        default=512, help="Maximum length of the input sequence. Summarization task requires longer input."
-    )
+# @dataclass
+# class Summarization(TextDataArgs):
+#     text_data_class: str = Arg(
+#         default="SummarizationData", help="Name of the text data class. It will be loaded from `data.py`"
+#     )
+#     dataset_name: str = Arg(default="CarperAI/openai_summarize_comparisons", help="Name of the huggingface dataset.")
+#     max_prompt_length: int = Arg(
+#         default=400, help="Maximum length of the prompt sequence. Prompts are longer in summarization task."
+#     )
+#     max_length: int = Arg(
+#         default=512, help="Maximum length of the input sequence. Summarization task requires longer input."
+#     )
 
 
 ### Generation Configs ###
