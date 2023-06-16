@@ -77,6 +77,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
+        hidden_size=args.actor_hidden_size,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     ).to(device)
@@ -101,7 +102,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Local data
     buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -247,12 +248,15 @@ def trainer(
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
-        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
+        fabric.setup_module(
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=args.critic_hidden_size, num_critics=1)
+        )
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim

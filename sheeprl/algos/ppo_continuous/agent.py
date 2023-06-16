@@ -8,20 +8,18 @@ from sheeprl.models.models import MLP
 
 
 class PPOContinuousActor(nn.Module):
-    def __init__(
-        self,
-        observation_dim: int,
-        action_dim: int,
-    ):
+    def __init__(self, observation_dim: int, action_dim: int, hidden_size: int = 256):
         """PPO continuous actor.
 
         Args:
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
+            hidden_size (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
         """
         super().__init__()
-        self.model = MLP(input_dims=observation_dim, hidden_sizes=(64, 64), flatten_dim=None)
+        self.model = MLP(input_dims=observation_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 

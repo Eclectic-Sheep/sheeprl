@@ -14,6 +14,7 @@ from lightning.fabric.strategies import DDPStrategy
 from lightning_fabric.fabric import _is_using_cli
 from lightning_fabric.loggers import TensorBoardLogger
 from lightning_fabric.plugins.collectives import TorchCollective
+from lightning_fabric.utilities.rank_zero import rank_zero_only
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
@@ -250,6 +251,7 @@ def player(
     buffer_players_collective: TorchCollective,
     players_trainer_collective: TorchCollective,
 ):
+    rank_zero_only.rank = 0  # TODO: fix rank_zero_only issue with logger
     rank = world_collective.rank
 
     root_dir = (
@@ -265,6 +267,7 @@ def player(
 
     # Initialize Fabric object
     fabric = Fabric(loggers=logger)
+    fabric.log("test", 1)
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
