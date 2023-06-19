@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -375,7 +375,7 @@ def build_models(
     world_model_state: Dict[str, Tensor] = None,
     actor_state: Dict[str, Tensor] = None,
     critic_state: Dict[str, Tensor] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, Dict[str, Any]]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -520,4 +520,4 @@ def build_models(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    return world_model, actor, critic
+    return world_model, actor, critic, {"encoder_output_size": encoder_output_size}

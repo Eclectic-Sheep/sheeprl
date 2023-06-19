@@ -54,6 +54,8 @@ def make_env(
             frame_skip=args.action_repeat,
             seed=seed,
         )
+    elif "minedojo" in env_id.lower():
+        task_id = "_".join(env_id.split("_")[1:])
     else:
         env_spec = gym.spec(env_id).entry_point
         if "mujoco" in env_spec:
