@@ -43,10 +43,8 @@ def reconstruction_loss(
     reward_loss = -qr.log_prob(rewards).mean()
     state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl_divergence(p, q).mean())
     if qc is not None and dones is not None:
-        continue_loss = -continue_scale_factor * qc.log_prob(dones).mean()
-
+        continue_loss = continue_scale_factor * F.binary_cross_entropy(qc.probs, dones)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
-
     return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
 ```
 Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *state loss* (default to 3); or *(ii)* the `kl_regularizer` parameter to scale the *state loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `continue_scale_factor`, the parameter to scale the *continue loss*.
