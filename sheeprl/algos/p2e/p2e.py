@@ -28,9 +28,9 @@ from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_lambda_values, init_weights, make_env, test
-from sheeprl.algos.p2e.agent import Ensemble
 from sheeprl.algos.p2e.args import P2EArgs
 from sheeprl.data.buffers import SequentialReplayBuffer
+from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -46,15 +46,15 @@ def train(
     world_model: WorldModel,
     actor: _FabricModule,
     critic: _FabricModule,
-    world_optimizer: Optimizer,
-    actor_optimizer: Optimizer,
-    critic_optimizer: Optimizer,
+    world_optimizer: _FabricOptimizer,
+    actor_optimizer: _FabricOptimizer,
+    critic_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: P2EArgs,
     encoder_output_size: int,
-    ensembles: Optional[_FabricModule],
-    ensemble_optims: Optional[List[_FabricOptimizer]],
+    ensembles: _FabricModule,
+    ensemble_optimizer: _FabricOptimizer,
 ) -> None:
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -169,15 +169,16 @@ def train(
     aggregator.update("State/q_entropy", q.entropy().mean().detach())
 
     # Ensemble
+    loss = 0
+    ensemble_optimizer.zero_grad(set_to_none=True)
     for i, ens in enumerate(ensembles):
-        ensemble_optims[i].zero_grad(set_to_none=True)
-        out = ens(recurrent_states.detach()[:-1], data["actions"].detach()[1:])
-        embeds_dist = Independent(Normal(out, 1), 1)
-        loss = -embeds_dist.log_prob(embedded_obs.detach()[1:]).mean()
-        loss.backward()
-        fabric.clip_gradients(module=ens, optimizer=ensemble_optims[i], max_norm=1000)
-        ensemble_optims[i].step()
-        aggregator.update(f"Ensemble/loss_{i}", loss.detach().cpu())
+        out = ens(latent_states.detach(), data["actions"].detach())[:-1]
+        next_obs_embedding_dist = Independent(Normal(out, 1), 1)
+        loss -= next_obs_embedding_dist.log_prob(stochastic_states.detach()[1:]).mean()
+    loss.backward()
+    fabric.clip_gradients(module=ens, optimizer=ensemble_optimizer, max_norm=args.ensemble_clip_gradients)
+    ensemble_optimizer.step()
+    aggregator.update(f"Ensemble/loss_{i}", loss.detach().cpu())
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurernt and stochastic states in order to have all the states on the first dimension.
@@ -222,19 +223,18 @@ def train(
     predicted_values = Independent(Normal(critic(imagined_trajectories[1:]), 1), 1).mean
 
     # Predict intrinsic reward
-    predicted_embeds = torch.zeros(
+    next_obs_embedding = torch.zeros(
         len(ensembles),
         args.horizon - 1,
         batch_size * sequence_length,
         encoder_output_size,
         device=device,
     )
-    rnn_state = imagined_trajectories[..., args.stochastic_size :]
     for i, ens in enumerate(ensembles):
-        predicted_embeds[i] = ens(rnn_state.detach()[:-1], all_actions.detach()[1:])
+        next_obs_embedding[i] = ens(imagined_trajectories.detach(), all_actions.detach())[:-1]
 
-    # predicted_embeds -> 5 x 15 x 2500 x 1024
-    intrinsic_reward = predicted_embeds.var(0).mean(-1, keepdim=True) * 10000
+    # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
+    intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * args.intrinsic_reward_multiplier
     aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
     if args.use_continues and world_model.continue_model:
@@ -321,8 +321,7 @@ def train(
     actor_optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
-    for eo in ensemble_optims:
-        eo.zero_grad(set_to_none=True)
+    ensemble_optimizer.zero_grad(set_to_none=True)
 
 
 @register_algorithm()
@@ -415,10 +414,10 @@ def main():
         for i in range(5):
             fabric.seed_everything(args.seed + i)
             ens_list.append(
-                Ensemble(
-                    args.recurrent_state_size,
-                    action_dim,
-                    info["encoder_output_size"],
+                MLP(
+                    input_dims=action_dim + args.recurrent_state_size + args.stochastic_size,
+                    output_dim=args.stochastic_size,
+                    hidden_sizes=[args.dense_units] * args.num_layers,
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
@@ -439,19 +438,18 @@ def main():
     )
 
     # Optimizers
-    world_optimizer = Adam(world_model.parameters(), lr=args.world_lr)
-    actor_optimizer = Adam(actor.parameters(), lr=args.actor_lr)
-    critic_optimizer = Adam(critic.parameters(), lr=args.critic_lr)
-    ensemble_optims = [Adam(ens.parameters(), eps=1e-4, lr=1e-3) for ens in ensembles]
+    world_optimizer = Adam(world_model.parameters(), eps=1e-5, lr=args.world_lr, weight_decay=1e-6)
+    actor_optimizer = Adam(actor.parameters(), eps=1e-5, lr=args.actor_lr, weight_decay=1e-6)
+    critic_optimizer = Adam(critic.parameters(), eps=1e-5, lr=args.critic_lr, weight_decay=1e-6)
+    ensemble_optimizer = Adam(ensembles.parameters(), eps=args.ensemble_eps, lr=args.ensemble_lr, weight_decay=1e-6)
     if args.checkpoint_path:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
-        for ens_opt, s in zip(ensemble_optims, state["ensemble_optims"]):
-            ens_opt.load_state_dict(s)
-    optims = list(fabric.setup_optimizers(world_optimizer, actor_optimizer, critic_optimizer, *ensemble_optims))
-    world_optimizer, actor_optimizer, critic_optimizer = optims[:3]
-    ensemble_optims = optims[3:]
+        ensemble_optimizer.load_state_dict(state["ensemble_optimizer"])
+    world_optimizer, actor_optimizer, critic_optimizer, ensemble_optimizer = fabric.setup_optimizers(
+        world_optimizer, actor_optimizer, critic_optimizer, ensemble_optimizer
+    )
 
     # Metrics
     with device:
@@ -617,7 +615,7 @@ def main():
                     args,
                     encoder_output_size=info["encoder_output_size"],
                     ensembles=ensembles,
-                    ensemble_optims=ensemble_optims,
+                    ensemble_optimizer=ensemble_optimizer,
                 )
             step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
             if args.expl_decay:
@@ -647,7 +645,7 @@ def main():
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
-                "ensemble_optims": [ens_optim.state_dict() for ens_optim in ensemble_optims],
+                "ensemble_optimizer": ensemble_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "args": asdict(args),
                 "global_step": global_step * fabric.world_size,

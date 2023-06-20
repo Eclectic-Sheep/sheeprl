@@ -181,6 +181,8 @@ class Actor(nn.Module):
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
+        num_layers (int): the number of MLP layers.
+            Default to 4.
     """
 
     def __init__(
@@ -193,12 +195,13 @@ class Actor(nn.Module):
         min_std: float = 1e-4,
         dense_units: int = 400,
         dense_act: nn.Module = nn.ELU,
+        num_layers: int = 4,
     ) -> None:
         super().__init__()
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=action_dim * 2 if is_continuous else action_dim,
-            hidden_sizes=[dense_units, dense_units, dense_units, dense_units],
+            hidden_sizes=[dense_units] * num_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -461,7 +464,7 @@ def build_models(
     reward_model = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units, args.dense_units],
+        hidden_sizes=[args.dense_units] * args.num_layers,
         activation=dense_act,
         flatten_dim=None,
     )
@@ -469,7 +472,7 @@ def build_models(
         continue_model = MLP(
             input_dims=args.stochastic_size + args.recurrent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units, args.dense_units, args.dense_units],
+            hidden_sizes=[args.dense_units] * args.num_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -489,11 +492,12 @@ def build_models(
         args.actor_min_std,
         args.dense_units,
         dense_act,
+        args.num_layers,
     )
     critic = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units, args.dense_units, args.dense_units],
+        hidden_sizes=[args.dense_units] * args.num_layers,
         activation=dense_act,
         flatten_dim=None,
     )
