@@ -55,7 +55,24 @@ def make_env(
             seed=seed,
         )
     elif "minedojo" in env_id.lower():
+        from sheeprl.envs.minedojo import MineDojoWrapper
+
         task_id = "_".join(env_id.split("_")[1:])
+        start_position = {
+            "x": args.mine_start_position[0],
+            "y": args.mine_start_position[1],
+            "z": args.mine_start_position[2],
+            "pitch": args.mine_start_position[3],
+            "yaw": args.mine_start_position[4],
+        }
+        env = MineDojoWrapper(
+            task_id,
+            height=64,
+            width=64,
+            pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
+            seed=args.seed,
+            start_position=start_position,
+        )
     else:
         env_spec = gym.spec(env_id).entry_point
         if "mujoco" in env_spec:

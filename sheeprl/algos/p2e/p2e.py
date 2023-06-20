@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import gymnasium as gym
+import jsonlines as jsonl
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -331,6 +332,10 @@ def main():
     args.num_envs = 1
     torch.set_num_threads(1)
 
+    args.env_id = "minedojo_open-ended"
+    args.memmap_buffer = True
+    args.mine_start_position = [-319.5, 62, 605.5, 0, 0]
+
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
@@ -507,13 +512,25 @@ def main():
         )
 
     # Get the first environment observation and start the optimization
-    obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
+    o = env.reset(seed=args.seed)[0]
+    obs = torch.from_numpy(o["rgb"].copy()).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, action_dim)
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["observations"] = obs
     rb.add(step_data[None, ...])
     player.init_states()
+
+    f = jsonl.open(log_dir + "/p2e.jsonl", "w")
+    f.write(
+        {
+            "pos": o["location_stats"]["pos"].tolist(),
+            "pitch": o["location_stats"]["pitch"].tolist(),
+            "yaw": o["location_stats"]["yaw"].tolist(),
+            "biomeid": o["location_stats"]["biome_id"].tolist(),
+            "action": 0,
+        }
+    )
 
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
@@ -540,7 +557,17 @@ def main():
             aggregator.update("Rewards/rew_avg", infos["episode"]["r"][0])
             aggregator.update("Game/ep_len_avg", infos["episode"]["l"][0])
 
-        next_obs = torch.from_numpy(next_obs).view(args.num_envs, *observation_shape)
+        f.write(
+            {
+                "pos": next_obs["location_stats"]["pos"].tolist(),
+                "pitch": next_obs["location_stats"]["pitch"].tolist(),
+                "yaw": next_obs["location_stats"]["yaw"].tolist(),
+                "biomeid": next_obs["location_stats"]["biome_id"].tolist(),
+                "action": real_actions,
+            }
+        )
+
+        next_obs = torch.from_numpy(next_obs["rgb"].copy()).view(args.num_envs, *observation_shape)
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
         dones = torch.tensor([bool(dones)]).view(args.num_envs, -1).float()
@@ -555,15 +582,15 @@ def main():
         rb.add(step_data[None, ...])
 
         if dones or truncated:
-            obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(
-                args.num_envs, *observation_shape
-            )  # [N_envs, N_obs]
+            o = env.reset(seed=args.seed)[0]
+            obs = torch.from_numpy(o["rgb"].copy()).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, action_dim)
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["observations"] = obs
             rb.add(step_data[None, ...])
             player.init_states()
+            break
 
         step_before_training -= 1
 
@@ -635,6 +662,7 @@ def main():
                 replay_buffer=rb if args.checkpoint_buffer else None,
             )
 
+    f.close()
     env.close()
     if fabric.is_global_zero:
         test(player, fabric, args)
