@@ -227,7 +227,6 @@ def trainer(
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
-    global_rank - 1
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])

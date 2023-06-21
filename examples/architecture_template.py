@@ -36,6 +36,8 @@ def player(
     world_collective: TorchCollective,
     buffer_players_collective: TorchCollective,
     players_trainer_collective: TorchCollective,
+    num_players: int,
+    num_trainers: int,
 ):
     """Player process.
     It receives updated parameters from the trainer and sends the collected data to the buffer.
@@ -48,7 +50,7 @@ def player(
             The last rank is for the trainer.
     """
     params = torch.empty(4)
-    players_trainer_collective.broadcast(params, src=world_collective.world_size - 1)  # Broadcast uses global rank
+    players_trainer_collective.broadcast(params, src=num_players)  # Broadcast uses global rank
     if players_trainer_collective.rank == 0:
         print(f"Player {world_collective.rank}: Params received from trainer -> {params}")
 
@@ -57,7 +59,7 @@ def player(
     local_buffer = torch.ones(4) * world_collective.rank
 
     print(f"Player {world_collective.rank}: Sending collected data to buffer...")
-    buffer_players_collective.gather_object(local_buffer, None, dst=0)
+    buffer_players_collective.gather_object(local_buffer, None, dst=num_players + num_trainers)
 
 
 def trainer(
@@ -65,6 +67,8 @@ def trainer(
     buffer_trainers_collective: TorchCollective,
     players_trainer_collective: TorchCollective,
     optimization_pg,
+    num_players: int,
+    num_trainers: int,
 ):
     """Trainer process.
     Send updated parameters to the players and receive the collected data from the buffer. Perform optimization with the
@@ -81,15 +85,15 @@ def trainer(
     if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
         params = torch.ones(4) * 2
         print(f"Trainer {world_collective.rank}: " f"Sending updated params to all players...")
-        players_trainer_collective.broadcast(params, src=world_collective.world_size - 1)  # broadcast uses global rank
+        players_trainer_collective.broadcast(params, src=num_players)  # broadcast uses global rank
 
     print(f"Trainer {world_collective.rank}: Waiting for collected data from buffer...")
     data_to_be_received = [None]
     buffer_trainers_collective.scatter_object_list(
-        data_to_be_received, None, src=0
+        data_to_be_received, None, src=num_players + num_trainers
     )  # scatter_object_list uses global rank
     sampled_data = data_to_be_received[0]
-    if buffer_trainers_collective.rank == 1:
+    if buffer_trainers_collective.rank == 0:
         print(f"Trainer {world_collective.rank}: Data received: {sampled_data}")
 
     print(f"Trainer {world_collective.rank}: Optimizing the model with the received data...")
@@ -103,6 +107,8 @@ def buffer(
     world_collective: TorchCollective,
     buffer_players_collective: TorchCollective,
     buffer_trainers_collective: TorchCollective,
+    num_players: int,
+    num_trainers: int,
 ):
     """Buffer process.
     Receive data from the players and send it to the trainers.
@@ -116,22 +122,24 @@ def buffer(
     """
     print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
     buffers = [None for _ in range(buffer_players_collective.world_size)]
-    buffer_players_collective.gather_object([None], buffers, dst=0)  # gather_object uses global rank
+    buffer_players_collective.gather_object(
+        [None], buffers, dst=num_players + num_trainers
+    )  # gather_object uses global rank
     for i, b in enumerate(buffers):
         print(f"Buffer-{i}:", b)
 
     print(f"Buffer {world_collective.rank}: Sending collected data to trainers...")
-    sampled_buffers = [torch.ones(4) * i for i in range(buffer_trainers_collective.world_size - 1)]
+    sampled_buffers = [torch.ones(4) * i for i in range(1, buffer_trainers_collective.world_size)]
     buffer_trainers_collective.scatter_object_list(
-        [None], [None] + sampled_buffers, src=0
+        [None], sampled_buffers + [None], src=num_players + num_trainers
     )  # scatter_object_list uses global rank
 
 
 def main():
     # Ranks semantic:
-    # rank-0: buffer
-    # rank-1, ..., rank-num_players: players
-    # rank-(num_players+1), ..., rank-(num_players+num_trainers): trainers
+    # rank-0, ..., rank-(num_players-1): players
+    # rank-(num_players), ..., rank-(num_players+num_trainers-1): trainers
+    # rank-(num_players+num_trainers): buffer
     num_players = 2
     num_trainers = 2
 
@@ -155,39 +163,43 @@ def main():
     # Trainers collective to train the model in paraller with all the other trainers, needed for the optimization_pg
     trainers_collective = TorchCollective()
     trainers_collective.create_group(
-        ranks=list(range(num_players + 1, num_players + num_trainers + 1)),
+        ranks=list(range(num_players, num_players + num_trainers)),
         timeout=timedelta(days=1),
     )
     optimization_pg = trainers_collective.group
 
     # Players-Buffer collective, to share data between players and buffer
     buffer_players_collective = TorchCollective()
-    buffer_players_collective.create_group(ranks=list(range(0, num_players + 1)), timeout=timedelta(days=1))
+    buffer_players_collective.create_group(
+        ranks=list(range(num_players)) + [num_players + num_trainers], timeout=timedelta(days=1)
+    )
 
     # Trainers-Buffer collective, to share data between buffer and trainers
     buffer_trainers_collective = TorchCollective()
     buffer_trainers_collective.create_group(
-        ranks=[0] + list(range(num_players + 1, num_players + num_trainers + 1)),
+        ranks=list(range(num_players, num_players + num_trainers + 1)),
         timeout=timedelta(days=1),
     )
 
     # Trainer-Players collective, to share the updated parameters between trainer and players
     players_trainer_collective = TorchCollective()
     players_trainer_collective.create_group(
-        ranks=list(range(1, num_players + 1)) + [num_players + num_trainers],
+        ranks=list(range(num_players + 1)),
         timeout=timedelta(days=1),
     )
 
-    if global_rank == 0:
-        buffer(world_collective, buffer_players_collective, buffer_trainers_collective)
-    elif 1 <= global_rank <= num_players:
-        player(world_collective, buffer_players_collective, players_trainer_collective)
-    else:
+    if global_rank == num_players + num_trainers:
+        buffer(world_collective, buffer_players_collective, buffer_trainers_collective, num_players, num_trainers)
+    elif 0 <= global_rank < num_players:
+        player(world_collective, buffer_players_collective, players_trainer_collective, num_players, num_trainers)
+    elif num_players <= global_rank < num_players + num_trainers:
         trainer(
             world_collective,
             buffer_trainers_collective,
             players_trainer_collective,
             optimization_pg,
+            num_players,
+            num_trainers,
         )
 
 

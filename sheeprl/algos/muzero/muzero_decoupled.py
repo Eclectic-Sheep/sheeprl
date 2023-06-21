@@ -10,11 +10,10 @@ import numpy as np
 import torch
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning import Fabric
+from lightning.fabric.fabric import _is_using_cli
+from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.strategies import DDPStrategy
-from lightning_fabric.fabric import _is_using_cli
-from lightning_fabric.loggers import TensorBoardLogger
-from lightning_fabric.plugins.collectives import TorchCollective
-from lightning_fabric.utilities.rank_zero import rank_zero_only
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
@@ -248,12 +247,9 @@ def ucb_score(
 def player(
     args: MuzeroArgs,
     world_collective: TorchCollective,
-    buffer_players_collective: TorchCollective,
+    players_buffer_collective: TorchCollective,
     players_trainer_collective: TorchCollective,
 ):
-    rank_zero_only.rank = 0  # TODO: fix rank_zero_only issue with logger
-    rank = world_collective.rank
-
     root_dir = (
         args.root_dir
         if args.root_dir is not None
@@ -266,10 +262,11 @@ def player(
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(loggers=logger)
-    fabric.log("test", 1)
+    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
+
+    global_rank = world_collective.rank
     device = fabric.device
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
@@ -277,16 +274,15 @@ def player(
     # Environment setup
     env = make_env(
         args.env_id,
-        args.seed + rank,
+        args.seed + global_rank,
         0,
         args.capture_video,
         logger.log_dir,
         "train",
         frame_stack=1,
-        vector_env_idx=rank,
+        vector_env_idx=global_rank,
     )()
-    if not isinstance(env.action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+    assert isinstance(env.action_space, gym.spaces.Discrete), "Only discrete action space is supported"
 
     # Create the model
     agent = RecurrentMuzero(num_actions=env.action_space.n).to(device)
@@ -299,7 +295,7 @@ def player(
     # Receive the first weights from the rank-0, a.k.a. the trainer
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     print("PLAYER WAITING FOR INITIAL PARAMS")
-    players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
+    players_trainer_collective.broadcast(flattened_parameters, src=players_trainer_collective.world_size - 1)
     print("OK!! PLAYER RECEIVED INITIAL PARAMS")
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
@@ -314,23 +310,20 @@ def player(
         )
 
     # Global variables
-    global_step = 0
-    start_time = time.time()
-    # Global variables
     start_time = time.perf_counter()
 
     num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
-    for update in range(1, num_updates + 1):
+    for global_step in range(1, num_updates + 1):
         print("PLAYER STARTING TO PLAY")
-        print(f"Player is playing update num {update} / {num_updates + 1}")
+        print(f"Player is playing update num {global_step} / {num_updates}")
         # reset the episode at every update
         with device:
             # Get the first environment observation and start the optimization
             obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).view(
                 1, 3, 64, 64
-            )  # shape (C, H, W)
+            )  # shape (1, C, H, W)
 
         steps_data = None
         for step in range(0, args.max_trajectory_len):
@@ -360,6 +353,7 @@ def player(
                         "values": node.value_sum.reshape(1, 1, -1),
                     },
                     batch_size=(1, 1),
+                    device=device,
                 )
             else:
                 steps_data = torch.cat(
@@ -382,7 +376,7 @@ def player(
                 for i, agent_final_info in enumerate(info["final_info"]):
                     if agent_final_info is not None and "episode" in agent_final_info:
                         fabric.print(
-                            f"Rank-{rank}: global_step={global_step}, reward={agent_final_info['episode']['r'][0]}"
+                            f"Rank-{global_rank}: global_step={global_step}, reward={agent_final_info['episode']['r'][0]}"
                         )
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -396,16 +390,18 @@ def player(
         agent.training_steps += 1
         # After episode is done, send data to the buffer
         print("PLAYER SENDING DATA!")
-        buffer_players_collective.gather_object(steps_data, None, dst=0)
+        players_buffer_collective.gather_object(steps_data, None, dst=world_collective.world_size - 1)
         print("OK!! PLAYER SENT DATA!")
 
-        # Gather metrics from the trainer to be plotted
-        # metrics = [None]
-        # players_trainer_collective.broadcast_object_list(metrics, src=world_collective.world_size - 1)
+        # Gather metrics from the trainers to be plotted
+        print("PLAYER GATHERING METRICS")
+        metrics = [None]
+        players_trainer_collective.broadcast_object_list(metrics, src=players_trainer_collective.world_size - 1)
+        print("PLAYER RECEIVED METRICS")
 
         # Wait the trainer to finish
         print("PLAYER WAITING FOR PARAMS")
-        players_trainer_collective.broadcast(flattened_parameters, src=world_collective.world_size - 1)
+        players_trainer_collective.broadcast(flattened_parameters, src=players_trainer_collective.world_size - 1)
         print("OK!! PLAYER RECEIVED PARAMS")
 
         # Convert back the parameters
@@ -413,18 +409,28 @@ def player(
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
-        # fabric.log_dict(metrics[0], global_step)
+        fabric.log_dict(metrics[0], global_step)
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
         # Checkpoint Model # TODO move to the trainer
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             state = [None]
-            players_trainer_collective.broadcast_object_list(state, src=1)
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+            players_trainer_collective.broadcast_object_list(state, src=players_trainer_collective.world_size - 1)
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.save(ckpt_path, state[0])
 
-    # world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+    world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
+    # Last checkpoint
+    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{num_updates}_{fabric.global_rank}.ckpt"
+    # fabric.call(
+    #     "on_checkpoint_player",
+    #     fabric=fabric,
+    #     player_trainer_collective=players_trainer_collective,
+    #     ckpt_path=ckpt_path,
+    #     replay_buffer=None,
+    # )
     env.close()
     # if fabric.is_global_zero:
     #     test_env = make_env(
@@ -434,7 +440,6 @@ def player(
     #         args.capture_video,
     #         fabric.logger.log_dir,
     #         "test",
-    #         mask_velocities=args.mask_vel,
     #         vector_env_idx=0,
     #     )()
     #     test(agent, test_env, fabric, args)
@@ -443,7 +448,7 @@ def player(
 def trainer(
     args: MuzeroArgs,
     world_collective: TorchCollective,
-    buffer_trainers_collective: TorchCollective,
+    trainers_buffer_collective: TorchCollective,
     players_trainer_collective: TorchCollective,
     optimization_pg,
 ):
@@ -468,12 +473,12 @@ def trainer(
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
-    # Send weights to rank-1, a.k.a. the first player
+    # Send weights to rank-0, a.k.a. the first player
     print("TRAINER SENDING INITIAL PARAMS")
     if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
         players_trainer_collective.broadcast(
             torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
-            src=world_collective.world_size - 1,
+            src=players_trainer_collective.world_size - 1,
         )
         print("OK! TRAINER SENT INITIAL PARAMS")
 
@@ -494,38 +499,33 @@ def trainer(
         )
 
     # Start training
-    update = 0
-
+    global_step = 1
     while True:
         # Wait for data
         print("TRAINER WAITING FOR DATA")
-        received_batch = [None]
-        buffer_trainers_collective.scatter_object_list(received_batch, None, src=0)
+        data = [None]
+        trainers_buffer_collective.scatter_object_list(data, None, src=world_collective.world_size - 1)
         print("OK!! TRAINER RECEIVED DATA")
-        batch = received_batch[0]
-        # if not isinstance(batch, Trajectory) and batch == -1:
+        data = data[0]
+        # if not isinstance(data, Trajectory):
         #     # Last Checkpoint
-        #     if global_rank == 0:
+        #     if global_rank == players_trainer_collective.world_size - 1:
         #         state = {
         #             "agent": agent.state_dict(),
         #             "optimizer": optimizer.state_dict(),
         #             "args": asdict(args),
-        #             "update_step": update,
+        #             "update_step": global_step,
         #             "scheduler": scheduler.state_dict() if args.anneal_lr else None,
         #         }
-        #         fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+        #         # fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
         #     return
-        # data = make_tensordict(data, device=device)
-        update += 1
 
         for _ in range(args.update_epochs):
-            # batch = buffer.sample(batch_size=batch_size, sequence_length=sequence_length)
-
-            target_rewards = batch["rewards"].squeeze()
-            target_values = batch["values"].squeeze()
-            target_policies = batch["policies"].squeeze()
-            observations = batch["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
-            actions = batch["actions"].squeeze(2)
+            target_rewards = data["rewards"].squeeze()
+            target_values = data["values"].squeeze()
+            target_policies = data["policies"].squeeze()
+            observations = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
+            actions = data["actions"].squeeze(2)
 
             hidden_state_0, policy_0, value_0 = agent.initial_inference(
                 observations[0]
@@ -561,81 +561,87 @@ def trainer(
             aggregator.update("Loss/value_loss", v_loss.detach())
             aggregator.update("Loss/entropy_loss", r_loss.detach())
 
+        global_step += 1
         # Send updated weights to the player
         metrics = aggregator.compute()
         aggregator.reset()
-        print("TRAINER SENDING UPDATED PARAMS")
-        if players_trainer_collective.rank == players_trainer_collective.world_size - 1:
+
+        if global_rank == players_trainer_collective.world_size - 1:
             if args.anneal_lr:
                 metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
             else:
                 metrics["Info/learning_rate"] = args.lr
 
-            # players_trainer_collective.broadcast_object_list(
-            #    [metrics], src=world_collective.world_size - 1
-            # )  # Broadcast metrics: fake send with object list between players and trainer
+            print("TRAINER SENDING METRICS")
+            players_trainer_collective.broadcast_object_list(
+                [metrics], src=players_trainer_collective.world_size - 1
+            )  # Broadcast metrics: fake send with object list between players and trainer
+            print("TRAINER SENDING UPDATED PARAMS")
             players_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
-                src=world_collective.world_size - 1,
+                src=players_trainer_collective.world_size - 1,
             )
-        print("OK!! TRAINER SENT UPDATED PARAMS")
+            print("OK!! TRAINER SENT UPDATED PARAMS")
 
         if args.anneal_lr:
             scheduler.step()
 
-        # Checkpoint model on rank-0: send it everything
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-            if global_rank == 1:
+        # Checkpoint model on last rank: send it everything
+        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
+            if global_rank == world_collective.world_size - 2:
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "args": asdict(args),
-                    "update_step": update,
+                    "update_step": global_step,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+                # fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
 
 
 def buffer(
     args: MuzeroArgs,
     world_collective: TorchCollective,
-    buffer_players_collective: TorchCollective,
-    buffer_trainers_collective: TorchCollective,
+    players_buffer_collective: TorchCollective,
+    trainers_buffer_collective: TorchCollective,
 ):
     """Buffer process.
     Receive data from the players and send it to the trainers.
 
     Args:
         world_collective: collective for the world group.
-        buffer_players_collective: collective for the players group and the buffer, for receiving the collected data.
+        players_buffer_collective: collective for the players group and the buffer, for receiving the collected data.
             The first rank is for the buffer.
-        buffer_trainers_collective: collective for the buffer and the trainers, for sending the collected data.
+        trainers_buffer_collective: collective for the buffer and the trainers, for sending the collected data.
             The first rank is for the buffer.
     """
     rb = TrajectoryReplayBuffer(max_num_trajectories=args.buffer_capacity)
     while True:
         print(f"Buffer {world_collective.rank}: Waiting for collected data from players...")
-        steps_data = [None for _ in range(buffer_players_collective.world_size)]
-        buffer_players_collective.gather_object(None, steps_data, dst=0)  # gather_object uses global rank
+        steps_data = [None for _ in range(players_buffer_collective.world_size)]
+        players_buffer_collective.gather_object(
+            None, steps_data, dst=world_collective.world_size - 1
+        )  # gather_object uses global rank
         for traj in steps_data:
             rb.add(traj)
 
         print(f"Buffer {world_collective.rank}: Sending collected data to trainers...")
         sampled_buffers = [
             rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
-            for _ in range(buffer_trainers_collective.world_size - 1)
+            for _ in range(trainers_buffer_collective.world_size - 1)
         ]
-        buffer_trainers_collective.scatter_object_list(
-            [None], [None] + sampled_buffers, src=0
+
+        trainers_buffer_collective.scatter_object_list(
+            [None], sampled_buffers + [None], src=world_collective.world_size - 1
         )  # scatter_object_list uses global rank
 
 
 @register_algorithm(decoupled=True)
 def main():
     # Ranks semantic:
-    # rank-0 -> buffer
-    # rank-1, ..., rank-num_players -> players
-    # rank-(num_players+1), ..., rank-(num_players+num_trainers) -> trainers
+    # rank-0, ..., rank-num_players - 1 -> players
+    # rank-(num_players), ..., rank-(num_players+num_trainers-1) -> trainers
+    # rank-(num_players+num_trainers) -> buffer
 
     parser = HfArgumentParser(MuzeroArgs)
     args: MuzeroArgs = parser.parse_args_into_dataclasses()[0]
@@ -661,38 +667,40 @@ def main():
     # Trainers collective to train the model in paraller with all the other trainers, needed for the optimization_pg
     trainers_collective = TorchCollective()
     trainers_collective.create_group(
-        ranks=list(range(args.num_players + 1, args.num_players + args.num_trainers + 1)),
+        ranks=list(range(args.num_players, args.num_players + args.num_trainers)),
         timeout=timedelta(days=1),
     )
     optimization_pg = trainers_collective.group
 
     # Players-Buffer collective, to share data between players and buffer
-    buffer_players_collective = TorchCollective()
-    buffer_players_collective.create_group(ranks=list(range(0, args.num_players + 1)), timeout=timedelta(days=1))
+    players_buffer_collective = TorchCollective()
+    players_buffer_collective.create_group(
+        ranks=list(range(0, args.num_players)) + [args.num_players + args.num_trainers], timeout=timedelta(days=1)
+    )
 
     # Trainers-Buffer collective, to share data between buffer and trainers
-    buffer_trainers_collective = TorchCollective()
-    buffer_trainers_collective.create_group(
-        ranks=[0] + list(range(args.num_players + 1, args.num_players + args.num_trainers + 1)),
+    trainers_buffer_collective = TorchCollective()
+    trainers_buffer_collective.create_group(
+        ranks=list(range(args.num_players, args.num_players + args.num_trainers + 1)),
         timeout=timedelta(days=1),
     )
 
     # Trainer-Players collective, to share the updated parameters between trainer and players
     players_trainer_collective = TorchCollective()
     players_trainer_collective.create_group(
-        ranks=list(range(1, args.num_players + 1)) + [args.num_players + args.num_trainers],
+        ranks=list(range(0, args.num_players + 1)),
         timeout=timedelta(days=1),
     )
 
-    if global_rank == 0:
-        buffer(args, world_collective, buffer_players_collective, buffer_trainers_collective)
-    elif 1 <= global_rank <= args.num_players:
-        player(args, world_collective, buffer_players_collective, players_trainer_collective)
-    else:
+    if 0 <= global_rank < args.num_players:
+        player(args, world_collective, players_buffer_collective, players_trainer_collective)
+    elif args.num_players <= global_rank < args.num_players + args.num_trainers:
         trainer(
             args,
             world_collective,
-            buffer_trainers_collective,
+            trainers_buffer_collective,
             players_trainer_collective,
             optimization_pg,
         )
+    else:
+        buffer(args, world_collective, players_buffer_collective, trainers_buffer_collective)
