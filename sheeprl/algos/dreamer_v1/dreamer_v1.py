@@ -401,7 +401,7 @@ def main():
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
 
-    world_model, actor, critic = build_models(
+    world_model, actor, critic, _ = build_models(
         fabric,
         action_dim,
         observation_shape,

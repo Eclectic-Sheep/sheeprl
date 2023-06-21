@@ -73,6 +73,7 @@ def make_env(
             seed=args.seed,
             start_position=start_position,
         )
+        env = ActionRepeat(env, args.action_repeat)
     else:
         env_spec = gym.spec(env_id).entry_point
         if "mujoco" in env_spec:

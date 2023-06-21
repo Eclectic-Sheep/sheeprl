@@ -1,5 +1,6 @@
 """Adapted from https://github.com/denisyarats/dmc2gym/blob/master/dmc2gym/wrappers.py"""
 
+import copy
 from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
@@ -8,19 +9,19 @@ import numpy as np
 from gymnasium import core
 
 ACTION_MAP = {
-    0: np.array([0, 0, 0, 12, 12, 0, 0, 0]),
-    1: np.array([1, 0, 0, 12, 12, 0, 0, 0]),
-    2: np.array([2, 0, 0, 12, 12, 0, 0, 0]),
-    3: np.array([0, 1, 0, 12, 12, 0, 0, 0]),
-    4: np.array([0, 2, 0, 12, 12, 0, 0, 0]),
-    5: np.array([1, 0, 1, 12, 12, 0, 0, 0]),
-    6: np.array([1, 0, 2, 12, 12, 0, 0, 0]),
-    7: np.array([1, 0, 3, 12, 12, 0, 0, 0]),
-    8: np.array([0, 0, 0, 11, 12, 0, 0, 0]),
-    9: np.array([0, 0, 0, 13, 12, 0, 0, 0]),
-    10: np.array([0, 0, 0, 12, 11, 0, 0, 0]),
-    11: np.array([0, 0, 0, 12, 13, 0, 0, 0]),
-    12: np.array([0, 0, 0, 12, 12, 3, 0, 0]),
+    0: np.array([0, 0, 0, 12, 12, 0, 0, 0]),  # no-op
+    1: np.array([1, 0, 0, 12, 12, 0, 0, 0]),  # forward
+    2: np.array([2, 0, 0, 12, 12, 0, 0, 0]),  # back
+    3: np.array([0, 1, 0, 12, 12, 0, 0, 0]),  # left
+    4: np.array([0, 2, 0, 12, 12, 0, 0, 0]),  # right
+    5: np.array([1, 0, 1, 12, 12, 0, 0, 0]),  # jump + forward
+    6: np.array([1, 0, 2, 12, 12, 0, 0, 0]),  # sneak + forward
+    7: np.array([1, 0, 3, 12, 12, 0, 0, 0]),  # sprint + forward
+    8: np.array([0, 0, 0, 11, 12, 0, 0, 0]),  # pitch down (-15)
+    9: np.array([0, 0, 0, 13, 12, 0, 0, 0]),  # pitch up (+15)
+    10: np.array([0, 0, 0, 12, 11, 0, 0, 0]),  # yaw down (-15)
+    11: np.array([0, 0, 0, 12, 13, 0, 0, 0]),  # yaw up (+15)
+    12: np.array([0, 0, 0, 12, 12, 3, 0, 0]),  # attack
 }
 
 
@@ -38,7 +39,9 @@ class MineDojoWrapper(core.Env):
         self._width = width
         self._pitch_limits = pitch_limits
         self._pos = kwargs.pop("start_position", None)
+        self._start_pos = copy.deepcopy(self._pos)
         self._action_space = gym.spaces.Discrete(len(ACTION_MAP.keys()))
+        self._reset_first = True
 
         if not (self._pitch_limits[0] <= self._pos["pitch"] <= self._pitch_limits[1]):
             raise ValueError(
@@ -51,6 +54,10 @@ class MineDojoWrapper(core.Env):
             image_size=(height, width),
             world_seed=seed,
             start_position=self._pos,
+            generate_world_type="default",
+            allow_mob_spawn=False,
+            allow_time_passage=False,
+            fast_reset=False,
             **kwargs,
         )
         # render
@@ -62,7 +69,7 @@ class MineDojoWrapper(core.Env):
         return getattr(self._env, name)
 
     def _convert_action(self, action) -> np.ndarray:
-        return ACTION_MAP[action.argmax().item()]
+        return ACTION_MAP[int(action)]
 
     @property
     def render_mode(self) -> str:
@@ -87,6 +94,8 @@ class MineDojoWrapper(core.Env):
             action[3] = 12
 
         obs, reward, done, info = self._env.step(action)
+        if obs["life_stats"]["life"] == 0.0:
+            done = True
         self._pos = {
             "x": obs["location_stats"]["pos"][0],
             "y": obs["location_stats"]["pos"][1],
@@ -99,7 +108,14 @@ class MineDojoWrapper(core.Env):
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        obs = self._env.reset()
+        _ = self._env.reset()
+        obs = self._env.teleport_agent(
+            self._start_pos["x"],
+            self._start_pos["y"],
+            self._start_pos["z"],
+            self._start_pos["yaw"],
+            self._start_pos["pitch"],
+        )[0]
         self._pos = {
             "x": obs["location_stats"]["pos"][0],
             "y": obs["location_stats"]["pos"][1],
@@ -107,6 +123,7 @@ class MineDojoWrapper(core.Env):
             "pitch": obs["location_stats"]["pitch"].item(),
             "yaw": obs["location_stats"]["yaw"].item(),
         }
+        self._reset_first = False
         return obs, {}
 
     def close(self):

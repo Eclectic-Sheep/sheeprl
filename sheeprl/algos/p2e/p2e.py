@@ -3,7 +3,6 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
-from typing import List, Optional
 
 import gymnasium as gym
 import jsonlines as jsonl
@@ -20,7 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
 from torch.distributions import Bernoulli, Independent, Normal
-from torch.optim import Adam, Optimizer
+from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
@@ -124,11 +123,11 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of rewards
-    qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
 
     # compute predictions for terminal steps, if required
     if args.use_continues and world_model.continue_model:
-        qc = Bernoulli(logits=world_model.continue_model(latent_states))
+        qc = Bernoulli(logits=world_model.continue_model(latent_states.detach()))
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
         qc = continue_targets = None
@@ -158,7 +157,10 @@ def train(
     )
     fabric.backward(rec_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients)
+        world_grad = fabric.clip_gradients(
+            module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
+        )
+        aggregator.update("Grads/world_model", world_grad.detach())
     world_optimizer.step()
     aggregator.update("Loss/reconstruction_loss", rec_loss.detach())
     aggregator.update("Loss/observation_loss", observation_loss.detach())
@@ -171,14 +173,18 @@ def train(
     # Ensemble
     loss = 0
     ensemble_optimizer.zero_grad(set_to_none=True)
-    for i, ens in enumerate(ensembles):
-        out = ens(latent_states.detach(), data["actions"].detach())[:-1]
+    for ens in ensembles:
+        out = ens(torch.cat((latent_states.detach(), data["actions"].detach()), -1))[:-1]
         next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-        loss -= next_obs_embedding_dist.log_prob(stochastic_states.detach()[1:]).mean()
+        loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
     loss.backward()
-    fabric.clip_gradients(module=ens, optimizer=ensemble_optimizer, max_norm=args.ensemble_clip_gradients)
+    if args.ensemble_clip_gradients is not None and args.ensemble_clip_gradients > 0:
+        ensemble_grad = fabric.clip_gradients(
+            module=ens, optimizer=ensemble_optimizer, max_norm=args.ensemble_clip_gradients, error_if_nonfinite=False
+        )
+        aggregator.update("Grads/ensemble", ensemble_grad.detach())
     ensemble_optimizer.step()
-    aggregator.update(f"Ensemble/loss_{i}", loss.detach().cpu())
+    aggregator.update(f"Loss/ensemble_loss", loss.detach().cpu())
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurernt and stochastic states in order to have all the states on the first dimension.
@@ -231,14 +237,14 @@ def train(
         device=device,
     )
     for i, ens in enumerate(ensembles):
-        next_obs_embedding[i] = ens(imagined_trajectories.detach(), all_actions.detach())[:-1]
+        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), all_actions.detach()), -1))[:-1]
 
     # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
     intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * args.intrinsic_reward_multiplier
     aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories[1:])), 1).mean
     else:
         done_mask = torch.ones_like(intrinsic_reward.detach()) * args.gamma
 
@@ -253,6 +259,9 @@ def train(
         horizon=args.horizon - 1,
         lmbda=args.lmbda,
     )
+
+    aggregator.update("Values/predicted_values", predicted_values.detach().cpu().mean())
+    aggregator.update("Values/lambda_values", lambda_values.detach().cpu().mean())
 
     # compute the discounts to multiply to the lambda values
     with torch.no_grad():
@@ -296,7 +305,10 @@ def train(
     policy_loss = actor_loss(discount * lambda_values)
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients)
+        actor_grad = fabric.clip_gradients(
+            module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
+        )
+        aggregator.update("Grads/actor", actor_grad.detach())
     actor_optimizer.step()
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
@@ -313,7 +325,10 @@ def train(
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients)
+        critic_grad = fabric.clip_gradients(
+            module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
+        )
+        aggregator.update("Grads/critic", critic_grad.detach())
     critic_optimizer.step()
     aggregator.update("Loss/value_loss", value_loss.detach())
 
@@ -330,10 +345,6 @@ def main():
     args: P2EArgs = parser.parse_args_into_dataclasses()[0]
     args.num_envs = 1
     torch.set_num_threads(1)
-
-    args.env_id = "minedojo_open-ended"
-    args.memmap_buffer = True
-    args.mine_start_position = [-319.5, 62, 605.5, 0, 0]
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -415,8 +426,8 @@ def main():
             fabric.seed_everything(args.seed + i)
             ens_list.append(
                 MLP(
-                    input_dims=action_dim + args.recurrent_state_size + args.stochastic_size,
-                    output_dim=args.stochastic_size,
+                    input_dims=int(action_dim + args.recurrent_state_size + args.stochastic_size),
+                    output_dim=info["encoder_output_size"],
                     hidden_sizes=[args.dense_units] * args.num_layers,
                 ).apply(init_weights)
             )
@@ -465,15 +476,17 @@ def main():
                 "Loss/reward_loss": MeanMetric(sync_on_compute=False),
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
+                "Loss/ensemble_loss": MeanMetric(sync_on_compute=False),
                 "State/p_entropy": MeanMetric(sync_on_compute=False),
                 "State/q_entropy": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
-                "Ensemble/loss_0": MeanMetric(sync_on_compute=False),
-                "Ensemble/loss_1": MeanMetric(sync_on_compute=False),
-                "Ensemble/loss_2": MeanMetric(sync_on_compute=False),
-                "Ensemble/loss_3": MeanMetric(sync_on_compute=False),
-                "Ensemble/loss_4": MeanMetric(sync_on_compute=False),
                 "Rewards/intrinsic": MeanMetric(sync_on_compute=False),
+                "Values/predicted_values": MeanMetric(sync_on_compute=False),
+                "Values/lambda_values": MeanMetric(sync_on_compute=False),
+                "Grads/world_model": MeanMetric(sync_on_compute=False),
+                "Grads/actor": MeanMetric(sync_on_compute=False),
+                "Grads/critic": MeanMetric(sync_on_compute=False),
+                "Grads/ensemble": MeanMetric(sync_on_compute=False),
             }
         )
 
@@ -519,7 +532,7 @@ def main():
     rb.add(step_data[None, ...])
     player.init_states()
 
-    f = jsonl.open(log_dir + "/p2e.jsonl", "w")
+    f = jsonl.open(log_dir + "/p2e_minedojo_dreamer_L_as_dreamerv2.jsonl", "w")
     f.write(
         {
             "pos": o["location_stats"]["pos"].tolist(),
@@ -527,6 +540,9 @@ def main():
             "yaw": o["location_stats"]["yaw"].tolist(),
             "biomeid": o["location_stats"]["biome_id"].tolist(),
             "action": 0,
+            "life": o["life_stats"]["life"].tolist(),
+            "oxygen": o["life_stats"]["oxygen"].tolist(),
+            "food": o["life_stats"]["food"].tolist(),
         }
     )
 
@@ -561,7 +577,10 @@ def main():
                 "pitch": next_obs["location_stats"]["pitch"].tolist(),
                 "yaw": next_obs["location_stats"]["yaw"].tolist(),
                 "biomeid": next_obs["location_stats"]["biome_id"].tolist(),
-                "action": real_actions,
+                "action": int(real_actions),
+                "life": next_obs["life_stats"]["life"].tolist(),
+                "oxygen": next_obs["life_stats"]["oxygen"].tolist(),
+                "food": next_obs["life_stats"]["food"].tolist(),
             }
         )
 
@@ -588,7 +607,18 @@ def main():
             step_data["observations"] = obs
             rb.add(step_data[None, ...])
             player.init_states()
-            break
+            f.write(
+                {
+                    "pos": o["location_stats"]["pos"].tolist(),
+                    "pitch": o["location_stats"]["pitch"].tolist(),
+                    "yaw": o["location_stats"]["yaw"].tolist(),
+                    "biomeid": o["location_stats"]["biome_id"].tolist(),
+                    "action": 0,
+                    "life": o["life_stats"]["life"].tolist(),
+                    "oxygen": o["life_stats"]["oxygen"].tolist(),
+                    "food": o["life_stats"]["food"].tolist(),
+                }
+            )
 
         step_before_training -= 1
 
