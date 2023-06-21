@@ -211,7 +211,7 @@ def train(
     for i in range(args.horizon):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
         actions = actor(imagined_latent_states.detach())
-        all_actions[0] = actions
+        all_actions[i] = actions
 
         # imagination step
         imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
@@ -226,25 +226,25 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of values/rewards
-    predicted_values = Independent(Normal(critic(imagined_trajectories[1:]), 1), 1).mean
+    predicted_values = Independent(Normal(critic(imagined_trajectories), 1), 1).mean
 
     # Predict intrinsic reward
     next_obs_embedding = torch.zeros(
         len(ensembles),
-        args.horizon - 1,
+        args.horizon,
         batch_size * sequence_length,
         encoder_output_size,
         device=device,
     )
     for i, ens in enumerate(ensembles):
-        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), all_actions.detach()), -1))[:-1]
+        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), all_actions.detach()), -1))
 
     # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
     intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * args.intrinsic_reward_multiplier
     aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories[1:])), 1).mean
+        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     else:
         done_mask = torch.ones_like(intrinsic_reward.detach()) * args.gamma
 
@@ -256,7 +256,7 @@ def train(
         predicted_values,
         done_mask,
         last_values=predicted_values[-1],
-        horizon=args.horizon - 1,
+        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 
@@ -314,7 +314,7 @@ def train(
 
     # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
-    qv = Independent(Normal(critic(imagined_trajectories.detach())[1:-1], 1), 1)
+    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
     # critic optimization step
     critic_optimizer.zero_grad(set_to_none=True)
