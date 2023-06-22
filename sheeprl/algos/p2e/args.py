@@ -16,3 +16,10 @@ class P2EArgs(DreamerV1Args):
     ensemble_eps: float = Arg(default=1e-5, help="the epsilon of the Adam optimizer of the ensembles")
     ensemble_clip_gradients: float = Arg(default=100, help="how much to clip the gradient norms of the ensembles")
     intrinsic_reward_multiplier: float = Arg(default=10000, help="how much scale the intrinsic rewards")
+
+
+class P2EOneShotArgs(P2EArgs):
+    # override
+    total_steps: int = Arg(default=150000, help="total timesteps of the experiments")
+    checkpoint_path: str = Arg(help="the path of the checkpoint")
+    buffer_size: int = Arg(default=150000, help="the size of the buffer")

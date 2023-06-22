@@ -23,7 +23,6 @@ from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
-from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_lambda_values, init_weights, make_env, test
 from sheeprl.algos.p2e.args import P2EArgs
