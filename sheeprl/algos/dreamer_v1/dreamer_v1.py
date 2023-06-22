@@ -12,11 +12,11 @@ from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
-from lightning.fabric.wrappers import _FabricModule
+from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
-from torch.optim import Adam, Optimizer
+from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
@@ -41,9 +41,9 @@ def train(
     world_model: WorldModel,
     actor: _FabricModule,
     critic: _FabricModule,
-    world_optimizer: Optimizer,
-    actor_optimizer: Optimizer,
-    critic_optimizer: Optimizer,
+    world_optimizer: _FabricOptimizer,
+    actor_optimizer: _FabricOptimizer,
+    critic_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: DreamerV1Args,
@@ -85,9 +85,9 @@ def train(
         world_model (_FabricModule): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
-        world_optimizer (Optimizer): the world optimizer.
-        actor_optimizer (Optimizer): the actor optimizer.
-        critic_optimizer (Optimizer): the critic optimizer.
+        world_optimizer (_FabricOptimizer): the world optimizer.
+        actor_optimizer (_FabricOptimizer): the actor optimizer.
+        critic_optimizer (_FabricOptimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV1Args): the configs.
@@ -244,10 +244,11 @@ def train(
     predicted_values = Independent(Normal(critic(imagined_trajectories), 1), 1).mean
     predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
 
+    # predict the probability that the episode will continue in the imagined states
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     else:
-        done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        predicted_continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
@@ -255,7 +256,7 @@ def train(
     lambda_values = compute_lambda_values(
         predicted_rewards,
         predicted_values,
-        done_mask,
+        predicted_continues,
         last_values=predicted_values[-1],
         horizon=args.horizon,
         lmbda=args.lmbda,
@@ -270,32 +271,32 @@ def train(
         # in [https://doi.org/10.48550/arXiv.1912.01603](https://doi.org/10.48550/arXiv.1912.01603)
         #
         # Suppose the case in which the continue model is not used and gamma = .99
-        # done_mask.shape = (15, 2500, 1)
-        # done_mask = [
+        # predicted_continues.shape = (15, 2500, 1)
+        # predicted_continues = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (15 rows)
-        # torch.ones_like(done_mask[:1]) = [
+        # torch.ones_like(predicted_continues[:1]) = [
         #   [ [1.], ..., [1.] ]
         # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # done_mask[:-2] = [
+        # predicted_continues[:-2] = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (13 rows)
-        # torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0) = [
+        # torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   ...,
         #   [ [.99], ..., [.99] ],
         # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0) = [
+        # torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   [ [.9801], ..., [.9801] ],
         #   ...,
         #   [ [.8775], ..., [.8775] ],
         # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
 
     # actor optimization step
     actor_optimizer.zero_grad(set_to_none=True)
@@ -401,7 +402,7 @@ def main():
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
 
-    world_model, actor, critic, _ = build_models(
+    world_model, actor, critic = build_models(
         fabric,
         action_dim,
         observation_shape,

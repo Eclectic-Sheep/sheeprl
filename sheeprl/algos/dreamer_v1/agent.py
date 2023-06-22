@@ -431,6 +431,12 @@ def build_models(
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
         args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
+        world_model_state (Dict[str, Tensor]): the state of the world model.
+            Default to None.
+        actor_state (Dict[str, Tensor]): the state of the actor.
+            Default to None.
+        critic_state (Dict[str, Tensor]): the state of the critic.
+            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
