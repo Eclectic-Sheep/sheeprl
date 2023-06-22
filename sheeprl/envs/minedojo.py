@@ -41,9 +41,8 @@ class MineDojoWrapper(core.Env):
         self._pos = kwargs.pop("start_position", None)
         self._start_pos = copy.deepcopy(self._pos)
         self._action_space = gym.spaces.Discrete(len(ACTION_MAP.keys()))
-        self._reset_first = True
 
-        if not (self._pitch_limits[0] <= self._pos["pitch"] <= self._pitch_limits[1]):
+        if self._pos is not None and not (self._pitch_limits[0] <= self._pos["pitch"] <= self._pitch_limits[1]):
             raise ValueError(
                 f"The initial position must respect the pitch limits {self._pitch_limits}, given {self._pos['pitch']}"
             )
@@ -57,7 +56,7 @@ class MineDojoWrapper(core.Env):
             generate_world_type="default",
             allow_mob_spawn=False,
             allow_time_passage=False,
-            fast_reset=False,
+            fast_reset=True,
             **kwargs,
         )
         # render
@@ -94,8 +93,6 @@ class MineDojoWrapper(core.Env):
             action[3] = 12
 
         obs, reward, done, info = self._env.step(action)
-        if obs["life_stats"]["life"] == 0.0:
-            done = True
         self._pos = {
             "x": obs["location_stats"]["pos"][0],
             "y": obs["location_stats"]["pos"][1],
@@ -103,19 +100,12 @@ class MineDojoWrapper(core.Env):
             "pitch": obs["location_stats"]["pitch"].item(),
             "yaw": obs["location_stats"]["yaw"].item(),
         }
-        return obs, reward, done, False, info
+        return obs["rgb"], reward, done, False, info
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        _ = self._env.reset()
-        obs = self._env.teleport_agent(
-            self._start_pos["x"],
-            self._start_pos["y"],
-            self._start_pos["z"],
-            self._start_pos["yaw"],
-            self._start_pos["pitch"],
-        )[0]
+        obs = self._env.reset()
         self._pos = {
             "x": obs["location_stats"]["pos"][0],
             "y": obs["location_stats"]["pos"][1],
@@ -123,8 +113,7 @@ class MineDojoWrapper(core.Env):
             "pitch": obs["location_stats"]["pitch"].item(),
             "yaw": obs["location_stats"]["yaw"].item(),
         }
-        self._reset_first = False
-        return obs, {}
+        return obs["rgb"], {}
 
     def close(self):
         self._env.close()

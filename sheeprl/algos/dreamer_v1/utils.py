@@ -58,13 +58,17 @@ def make_env(
         from sheeprl.envs.minedojo import MineDojoWrapper
 
         task_id = "_".join(env_id.split("_")[1:])
-        start_position = {
-            "x": args.mine_start_position[0],
-            "y": args.mine_start_position[1],
-            "z": args.mine_start_position[2],
-            "pitch": args.mine_start_position[3],
-            "yaw": args.mine_start_position[4],
-        }
+        start_position = (
+            {
+                "x": args.mine_start_position[0],
+                "y": args.mine_start_position[1],
+                "z": args.mine_start_position[2],
+                "pitch": args.mine_start_position[3],
+                "yaw": args.mine_start_position[4],
+            }
+            if args.mine_start_position is not None
+            else None
+        )
         env = MineDojoWrapper(
             task_id,
             height=64,
