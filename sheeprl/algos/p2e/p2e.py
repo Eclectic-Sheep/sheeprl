@@ -686,7 +686,12 @@ def main():
             )
 
     env.close()
+    # exploration test
     if fabric.is_global_zero:
+        test(player, fabric, args)
+    # task test zero-shot
+    if fabric.is_global_zero:
+        player.actor = actor_task.module
         test(player, fabric, args)
 
 
