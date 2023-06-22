@@ -59,15 +59,22 @@ def train(
 ) -> None:
     """Runs one-step update of the agent.
 
-    This method is based on [sheeprl.algos.dreamer_v1.dreamer_v1](sheeprl.algos.dreamer_v1.dreamer_v1) algorithm,
-    extending it to implement the [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
+    In particular, it updates the agent as specified by Algorithm 1 in
+    [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
 
     The algorithm is made by different phases:
     1. Dynamic Learning: see Algorithm 1 in [Dream to Control: Learning Behaviors by Latent Imagination](https://arxiv.org/abs/1912.01603)
     2. Ensemble Learning: learn the ensemble models as described in [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
         The ensemble models give the novelty of the state visited by the agent.
     3. Behaviour Learning Exploration: the agent learns to explore the environment, having as reward only the intrinsic reward, computed from the ensembles.
-    4. Behaviour Learning Task (zero-shot): the agent learns to solve the task, the experiences it uses to learn it are the ones collected during the exploration.
+    4. Behaviour Learning Task (zero-shot): the agent learns to solve the task, the experiences it uses to learn it are the ones collected during the exploration:
+        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Predict rewards and values in the imagined trajectories.
+        - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
+        - Update the actor and the critic
+
+    This method is based on [sheeprl.algos.dreamer_v1.dreamer_v1](sheeprl.algos.dreamer_v1.dreamer_v1) algorithm,
+    extending it to implement the [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
 
     Args:
         fabric (Fabric): the fabric instance.
@@ -687,11 +694,11 @@ def main():
     env.close()
     # exploration test
     if fabric.is_global_zero:
-        test(player, fabric, args)
+        test(player, fabric, args, "exploration")
     # task test zero-shot
     if fabric.is_global_zero:
         player.actor = actor_task.module
-        test(player, fabric, args)
+        test(player, fabric, args, "zero-shot")
 
 
 if __name__ == "__main__":

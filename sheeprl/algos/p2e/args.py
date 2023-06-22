@@ -18,8 +18,11 @@ class P2EArgs(DreamerV1Args):
     intrinsic_reward_multiplier: float = Arg(default=10000, help="how much scale the intrinsic rewards")
 
 
-class P2EOneShotArgs(P2EArgs):
-    # override
-    total_steps: int = Arg(default=150000, help="total timesteps of the experiments")
+@dataclass
+class P2EFewShotArgs:
     checkpoint_path: str = Arg(help="the path of the checkpoint")
+    total_steps: int = Arg(default=150000, help="total timesteps of the experiments")
     buffer_size: int = Arg(default=150000, help="the size of the buffer")
+    learning_starts: int = Arg(default=2500, help="timestep to start learning")
+    train_every: int = Arg(default=1000, help="the number of steps between one training and another")
+    checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")

@@ -67,7 +67,7 @@ class MineDojoWrapper(core.Env):
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-    def _convert_action(self, action) -> np.ndarray:
+    def _convert_action(self, action: np.ndarray) -> np.ndarray:
         return ACTION_MAP[int(action)]
 
     @property
@@ -86,7 +86,7 @@ class MineDojoWrapper(core.Env):
         self.observation_space.seed(seed)
         self.action_space.seed(seed)
 
-    def step(self, action) -> Dict[str, Any]:
+    def step(self, action: np.ndarray) -> Dict[str, Any]:
         action = self._convert_action(action)
         next_pitch = self._pos["pitch"] + (action[3] - 12) * 15
         if not (self._pitch_limits[0] <= next_pitch <= self._pitch_limits[1]):
@@ -100,6 +100,12 @@ class MineDojoWrapper(core.Env):
             "pitch": obs["location_stats"]["pitch"].item(),
             "yaw": obs["location_stats"]["yaw"].item(),
         }
+        info["life_stats"] = {
+            "life": obs["life_stats"]["life"],
+            "oxygen": obs["life_stats"]["oxygen"],
+            "food": obs["life_stats"]["food"],
+        }
+        info["location_stats"] = copy.deepcopy(self._pos)
         return obs["rgb"], reward, done, False, info
 
     def reset(
@@ -113,7 +119,14 @@ class MineDojoWrapper(core.Env):
             "pitch": obs["location_stats"]["pitch"].item(),
             "yaw": obs["location_stats"]["yaw"].item(),
         }
-        return obs["rgb"], {}
+        return obs["rgb"], {
+            "life_stats": {
+                "life": obs["life_stats"]["life"],
+                "oxygen": obs["life_stats"]["oxygen"],
+                "food": obs["life_stats"]["food"],
+            },
+            "location_stats": copy.deepcopy(self._pos),
+        }
 
     def close(self):
         self._env.close()

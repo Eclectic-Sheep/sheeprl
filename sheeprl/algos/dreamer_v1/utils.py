@@ -279,14 +279,16 @@ def cnn_forward(
 
 
 @torch.no_grad()
-def test(player: "Player", fabric: Fabric, args: DreamerV1Args):
+def test(player: "Player", fabric: Fabric, args: DreamerV1Args, test_name: str = ""):
     """Test the model on the environment with the frozen model.
 
     Args:
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
     """
-    env: gym.Env = make_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test")
+    env: gym.Env = make_env(
+        args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
+    )
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)
