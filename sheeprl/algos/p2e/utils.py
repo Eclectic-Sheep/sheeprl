@@ -5,9 +5,10 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
-from sheeprl.algos.dreamer_v1.agent import RSSM, Actor, Encoder, RecurrentModel, WorldModel
+from sheeprl.algos.dreamer_v1.agent import Actor, Encoder, RecurrentModel, WorldModel
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.utils import init_weights
+from sheeprl.algos.p2e.agent import RSSMP2E
 from sheeprl.models.models import MLP, DeCNN
 
 
@@ -49,7 +50,8 @@ def build_models(
         The actor_exploration (_FabricModule).
         The critic_exploration (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs else 3
+    # minecraft environment does not support grayscale observations
+    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -93,7 +95,7 @@ def build_models(
         activation=dense_act,
         flatten_dim=None,
     )
-    rssm = RSSM(
+    rssm = RSSMP2E(
         recurrent_model.apply(init_weights),
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),

@@ -443,7 +443,7 @@ def build_models(
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs else 3
+    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:

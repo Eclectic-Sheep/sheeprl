@@ -106,6 +106,7 @@ def train(
 
     recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
     stochastic_states = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    pred_stochastic_states = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
     states_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     states_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
@@ -115,7 +116,13 @@ def train(
     embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
 
     for i in range(0, sequence_length):
-        state_mean_std, recurrent_state, stochastic_state, pred_state_mean_std = world_model.rssm.dynamic(
+        (
+            state_mean_std,
+            recurrent_state,
+            stochastic_state,
+            pred_state_mean_std,
+            predicted_stochastic_state,
+        ) = world_model.rssm.dynamic(
             stochastic_state, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
         )
         recurrent_states[i] = recurrent_state
@@ -124,6 +131,7 @@ def train(
         states_std[i] = state_mean_std[1]
         pred_states_mean[i] = pred_state_mean_std[0]
         pred_states_std[i] = pred_state_mean_std[1]
+        pred_stochastic_states[i] = predicted_stochastic_state
     latent_states = torch.cat((stochastic_states, recurrent_states), -1)
 
     decoded_information = cnn_forward(
@@ -134,7 +142,7 @@ def train(
     qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
 
     if args.use_continues and world_model.continue_model:
-        qc = Bernoulli(logits=world_model.continue_model(latent_states.detach()))
+        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
         qc = continue_targets = None
@@ -175,7 +183,9 @@ def train(
     loss = 0
     ensemble_optimizer.zero_grad(set_to_none=True)
     for ens in ensembles:
-        out = ens(torch.cat((latent_states.detach(), data["actions"].detach()), -1))[:-1]
+        out = ens(
+            torch.cat((pred_stochastic_states.detach(), recurrent_states.detach(), data["actions"].detach()), -1)
+        )[:-1]
         next_obs_embedding_dist = Independent(Normal(out, 1), 1)
         loss += ensemble_loss(next_obs_embedding_dist, embedded_obs.detach()[1:])
     loss.backward()
