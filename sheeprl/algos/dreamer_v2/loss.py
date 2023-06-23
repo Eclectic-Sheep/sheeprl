@@ -99,6 +99,6 @@ def reconstruction_loss(
     state_loss = 0.8 * loss_lhs + (1 - 0.8) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
     if qc is not None and dones is not None:
-        continue_loss = continue_scale_factor * qc.log_prob(dones)
+        continue_loss = continue_scale_factor * -qc.log_prob(dones).mean()
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
