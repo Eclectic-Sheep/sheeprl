@@ -33,6 +33,8 @@ class MineDojoWrapper(core.Env):
         width: int = 64,
         pitch_limits: Tuple[int, int] = (-60, 60),
         seed: Optional[int] = None,
+        sticky_attack: Optional[int] = 30,
+        sticky_jump: Optional[int] = 10,
         **kwargs: Optional[Dict[Any, Any]],
     ):
         self._height = height
@@ -41,6 +43,10 @@ class MineDojoWrapper(core.Env):
         self._pos = kwargs.pop("start_position", None)
         self._start_pos = copy.deepcopy(self._pos)
         self._action_space = gym.spaces.Discrete(len(ACTION_MAP.keys()))
+        self._sticky_attack = sticky_attack
+        self._sticky_jump = sticky_jump
+        self._sticky_attack_counter = 0
+        self._sticky_jump_counter = 0
 
         if self._pos is not None and not (self._pitch_limits[0] <= self._pos["pitch"] <= self._pitch_limits[1]):
             raise ValueError(
@@ -68,7 +74,23 @@ class MineDojoWrapper(core.Env):
         return getattr(self._env, name)
 
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
-        return ACTION_MAP[int(action)]
+        action = ACTION_MAP[int(action)]
+        if self._sticky_attack:
+            if action[5] == 3:
+                self._sticky_attack_counter = self._sticky_attack
+            if self._sticky_attack_counter > 0:
+                action[5] = 3
+                action[2] = 0
+                self._sticky_attack_counter -= 1
+        if self._sticky_jump:
+            if action[2] == 1:
+                self._sticky_jump_counter = self._sticky_jump
+            if self._sticky_jump_counter > 0:
+                action[2] = 1
+                if action[0] == action[1] == 0:
+                    action[0] = 1
+                self._sticky_jump_counter -= 1
+        return action
 
     @property
     def render_mode(self) -> str:
