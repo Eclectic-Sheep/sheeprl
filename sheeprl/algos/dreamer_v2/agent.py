@@ -111,6 +111,7 @@ class RSSM(nn.Module):
         """
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
+        recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_out)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
