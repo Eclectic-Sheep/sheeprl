@@ -26,3 +26,7 @@ class P2EFewShotArgs:
     learning_starts: int = Arg(default=2500, help="timestep to start learning")
     train_every: int = Arg(default=1000, help="the number of steps between one training and another")
     checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
+    is_few_shot: bool = Arg(
+        default=False,
+        help="whether or not the chekpoint is from few-shot learning (False if it comes from the exploration phase)",
+    )

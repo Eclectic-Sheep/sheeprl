@@ -7,7 +7,6 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -245,17 +244,6 @@ def main():
     #   - how often to checkpoint the models (checkpoint_every)
     parser = HfArgumentParser(P2EFewShotArgs)
     args_few_shot: P2EFewShotArgs = parser.parse_args_into_dataclasses()[0]
-    state = fabric.load(args_few_shot.checkpoint_path)
-    args = P2EArgs(**state["args"])
-    args.total_steps = args_few_shot.total_steps
-    args.buffer_size = args_few_shot.buffer_size
-    args.learning_starts = args_few_shot.learning_starts
-    args.train_every = args_few_shot.train_every
-    args.checkpoint_every = args_few_shot.checkpoint_every
-    args.checkpoint_path = args_few_shot.checkpoint_path
-
-    ckpt_path = pathlib.Path(args_few_shot.checkpoint_path)
-    args.num_envs = 1
     torch.set_num_threads(1)
 
     # Initialize Fabric
@@ -264,6 +252,23 @@ def main():
         fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
+
+    state = fabric.load(args_few_shot.checkpoint_path)
+    ckpt_path = pathlib.Path(args_few_shot.checkpoint_path)
+    if args_few_shot.is_few_shot:
+        args_few_shot = P2EFewShotArgs(**state["args_few_shot"])
+    args = P2EArgs(**state["args"])
+    args.total_steps = args_few_shot.total_steps
+    args.buffer_size = args_few_shot.buffer_size
+    args.learning_starts = args_few_shot.learning_starts
+    args.train_every = args_few_shot.train_every
+    args.checkpoint_every = args_few_shot.checkpoint_every
+    args.checkpoint_path = args_few_shot.checkpoint_path
+    args.num_envs = 1
+    if not args_few_shot.is_few_shot:
+        state["global_step"] = 1
+        state["expl_decay_steps"] = 0
+
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
@@ -314,7 +319,6 @@ def main():
     action_dim = env.action_space.shape[0] if is_continuous else env.action_space.n
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
-
     world_model, actor_task, critic_task = build_models(
         fabric,
         action_dim,
@@ -346,9 +350,9 @@ def main():
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_task_optimizer.load_state_dict(state["actor_task_optimizer"])
         critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])
-    world_optimizer,
-    actor_task_optimizer,
-    critic_task_optimizer = fabric.setup_optimizers(world_optimizer, actor_task_optimizer, critic_task_optimizer)
+    world_optimizer, actor_task_optimizer, critic_task_optimizer = fabric.setup_optimizers(
+        world_optimizer, actor_task_optimizer, critic_task_optimizer
+    )
 
     # Metrics
     with device:
@@ -357,8 +361,8 @@ def main():
                 "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
                 "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
                 "Time/step_per_second": MeanMetric(sync_on_compute=False),
-                "Loss/value_task_loss_task": MeanMetric(sync_on_compute=False),
-                "Loss/policy_task_loss_task": MeanMetric(sync_on_compute=False),
+                "Loss/value_task_loss": MeanMetric(sync_on_compute=False),
+                "Loss/policy_task_loss": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/actor_task": MeanMetric(sync_on_compute=False),
                 "Grads/critic_task": MeanMetric(sync_on_compute=False),
@@ -409,22 +413,14 @@ def main():
     player.init_states()
 
     for global_step in range(start_step, num_updates + 1):
-        # Sample an action given the observation received by the environment
-        if global_step < learning_starts and args.checkpoint_path is None:
-            real_actions = actions = np.array(env.action_space.sample())
-            if not is_continuous:
-                actions = F.one_hot(torch.tensor(actions), action_dim).numpy()
-        else:
-            with torch.no_grad():
-                real_actions = actions = player.get_exploration_action(
-                    obs[None, ...].to(device) / 255 - 0.5, is_continuous
-                )
-                actions = actions.cpu().numpy()
-                real_actions = real_actions.cpu().numpy()
-                if is_continuous:
-                    real_actions = real_actions.reshape(action_dim)
-                else:
-                    real_actions = real_actions.argmax()
+        with torch.no_grad():
+            real_actions = actions = player.get_exploration_action(obs[None, ...].to(device) / 255 - 0.5, is_continuous)
+            actions = actions.cpu().numpy()
+            real_actions = real_actions.cpu().numpy()
+            if is_continuous:
+                real_actions = real_actions.reshape(action_dim)
+            else:
+                real_actions = real_actions.argmax()
         next_obs, rewards, dones, truncated, infos = env.step(real_actions)
         dones = np.logical_or(dones, truncated)
 
@@ -475,7 +471,7 @@ def main():
                     world_model=world_model,
                     actor_task=actor_task,
                     critic_task=critic_task,
-                    actor_task_optimizer=actor_task,
+                    actor_task_optimizer=actor_task_optimizer,
                     critic_task_optimizer=critic_task_optimizer,
                     data=local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
                     aggregator=aggregator,
@@ -508,6 +504,7 @@ def main():
                 "critic_task_optimizer": critic_task_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "args_few_shot": asdict(args_few_shot),
+                "args": args,
                 "global_step": global_step * fabric.world_size,
                 "batch_size": args.per_rank_batch_size * fabric.world_size,
             }
