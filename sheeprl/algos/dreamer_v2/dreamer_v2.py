@@ -253,7 +253,7 @@ def train(
 
     if args.use_continues and world_model.continue_model:
         done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
-        true_first = (1 - data["dones"]).view_like(done_mask)
+        true_first = (1 - data["dones"]).flatten().reshape(1, -1, 1)
         done_mask = torch.cat((true_first, done_mask[1:]))
     else:
         done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
