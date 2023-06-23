@@ -28,7 +28,7 @@ class DreamerV2Args(StandardArgs):
     actor_lr: float = Arg(default=8e-5, help="the learning rate of the optimizer of the actor")
     critic_lr: float = Arg(default=2e-4, help="the learning rate of the optimizer of the critic")
     horizon: int = Arg(default=15, help="the number of imagination step")
-    gamma: float = Arg(default=0.99, help="the discount factor gamma")
+    gamma: float = Arg(default=0.999, help="the discount factor gamma")
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
     use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=32, help="the dimension of the stochastic state")

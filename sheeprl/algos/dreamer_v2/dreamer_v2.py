@@ -1,3 +1,4 @@
+import copy
 import os
 import pathlib
 import time
@@ -162,7 +163,7 @@ def train(
 
     # compute predictions for terminal steps, if required
     if args.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
+        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
         qc = continue_targets = None
@@ -530,7 +531,7 @@ def main():
                 else:
                     real_actions = real_actions.argmax()
 
-        step_data["is_first"] = dones
+        step_data["is_first"] = copy.deepcopy(step_data["dones"])
         next_obs, rewards, dones, truncated, infos = env.step(real_actions)
         dones = np.logical_or(dones, truncated)
 
