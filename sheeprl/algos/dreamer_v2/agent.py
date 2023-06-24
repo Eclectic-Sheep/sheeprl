@@ -372,7 +372,7 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         actions = self.get_greedy_action(obs)
-        if is_continuous:
+        if is_continuous and self.expl_amount > 0.0:
             actions = torch.clip(Normal(actions, self.expl_amount).sample(), -1, 1)
         else:
             sample = OneHotCategorical(logits=torch.zeros_like(actions)).sample().to(self.device)
