@@ -99,6 +99,7 @@ def train(
     observation_shape = data["observations"].shape[-3:]
     device = fabric.device
     batch_obs = data["observations"] / 255 - 0.5
+    data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
@@ -178,7 +179,7 @@ def train(
         data["rewards"],
         priors_logits,
         posteriors_logits,
-        args.kl__balancing_alpha,
+        args.kl_balancing_alpha,
         args.kl_free_nats,
         args.kl_free_avg,
         args.kl_regularizer,
