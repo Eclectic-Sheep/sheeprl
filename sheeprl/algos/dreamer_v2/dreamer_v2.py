@@ -99,6 +99,7 @@ def train(
     observation_shape = data["observations"].shape[-3:]
     device = fabric.device
     batch_obs = data["observations"] / 255 - 0.5
+    data["is_first"] = torch.zeros_like(data["is_first"])
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
@@ -177,8 +178,8 @@ def train(
         batch_obs,
         qr,
         data["rewards"],
-        priors_logits,
-        posteriors_logits,
+        priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
+        posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
         args.kl_balancing_alpha,
         args.kl_free_nats,
         args.kl_free_avg,
