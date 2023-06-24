@@ -41,12 +41,13 @@ def reconstruction_loss(
     rewards: Tensor,
     priors_logits: Tensor,
     posteriors_logits: Tensor,
+    kl_balancing_alpha: float = 0.8,
     kl_free_nats: float = 0.0,
     kl_free_avg: bool = True,
     kl_regularizer: float = 1.0,
     qc: Optional[Distribution] = None,
     dones: Optional[Tensor] = None,
-    continue_scale_factor: float = 10.0,
+    continue_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 10 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
@@ -58,6 +59,8 @@ def reconstruction_loss(
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
         posteriors_logits (Tensor): the logits of the posterior.
+        kl_balancing_alpha (float): the kl-balancing alpha value.
+            Defaults to 0.8.
         kl_free_nats (float): lower bound of the KL divergence.
             Default to 0.0.
         kl_regularizer (float): scale factor of the KL divergence.
@@ -96,9 +99,9 @@ def reconstruction_loss(
     else:
         loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
         loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
-    state_loss = 0.8 * loss_lhs + (1 - 0.8) * loss_rhs
+    kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
     if qc is not None and dones is not None:
         continue_loss = continue_scale_factor * -qc.log_prob(dones).mean()
-    reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
-    return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
+    reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
+    return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss

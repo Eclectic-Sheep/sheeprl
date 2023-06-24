@@ -178,6 +178,7 @@ def train(
         data["rewards"],
         priors_logits,
         posteriors_logits,
+        args.kl__balancing_alpha,
         args.kl_free_nats,
         args.kl_free_avg,
         args.kl_regularizer,
@@ -209,7 +210,7 @@ def train(
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
 
     # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
-    imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
 
     # initialize the tensor of the imagined states
     imagined_trajectories = torch.empty(
@@ -218,7 +219,7 @@ def train(
         args.stochastic_size * args.discrete_size + args.recurrent_state_size,
         device=device,
     )
-    imagined_trajectories[0] = imagined_latent_states
+    imagined_trajectories[0] = imagined_latent_state
 
     # initialize the tensor of the imagined actions
     imagined_actions = torch.empty(
@@ -232,7 +233,7 @@ def train(
     # imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions, _ = actor(imagined_latent_states.detach())
+        actions, _ = actor(imagined_latent_state.detach())
         imagined_actions[i] = actions
 
         # imagination step
@@ -240,8 +241,8 @@ def train(
 
         # update current state
         imagined_prior = imagined_prior.view(1, -1, args.stochastic_size * args.discrete_size)
-        imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_states
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories[i] = imagined_latent_state
 
     # predict values and rewards
     # it is necessary an Independent distribution because
@@ -309,7 +310,8 @@ def train(
     # actor optimization step
     actor_optimizer.zero_grad(set_to_none=True)
     # compute the policy loss
-    policy_loss = actor_loss(discount[:-2] * lambda_values[1:])
+    entropy = args.actor_ent_coef * actor(imagined_trajectories[:-2].detach())[1].entropy()
+    policy_loss = actor_loss(discount[:-2] * (lambda_values[1:] + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         fabric.clip_gradients(
@@ -348,7 +350,6 @@ def main():
     parser = HfArgumentParser(DreamerV2Args)
     args: DreamerV2Args = parser.parse_args_into_dataclasses()[0]
     args.num_envs = 1
-    args.env_id = "dmc_walker_walk"
     torch.set_num_threads(1)
 
     # Initialize Fabric
@@ -472,9 +473,7 @@ def main():
         aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = (
-        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
-    )
+    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
     rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
@@ -489,11 +488,11 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
-    learning_starts = (args.learning_starts // (fabric.world_size * args.action_repeat)) if not args.dry_run else 0
+    step_before_training = args.train_every // fabric.world_size if not args.dry_run else 0
+    num_updates = int(args.total_steps // fabric.world_size) if not args.dry_run else 1
+    learning_starts = args.learning_starts // fabric.world_size if not args.dry_run else 0
     if args.checkpoint_path and not args.checkpoint_buffer:
-        learning_starts = start_step + args.learning_starts // int(fabric.world_size * args.action_repeat)
+        learning_starts = start_step + args.learning_starts // int(fabric.world_size)
     max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
     if args.checkpoint_path:
         player.expl_amount = polynomial_decay(
@@ -515,7 +514,7 @@ def main():
     gradient_steps = 0
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step < learning_starts and args.checkpoint_path is None:
+        if global_step <= learning_starts and args.checkpoint_path is None:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
                 actions = F.one_hot(torch.tensor(actions), action_dim).numpy()
@@ -568,12 +567,12 @@ def main():
         step_before_training -= 1
 
         # Train the agent
-        if global_step > learning_starts and step_before_training <= 0:
+        if global_step >= learning_starts and step_before_training <= 0:
             fabric.barrier()
             local_data = rb.sample(
                 args.per_rank_batch_size,
                 sequence_length=args.per_rank_sequence_length,
-                n_samples=args.gradient_steps,
+                n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
@@ -594,7 +593,7 @@ def main():
                     args,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
+            step_before_training = args.train_every // (args.num_envs * fabric.world_size)
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
@@ -604,8 +603,10 @@ def main():
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.update(
+            "Time/step_per_second", int(global_step * args.action_repeat / (time.perf_counter() - start_time))
+        )
+        fabric.log_dict(aggregator.compute(), global_step * args.action_repeat)
         aggregator.reset()
 
         # Checkpoint Model
