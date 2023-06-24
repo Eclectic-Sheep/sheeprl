@@ -38,7 +38,7 @@ class DreamerV2Args(StandardArgs):
     discrete_size: int = Arg(default=32, help="the dimension of the discrete state")
     hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
     recurrent_state_size: int = Arg(default=200, help="the dimension of the recurrent state")
-    kl__balancing_alpha: float = Arg(default=0.8, help="the value for the kl-balancing alpha")
+    kl_balancing_alpha: float = Arg(default=0.8, help="the value for the kl-balancing alpha")
     kl_free_nats: float = Arg(default=1.0, help="the minimum value for the kl divergence")
     kl_free_avg: bool = Arg(default=True, help="whether to apply free average")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
