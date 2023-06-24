@@ -18,6 +18,7 @@ from torch.distributions import (
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.utils.distribution import TruncatedNormal
 
 
 class RecurrentModel(nn.Module):
@@ -183,8 +184,6 @@ class Actor(nn.Module):
         action_dim (int): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
-        mean_scale (float): how much to scale the mean.
-            Default to 1.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 5.
         min_std (float): the minimum standard deviation for the actions.
@@ -193,6 +192,9 @@ class Actor(nn.Module):
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
+        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal` and
+            `trunc_normal`.
+            Defaults to `auto`.
     """
 
     def __init__(
@@ -200,14 +202,25 @@ class Actor(nn.Module):
         latent_state_size: int,
         action_dim: int,
         is_continuous: bool,
-        mean_scale: float = 5.0,
-        init_std: float = 5.0,
-        min_std: float = 1e-4,
+        init_std: float = 0.0,
+        min_std: float = 0.1,
         dense_units: int = 400,
         dense_act: nn.Module = nn.ELU,
         mlp_layers: int = 4,
+        distribution: str = "auto",
     ) -> None:
         super().__init__()
+        self.distribution = distribution.lower()
+        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
+            raise ValueError(
+                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
+                f"Found: {self.distribution}"
+            )
+        if self.distribution == "discrete" and is_continuous:
+            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        if self.distribution == "auto":
+            self.distribution = "trunc_normal"
+            is_continuous = True
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=action_dim * 2 if is_continuous else action_dim,
@@ -217,9 +230,7 @@ class Actor(nn.Module):
         )
         self.action_dim = action_dim
         self.is_continuous = is_continuous
-        self.mean_scale = torch.tensor(mean_scale)
         self.init_std = torch.tensor(init_std)
-        self.raw_init_std = torch.log(torch.exp(self.init_std) - 1)
         self.min_std = min_std
 
     def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Tensor, Distribution]:
@@ -237,10 +248,18 @@ class Actor(nn.Module):
         out: Tensor = self.model(state)
         if self.is_continuous:
             mean, std = torch.chunk(out, 2, -1)
-            mean = self.mean_scale * torch.tanh(mean / self.mean_scale)
-            std = F.softplus(std + self.raw_init_std) + self.min_std
-            actions_dist = Normal(mean, std)
-            actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+            if self.distribution == "tanh_normal":
+                mean = 5 * torch.tanh(mean / 5)
+                std = F.softplus(std + self.init_std) + self.min_std
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+            elif self.distribution == "normal":
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
+            elif self.distribution == "trunc_normal":
+                std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                actions_dist = Independent(dist, 1)
             if is_training:
                 actions = actions_dist.rsample()
             else:
@@ -447,14 +466,14 @@ def build_models(
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder_output_size,
         output_dim=stochastic_size,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
         output_dim=stochastic_size,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
@@ -506,7 +525,6 @@ def build_models(
         stochastic_size + args.recurrent_state_size,
         action_dim,
         is_continuous,
-        args.actor_mean_scale,
         args.actor_init_std,
         args.actor_min_std,
         args.dense_units,
