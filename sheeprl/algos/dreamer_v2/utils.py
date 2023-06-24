@@ -125,7 +125,7 @@ def compute_stochastic_state(
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
     dist = Independent(OneHotCategoricalStraightThrough(logits=logits), event_shape)
-    return dist.sample()
+    return dist.rsample()
 
 
 def compute_lambda_values(
