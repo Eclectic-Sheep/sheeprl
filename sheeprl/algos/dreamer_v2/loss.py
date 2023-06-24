@@ -46,7 +46,7 @@ def reconstruction_loss(
     kl_free_avg: bool = True,
     kl_regularizer: float = 1.0,
     qc: Optional[Distribution] = None,
-    dones: Optional[Tensor] = None,
+    continues: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
@@ -101,7 +101,7 @@ def reconstruction_loss(
         loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
-    if qc is not None and dones is not None:
-        continue_loss = continue_scale_factor * -qc.log_prob(dones).mean()
+    if qc is not None and continues is not None:
+        continue_loss = continue_scale_factor * -qc.log_prob(continues).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
