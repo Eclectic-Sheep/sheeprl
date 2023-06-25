@@ -16,14 +16,14 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
-from torch.distributions import Bernoulli, Independent, Normal
+from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.loss import actor_loss, critic_loss, reconstruction_loss
+from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_lambda_values, make_env, test
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
@@ -49,6 +49,7 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: DreamerV2Args,
+    is_continuous: bool,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -311,9 +312,14 @@ def train(
 
     # actor optimization step
     actor_optimizer.zero_grad(set_to_none=True)
-    # compute the policy loss
-    entropy = args.actor_ent_coef * actor(imagined_trajectories[:-2].detach())[1].entropy()
-    policy_loss = actor_loss(discount[:-2] * (lambda_values[1:] + entropy.unsqueeze(-1)))
+    policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
+    entropy = args.actor_ent_coef * policy.entropy()
+    if is_continuous:
+        objective = lambda_values[1:]
+    else:
+        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+        objective = policy.log_prob(imagined_actions[1:-1].detach()).unsqueeze(-1) * advantage
+    policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         fabric.clip_gradients(
@@ -332,7 +338,7 @@ def train(
     # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
     # it is necessary to remove the last dimension properly match the shapes
     # for the log prob
-    value_loss = critic_loss(qv, lambda_values.detach(), discount[:-1, ..., 0])
+    value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         fabric.clip_gradients(
@@ -595,6 +601,7 @@ def main():
                     local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
                     aggregator,
                     args,
+                    is_continuous,
                 )
                 gradient_steps += 1
             step_before_training = args.train_every // (args.num_envs * fabric.world_size)

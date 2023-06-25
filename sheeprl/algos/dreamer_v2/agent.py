@@ -11,6 +11,7 @@ from torch.distributions import (
     Independent,
     Normal,
     OneHotCategorical,
+    OneHotCategoricalStraightThrough,
     TanhTransform,
     TransformedDistribution,
 )
@@ -219,8 +220,10 @@ class Actor(nn.Module):
         if self.distribution == "discrete" and is_continuous:
             raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
         if self.distribution == "auto":
-            self.distribution = "trunc_normal"
-            is_continuous = True
+            if is_continuous:
+                self.distribution = "trunc_normal"
+            else:
+                self.distribution = "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=action_dim * 2 if is_continuous else action_dim,
@@ -267,9 +270,9 @@ class Actor(nn.Module):
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
         else:
-            actions_dist = OneHotCategorical(logits=out)
+            actions_dist = OneHotCategoricalStraightThrough(logits=out)
             if is_training:
-                actions = actions_dist.sample() + actions_dist.probs - actions_dist.probs.detach()
+                actions = actions_dist.rsample()
             else:
                 actions = actions_dist.mode
         return actions, actions_dist

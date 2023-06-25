@@ -75,9 +75,10 @@ def make_env(
                 screen_size=64,
                 grayscale_obs=args.grayscale_obs,
                 scale_obs=False,
-                terminal_on_life_loss=True,
+                terminal_on_life_loss=False,
                 grayscale_newaxis=True,
             )
+            env = gym.wrappers.TimeLimit(env, 27000)
         else:
             env = ActionRepeat(env, args.action_repeat)
             if isinstance(env.observation_space, gym.spaces.Box) or len(env.observation_space.shape) < 3:
