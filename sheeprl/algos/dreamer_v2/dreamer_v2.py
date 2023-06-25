@@ -509,6 +509,7 @@ def main():
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, action_dim)
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
+    step_data["is_first"] = copy.deepcopy(step_data["dones"])
     step_data["observations"] = obs
     rb.add(step_data[None, ...])
     player.init_states()
@@ -562,6 +563,7 @@ def main():
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, action_dim)
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
+            step_data["is_first"] = copy.deepcopy(step_data["dones"])
             step_data["observations"] = obs
             rb.add(step_data[None, ...])
             player.init_states()

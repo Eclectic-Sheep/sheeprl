@@ -59,7 +59,7 @@ class RSSM(nn.Module):
 
     Args:
         recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multu-layer perceptron to compute the stochastic part of the latent state.
+        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
             For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
@@ -340,14 +340,12 @@ class Player(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-
         self.expl_amount = expl_amount
         self.action_dim = action_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-
         self.init_states()
 
     def init_states(self) -> None:
