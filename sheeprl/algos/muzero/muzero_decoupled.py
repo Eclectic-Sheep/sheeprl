@@ -655,7 +655,7 @@ def main():
 
     world_collective = TorchCollective()
     world_collective.setup(
-        backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo",
+        backend="gloo",
         timeout=timedelta(days=1),
     )
 
