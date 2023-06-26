@@ -476,14 +476,14 @@ def build_models(
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.output_size,
         output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
         output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )

@@ -32,6 +32,7 @@ class DreamerV1Args(StandardArgs):
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
     use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=30, help="the dimension of the stochastic state")
+    hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
     recurrent_state_size: int = Arg(default=200, help="the dimension of the recurrent state")
     kl_free_nats: float = Arg(default=3.0, help="the minimum value for the kl divergence")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
