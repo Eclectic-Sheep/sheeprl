@@ -54,6 +54,30 @@ def make_env(
             frame_skip=args.action_repeat,
             seed=seed,
         )
+    elif "minedojo" in env_id.lower():
+        from sheeprl.envs.minedojo import MineDojoWrapper
+
+        task_id = "_".join(env_id.split("_")[1:])
+        start_position = (
+            {
+                "x": args.mine_start_position[0],
+                "y": args.mine_start_position[1],
+                "z": args.mine_start_position[2],
+                "pitch": args.mine_start_position[3],
+                "yaw": args.mine_start_position[4],
+            }
+            if args.mine_start_position is not None
+            else None
+        )
+        env = MineDojoWrapper(
+            task_id,
+            height=64,
+            width=64,
+            pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
+            seed=args.seed,
+            start_position=start_position,
+        )
+        env = ActionRepeat(env, args.action_repeat)
     else:
         env_spec = gym.spec(env_id).entry_point
         if "mujoco" in env_spec:
@@ -255,14 +279,16 @@ def cnn_forward(
 
 
 @torch.no_grad()
-def test(player: "Player", fabric: Fabric, args: DreamerV1Args):
+def test(player: "Player", fabric: Fabric, args: DreamerV1Args, test_name: str = ""):
     """Test the model on the environment with the frozen model.
 
     Args:
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
     """
-    env: gym.Env = make_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test")
+    env: gym.Env = make_env(
+        args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
+    )
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)

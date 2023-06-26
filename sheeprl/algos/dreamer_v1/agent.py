@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +10,50 @@ from torch.distributions import Independent, Normal, OneHotCategorical, TanhTran
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.utils.model import ArgsType, ModuleType
+
+
+class Encoder(nn.Module):
+    """The wrapper class for the encoder.
+
+    Args:
+        input_channels (int): the number of channels in input.
+        hidden_channels (Sequence[int]): the hidden channels of the CNN.
+        layer_args (ArgsType): the args of the layers of the CNN.
+        activation (Optional[Union[ModuleType, Sequence[ModuleType]]]): the activation function to use in the CNN.
+            Default nn.ReLU.
+        observation_shape (Tuple[int, int, int]): the dimension of the observations, channels first.
+            Default to (3, 64, 64).
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: Sequence[int],
+        layer_args: ArgsType,
+        activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
+        observation_shape: Tuple[int, int, int] = (3, 64, 64),
+    ) -> None:
+        super().__init__()
+        self._module = nn.Sequential(
+            CNN(
+                input_channels=input_channels,
+                hidden_channels=hidden_channels,
+                layer_args=layer_args,
+                activation=activation,
+            ),
+            nn.Flatten(-3, -1),
+        )
+        self._observation_shape = observation_shape
+        with torch.no_grad():
+            self._output_size = self._module(torch.zeros(*observation_shape)).shape[-1]
+
+    @property
+    def output_size(self) -> None:
+        return self._output_size
+
+    def forward(self, x) -> Tensor:
+        return self._module(x)
 
 
 class RecurrentModel(nn.Module):
@@ -181,6 +225,8 @@ class Actor(nn.Module):
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
+        num_layers (int): the number of MLP layers.
+            Default to 4.
     """
 
     def __init__(
@@ -193,12 +239,13 @@ class Actor(nn.Module):
         min_std: float = 1e-4,
         dense_units: int = 400,
         dense_act: nn.Module = nn.ELU,
+        num_layers: int = 4,
     ) -> None:
         super().__init__()
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=action_dim * 2 if is_continuous else action_dim,
-            hidden_sizes=[dense_units, dense_units, dense_units, dense_units],
+            hidden_sizes=[dense_units] * num_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -384,13 +431,19 @@ def build_models(
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
         args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
+        world_model_state (Dict[str, Tensor]): the state of the world model.
+            Default to None.
+        actor_state (Dict[str, Tensor]): the state of the actor.
+            Default to None.
+        critic_state (Dict[str, Tensor]): the state of the critic.
+            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs else 3
+    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -411,29 +464,26 @@ def build_models(
         )
 
     # Define models
-    encoder = nn.Sequential(
-        CNN(
-            input_channels=n_obs_channels,
-            hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
-            layer_args={"kernel_size": 4, "stride": 2},
-            activation=cnn_act,
-        ),
-        nn.Flatten(-3, -1),
+    encoder = Encoder(
+        input_channels=n_obs_channels,
+        hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
+        layer_args={"kernel_size": 4, "stride": 2},
+        activation=cnn_act,
+        observation_shape=observation_shape,
     )
-    with torch.no_grad():
-        encoder_output_size = encoder(torch.zeros(*observation_shape)).shape[-1]
+
     recurrent_model = RecurrentModel(action_dim + args.stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder_output_size,
+        input_dims=args.recurrent_state_size + encoder.output_size,
         output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
         output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.recurrent_state_size],
+        hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
@@ -444,10 +494,10 @@ def build_models(
         args.min_std,
     )
     observation_model = nn.Sequential(
-        nn.Linear(args.stochastic_size + args.recurrent_state_size, encoder_output_size),
-        nn.Unflatten(1, (encoder_output_size, 1, 1)),
+        nn.Linear(args.stochastic_size + args.recurrent_state_size, encoder.output_size),
+        nn.Unflatten(1, (encoder.output_size, 1, 1)),
         DeCNN(
-            input_channels=encoder_output_size,
+            input_channels=encoder.output_size,
             hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
             layer_args=[
                 {"kernel_size": 5, "stride": 2},
@@ -461,7 +511,7 @@ def build_models(
     reward_model = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units, args.dense_units],
+        hidden_sizes=[args.dense_units] * args.num_layers,
         activation=dense_act,
         flatten_dim=None,
     )
@@ -469,7 +519,7 @@ def build_models(
         continue_model = MLP(
             input_dims=args.stochastic_size + args.recurrent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units, args.dense_units, args.dense_units],
+            hidden_sizes=[args.dense_units] * args.num_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -489,11 +539,12 @@ def build_models(
         args.actor_min_std,
         args.dense_units,
         dense_act,
+        args.num_layers,
     )
     critic = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units, args.dense_units, args.dense_units],
+        hidden_sizes=[args.dense_units] * args.num_layers,
         activation=dense_act,
         flatten_dim=None,
     )

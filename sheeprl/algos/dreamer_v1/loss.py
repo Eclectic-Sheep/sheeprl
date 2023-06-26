@@ -1,7 +1,6 @@
 from typing import Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Distribution
 from torch.distributions.kl import kl_divergence
@@ -45,7 +44,7 @@ def reconstruction_loss(
     kl_free_nats: float = 3.0,
     kl_regularizer: float = 1.0,
     qc: Optional[Distribution] = None,
-    dones: Optional[Tensor] = None,
+    continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 10.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
@@ -65,7 +64,7 @@ def reconstruction_loss(
         qc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
             0s for the entries that are relative to a terminal step, 1s otherwise.
             Default to None.
-        dones (Tensor, optional): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        continue_targets (Tensor, optional): 1s for the entries that are relative to a terminal step, 0s otherwise.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
@@ -78,11 +77,11 @@ def reconstruction_loss(
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
     device = observations.device
-    continue_loss = torch.tensor(0, device=device)
     observation_loss = -qo.log_prob(observations).mean()
     reward_loss = -qr.log_prob(rewards).mean()
     state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl_divergence(p, q).mean())
-    if qc is not None and dones is not None:
-        continue_loss = continue_scale_factor * F.binary_cross_entropy(qc.probs, dones)
+    continue_loss = torch.tensor(0, device=device)
+    if qc is not None and continue_targets is not None:
+        continue_loss = continue_scale_factor * qc.log_prob(continue_targets)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
