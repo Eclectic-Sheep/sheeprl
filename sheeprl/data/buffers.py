@@ -94,6 +94,7 @@ class ReplayBuffer:
                 "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
                 "`sequence_length` and `n_envs` should be 1. Shape is: {}".format(data.shape)
             )
+        data = data.to(self.device)
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
         if next_pos < self._pos or (data_len >= self._buffer_size and not self._full):
