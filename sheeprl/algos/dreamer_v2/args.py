@@ -51,6 +51,12 @@ class DreamerV2Args(StandardArgs):
         default=0.0, help="the amout to sum to the input of the function of the standard deviation of the actions"
     )
     actor_min_std: float = Arg(default=0.1, help="the minimum standard deviation for the actions")
+    actor_distribution: str = Arg(
+        default="auto",
+        help="the actor distribution. One can chose between `auto`, `discrete` (one-hot categorical), "
+        "`normal`, `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be a one-hot categorical if "
+        "the action space is discrete, otherwise it will be a truncated normal distribution.",
+    )
     clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
     mlp_layers: int = Arg(
