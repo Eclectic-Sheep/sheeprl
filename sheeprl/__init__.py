@@ -10,6 +10,7 @@ if not _IS_TORCH_GREATER_EQUAL_2_0:
 from sheeprl.algos.dreamer_v1 import dreamer_v1
 from sheeprl.algos.dreamer_v2 import dreamer_v2
 from sheeprl.algos.droq import droq
+from sheeprl.algos.p2e import p2e
 from sheeprl.algos.ppo import ppo, ppo_decoupled
 from sheeprl.algos.ppo_continuous import ppo_continuous
 from sheeprl.algos.ppo_pixel import ppo_pixel_continuous

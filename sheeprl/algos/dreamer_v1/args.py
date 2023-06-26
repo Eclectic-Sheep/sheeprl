@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from sheeprl.algos.args import StandardArgs
 from sheeprl.utils.parser import Arg
@@ -32,6 +32,7 @@ class DreamerV1Args(StandardArgs):
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
     use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=30, help="the dimension of the stochastic state")
+    hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
     recurrent_state_size: int = Arg(default=200, help="the dimension of the recurrent state")
     kl_free_nats: float = Arg(default=3.0, help="the minimum value for the kl divergence")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
@@ -46,6 +47,10 @@ class DreamerV1Args(StandardArgs):
     actor_min_std: float = Arg(default=1e-4, help="the minimum standard deviation for the actions")
     clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
+    num_layers: int = Arg(
+        default=4,
+        help="the number of MLP layers for every model: actor, critic, reward and possibly the continue model",
+    )
     cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="ELU",
@@ -74,3 +79,8 @@ class DreamerV1Args(StandardArgs):
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
+    mine_min_pitch: int = Arg(default=-60, help="The minimum value of pitch in Minecraft environmnets.")
+    mine_max_pitch: int = Arg(default=60, help="The maximum value of pitch in Minecraft environmnets.")
+    mine_start_position: Optional[List[float]] = Arg(
+        default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
+    )
