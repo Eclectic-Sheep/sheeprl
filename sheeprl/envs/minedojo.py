@@ -74,7 +74,7 @@ class MineDojoWrapper(core.Env):
         return getattr(self._env, name)
 
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
-        action = ACTION_MAP[int(action)]
+        action = copy.deepcopy(ACTION_MAP[int(action)])
         if self._sticky_attack:
             if action[5] == 3:
                 self._sticky_attack_counter = self._sticky_attack
@@ -109,6 +109,7 @@ class MineDojoWrapper(core.Env):
         self.action_space.seed(seed)
 
     def step(self, action: np.ndarray) -> Dict[str, Any]:
+        a = action
         action = self._convert_action(action)
         next_pitch = self._pos["pitch"] + (action[3] - 12) * 15
         if not (self._pitch_limits[0] <= next_pitch <= self._pitch_limits[1]):
@@ -116,18 +117,22 @@ class MineDojoWrapper(core.Env):
 
         obs, reward, done, info = self._env.step(action)
         self._pos = {
-            "x": obs["location_stats"]["pos"][0],
-            "y": obs["location_stats"]["pos"][1],
-            "z": obs["location_stats"]["pos"][2],
-            "pitch": obs["location_stats"]["pitch"].item(),
-            "yaw": obs["location_stats"]["yaw"].item(),
+            "x": float(obs["location_stats"]["pos"][0]),
+            "y": float(obs["location_stats"]["pos"][1]),
+            "z": float(obs["location_stats"]["pos"][2]),
+            "pitch": float(obs["location_stats"]["pitch"].item()),
+            "yaw": float(obs["location_stats"]["yaw"].item()),
         }
-        info["life_stats"] = {
-            "life": obs["life_stats"]["life"],
-            "oxygen": obs["life_stats"]["oxygen"],
-            "food": obs["life_stats"]["food"],
+        info = {
+            "life_stats": {
+                "life": float(obs["life_stats"]["life"].item()),
+                "oxygen": float(obs["life_stats"]["oxygen"].item()),
+                "food": float(obs["life_stats"]["food"].item()),
+            },
+            "location_stats": copy.deepcopy(self._pos),
+            "action": int(a.item()),
+            "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
-        info["location_stats"] = copy.deepcopy(self._pos)
         return obs["rgb"], reward, done, False, info
 
     def reset(
@@ -135,17 +140,17 @@ class MineDojoWrapper(core.Env):
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         obs = self._env.reset()
         self._pos = {
-            "x": obs["location_stats"]["pos"][0],
-            "y": obs["location_stats"]["pos"][1],
-            "z": obs["location_stats"]["pos"][2],
-            "pitch": obs["location_stats"]["pitch"].item(),
-            "yaw": obs["location_stats"]["yaw"].item(),
+            "x": float(obs["location_stats"]["pos"][0]),
+            "y": float(obs["location_stats"]["pos"][1]),
+            "z": float(obs["location_stats"]["pos"][2]),
+            "pitch": float(obs["location_stats"]["pitch"].item()),
+            "yaw": float(obs["location_stats"]["yaw"].item()),
         }
         return obs["rgb"], {
             "life_stats": {
-                "life": obs["life_stats"]["life"],
-                "oxygen": obs["life_stats"]["oxygen"],
-                "food": obs["life_stats"]["food"],
+                "life": float(obs["life_stats"]["life"].item()),
+                "oxygen": float(obs["life_stats"]["oxygen"].item()),
+                "food": float(obs["life_stats"]["food"].item()),
             },
             "location_stats": copy.deepcopy(self._pos),
         }
