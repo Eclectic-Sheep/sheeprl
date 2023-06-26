@@ -6,34 +6,6 @@ from torch.distributions import Distribution, Independent, OneHotCategoricalStra
 from torch.distributions.kl import kl_divergence
 
 
-def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Tensor:
-    """
-    Compute the critic loss as described in Eq. 8 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-
-    Args:
-        qv (Distribution): the predicted distribution of the values.
-        lambda_values (Tensor): the lambda values computed from the imagined states.
-        discount (Tensor): the discount to apply to the loss.
-
-    Returns:
-        The tensor of the critic loss.
-    """
-    return -torch.mean(discount * qv.log_prob(lambda_values))
-
-
-def actor_loss(lambda_values: Tensor) -> Tensor:
-    """
-    Compute the actor loss as described in Eq. 7 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-
-    Args:
-        lambda_values (Tensor): the lambda values computed on the predictions in the latent space.
-
-    Returns:
-        The tensor of the actor loss.
-    """
-    return -torch.mean(lambda_values)
-
-
 def reconstruction_loss(
     qo: Distribution,
     observations: Tensor,
