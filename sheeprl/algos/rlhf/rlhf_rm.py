@@ -31,7 +31,6 @@ from sheeprl.algos.rlhf.utils import (
 
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import EmptyInitOnDevice
 
 
 __all__ = ["main"]
@@ -127,10 +126,9 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     # Setup Model
-    with EmptyInitOnDevice(fabric.device):
-        model = CriticModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
-        model = model.to(fabric.device)
-        setup_finetuning(fabric=fabric, model=model, model_args=model_args)
+    model = CriticModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
+    setup_finetuning(fabric=fabric, model=model, model_args=model_args)
+    model = model.to(fabric.device)
 
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
 

@@ -48,7 +48,7 @@ class LoRAParametrization(nn.Module):
         return A * self.lora_dropout(self.lora_dropout_mask)  # type: ignore[operator]
 
     def lora_forward(self, X: torch.Tensor):
-        return X + torch.mm(*self.swap((self.lora_B, self.dropout_fn(self.lora_A)))) * self.scaling
+        return X + torch.matmul(*self.swap((self.lora_B, self.dropout_fn(self.lora_A)))) * self.scaling
 
     def forward(self, X: torch.Tensor):
         return self.forward_fn(X)
