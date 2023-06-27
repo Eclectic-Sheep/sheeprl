@@ -1,11 +1,13 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import lightning
 import warnings
 import json
 from lightning.fabric.fabric import torch
 
 from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs, TrainArgs
+from sheeprl.algos.rlhf.lora_utils import add_lora
+from sheeprl.algos.rlhf.models import CasualModel, CriticModel
 
 
 def log_text(fabric: lightning.Fabric, text: str, name: str, step: int):
@@ -16,7 +18,10 @@ def log_text(fabric: lightning.Fabric, text: str, name: str, step: int):
             warnings.warn(f"Logging text is not supported for {type(fabric.logger)}")
 
 
-def trainable_parameter_summary(fabric: lightning.Fabric, model: torch.nn.Module, show_names: bool = False):
+def trainable_parameter_summary(
+    model: torch.nn.Module, show_names: bool = False, fabric: Optional[lightning.Fabric] = None
+):
+    print_fn = fabric.print if fabric is not None else print
     trainable = {"int8": 0, "bf16": 0, "fp16": 0, "fp32": 0, "other": 0}
     non_trainable = {"int8": 0, "bf16": 0, "fp16": 0, "fp32": 0, "other": 0}
     param_count = {"trainable": trainable, "non_trainable": non_trainable}
@@ -40,14 +45,14 @@ def trainable_parameter_summary(fabric: lightning.Fabric, model: torch.nn.Module
             param_count[dict_name]["other"] += num_params
 
     if show_names:
-        fabric.print("Trainable parameter names:")
-        fabric.print(trainable_param_names)
-    fabric.print("Parameter dtypes:")
-    fabric.print(f"Trainable {trainable}")
-    fabric.print(f"Non-Trainable {non_trainable}")
+        print_fn("Trainable parameter names:")
+        print_fn(trainable_param_names)
+    print_fn("Parameter dtypes:")
+    print_fn(f"Trainable {trainable}")
+    print_fn(f"Non-Trainable {non_trainable}")
     total_params = sum([sum(v.values()) for v in param_count.values()])
     total_trainable_params = sum([v for k, v in param_count["trainable"].items()])
-    fabric.print(
+    print_fn(
         f"Total: {total_params}, Trainable: {total_trainable_params}, Percentage: {total_trainable_params/total_params:.2%}"
     )
 
@@ -71,15 +76,10 @@ def prepare_optimizer_parameters(model: torch.nn.Module, weight_decay: float) ->
     return optim_groups, num_decay_params, num_nodecay_params
 
 
-def load_model_args_from_json(experiment_dir: str):
+def load_args_from_json(experiment_dir: str):
     with open(os.path.join(experiment_dir, "args.json"), "r") as f:
         args_dict = json.load(f)
-    if "model_args" in args_dict:
-        model_args_dict = args_dict["model_args"]
-        model_args = ModelArgs(**model_args_dict)
-        return model_args
-    else:
-        raise ValueError("No model args found in args.json")
+    return args_dict
 
 
 def save_args_to_json(
@@ -98,8 +98,39 @@ def save_args_to_json(
     return args
 
 
-def get_last_checkpoint_path(experimet_dir: str):
-    model_dir = os.path.join(experimet_dir, "model")
+def get_last_checkpoint_path(experiment_dir: str):
+    model_dir = os.path.join(experiment_dir, "model")
     checkpoints = [os.path.join(model_dir, f) for f in os.listdir(model_dir) if f.endswith(".pt")]
     checkpoints = sorted(checkpoints, key=lambda x: int(x.split(".")[-2].split("-")[-1]))
     return checkpoints[-1]
+
+
+def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_args: ModelArgs):
+    finetune_mode = model_args.finetune_mode
+    if finetune_mode == "all":
+        fabric.print("Using all layer arameters for finetuning")
+        for param in model.parameters():
+            param.requires_grad = True
+
+    elif finetune_mode == "lora":
+        fabric.print("Adding LORA parameters for finetuning")
+        add_lora(model, model_args)
+
+    elif finetune_mode == "last_layer":
+        fabric.print("Using only head layer parameters for finetuning")
+        for name, param in model.named_parameters():
+            param.requires_grad = False
+        if isinstance(model, CasualModel):
+            if hasattr(model.model, "get_input_embeddings"):
+                model.model.get_input_embeddings().weight.requires_grad = True
+            else:
+                raise ValueError("No input embeddings found in model for finetuning. Cannot use head mode.")
+
+        elif isinstance(model, CriticModel):
+            for param in model.head.parameters():
+                param.requires_grad = True
+        else:
+            raise ValueError(f"Unknown model type {type(model)}")
+
+    else:
+        raise ValueError(f"Unknown finetuning mode {finetune_mode}")
