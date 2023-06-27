@@ -19,7 +19,6 @@ from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.args import OPT, GenerationArgs, ModelArgs, SFTArgs, TextDataArgs
 from sheeprl.algos.rlhf.data import SFTCollate
-from sheeprl.algos.rlhf.lora_utils import add_lora
 from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
@@ -27,6 +26,7 @@ from sheeprl.algos.rlhf.utils import (
     log_text,
     prepare_optimizer_parameters,
     save_args_to_json,
+    setup_finetuning,
     trainable_parameter_summary,
 )
 
@@ -100,14 +100,6 @@ def main():
         train_args = SFTArgs(data_dir="data/Dahoas/static-hh")
         model_args = OPT()
         gen_args = GenerationArgs()
-        # custom args if not using command line
-        train_args.learning_rate = 5e-5
-        train_args.epochs = 3
-        train_args.lr_warmup_steps = 200
-        train_args.micro_batch_size = 32
-        train_args.mini_batch_size = 32
-        train_args.save_interval = 3000
-        model_args.disable_dropout = False
 
     data_args_path = Path(train_args.data_dir) / "args.json"
     data_args = TextDataArgs.from_json(str(data_args_path))
@@ -142,14 +134,9 @@ def main():
     with EmptyInitOnDevice(fabric.device):
         model = CasualModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
         model = model.to(fabric.device)
-        if model_args.apply_lora:
-            add_lora(model, model_args)
-        else:
-            fabric.print("Not applying LORA, Finetuning all parameters")
-            for param in model.parameters():
-                param.requires_grad = True
+        setup_finetuning(fabric, model, model_args)
 
-    trainable_parameter_summary(fabric, model, show_names=False)
+    trainable_parameter_summary(model, show_names=False, fabric=fabric)
 
     # Setup Generation Config
     try:
