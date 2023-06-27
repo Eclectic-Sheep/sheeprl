@@ -252,8 +252,8 @@ def train(
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of values/rewards
     with torch.no_grad():
-        predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mean
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
+        predicted_target_values = target_critic(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
 
     if args.use_continues and world_model.continue_model:
         done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
