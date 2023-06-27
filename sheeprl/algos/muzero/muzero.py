@@ -172,7 +172,7 @@ class Node:
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
-        normalized_policy = torch.nn.functional.softmax(policy_logits)
+        normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
         for action in range(normalized_policy.numel()):
             self.children[action] = Node(normalized_policy[:, action].item(), device=hidden_state.device)
         self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
@@ -213,7 +213,7 @@ class Node:
             )
             node.hidden_state = hidden_state
             node.reward = reward
-            normalized_policy = torch.nn.functional.softmax(policy_logits)
+            normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             for action in range(normalized_policy.numel()):
                 node.children[action] = Node(normalized_policy.squeeze()[action].item(), device=normalized_policy.device)
 
@@ -320,13 +320,13 @@ def main():
         )
 
     # Local data
-    buffer_size = args.buffer_capacity // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
+    buffer_size = args.buffer_capacity // int(fabric.world_size) if not args.dry_run else 1
     rb = TrajectoryReplayBuffer(max_num_trajectories=buffer_size)  # TODO device=device, memmap=args.memmap_buffer)
 
     # Global variables
     start_time = time.perf_counter()
     num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
+    args.learning_starts = args.learning_starts // args.num_players if not args.dry_run else 0
 
     
     for update_step in range(1, num_updates + 1):
@@ -337,6 +337,7 @@ def main():
                 obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).view(
                     1, 3, 64, 64
                 )  # shape (1, C, H, W)
+                rew_sum = 0.0
 
             steps_data = None
             for trajectory_step in range(0, args.max_trajectory_len):
@@ -354,6 +355,7 @@ def main():
                 print(f"Mcts completed, action: {action}")
                 # Single environment step
                 next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+                rew_sum += reward
 
                 # Store the current step data
                 if steps_data is None:
@@ -385,17 +387,17 @@ def main():
                             ),
                         ],
                     )
-
-                if "episode" in info:
-                    fabric.print(f"Rank-{rank}: update_step={update_step}, reward={info['episode']['r'][0]}")
-                    aggregator.update("Rewards/rew_avg", info["episode"]["r"][0])
-                    aggregator.update("Game/ep_len_avg", info["episode"]["l"][0])
+                
 
                 if done or truncated:
                     break
                 else:
                     with device:
                         obs = torch.tensor(next_obs).view(1, 3, 64, 64)
+
+            fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
+            aggregator.update("Rewards/rew_avg", rew_sum)
+            aggregator.update("Game/ep_len_avg", trajectory_step)
             print("Finished episode")            
             rb.add(trajectory=steps_data)
 
@@ -405,8 +407,8 @@ def main():
                 # We sample one time to reduce the communications between processes
                 data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
 
-                target_rewards = data["rewards"].squeeze()
-                target_values = data["values"].squeeze(-1)
+                target_rewards = data["rewards"]
+                target_values = data["values"]
                 target_policies = data["policies"].squeeze()
                 observations = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
                 actions = data["actions"].squeeze(2)
