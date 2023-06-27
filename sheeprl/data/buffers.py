@@ -1,6 +1,7 @@
 import typing
 from typing import List, Optional, Union
 
+import numpy as np
 import torch
 from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -323,18 +324,19 @@ class EpisodeBuffer:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
         if sequence_length <= 0:
             raise ValueError(f"The sequence length must be greater than zero, got: {sequence_length}")
-        if buffer_size <= sequence_length:
+        if buffer_size < sequence_length:
             raise ValueError(
                 f"The sequence length must be lower than the buffer size, got: bs = {buffer_size} and sl = {sequence_length}"
             )
         self._buffer_size = buffer_size
         self._sequence_length = sequence_length
         self._buf = []
-        self._lengths = []
+        self._cum_lengths = []
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._chunk_length = torch.arange(sequence_length, device=self.device).reshape(1, -1)
 
     @property
     def buffer(self) -> Optional[List[TensorDictBase]]:
@@ -345,8 +347,56 @@ class EpisodeBuffer:
         return self._buffer_size
 
     @property
+    def sequence_length(self) -> int:
+        return self._sequence_length
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    @property
     def full(self) -> bool:
-        return len(self) + self._sequence_length >= self._buffer_size
+        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self._buf) > 0 else False
+
+    def __getitem__(self, key: int) -> torch.Tensor:
+        if not isinstance(key, int):
+            raise TypeError("`key` must be an integer")
+        return self._buf[key]
 
     def __len__(self) -> int:
-        return sum(self._lengths)
+        return self._cum_lengths[-1] if len(self._buf) > 0 else 0
+
+    def add(self, episode: TensorDictBase) -> None:
+        if len(torch.nonzero(episode["dones"])) != 1:
+            raise RuntimeError(
+                f"The episode must contain exactly one done, got: {len(torch.nonzero(episode['dones']))}"
+            )
+        if episode["dones"][-1] != 1:
+            raise RuntimeError(f"The last step must contain a done, got: {episode['dones'][-1]}")
+        if episode.shape[0] < self._sequence_length:
+            raise RuntimeError(
+                f"Episode too short (at least {self._sequence_length} steps), got: {episode.shape[0]} steps"
+            )
+        if episode.shape[0] > self._buffer_size:
+            raise RuntimeError(f"Episode too long (at most {self._buffer_size} steps), got: {episode.shape[0]} steps")
+
+        ep_len = episode.shape[0]
+        if self.full or len(self) + ep_len > self._buffer_size:
+            cum_lengths = np.array(self._cum_lengths)
+            mask = (len(self) - cum_lengths + ep_len) <= self._buffer_size
+            self._buf = self._buf[mask.argmax() + 1 :]
+            cum_lengths = cum_lengths[mask.argmax() + 1 :] - cum_lengths[mask.argmax()]
+            self._cum_lengths = cum_lengths.tolist()
+        self._cum_lengths.append(len(self) + ep_len)
+        self._buf.append(episode)
+
+    def sample(self, batch_size: int, n_samples: int = 1, prioritize_end: bool = False) -> TensorDictBase:
+        nsample_per_eps = torch.bincount(torch.randint(0, len(self._buf), (batch_size * n_samples,)))
+        samples = []
+        for i, n in enumerate(nsample_per_eps):
+            start_idxes = torch.randint(0, self._buf[i].shape[0] - self._sequence_length + 1, size=(n,)).reshape(-1, 1)
+            indices = start_idxes + self._chunk_length
+            samples.append(self._buf[i][indices])
+        return (
+            torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        )  # batch_size * n_samples, sl, ...
