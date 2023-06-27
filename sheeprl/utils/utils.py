@@ -101,3 +101,47 @@ def make_env(
         return env
 
     return thunk
+
+
+def two_hot_encoder(tensor: Tensor, support_size: int = 601) -> Tensor:
+    """Encode a tensor representing a floating point number `x` as a tensor with all zeros except for two entries in the
+    indexes -`support_size` / 2 + `floor(x)` and `support_size` / 2 + `ceil(x)`,
+    which are set to `x - floor(x)` and `ceil(x) - x` respectively.
+
+    Args:
+        tensor (Tensor): tensor to encode of shape (..., batch_size, 1)
+        support_size optional(int): size of the support of the distribution (default: 601)
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, support_size)
+    """
+    if tensor.shape == torch.Size([]):
+        tensor = tensor.unsqueeze(0)
+    if support_size % 2 == 0:
+        raise ValueError("support_size must be odd")
+    tensor = tensor.clip(-(support_size - 1) / 2, (support_size - 1) / 2)
+    floor = tensor.floor().long()
+    ceil = floor + 1
+    floor_prob = ceil - tensor
+    ceil_prob = 1.0 - floor_prob
+    two_hot = torch.zeros_like(tensor).expand(*tensor.shape[:-1], support_size).clone()
+    two_hot.scatter_add_(-1, floor + (support_size - 1) // 2, floor_prob)
+    ceil = ceil.clip(-(support_size - 1) // 2, (support_size - 1) // 2)
+    two_hot.scatter_add_(-1, ceil + (support_size - 1) // 2, ceil_prob)
+    return two_hot
+
+
+def two_hot_decoder(tensor: torch.Tensor) -> torch.Tensor:
+    """Decode a tensor representing a two-hot vector as a tensor of floating point numbers.
+
+    Args:
+        tensor (Tensor): tensor to decode of shape (..., batch_size, support_size)
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, 1)
+    """
+    support_size = tensor.shape[-1]
+    if support_size % 2 == 0:
+        raise ValueError("support_size must be odd")
+    support = torch.arange(-(support_size - 1) / 2, (support_size - 1) / 2 + 1).to(tensor.device)
+    return torch.sum(tensor * support, dim=-1, keepdim=True)
