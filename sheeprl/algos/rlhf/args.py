@@ -2,9 +2,10 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Type
 
 from sheeprl.utils.parser import Arg
+import ast
 
 ### Training Arguments ###
 
@@ -70,6 +71,9 @@ class RMArgs(TrainArgs):
     lr_warmup_steps: int = Arg(
         default=100, help="Number of warmup steps for learning rate scheduler. Default scheduler has linear warmup."
     )
+    loss_type: Literal["average", "last_token", "per_sample"] = Arg(
+        default="average", help="Loss type for reward modelling"
+    )
 
 
 @dataclass
@@ -97,6 +101,26 @@ class PPOArgs(TrainArgs):
     critic_learning_rate: float = Arg(default=1e-6, help="Learning rate for critic optimizer")
 
 
+#### Evaluation Arguments ####
+
+
+@dataclass
+class EvaluateArgs:
+    experiment_dir: str = Arg(help="Path to experiment directory to load casual model from")
+    seed: int = Arg(default=42, help="Seed for reproducibility")
+    mini_batch_size: int = Arg(default=4, help="Mini batch size for evaluation")
+    num_workers: int = Arg(default=4, help="Number of workers for data loading")
+    label_smoothing: float = Arg(
+        default=0.0,
+        help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. Label smoothing helps when the model is overconfident.",
+    )
+    use_targets: bool = Arg(
+        default=True,
+        help="Whether to use masked targets for training. We would like to evaluate models on possible generated responses.",
+    )
+    use_pretrained: bool = Arg(default=False, help="Whether to use pretrained model for evaluation or finetuned model")
+
+
 ### Model Arguments ###
 
 
@@ -119,24 +143,28 @@ class ModelArgs:
     low_cpu_mem_usage: bool = Arg(
         default=False, help="Whether to use low cpu memory usage for huggingface transformer."
     )
-    freeze_transformer: bool = Arg(
-        default=True, help="Freeze transformer weights. If False, transformer weights will be updated during training."
-    )
+    freeze_transformer: bool = Arg(default=True, help="Freeze transformer weights when it is loading.")
     disable_dropout: bool = Arg(
         default=False,
         help="Whether to disable dropout layers in the model. During SFT dropout allows not to overfit to the dataset. However, Disabling dropout layers helps stabilizing training during PPO training since `log_ratio` for the first iteration becomes one. ",
     )
-    apply_lora: bool = Arg(
-        default=False,
-        help="Whether to apply LoRA to the model. If it is `True`, `lora_targets` must be set and othe lora arguments will be used.",
+    finetune_mode: Literal["all", "last_layer", "lora"] = Arg(
+        default="all",
+        help="Whether to finetune the model. If it is `all`, all the layers will be finetuned. If it is `head`, only the head layer will be finetuned. If it is 'lora', lora approximation will be used for the model finetuning.",
     )
-    lora_targets: Optional[Tuple[str, ...]] = Arg(default=None, help="LoRA target layer names for the model.")
+    lora_targets: Optional[str] = Arg(
+        default=None,
+        help="LoRA target layer names for the model.",
+    )
     lora_rank: int = Arg(default=8, help="Rank of the LoRA approximation.")
     lora_alpha: int = Arg(default=1, help="Alpha value for LoRA approximation.")
     lora_dropout: float = Arg(default=0.0, help="Dropout rate for LoRA approximation.")
 
     def to_dict(self) -> dict:
         return {"model_args": asdict(self)}
+
+    def __post_init__(self):
+        self.lora_targets = ast.literal_eval(self.lora_targets) if self.lora_targets else None
 
 
 @dataclass
@@ -146,7 +174,7 @@ class GPT2(ModelArgs):
         default="n_embd",
         help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
     )
-    lora_targets: Tuple[str, ...] = ("c_attn",)
+    lora_targets: Optional[str] = Arg(default="('c_attn',)", help="LoRA target layer names for the model.")
 
 
 @dataclass
@@ -158,7 +186,10 @@ class OPT(ModelArgs):
         default="word_embed_proj_dim",
         help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
     )
-    lora_targets: Tuple[str, ...] = Arg(default=("q_proj", "v_proj"), help="LoRA target layer names for the model.")
+    lora_targets: Optional[str] = Arg(
+        default="('q_proj','v_proj')",
+        help="LoRA target layer names for the model.",
+    )
 
 
 @dataclass
@@ -170,7 +201,7 @@ class Pythia(ModelArgs):
         default="hidden_size",
         help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
     )
-    lora_targets: Tuple[str, ...] = Arg(default=("query_key_value",), help="LoRA target layer names for the model.")
+    lora_targets: Optional[str] = Arg(default="('query_key_value',)", help="LoRA target layer names for the model.")
 
 
 ### Data Configs ###
@@ -190,6 +221,9 @@ class TextDataArgs:
         default=-1,
         help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss calculation if it is enabled.",
     )
+    remove_same_output: bool = Arg(
+        default=True, help="Whether to remove samples with same chosen and rejected outputs."
+    )
 
     def to_dict(self) -> dict:
         return {"data_args": asdict(self)}
@@ -199,26 +233,6 @@ class TextDataArgs:
         with open(json_path, "r") as f:
             data_args = json.load(f)
         return cls(**data_args)
-
-
-# @dataclass
-# class Anthropic_HH(TextDataArgs):
-#     text_data_class: str = Arg(default="HHData", help="Name of the text data class. It will be loaded from `data.py`")
-#     dataset_name: str = Arg(default="Dahoas/static-hh", help="Name of the huggingface dataset.")
-
-
-# @dataclass
-# class Summarization(TextDataArgs):
-#     text_data_class: str = Arg(
-#         default="SummarizationData", help="Name of the text data class. It will be loaded from `data.py`"
-#     )
-#     dataset_name: str = Arg(default="CarperAI/openai_summarize_comparisons", help="Name of the huggingface dataset.")
-#     max_prompt_length: int = Arg(
-#         default=400, help="Maximum length of the prompt sequence. Prompts are longer in summarization task."
-#     )
-#     max_length: int = Arg(
-#         default=512, help="Maximum length of the input sequence. Summarization task requires longer input."
-#     )
 
 
 ### Generation Configs ###

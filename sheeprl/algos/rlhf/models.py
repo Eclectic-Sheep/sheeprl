@@ -59,7 +59,10 @@ class CasualModel(torch.nn.Module):
         model = cls(model=model)
         if path is not None:
             sd = torch.load(path, map_location=device)
-            if model_args.apply_lora:
+            if model_args.finetune_mode == "last_layer":
+                embedding_weights = sd["last_layer_weights"]
+                model.model.set_input_embeddings(embedding_weights)
+            elif model_args.finetune_mode == "lora":
                 add_lora(model, model_args)
                 model.load_state_dict(sd, strict=False)
                 merge_lora(model)
@@ -75,7 +78,10 @@ class CasualModel(torch.nn.Module):
     def save_checkpoint(self, fabric: L.Fabric, train_args: TrainArgs, model_args: ModelArgs, step):
         output_file = os.path.join(train_args.experiment_dir, "model", f"checkpoint-{step}.pt")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if model_args.apply_lora:
+        if model_args.finetune_mode == "last_layer":
+            embedding_weights = self.model.get_input_embeddings().weight
+            sd = {"last_layer_weights": embedding_weights}
+        if model_args.finetune_mode == "lora":
             sd = get_lora_state_dict(self)
         else:
             sd = self.state_dict()
@@ -103,6 +109,13 @@ class CriticModel(torch.nn.Module):
         else:
             self.transformer = getattr(model, transformer_name)
         self.head = torch.nn.Linear(embedding_dim, 1, bias=False)
+        self.head.apply(self.init_normal)
+
+    def init_normal(self, module):
+        if type(module) == torch.nn.Linear:
+            module.weight.data.normal_(mean=0.0, std=0.01)
+            if module.bias is not None:
+                module.bias.data.zero_()
 
     def forward(self, **kwargs):
         out = self.transformer(**kwargs)[0]
@@ -133,12 +146,14 @@ class CriticModel(torch.nn.Module):
             for k, v in sd.items():
                 new_k = k.replace("model.model", "transformer")
                 new_sd[new_k] = v
-            if model_args.apply_lora:
+            if model_args.finetune_mode == "lora":
                 add_lora(model, model_args)
                 model.load_state_dict(new_sd, strict=False)
                 merge_lora(model)
-            else:
+            elif model_args.finetune_mode == "last_layer":
                 model.load_state_dict(new_sd, strict=False)
+            else:
+                model.load_state_dict(new_sd)
         if freeze:
             for param in model.parameters():
                 param.requires_grad = False
@@ -148,10 +163,12 @@ class CriticModel(torch.nn.Module):
     def save_checkpoint(self, fabric: L.Fabric, train_args: TrainArgs, model_args: ModelArgs, step):
         output_file = os.path.join(train_args.experiment_dir, "model", f"checkpoint-{step}.pt")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if model_args.apply_lora:
+        if model_args.finetune_mode == "lora":
             sd = get_lora_state_dict(self)
             head_sd = self.get_head_state_dict()
             sd.update(head_sd)
+        elif model_args.finetune_mode == "last_layer":
+            sd = self.get_head_state_dict()
         else:
             sd = self.state_dict()
         fabric.save(output_file, sd)
