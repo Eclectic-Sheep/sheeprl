@@ -23,7 +23,27 @@ def reward_loss_last_token(
     return -F.logsigmoid(filtered_rewards).mean(), chosen_last_rewards, rejected_last_rewards
 
 
-def reward_loss(
+def reward_loss_average(
+    chosen: torch.Tensor,
+    rejected: torch.Tensor,
+    chosen_rewards: torch.Tensor,
+    rejected_rewards: torch.Tensor,
+    pad_token_id: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from average of all output tokens excluding padding tokens"""
+    pad_mask_chosen = chosen != pad_token_id  # (B, T)
+    pad_mask_rejected = rejected != pad_token_id  # (B, T)
+
+    chosen_rewards_average = chosen_rewards * pad_mask_chosen
+    chosen_rewards_average = chosen_rewards_average.sum(dim=1) / pad_mask_chosen.sum(dim=1)
+    rejected_rewards_average = rejected_rewards * pad_mask_rejected
+    rejected_rewards_average = rejected_rewards_average.sum(dim=1) / pad_mask_rejected.sum(dim=1)
+
+    filtered_rewards = chosen_rewards_average - rejected_rewards_average
+    return -F.logsigmoid(filtered_rewards).mean(), chosen_rewards_average, rejected_rewards_average
+
+
+def reward_loss_per_sample(
     chosen: torch.Tensor,
     rejected: torch.Tensor,
     chosen_rewards: torch.Tensor,
@@ -94,6 +114,17 @@ def reward_loss(
     rejected_last_rewards = torch.stack(rejected_last_rewards)
 
     return loss, chosen_last_rewards, rejected_last_rewards
+
+
+def load_reward_loss(reward_loss_type: str):
+    if reward_loss_type == "average":
+        return reward_loss_average
+    elif reward_loss_type == "last_token":
+        return reward_loss_last_token
+    elif reward_loss_type == "per_sample":
+        return reward_loss_per_sample
+    else:
+        raise ValueError(f"Invalid reward loss type: {reward_loss_type}")
 
 
 def finetune_loss(
