@@ -44,11 +44,18 @@ class GruMlpDynamics(torch.nn.Module):
 class Predictor(torch.nn.Module):
     def __init__(self, hidden_state_size=256, num_actions=4):
         super().__init__()
-        self.mlp1 = torch.nn.Linear(in_features=hidden_state_size, out_features=num_actions)
-        self.mlp2 = torch.nn.Linear(in_features=hidden_state_size, out_features=1)
+        self.mlp_actor1 = torch.nn.Linear(in_features=hidden_state_size, out_features=16)
+        self.act_actor = torch.nn.ELU()
+        self.mlp_actor2 = torch.nn.Linear(in_features=16, out_features=num_actions)
+
+        self.mlp_value1 = torch.nn.Linear(in_features=hidden_state_size, out_features=16)
+        self.act_value = torch.nn.ELU()
+        self.mlp_value2 = torch.nn.Linear(in_features=16, out_features=1)
 
     def forward(self, x):
-        return self.mlp1(x), self.mlp2(x)
+        policy = self.mlp_actor2(self.act_actor(self.mlp_actor1(x)))
+        value = self.mlp_value2(self.act_value(self.mlp_value1(x)))
+        return policy, value
 
 
 class RecurrentMuzero(MuzeroAgent):

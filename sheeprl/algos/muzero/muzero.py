@@ -79,7 +79,7 @@ class MinMaxStats:
         self.minimum = min(self.minimum, value)
 
     def normalize(self, value: float) -> float:
-        if self.maximum > self.minimum:
+        if self.maximum > self.minimum and self.maximum != float("inf") and self.minimum != -float("inf"):
             # We normalize only when we have set the maximum and minimum values.
             return (value - self.minimum) / (self.maximum - self.minimum)
         return value
@@ -116,7 +116,7 @@ class Node:
             running from 0 to num_actions - 1.
     """
 
-    def __init__(self, prior: float, image: torch.Tensor = None):
+    def __init__(self, prior: float, image: torch.Tensor = None, device="cpu"):
         """A Node in the MCTS tree.
 
         Args:
@@ -129,8 +129,8 @@ class Node:
         self.image: torch.Tensor = image
 
         self.hidden_state: Optional[torch.Tensor] = None
-        self.reward: float = 0.0
-        self.value_sum: torch.tensor = 0.0
+        self.reward: torch.tensor = torch.tensor(0.0, device=device)
+        self.value_sum: torch.tensor = torch.tensor(0.0, device=device)
         self.visit_count: int = 0
         self.children: dict[int, Node] = {}
 
@@ -172,10 +172,9 @@ class Node:
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
-        normalized_policy = torch.exp(policy_logits)
-        normalized_policy = normalized_policy / torch.sum(normalized_policy)
+        normalized_policy = torch.nn.functional.softmax(policy_logits)
         for action in range(normalized_policy.numel()):
-            self.children[action] = Node(normalized_policy[:, action].item())
+            self.children[action] = Node(normalized_policy[:, action].item(), device=hidden_state.device)
         self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
@@ -187,8 +186,7 @@ class Node:
 
             while node.expanded():
                 # Select the child with the highest UCB score
-                _, imagined_action, child = max(
-                    [
+                ucb_scores = [[
                         ucb_score(
                             parent=node,
                             child=child_node,
@@ -201,6 +199,9 @@ class Node:
                         child_node,
                     ]
                     for action, child_node in node.children.items()
+                ]
+                _, imagined_action, child = max(
+                    ucb_scores
                 )
                 search_path.append(child)
                 node = child
@@ -208,18 +209,17 @@ class Node:
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             parent = search_path[-2]
             hidden_state, reward, policy_logits, value = agent.recurrent_inference(
-                torch.tensor([imagined_action]).view(1, 1, 1).to(dtype=torch.float32), parent.hidden_state
+                torch.tensor([imagined_action]).view(1, 1, 1).to(device=parent.hidden_state.device, dtype=torch.float32), parent.hidden_state
             )
             node.hidden_state = hidden_state
             node.reward = reward
-            normalized_policy = torch.exp(policy_logits)
-            normalized_policy = normalized_policy / torch.sum(normalized_policy)
+            normalized_policy = torch.nn.functional.softmax(policy_logits)
             for action in range(normalized_policy.numel()):
-                node.children[action] = Node(normalized_policy.squeeze()[action].item())
+                node.children[action] = Node(normalized_policy.squeeze()[action].item(), device=normalized_policy.device)
 
             # Backpropagate the search path to update the nodes' statistics
             for node in reversed(search_path):
-                node.value_sum += value
+                node.value_sum += value.squeeze()
                 node.visit_count += 1
                 min_max_stats.update(node.value())
 
@@ -231,14 +231,15 @@ def ucb_score(
 ) -> float:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
+    device=parent.hidden_state.device
     pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
     pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
 
     prior_score = pb_c * child.prior
     if child.visit_count > 0:
-        value_score = child.reward + gamma * min_max_stats.normalize(child.value())
+        value_score = child.reward.squeeze() + gamma * min_max_stats.normalize(child.value())
     else:
-        value_score = 0
+        value_score = torch.tensor(0.0, device=device)
     return prior_score + value_score
 
 
@@ -327,8 +328,9 @@ def main():
     num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
 
-    with torch.no_grad():
-        for update_step in range(1, num_updates + 1):
+    
+    for update_step in range(1, num_updates + 1):
+        with torch.no_grad():
             # reset the episode at every update
             with device:
                 # Get the first environment observation and start the optimization
@@ -338,17 +340,18 @@ def main():
 
             steps_data = None
             for trajectory_step in range(0, args.max_trajectory_len):
-                node = Node(prior=0, image=obs)
+                node = Node(prior=0, image=obs, device=device)
 
                 # start MCTS
                 node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
+                
 
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
                 visits_count = visits_count / temperature
                 action = torch.distributions.Categorical(logits=visits_count).sample()
-
+                print(f"Mcts completed, action: {action}")
                 # Single environment step
                 next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
 
@@ -378,6 +381,7 @@ def main():
                                     "values": node.value_sum.reshape(1, 1, -1),
                                 },
                                 batch_size=(1, 1),
+                                device=device
                             ),
                         ],
                     )
@@ -392,6 +396,7 @@ def main():
                 else:
                     with device:
                         obs = torch.tensor(next_obs).view(1, 3, 64, 64)
+            print("Finished episode")            
             rb.add(trajectory=steps_data)
 
         if update_step >= args.learning_starts - 1:
@@ -406,7 +411,7 @@ def main():
                 observations = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
                 actions = data["actions"].squeeze(2)
 
-                hidden_state_0, policy_0, value_0 = agent.initial_inference(
+                hidden_states, policy_0, value_0 = agent.initial_inference(
                     observations[0]
                 )  # in shape should be (N, C, H, W)
                 # Policy loss
@@ -418,17 +423,17 @@ def main():
 
                 for sequence_idx in range(1, args.chunk_sequence_len):
                     hidden_states, rewards, policies, values = agent.recurrent_inference(
-                        actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32), hidden_state_0
+                        actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32), hidden_states
                     )  # action should be (1, N, 1)
                     # Policy loss
-                    pg_loss += policy_loss(policies.squeeze(), target_policies[sequence_idx])
+                    pg_loss += policy_loss(policies, target_policies[sequence_idx:sequence_idx+1])
                     # Value loss
-                    v_loss += value_loss(values, target_values[sequence_idx].unsqueeze(0))
+                    v_loss += value_loss(values, target_values[sequence_idx:sequence_idx+1])
                     # Reward loss
-                    r_loss += reward_loss(rewards.squeeze(), target_rewards[sequence_idx])
+                    r_loss += reward_loss(rewards, target_rewards[sequence_idx:sequence_idx+1])
 
                 # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
-                loss = pg_loss + v_loss + r_loss
+                loss = (pg_loss + v_loss + r_loss) / args.chunk_sequence_len
 
                 optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
