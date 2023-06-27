@@ -28,6 +28,7 @@ def prepare(
     mask_inputs: bool = False,
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
+    remove_same_output: bool = True,
 ) -> None:
     destination_dir = Path(destination_dir)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -36,7 +37,7 @@ def prepare(
         tokenizer.pad_token_id = tokenizer.eos_token_id
     os.makedirs(destination_dir, exist_ok=True)
     cache_dir = destination_dir / "cache"
-
+    skipped = 0
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
         dataset = load_dataset("CarperAI/openai_summarize_comparisons", split=split, cache_dir=cache_dir)
@@ -91,7 +92,6 @@ def prepare(
                     truncation=True,
                     return_tensors="pt",
                 )
-                output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
 
                 prompt_rejected = prompt + rejected
                 encoded_prompt_rejected = tokenizer(
@@ -100,11 +100,15 @@ def prepare(
                     truncation=True,
                     return_tensors="pt",
                 )
+                if remove_same_output and prompt_chosen == prompt_rejected:
+                    skipped += 1
+                    continue
+                output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
                 output["rejected_input_ids"] = encoded_prompt_rejected["input_ids"].squeeze()
             else:
                 output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
             samples.append(output)
-        print(f"Processed {len(samples)} samples")
+        print(f"Processed {len(samples)} samples, skipped {skipped} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
 
     example_prompt_path = destination_dir / "example_prompt.pt"
@@ -144,6 +148,7 @@ if __name__ == "__main__":
             stage="sft",
             max_length=512,
             max_prompt_length=512,
+            remove_same_output=True,
         )
     prepare(**asdict(data_args))
     with open(Path(data_args.destination_dir) / "args.json", "w") as f:
