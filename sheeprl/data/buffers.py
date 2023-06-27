@@ -1,5 +1,5 @@
 import typing
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import torch
 from tensordict import MemmapTensor, TensorDict
@@ -309,3 +309,44 @@ class SequentialReplayBuffer(ReplayBuffer):
         #   [bn_s1, bn_s2, ...]
         # ]
         return sample.view(*unflatten_shape)
+
+
+class EpisodeBuffer:
+    def __init__(
+        self,
+        buffer_size: int,
+        sequence_length: int,
+        device: Union[device, str] = "cpu",
+        memmap: bool = False,
+    ) -> None:
+        if buffer_size <= 0:
+            raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
+        if sequence_length <= 0:
+            raise ValueError(f"The sequence length must be greater than zero, got: {sequence_length}")
+        if buffer_size <= sequence_length:
+            raise ValueError(
+                f"The sequence length must be lower than the buffer size, got: bs = {buffer_size} and sl = {sequence_length}"
+            )
+        self._buffer_size = buffer_size
+        self._sequence_length = sequence_length
+        self._buf = []
+        self._lengths = []
+        if isinstance(device, str):
+            device = torch.device(device=device)
+        self._device = device
+        self._memmap = memmap
+
+    @property
+    def buffer(self) -> Optional[List[TensorDictBase]]:
+        return self._buf
+
+    @property
+    def buffer_size(self) -> int:
+        return self._buffer_size
+
+    @property
+    def full(self) -> bool:
+        return len(self) + self._sequence_length >= self._buffer_size
+
+    def __len__(self) -> int:
+        return sum(self._lengths)
