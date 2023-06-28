@@ -390,13 +390,29 @@ class EpisodeBuffer:
         self._cum_lengths.append(len(self) + ep_len)
         self._buf.append(episode)
 
-    def sample(self, batch_size: int, n_samples: int = 1, prioritize_end: bool = False) -> TensorDictBase:
+    def sample(self, batch_size: int, n_samples: int = 1, prioritize_ends: bool = False) -> TensorDictBase:
+        if batch_size <= 0:
+            raise ValueError(f"Batch size must be greater than 0, got: {batch_size}")
+        if n_samples <= 0:
+            raise ValueError(f"The number of samples must be greater than 0, got: {n_samples}")
+        if len(self) == 0:
+            raise RuntimeError(
+                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+            )
+
         nsample_per_eps = torch.bincount(torch.randint(0, len(self._buf), (batch_size * n_samples,)))
         samples = []
         for i, n in enumerate(nsample_per_eps):
-            start_idxes = torch.randint(0, self._buf[i].shape[0] - self._sequence_length + 1, size=(n,)).reshape(-1, 1)
+            ep_len = self._buf[i].shape[0]
+            # length = min(ep_len, self._sequence_length) # always sl
+            # length -= torch.randint(0, self._sequence_length, (1,)).item() # sl - something
+            # length = max(self._sequence_length, length) # max(sl, sl - something) = sl
+            upper = ep_len - self._sequence_length + 1
+            if prioritize_ends:
+                upper += self._sequence_length
+            start_idxes = torch.min(
+                torch.randint(0, upper, size=(n,)).reshape(-1, 1), torch.tensor(ep_len - self._sequence_length)
+            )
             indices = start_idxes + self._chunk_length
             samples.append(self._buf[i][indices])
-        return (
-            torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
-        )  # batch_size * n_samples, sl, ...
+        return torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
