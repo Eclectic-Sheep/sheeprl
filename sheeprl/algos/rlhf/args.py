@@ -53,7 +53,7 @@ class SFTArgs(TrainArgs):
         help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. Label smoothing helps when the model is overconfident.",
     )
     use_targets: bool = Arg(
-        default=False, help="Whether to use masked targets for training. Using masked targets may lead to overfitting."
+        default=True, help="Whether to use masked targets for training. Using masked targets may lead to overfitting."
     )
     learning_rate: float = Arg(default=1e-4, help="Learning rate for optimizer")
     lr_warmup_steps: int = Arg(
@@ -163,9 +163,6 @@ class ModelArgs:
     def to_dict(self) -> dict:
         return {"model_args": asdict(self)}
 
-    def __post_init__(self):
-        self.lora_targets = ast.literal_eval(self.lora_targets) if self.lora_targets else None
-
 
 @dataclass
 class GPT2(ModelArgs):
@@ -217,6 +214,7 @@ class TextDataArgs:
     num_samples: Optional[int] = Arg(
         default=None, help="Number of samples to use from the dataset. If None, all samples will be used."
     )
+    mask_prompt: bool = Arg(default=False, help="Whether to mask prompt tokens.")
     ignore_index: int = Arg(
         default=-1,
         help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss calculation if it is enabled.",

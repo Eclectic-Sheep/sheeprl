@@ -50,7 +50,7 @@ def evaluate(
     eval_iters = train_args.eval_iters
     for batch in test_dataloader:
         outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-        targets = batch["targets"] if train_args.use_targets else batch["input_ids"]
+        targets = batch["targets"] if train_args.use_targets else batch["input_ids"].detach().clone()
         loss = finetune_loss(
             outputs=outputs,
             targets=targets,
@@ -209,7 +209,7 @@ def main():
         batch = next(data_iterator)
         input_ids = batch["input_ids"]  # type: ignore[index]
         attention_mask = batch["attention_mask"]  # type: ignore[index]
-        targets = batch["targets"] if train_args.use_targets else input_ids  # type: ignore[index]
+        targets = batch["targets"] if train_args.use_targets else input_ids.detach().clone()  # type: ignore[index]
 
         # Forward and Backward Pass
         t0 = time.time()

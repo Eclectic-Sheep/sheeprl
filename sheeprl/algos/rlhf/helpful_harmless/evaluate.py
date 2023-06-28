@@ -11,7 +11,6 @@ from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json
 from sheeprl.utils.parser import HfArgumentParser
-from sheeprl.utils.utils import EmptyInitOnDevice
 from tqdm.auto import tqdm
 from dotenv import load_dotenv
 
@@ -28,7 +27,7 @@ def evaluate(
     pbar = tqdm(test_dataloader, total=len(test_dataloader), desc="Evaluating")
     for batch in pbar:
         outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-        targets = batch["targets"] if eval_args.use_targets else batch["input_ids"]
+        targets = batch["targets"] if eval_args.use_targets else batch["input_ids"].detach().clone()
         loss = finetune_loss(
             outputs=outputs,
             targets=targets,
@@ -76,14 +75,14 @@ def main():
         fabric.print("\nLoading Finetuned model")
         path = checkpoint_path
 
-    with EmptyInitOnDevice(fabric.device):
-        model = CasualModel.from_checkpoint(
-            device=fabric.device,
-            model_args=model_args,
-            path=path,
-            freeze=True,
-        )
-        model.eval()
+    model = CasualModel.from_checkpoint(
+        device=fabric.device,
+        model_args=model_args,
+        path=path,
+        freeze=True,
+    )
+    model.to(fabric.device)
+    model.eval()
     fabric.print("Model loaded")
 
     # Setup Dataloaders

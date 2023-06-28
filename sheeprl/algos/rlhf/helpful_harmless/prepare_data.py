@@ -25,7 +25,7 @@ def prepare(
     stage: str = "sft",
     max_length: int = 512,
     max_prompt_length: int = 512,
-    mask_inputs: bool = False,
+    mask_prompt: bool = False,
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
     remove_same_output: bool = True,
@@ -62,12 +62,13 @@ def prepare(
                 max_length=max_length,
                 return_tensors="pt",
             )
-            if len(encoded_prompt) > max_prompt_length:
+            encoded_prompt_input_ids = encoded_prompt["input_ids"].squeeze()
+            if len(encoded_prompt_input_ids) > max_prompt_length:
                 skipped += 1
                 continue
             if stage == "sft":
                 # we use prompt and choosen as data
-                prompt_response = sample["prompt"] + sample["chosen"]
+                prompt_response = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_response = tokenizer(
                     prompt_response,
                     truncation=True,
@@ -77,12 +78,12 @@ def prepare(
                 input_ids = encoded_prompt_response["input_ids"].squeeze()
                 targets = input_ids.clone()
                 output["input_ids"] = input_ids
-                if mask_inputs:
-                    targets[:, : len(encoded_prompt)] = ignore_index
+                if mask_prompt:
+                    targets[: len(encoded_prompt_input_ids)] = ignore_index
                 output["targets"] = targets
             elif stage == "rm":
                 # we need pairs of prompt and choosen and prompt and rejected
-                prompt_chosen = sample["prompt"] + sample["chosen"]
+                prompt_chosen = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_chosen = tokenizer(
                     prompt_chosen,
                     max_length=max_length,
@@ -90,7 +91,7 @@ def prepare(
                     return_tensors="pt",
                 )
 
-                prompt_rejected = sample["prompt"] + sample["rejected"]
+                prompt_rejected = sample["prompt"] + sample["rejected"] + tokenizer.eos_token
                 encoded_prompt_rejected = tokenizer(
                     prompt_rejected,
                     max_length=max_length,
@@ -142,6 +143,7 @@ if __name__ == "__main__":
             max_length=256,
             max_prompt_length=256,
             remove_same_output=True,
+            mask_prompt=True,
         )
     prepare(**asdict(data_args))
     with open(Path(data_args.destination_dir) / "args.json", "w") as f:

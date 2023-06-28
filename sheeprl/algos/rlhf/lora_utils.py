@@ -5,6 +5,7 @@ https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
 Taken and adapted from https://github.com/cccntu/minlora
 License: MIT
 """
+import ast
 import math
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, no_type_check
@@ -217,7 +218,10 @@ def untie_weights(linear: nn.Linear, embedding: nn.Embedding):
 
 
 def add_lora(model: torch.nn.Module, model_args: ModelArgs):
-    target_modules = model_args.lora_targets
+    if isinstance(model_args.lora_targets, str):
+        lora_targets = ast.literal_eval(model_args.lora_targets)
+    else:
+        lora_targets = model_args.lora_targets
     rank = model_args.lora_rank
     alpha = model_args.lora_alpha
     dropout = model_args.lora_dropout
@@ -238,7 +242,7 @@ def add_lora(model: torch.nn.Module, model_args: ModelArgs):
     }
 
     def _target_module(name: str):
-        return any(t in name for t in target_modules)
+        return any(t in name for t in lora_targets)
 
     named_modules = list(model.named_modules())
     for n, m in named_modules:

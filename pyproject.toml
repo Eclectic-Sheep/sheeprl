@@ -58,9 +58,12 @@ atari = [
 ]
 rlhf = [
   "tqdm==4.65.0",
-  "datasets==2.12.*",
-  "transformers==4.29.*",
-  "gradio==3.28.3"
+  "datasets==2.13.1",
+  "transformers==4.30.1",
+  "gradio==3.28.3",
+  "nltk==3.8.1",
+  "rouge-score=0.1.2",
+  "evaluate==0.4.0"
 ]
 
 [tool.ruff]
