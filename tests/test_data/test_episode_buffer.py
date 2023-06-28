@@ -112,9 +112,9 @@ def test_episode_buffer_sample_more_episodes():
     buf_size = 100
     sl = 15
     rb = EpisodeBuffer(buf_size, sl)
-    td1 = TensorDict({"dones": torch.zeros(20, 1), "t": torch.ones(20, 1) * -1}, batch_size=[20])
-    td2 = TensorDict({"dones": torch.zeros(25, 1), "t": torch.ones(25, 1) * -2}, batch_size=[25])
-    td3 = TensorDict({"dones": torch.zeros(30, 1), "t": torch.ones(30, 1) * -3}, batch_size=[30])
+    td1 = TensorDict({"dones": torch.zeros(40, 1), "t": torch.ones(40, 1) * -1}, batch_size=[40])
+    td2 = TensorDict({"dones": torch.zeros(45, 1), "t": torch.ones(45, 1) * -2}, batch_size=[45])
+    td3 = TensorDict({"dones": torch.zeros(50, 1), "t": torch.ones(50, 1) * -3}, batch_size=[50])
     td1["dones"][-1] = 1
     td2["dones"][-1] = 1
     td3["dones"][-1] = 1
@@ -124,63 +124,35 @@ def test_episode_buffer_sample_more_episodes():
     samples = rb.sample(50, n_samples=5)
     assert samples.shape == torch.Size([5, sl, 50])
     for seq in samples.permute(0, -1, -2).reshape(-1, sl, 1):
-        assert (seq["t"] == -1).all() or (seq["t"] == -2).all() or (seq["t"] == -3).all()
+        assert torch.isin(seq["t"], -1).all() or torch.isin(seq["t"], -2).all() or torch.isin(seq["t"], -3).all()
         assert len(torch.nonzero(seq["dones"])) == 0 or seq["dones"][-1] == 1
 
 
-## TODO: other tests
-
-
-def test_episode_buffer_sample_full_large_sl():
-    buf_size = 10000
-    n_envs = 1
-    seq_len = 1000
-    rb = EpisodeBuffer(buf_size, n_envs)
-    t = TensorDict({"t": torch.arange(10500).reshape(-1, 1, 1) % buf_size}, batch_size=[10500, n_envs])
-    rb.add(t)
-    samples = rb.sample(1000, sequence_length=seq_len, n_samples=5)
-    assert not torch.logical_and(
-        (samples["t"][:, 0, :] >= buf_size + rb._pos - seq_len + 1), (samples["t"][:, -1, :] < rb._pos)
-    ).any()
-    assert not torch.logical_and((samples["t"][:, 0, :] < rb._pos), (samples["t"][:, -1, :] >= rb._pos)).any()
-
-
-def test_episode_buffer_sampleable_items():
+def test_episode_buffer_error_sample():
     buf_size = 10
-    n_envs = 1
-    seq_len = 10
-    rb = EpisodeBuffer(buf_size, n_envs)
-    t = TensorDict({"t": torch.arange(15).reshape(-1, 1, 1)}, batch_size=[15, n_envs])
-    rb.add(t)
-    with pytest.raises(ValueError, match=f"sampleable items"):
-        rb.sample(5, sequence_length=seq_len, n_samples=2)
+    sl = 5
+    rb = EpisodeBuffer(buf_size, sl)
+    with pytest.raises(RuntimeError, match=f"No sample has been added"):
+        rb.sample(2, 2)
+    with pytest.raises(ValueError, match=f"Batch size must be greater than 0"):
+        rb.sample(-1, n_samples=2)
+    with pytest.raises(ValueError, match=f"The number of samples must be greater than 0"):
+        rb.sample(2, -1)
 
 
-def test_episode_buffer_sample_fail_not_full():
-    buf_size = 10
-    n_envs = 1
-    seq_len = 8
-    rb = EpisodeBuffer(buf_size, n_envs)
-    t = TensorDict({"t": torch.arange(5).reshape(-1, 1, 1)}, batch_size=[5, n_envs])
-    rb.add(t)
-    with pytest.raises(ValueError, match=f"too long sequence length"):
-        rb.sample(5, sequence_length=seq_len, n_samples=1)
-
-
-def test_episode_buffer_sample_not_full():
-    buf_size = 10
-    n_envs = 1
-    rb = EpisodeBuffer(buf_size, n_envs)
-    rb._buf = TensorDict({"t": torch.ones(10, n_envs, 1) * 20}, batch_size=[10, n_envs])
-    t = TensorDict({"t": torch.arange(7).reshape(-1, 1, 1) * 1.0}, batch_size=[7, n_envs])
-    rb.add(t)
-    sample = rb.sample(2, sequence_length=5, n_samples=2)
-    assert (sample["t"] < 7).all()
-
-
-def test_episode_buffer_sample_no_add():
-    buf_size = 10
-    n_envs = 1
-    rb = EpisodeBuffer(buf_size, n_envs)
-    with pytest.raises(ValueError, match=f"No sample has been added"):
-        rb.sample(2, sequence_length=5, n_samples=2)
+def test_episode_buffer_prioritize_ends():
+    buf_size = 100
+    sl = 15
+    rb = EpisodeBuffer(buf_size, sl)
+    td1 = TensorDict({"dones": torch.zeros(15, 1)}, batch_size=[15])
+    td2 = TensorDict({"dones": torch.zeros(25, 1)}, batch_size=[25])
+    td3 = TensorDict({"dones": torch.zeros(30, 1)}, batch_size=[30])
+    td1["dones"][-1] = 1
+    td2["dones"][-1] = 1
+    td3["dones"][-1] = 1
+    rb.add(td1)
+    rb.add(td2)
+    rb.add(td3)
+    samples = rb.sample(50, n_samples=5, prioritize_ends=True)
+    assert samples.shape == torch.Size([5, sl, 50])
+    assert torch.isin(samples["dones"], 1).any() > 0
