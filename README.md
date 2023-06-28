@@ -84,7 +84,7 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 >
 > if you are on an M-series mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
 >
-> if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04)
+> if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 
 <details>
     <summary>Installing SWIG</summary>
