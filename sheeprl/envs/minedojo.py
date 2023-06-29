@@ -7,7 +7,9 @@ import gymnasium as gym
 import minedojo
 import numpy as np
 from gymnasium import core
+from minedojo.sim import ALL_CRAFT_SMELT_ITEMS, ALL_ITEMS
 
+N_ALL_ITEMS = len(ALL_ITEMS)
 ACTION_MAP = {
     0: np.array([0, 0, 0, 12, 12, 0, 0, 0]),  # no-op
     1: np.array([1, 0, 0, 12, 12, 0, 0, 0]),  # forward
@@ -21,8 +23,16 @@ ACTION_MAP = {
     9: np.array([0, 0, 0, 13, 12, 0, 0, 0]),  # pitch up (+15)
     10: np.array([0, 0, 0, 12, 11, 0, 0, 0]),  # yaw down (-15)
     11: np.array([0, 0, 0, 12, 13, 0, 0, 0]),  # yaw up (+15)
-    12: np.array([0, 0, 0, 12, 12, 3, 0, 0]),  # attack
+    12: np.array([0, 0, 0, 12, 12, 1, 0, 0]),  # use
+    13: np.array([0, 0, 0, 12, 12, 2, 0, 0]),  # drop
+    14: np.array([0, 0, 0, 12, 12, 3, 0, 0]),  # attack
+    15: np.array([0, 0, 0, 12, 12, 4, 0, 0]),  # craft
+    16: np.array([0, 0, 0, 12, 12, 5, 0, 0]),  # equip
+    17: np.array([0, 0, 0, 12, 12, 6, 0, 0]),  # place
+    18: np.array([0, 0, 0, 12, 12, 7, 0, 0]),  # destroy
 }
+ITEM_ID_TO_NAME = dict(enumerate(ALL_ITEMS))
+ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
 
 
 class MineDojoWrapper(core.Env):
@@ -41,8 +51,8 @@ class MineDojoWrapper(core.Env):
         self._width = width
         self._pitch_limits = pitch_limits
         self._pos = kwargs.pop("start_position", None)
+        self._break_speed_multiplier = kwargs.pop("start_position", 100)
         self._start_pos = copy.deepcopy(self._pos)
-        self._action_space = gym.spaces.Discrete(len(ACTION_MAP.keys()))
         self._sticky_attack = sticky_attack
         self._sticky_jump = sticky_jump
         self._sticky_attack_counter = 0
@@ -63,7 +73,31 @@ class MineDojoWrapper(core.Env):
             allow_mob_spawn=False,
             allow_time_passage=False,
             fast_reset=True,
+            break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
+        )
+        # inventory
+        self._inventory = {}
+        self._inventory_names = None
+        # action and observations space
+        self._action_space = gym.spaces.MultiDiscrete(
+            np.array([len(ACTION_MAP.keys()), len(ALL_CRAFT_SMELT_ITEMS), N_ALL_ITEMS])
+        )
+        self._observation_space = gym.spaces.Dict(
+            {
+                "rgb": gym.spaces.Box(0, 255, self._env.observation_space["rgb"].shape, np.uint8),
+                "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+                "equipment": gym.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32),
+                "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
+                "masks": gym.spaces.Dict(
+                    {
+                        "action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), np.bool_),
+                        "equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
+                        "desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
+                        "craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), np.bool_),
+                    }
+                ),
+            }
         )
         # render
         self._render_mode: str = "rgb_array"
@@ -73,24 +107,72 @@ class MineDojoWrapper(core.Env):
     def __getattr__(self, name):
         return getattr(self._env, name)
 
+    def _convert_inventory(self, inventory: Dict[str, Any]) -> np.ndarray:
+        converted_inventory = np.zeros(N_ALL_ITEMS)
+        self._inventory = {}
+        self._inventory_names = inventory["name"].copy()
+        for i, (item, quantity) in enumerate(zip(inventory["name"], inventory["quantity"])):
+            if item not in self._inventory:
+                self._inventory[item] = [i]
+            else:
+                self._inventory[item].append(i)
+            if item == "air":
+                converted_inventory[ALL_ITEMS[ITEM_NAME_TO_ID[item]]] += 1
+            else:
+                converted_inventory[ALL_ITEMS[ITEM_NAME_TO_ID[item]]] += quantity
+        return converted_inventory
+
+    def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
+        equipment = np.zeros(len(N_ALL_ITEMS), dtype=np.int32)
+        equipment[ITEM_NAME_TO_ID[equipment["name"][0]]] = 1
+        return equipment
+
+    def _convert_masks(self, masks: Dict[str, Any]) -> Dict[str, np.ndarray]:
+        equip_mask = np.array([False] * N_ALL_ITEMS)
+        destroy_mask = np.array([False] * N_ALL_ITEMS)
+        for item, eqp_mask, dst_mask in zip(self._inventory_names, masks["equip"], masks["destroy"]):
+            idx = ITEM_NAME_TO_ID[item]
+            equip_mask[idx] = eqp_mask
+            destroy_mask[idx] = dst_mask
+        return {
+            "action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
+            "equip/place": equip_mask,
+            "desrtoy": destroy_mask,
+            "craft_smelt": masks["craft_smelt"],
+        }
+
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
-        action = copy.deepcopy(ACTION_MAP[int(action)])
+        converted_action = copy.deepcopy(ACTION_MAP[int(action[0])])
         if self._sticky_attack:
-            if action[5] == 3:
+            if converted_action[5] == 3:
                 self._sticky_attack_counter = self._sticky_attack
             if self._sticky_attack_counter > 0:
-                action[5] = 3
-                action[2] = 0
+                converted_action[5] = 3
+                converted_action[2] = 0
                 self._sticky_attack_counter -= 1
         if self._sticky_jump:
-            if action[2] == 1:
+            if converted_action[2] == 1:
                 self._sticky_jump_counter = self._sticky_jump
             if self._sticky_jump_counter > 0:
-                action[2] = 1
-                if action[0] == action[1] == 0:
-                    action[0] = 1
+                converted_action[2] = 1
+                if converted_action[0] == converted_action[1] == 0:
+                    converted_action[0] = 1
                 self._sticky_jump_counter -= 1
-        return action
+
+        converted_action[6] = int(action[1])
+        converted_action[7] = self._inventory[ITEM_ID_TO_NAME[int(action[2])]][0]
+        return converted_action
+
+    def _convert_obs(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
+        return {
+            "rgb": obs["rgb"],
+            "inventory": self._convert_inventory(obs["inventory"]),
+            "equipment": self._convert_equipment(obs["equipment"]),
+            "life_stats": np.concatenate(
+                (obs["life_stats"]["life"], obs["life_stats"]["food"], obs["life_stats"]["oxygen"])
+            ),
+            "masks": self._convert_masks(obs["masks"]),
+        }
 
     @property
     def render_mode(self) -> str:
@@ -102,7 +184,7 @@ class MineDojoWrapper(core.Env):
 
     @property
     def observation_space(self) -> gym.spaces.Space:
-        return self._env.observation_space["rgb"]
+        return self._observation_space
 
     def seed(self, seed: Optional[int] = None) -> None:
         self.observation_space.seed(seed)
@@ -133,7 +215,7 @@ class MineDojoWrapper(core.Env):
             "action": int(a.item()),
             "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
-        return obs["rgb"], reward, done, False, info
+        return self._convert_obs(obs), reward, done, False, info
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
@@ -146,7 +228,7 @@ class MineDojoWrapper(core.Env):
             "pitch": float(obs["location_stats"]["pitch"].item()),
             "yaw": float(obs["location_stats"]["yaw"].item()),
         }
-        return obs["rgb"], {
+        return self._convert_obs(obs), {
             "life_stats": {
                 "life": float(obs["life_stats"]["life"].item()),
                 "oxygen": float(obs["life_stats"]["oxygen"].item()),
