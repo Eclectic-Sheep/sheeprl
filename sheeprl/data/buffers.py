@@ -22,7 +22,7 @@ class ReplayBuffer:
             buffer_size (int): The buffer size.
             n_envs (int, optional): The number of environments. Defaults to 1.
             device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
-            memmap (bool, optional): Whether to memory-mapping the buffer
+            memmap (bool, optional): Whether to memory-mapping the buffer.
         """
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
@@ -131,7 +131,7 @@ class ReplayBuffer:
         See https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
 
         Args:
-            batch_size (int): batch_size (int): Number of element to sample
+            batch_size (int): Number of element to sample
             sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
                 Defaults to False.
             clone (bool): whether to clone the sampled TensorDict
@@ -219,7 +219,7 @@ class SequentialReplayBuffer(ReplayBuffer):
         See comments in the code for more information.
 
         Args:
-            batch_size (int): batch_size (int): Number of element to sample
+            batch_size (int): Number of element to sample
             sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
                 Defaults to False.
             clone (bool): whether to clone the sampled TensorDict.
@@ -313,6 +313,15 @@ class SequentialReplayBuffer(ReplayBuffer):
 
 
 class EpisodeBuffer:
+    """A replay buffer that stores separately the episodes.
+
+    Args:
+        buffer_size (int): The capacity of the buffer.
+        sequence_length (int): The length of the sequences of the samples (an episode cannot be shorter than the episode length).
+        device (Union[torch.device, str]): The device where the buffer is created. Defaults to "cpu".
+        memmap (bool): Whether to memory-mapping the buffer.
+    """
+
     def __init__(
         self,
         buffer_size: int,
@@ -351,8 +360,12 @@ class EpisodeBuffer:
         return self._sequence_length
 
     @property
-    def device(self) -> torch.device:
+    def device(self) -> device:
         return self._device
+
+    @property
+    def is_memmap(self) -> bool:
+        return self._memmap
 
     @property
     def full(self) -> bool:
@@ -367,6 +380,17 @@ class EpisodeBuffer:
         return self._cum_lengths[-1] if len(self._buf) > 0 else 0
 
     def add(self, episode: TensorDictBase) -> None:
+        """Add an episode to the buffer.
+
+        Args:
+            episode (TensorDictBase): data to add.
+
+        Raises:
+            RuntimeError:
+                - The episode must contain exactly one done at the end of the episode.
+                - The length of the episode must be at least sequence lenght.
+                - The length of the episode cannot be greater than the buffer size.
+        """
         if len(torch.nonzero(episode["dones"])) != 1:
             raise RuntimeError(
                 f"The episode must contain exactly one done, got: {len(torch.nonzero(episode['dones']))}"
@@ -388,9 +412,24 @@ class EpisodeBuffer:
             cum_lengths = cum_lengths[mask.argmax() + 1 :] - cum_lengths[mask.argmax()]
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
+        if self._memmap:
+            episode.memmap_()
+        episode.to(self.device)
         self._buf.append(episode)
 
     def sample(self, batch_size: int, n_samples: int = 1, prioritize_ends: bool = False) -> TensorDictBase:
+        """Sample trajectories from the replay buffer.
+
+        Args:
+            batch_size (int): Number of element in the batch.
+            n_samples (bool): The number of samples to be retrieved.
+                Defaults to 1.
+            prioritize_ends (bool): Whether to clone prioritize the ends of the episodes.
+                Defaults to False.
+
+        Returns:
+            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [batch_size, 1]
+        """
         if batch_size <= 0:
             raise ValueError(f"Batch size must be greater than 0, got: {batch_size}")
         if n_samples <= 0:
@@ -404,9 +443,6 @@ class EpisodeBuffer:
         samples = []
         for i, n in enumerate(nsample_per_eps):
             ep_len = self._buf[i].shape[0]
-            # length = min(ep_len, self._sequence_length) # always sl
-            # length -= torch.randint(0, self._sequence_length, (1,)).item() # sl - something
-            # length = max(self._sequence_length, length) # max(sl, sl - something) = sl
             upper = ep_len - self._sequence_length + 1
             if prioritize_ends:
                 upper += self._sequence_length
