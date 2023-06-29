@@ -54,18 +54,21 @@ def train(
     """Runs one-step update of the agent.
 
     The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is waht is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
-        - p: the output of the representation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - q: the output of the transition model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qo: the output of the observation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qr: the output of the reward model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qc: the output of the continue model.
-        - qv: the output of the value model (critic), from Eq. 2 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - recurrent_state: is what is called ht or deterministic state from Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - prior: the stochastic state coming out from the transition model, depicted as z-hat_t
+        in Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - posterior: the stochastic state coming out from the representation model, depicted as z_t
+        in Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one) and recurrent states on the last dimension.
+        - p: the output of the transition model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - q: the output of the representation model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - po: the output of the observation model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - pr: the output of the reward model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - pc: the output of the continue model (discout predictor), from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        - pv: the output of the value model (critic), from Eq. 3 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     In particular, it updates the agent as specified by Algorithm 1 in
-    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     1. Dynamic Learning:
         - Encoder: encode the observations.
@@ -80,7 +83,7 @@ def train(
     2. Behaviour Learning:
         - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
-        - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
+        - Compute lambda targets (Eq. 4 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193))
         - Update the actor and the critic
 
     Args:
@@ -94,6 +97,7 @@ def train(
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV2Args): the configs.
+        is_continuous (bool): whether the action space is a continuous or discrete space
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -107,21 +111,17 @@ def train(
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
     # the recurrent state is the deterministic state (or ht)
-    # from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
-    # initialize the stochastic_state that must be of dimension (batch_size, 1, stochastic_size)
-    # the stochastic state is the stochastic state (or st)
-    # from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    # initialize the posterior that must be of dimension (1, batch_size, stochastic_size, discrete_size), which
+    # by default is set to (1, batch_size, 32, 32). The posterior state is named zt in the paper
     posterior = torch.zeros(1, batch_size, args.stochastic_size, args.discrete_size, device=device)
 
-    # initialize the tensors for dynamic learning
-    # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
-    # and its dimension is (sequence_length, batch_size, recurrent_state_size)
+    # initialize the recurrent_states, which will contain all the recurrent states
+    # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
     recurrent_states = torch.zeros(sequence_length, batch_size, args.recurrent_state_size, device=device)
 
-    # states_mean and states_std will contain all the actual means and stds of the sthocastic states respectively,
-    # their dimension is (sequence_length, batch_size, stochastic_size)
+    # initialize all the tensor to collect priors and posteriors states with their associated logits
     priors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
     priors_logits = torch.empty(sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
@@ -129,12 +129,12 @@ def train(
         sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device
     )
 
+    # embedded observations from the environment
     embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
 
     for i in range(0, sequence_length):
-        # one step of dynamic learning, take the stochastic state, the recurrent state, the action, and the observation
-        # compute the actual mean and std of the stochastic state, the new recurrent state, the new stochastic state,
-        # and the predicted mean and std of the stochastic state
+        # one step of dynamic learning, which take the posterior state, the recurrent state, the action
+        # and the observation and compute the next recurrent, prior and posterior states
         recurrent_state, prior_logits, prior, posterior_logits, posterior = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
@@ -145,39 +145,33 @@ def train(
         posteriors_logits[i] = posterior_logits
 
     # concatenate the posteriors with the recurrent states on the last dimension
-    # latent_states tensor has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
+    # latent_states has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # compute predictions for the observations
     decoded_information = cnn_forward(
         world_model.observation_model, latent_states, (latent_states.shape[-1],), observation_shape
     )
-    # compute the distribution of the reconstructed observations
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size observations.shape
-    qo = Independent(Normal(decoded_information, 1), len(observation_shape))
 
-    # compute predictions for the rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of rewards
-    qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    # compute the distribution over the reconstructed observations
+    po = Independent(Normal(decoded_information, 1), len(observation_shape))
 
-    # compute predictions for terminal steps, if required
+    # compute the distribution over the rewards
+    pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+
+    # compute the distribution over the terminal steps, if required
     if args.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
-        qc = continue_targets = None
+        pc = continue_targets = None
 
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
-    # compute the overall loss of the world model
     rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        qo,
+        po,
         batch_obs,
-        qr,
+        pr,
         data["rewards"],
         priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
         posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
@@ -185,7 +179,7 @@ def train(
         args.kl_free_nats,
         args.kl_free_avg,
         args.kl_regularizer,
-        qc,
+        pc,
         continue_targets,
         args.continue_scale_factor,
     )
@@ -212,10 +206,10 @@ def train(
     # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
 
-    # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
+    # (1, batch_size * sequence_length, determinisitic_size + stochastic_size * discrete_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
 
-    # initialize the tensor of the imagined states
+    # initialize the tensor of the imagined trajectories
     imagined_trajectories = torch.empty(
         args.horizon + 1,
         batch_size * sequence_length,
@@ -248,9 +242,6 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # predict values and rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of values/rewards
     with torch.no_grad():
         predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
@@ -276,11 +267,9 @@ def train(
 
     # compute the discounts to multiply to the lambda values
     with torch.no_grad():
-        # the time steps in Eq. 7 and Eq. 8 of the paper are weighted by the cumulative product of the predicted
+        # the losses in Eq. 5 and Eq. 6 of the paper are weighted by the cumulative product of the predicted
         # discount factors, estimated by the continue model, so terms are wighted down based on how likely
         # the imagined trajectory would have ended.
-        # Ref. subsection "Learning objectives" of paragraph 3 (Learning Behaviors by Latent Imagination)
-        # in [https://doi.org/10.48550/arXiv.1912.01603](https://doi.org/10.48550/arXiv.1912.01603)
         #
         # Suppose the case in which the continue model is not used and gamma = .99
         # done_mask.shape = (15, 2500, 1)
@@ -310,7 +299,7 @@ def train(
         # ] (14 rows)
         discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
 
-    # actor optimization step
+    # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
     entropy = args.actor_ent_coef * policy.entropy()
@@ -332,12 +321,8 @@ def train(
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
     qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
-    # critic optimization step
+    # critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
-    # compute the value loss
-    # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
-    # it is necessary to remove the last dimension properly match the shapes
-    # for the log prob
     value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:

@@ -7,9 +7,9 @@ from torch.distributions.kl import kl_divergence
 
 
 def reconstruction_loss(
-    qo: Distribution,
+    po: Distribution,
     observations: Tensor,
-    qr: Distribution,
+    pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
     posteriors_logits: Tensor,
@@ -17,17 +17,17 @@ def reconstruction_loss(
     kl_free_nats: float = 0.0,
     kl_free_avg: bool = True,
     kl_regularizer: float = 1.0,
-    qc: Optional[Distribution] = None,
-    continues: Optional[Tensor] = None,
+    pc: Optional[Distribution] = None,
+    continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
-    Compute the reconstruction loss as described in Eq. 10 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     Args:
-        qo (Distribution): the distribution returned by the observation_model (decoder).
+        po (Distribution): the distribution returned by the observation_model (decoder).
         observations (Tensor): the observations provided by the environment.
-        qr (Distribution): the reward distribution returned by the reward_model.
+        pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
         posteriors_logits (Tensor): the logits of the posterior.
@@ -37,10 +37,11 @@ def reconstruction_loss(
             Default to 0.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
-        qc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
+        pc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
             0s for the entries that are relative to a terminal step, 1s otherwise.
             Default to None.
-        dones (Tensor, optional): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        continue_targets (Tensor, optional): the targets for the discount predictor. Those are normally computed
+            as `(1 - data["dones"]) * args.gamma`.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
@@ -53,8 +54,8 @@ def reconstruction_loss(
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
     device = observations.device
-    observation_loss = -qo.log_prob(observations).mean()
-    reward_loss = -qr.log_prob(rewards).mean()
+    observation_loss = -po.log_prob(observations).mean()
+    reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl_divergence(
         Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
@@ -73,7 +74,7 @@ def reconstruction_loss(
         loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
-    if qc is not None and continues is not None:
-        continue_loss = continue_scale_factor * -qc.log_prob(continues).mean()
+    if pc is not None and continue_targets is not None:
+        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss

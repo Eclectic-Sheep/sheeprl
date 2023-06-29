@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from lightning import Fabric
 from torch import Tensor, nn
-from torch.distributions import Independent, OneHotCategoricalStraightThrough
+from torch.distributions import OneHotCategoricalStraightThrough
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import Player
@@ -106,16 +106,13 @@ def make_env(
 
 def compute_stochastic_state(
     logits: Tensor,
-    event_shape: Optional[int] = 1,
     discrete: int = 32,
 ) -> Tensor:
     """
-    Compute the stochastic state from the information of the distribution of the stochastic state.
+    Compute the stochastic state from the logits computed by the transition or representaiton model.
 
     Args:
         logits (Tensor): logits from either the representation model or the transition model.
-        event_shape (int, optional): how many batch dimensions have to be reinterpreted as event dims.
-            Default to 1.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
 
@@ -124,7 +121,7 @@ def compute_stochastic_state(
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    dist = Independent(OneHotCategoricalStraightThrough(logits=logits), event_shape)
+    dist = OneHotCategoricalStraightThrough(logits=logits)
     return dist.rsample()
 
 

@@ -61,8 +61,8 @@ class RSSM(nn.Module):
     Args:
         recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
         representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
-            For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+            For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
         min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
             Default to 0.1.
@@ -87,15 +87,15 @@ class RSSM(nn.Module):
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tuple[Tensor, Tensor], Tensor, Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
                 i.e., it computes the deterministic state (or ht).
-            Transition model: predict the stochastic state from the recurrent output.
-            Representation model: compute the stochasitc state from the recurrent state and from
+            Transition model: predict the prior from the recurrent output.
+            Representation model: compute the posterior from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
         Args:
             posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected
@@ -106,10 +106,12 @@ class RSSM(nn.Module):
             is_first (Tensor): if this is the first step in the episode.
 
         Returns:
-            The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
+            The recurrent state (Tensor): the recurrent state of the recurrent model.
+            The prior state (Tensor): computed by the transition model from the recurrent state.
+            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             The posterior stochastic state (Tensor): computed by the representation model
             from the recurrent state and the embbedded observation.
-            The prior stochastic state (Tensor): computed by the transition model from the recurrent state.
+            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
         """
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
@@ -119,7 +121,7 @@ class RSSM(nn.Module):
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, prior_logits, prior, posterior_logits, posterior
 
-    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
+    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
@@ -127,53 +129,41 @@ class RSSM(nn.Module):
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
-            logits (Tensor, Tensor): the logits of the distribution of the posterior state.
+            logits (Tensor): the logits of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior stochastic state.
         """
         logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        return logits, compute_stochastic_state(
-            logits,
-            event_shape=1,
-            discrete=self.discrete,
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
-    def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
+    def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
 
         Returns:
-            logits (Tensor, Tensor): the logits of the distribution of the prror state.
+            logits (Tensor): the logits of the distribution of the prror state.
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)
-        return logits, compute_stochastic_state(
-            logits,
-            event_shape=1,
-            discrete=self.discrete,
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
-    def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+    def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
         One-step imagination of the next latent state.
         It can be used several times to imagine trajectories in the latent space (Transition Model).
 
         Args:
-            stochastic_state (Tensor): the stochastic part of the latent space.
-                Shape (batch_size, 1, stochastic_size).
-            recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
+            prior (Tensor): the prior state.
+            recurrent_state (Tensor): the recurrent state of the recurrent model.
             actions (Tensor): the actions taken by the agent.
-                Shape (batch_size, 1, stochastic_size).
 
         Returns:
-            The imagined stochastic state (Tuple[Tensor, Tensor]): the imagined stochastic state.
+            The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_output, recurrent_state = self.recurrent_model(
-            torch.cat((stochastic_state, actions), -1), recurrent_state
-        )
-        _, imagined_stochastic_state = self._transition(recurrent_output)
-        return imagined_stochastic_state, recurrent_state
+        recurrent_output, recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
+        _, imagined_prior = self._transition(recurrent_output)
+        return imagined_prior, recurrent_state
 
 
 class Actor(nn.Module):
@@ -193,8 +183,9 @@ class Actor(nn.Module):
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
-        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal` and
-            `trunc_normal`.
+        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
+            `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
+            space is a discrete one, `trunc_normal` otherwise.
             Defaults to `auto`.
     """
 
@@ -321,6 +312,9 @@ class Player(nn.Module):
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (torch.device): the device to work on.
+        discrete_size (int): the dimension of a single Categorical variable in the
+            stochastic state (prior or posterior).
+            Defaults to 32.
     """
 
     def __init__(
@@ -396,11 +390,10 @@ class Player(nn.Module):
         _, self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
-        self.stochastic_state = compute_stochastic_state(
-            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)), discrete=self.discrete_size
-        )
-        self.stochastic_state = self.stochastic_state.view(
-            *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
+        posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
+        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
+        self.stochastic_state = stochastic_state.view(
+            *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
         self.actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
         return self.actions
