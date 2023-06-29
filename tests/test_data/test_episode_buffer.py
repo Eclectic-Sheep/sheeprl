@@ -156,3 +156,18 @@ def test_episode_buffer_prioritize_ends():
     samples = rb.sample(50, n_samples=5, prioritize_ends=True)
     assert samples.shape == torch.Size([5, sl, 50])
     assert torch.isin(samples["dones"], 1).any() > 0
+
+
+def test_memmap_episode_buffer():
+    buf_size = 1000000
+    sl = 50
+    rb = EpisodeBuffer(buf_size, sl, memmap=True)
+    for _ in range(100000 // 3000):
+        td = TensorDict(
+            {"observations": torch.randint(0, 256, (3000, 3, 64, 64), dtype=torch.uint8), "dones": torch.zeros(3000)},
+            batch_size=[3000],
+        )
+        td["dones"][-1] = 1
+        rb.add(td)
+        assert rb[-1].is_memmap()
+    assert rb.is_memmap
