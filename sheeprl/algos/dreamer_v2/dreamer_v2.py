@@ -4,6 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
+from typing import Sequence
 
 import gymnasium as gym
 import numpy as np
