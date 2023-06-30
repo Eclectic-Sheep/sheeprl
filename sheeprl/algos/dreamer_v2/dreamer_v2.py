@@ -242,8 +242,7 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # predict values and rewards
-    with torch.no_grad():
-        predicted_target_values = target_critic(imagined_trajectories)
+    predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
 
     if args.use_continues and world_model.continue_model:
