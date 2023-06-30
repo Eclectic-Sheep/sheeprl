@@ -107,6 +107,18 @@ class MineDojoWrapper(core.Env):
     def __getattr__(self, name):
         return getattr(self._env, name)
 
+    @property
+    def render_mode(self) -> str:
+        return self._render_mode
+
+    @property
+    def action_space(self) -> gym.spaces.Space:
+        return self._action_space
+
+    @property
+    def observation_space(self) -> gym.spaces.Space:
+        return self._observation_space
+
     def _convert_inventory(self, inventory: Dict[str, Any]) -> np.ndarray:
         converted_inventory = np.zeros(N_ALL_ITEMS)
         self._inventory = {}
@@ -165,7 +177,7 @@ class MineDojoWrapper(core.Env):
 
     def _convert_obs(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         return {
-            "rgb": obs["rgb"],
+            "rgb": obs["rgb"].copy(),
             "inventory": self._convert_inventory(obs["inventory"]),
             "equipment": self._convert_equipment(obs["equipment"]),
             "life_stats": np.concatenate(
@@ -173,18 +185,6 @@ class MineDojoWrapper(core.Env):
             ),
             "masks": self._convert_masks(obs["masks"]),
         }
-
-    @property
-    def render_mode(self) -> str:
-        return self._render_mode
-
-    @property
-    def action_space(self) -> gym.spaces.Space:
-        return self._action_space
-
-    @property
-    def observation_space(self) -> gym.spaces.Space:
-        return self._observation_space
 
     def seed(self, seed: Optional[int] = None) -> None:
         self.observation_space.seed(seed)
