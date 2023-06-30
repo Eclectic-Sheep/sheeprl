@@ -129,15 +129,15 @@ class MineDojoWrapper(core.Env):
             else:
                 self._inventory[item].append(i)
             if item == "air":
-                converted_inventory[ALL_ITEMS[ITEM_NAME_TO_ID[item]]] += 1
+                converted_inventory[ITEM_NAME_TO_ID[item]] += 1
             else:
-                converted_inventory[ALL_ITEMS[ITEM_NAME_TO_ID[item]]] += quantity
+                converted_inventory[ITEM_NAME_TO_ID[item]] += quantity
         return converted_inventory
 
     def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
-        equipment = np.zeros(len(N_ALL_ITEMS), dtype=np.int32)
-        equipment[ITEM_NAME_TO_ID[equipment["name"][0]]] = 1
-        return equipment
+        equip = np.zeros(N_ALL_ITEMS, dtype=np.int32)
+        equip[ITEM_NAME_TO_ID[equipment["name"][0]]] = 1
+        return equip
 
     def _convert_masks(self, masks: Dict[str, Any]) -> Dict[str, np.ndarray]:
         equip_mask = np.array([False] * N_ALL_ITEMS)
@@ -154,7 +154,7 @@ class MineDojoWrapper(core.Env):
         }
 
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
-        converted_action = copy.deepcopy(ACTION_MAP[int(action[0])])
+        converted_action = ACTION_MAP[int(action[0])].copy()
         if self._sticky_attack:
             if converted_action[5] == 3:
                 self._sticky_attack_counter = self._sticky_attack
@@ -171,8 +171,11 @@ class MineDojoWrapper(core.Env):
                     converted_action[0] = 1
                 self._sticky_jump_counter -= 1
 
-        converted_action[6] = int(action[1])
-        converted_action[7] = self._inventory[ITEM_ID_TO_NAME[int(action[2])]][0]
+        converted_action[6] = int(action[1]) if converted_action[5] == 4 else 0
+        if converted_action[5] == 5 or converted_action[5] == 6 or converted_action[5] == 7:
+            converted_action[7] = self._inventory[ITEM_ID_TO_NAME[int(action[2])]][0]
+        else:
+            converted_action[7] = 0
         return converted_action
 
     def _convert_obs(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -212,7 +215,7 @@ class MineDojoWrapper(core.Env):
                 "food": float(obs["life_stats"]["food"].item()),
             },
             "location_stats": copy.deepcopy(self._pos),
-            "action": int(a.item()),
+            "action": a.tolist(),
             "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
         return self._convert_obs(obs), reward, done, False, info
