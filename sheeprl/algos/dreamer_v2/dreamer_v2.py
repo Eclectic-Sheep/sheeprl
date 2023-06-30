@@ -307,7 +307,8 @@ def train(
     if is_continuous:
         objective = lambda_values[1:]
     else:
-        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+        baseline = target_critic(imagined_trajectories)
+        advantage = (lambda_values[1:] - baseline[:-2]).detach()
         objective = (
             torch.cat(
                 [
