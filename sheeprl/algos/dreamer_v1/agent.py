@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import Independent, Normal, OneHotCategorical, TanhTransform, TransformedDistribution
+from torch.distributions import Independent, Normal, OneHotCategoricalStraightThrough, TanhTransform, TransformedDistribution
 
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state, init_weights
@@ -281,9 +281,9 @@ class Actor(nn.Module):
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
         else:
-            actions_dist = OneHotCategorical(logits=out)
+            actions_dist = OneHotCategoricalStraightThrough(logits=out)
             if is_training:
-                actions = actions_dist.sample() + actions_dist.probs - actions_dist.probs.detach()
+                actions = actions_dist.rsample()
             else:
                 actions = actions_dist.mode
         return actions
@@ -385,7 +385,7 @@ class Player(nn.Module):
         if is_continuous:
             actions = torch.clip(Normal(actions, self.expl_amount).sample(), -1, 1)
         else:
-            sample = OneHotCategorical(logits=torch.zeros_like(actions)).sample().to(self.device)
+            sample = OneHotCategoricalStraightThrough(logits=torch.zeros_like(actions)).sample().to(self.device)
             actions = torch.where(torch.rand(actions.shape[:1], device=self.device) < self.expl_amount, sample, actions)
         return actions
 
