@@ -230,8 +230,8 @@ def train(
     # imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions, _ = actor(imagined_latent_state.detach())
-        imagined_actions[i] = torch.cat(actions, -1)
+        actions = torch.cat(actor(imagined_latent_state.detach())[0])
+        imagined_actions[i] = actions
 
         # imagination step
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
@@ -300,21 +300,22 @@ def train(
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
-    policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
-    entropy = args.actor_ent_coef * torch.cat([p.entropy() for p in policy], -1)
+
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
+    entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
     if is_continuous:
         objective = lambda_values[1:]
     else:
         baseline = target_critic(imagined_trajectories)
         advantage = (lambda_values[1:] - baseline[:-2]).detach()
         objective = (
-            torch.cat(
+            torch.stack(
                 [
                     p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policy, torch.split(imagined_actions, actions_dim, -1))
+                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
                 ],
                 -1,
-            )
+            ).sum(-1)
             * advantage
         )
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
@@ -414,14 +415,11 @@ def main():
     )
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
     actions_dim = (
         env.action_space.shape
         if is_continuous
-        else (
-            np.array([env.action_space.n])
-            if isinstance(env.action_space, gym.spaces.Discrete)
-            else env.action_space.nvec
-        )
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
@@ -515,7 +513,7 @@ def main():
     # Get the first environment observation and start the optimization
     obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, actions_dim)
+    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
     step_data["observations"] = obs
@@ -529,7 +527,10 @@ def main():
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
-                    [F.one_hot(torch.tensor(act), act_dim).numpy() for act, act_dim in zip(actions, actions_dim)],
+                    [
+                        F.one_hot(torch.tensor(act), act_dim).numpy()
+                        for act, act_dim in zip(actions.reshape(len(actions_dim)), actions_dim)
+                    ],
                     axis=-1,
                 )
         else:
@@ -539,9 +540,11 @@ def main():
                 )
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = torch.cat(real_actions, -1).cpu().numpy().reshape(actions_dim)
+                    real_actions = torch.cat(real_actions, -1).cpu().numpy().reshape(np.sum(actions_dim))
                 else:
-                    real_actions = np.array([real_act.argmax() for real_act in real_actions])
+                    real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
+                    if not is_multidiscrete:
+                        real_actions = real_actions.item()
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
         next_obs, rewards, dones, truncated, infos = env.step(real_actions)
@@ -571,7 +574,7 @@ def main():
                 args.num_envs, *observation_shape
             )  # [N_envs, N_obs]
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, actions_dim)
+            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
             step_data["observations"] = obs

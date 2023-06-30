@@ -263,15 +263,15 @@ class Actor(nn.Module):
             actions = (actions,)
             actions_dist = (actions_dist,)
         else:
-            actions_logits = torch.split(out, self.actions_dim), -1
+            actions_logits = torch.split(out, self.actions_dim, -1)
             actions_dist = []
             actions = []
             for logits in actions_logits:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
                 if is_training:
-                    actions.append(actions_dist.rsample())
+                    actions.append(actions_dist[-1].rsample())
                 else:
-                    actions.append(actions_dist.mode)
+                    actions.append(actions_dist[-1].mode)
         return actions, actions_dist
 
 
@@ -409,6 +409,7 @@ class Player(nn.Module):
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        self.actions = torch.cat(actions, -1)
         return actions
 
 
