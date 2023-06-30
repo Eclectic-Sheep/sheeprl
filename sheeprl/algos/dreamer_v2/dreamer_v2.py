@@ -305,7 +305,8 @@ def train(
     if is_continuous:
         objective = lambda_values[1:]
     else:
-        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+        baseline = target_critic(imagined_trajectories)
+        advantage = (lambda_values[1:] - baseline[:-2]).detach()
         objective = policy.log_prob(imagined_actions[1:-1].detach()).unsqueeze(-1) * advantage
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
