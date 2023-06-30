@@ -225,7 +225,7 @@ class SummaryUI:
                     with gr.Row():
                         topk_s = gr.Slider(
                             0,
-                            40,
+                            1000,
                             value=self.gen_args.top_k,
                             label="Top-k",
                             interactive=True,
@@ -237,13 +237,38 @@ class SummaryUI:
                             1, 128, value=self.gen_args.max_new_tokens, label="Max new tokens", interactive=True
                         )
                         do_sample_s = gr.Checkbox(label="Do Sample", checked=True)
+                        load_from_exp_button = gr.Button("Load from Experiment", label="Load from Experiment")
+                        load_from_exp_info = gr.Markdown(visible=False, value="")
+
+                        def load_from_experiment():
+                            return (
+                                self.gen_args.top_k,
+                                self.gen_args.top_p,
+                                self.gen_args.temperature,
+                                self.gen_args.max_new_tokens,
+                                self.gen_args.do_sample,
+                            )
+
+                        load_from_exp_button.click(
+                            load_from_experiment,
+                            outputs=[
+                                load_from_exp_info,
+                                topk_s,
+                                topp_s,
+                                temp_s,
+                                max_new_tokens_s,
+                                do_sample_s,
+                            ],
+                            show_progress=True,
+                        )
+
                         update_button = gr.Button("Update Settings", label="Update")
                         update_info = gr.Markdown(visible=False, value="")
 
                         def update_settings(topk_s, topp_s, temp_s, max_new_tokens_s, do_sample_s):
                             self.gen_args.top_k = topk_s
                             self.gen_args.top_p = topp_s
-                            self.gen_args.temperature = topp_s
+                            self.gen_args.temperature = temp_s
                             self.gen_args.max_new_tokens = max_new_tokens_s
                             self.gen_args.do_sample = do_sample_s
                             print(self.gen_args)

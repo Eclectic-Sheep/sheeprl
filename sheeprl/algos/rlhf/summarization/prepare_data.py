@@ -22,10 +22,10 @@ sys.path.append(str(wd))
 def prepare(
     destination_dir: str,
     tokenizer_name: str,
-    stage: str = "sft",
+    stage: str = "finetune",
     max_length: int = 512,
     max_prompt_length: int = 512,
-    mask_prompt: bool = False,
+    mask_prompt: bool = True,
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
     remove_same_output: bool = True,
@@ -41,14 +41,14 @@ def prepare(
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
         dataset = load_dataset("CarperAI/openai_summarize_comparisons", split=split, cache_dir=cache_dir)
-        if stage == "sft" or stage == "ppo":
+        if stage == "finetune":
             # first half of the dataset
             dataset = dataset.select(range(len(dataset) // 2))
-        elif stage == "rm":
+        elif stage == "preference":
             # second half of the dataset
             dataset = dataset.select(range(len(dataset) // 2, len(dataset)))
         else:
-            raise ValueError(f"stage must be one of 'rm', 'sft', 'ppo', but got {stage}")
+            raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
 
         if num_samples is not None:
             dataset = dataset.select(range(num_samples))
@@ -83,6 +83,7 @@ def prepare(
                 if mask_prompt:
                     targets[: len(encoded_prompt_input_ids)] = ignore_index
                 output["targets"] = targets
+                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
             elif stage == "rm":
                 # we need pairs of prompt and choosen and prompt and rejected
                 chosen = sample["chosen"][8:]  # remove "TL;DR: "
@@ -107,8 +108,6 @@ def prepare(
                     continue
                 output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
                 output["rejected_input_ids"] = encoded_prompt_rejected["input_ids"].squeeze()
-            else:
-                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
             samples.append(output)
         print(f"Processed {len(samples)} samples, skipped {skipped} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
@@ -147,11 +146,9 @@ if __name__ == "__main__":
         data_args = TextDataArgs(
             destination_dir="data/CarperAI/openai_summarize_comparisons",
             tokenizer_name=OPT().model_name,
-            stage="sft",
+            stage="finetune",
             max_length=512,
             max_prompt_length=512,
-            remove_same_output=True,
-            mask_prompt=True,
         )
     prepare(**asdict(data_args))
     with open(Path(data_args.destination_dir) / "args.json", "w") as f:

@@ -149,7 +149,7 @@ def main():
 
     # Setup Dataloaders
     collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / f"sft_train.pt")
+    train_data = torch.load(Path(train_args.data_dir) / f"finetune_train.pt")
     train_dataloader = DataLoader(
         train_data,
         shuffle=True,
@@ -159,7 +159,7 @@ def main():
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
 
-    test_data = torch.load(Path(train_args.data_dir) / f"sft_test.pt")
+    test_data = torch.load(Path(train_args.data_dir) / f"finetune_test.pt")
     test_dataloader = DataLoader(
         test_data,
         shuffle=False,

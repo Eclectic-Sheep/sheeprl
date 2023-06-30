@@ -208,7 +208,7 @@ class Pythia(ModelArgs):
 class TextDataArgs:
     destination_dir: str = Arg(help="Path to the directory where the dataset will be created.")
     tokenizer_name: str = Arg(help="Name of the tokenizer. It will be used to load huggingface tokenizer.")
-    stage: str = Arg(default="sft", help="Stage of the experiment. It can be sft, rm or rl.")
+    stage: str = Arg(default="finetune", metadata={"choices": ["finetune", "preference"]}, help="Stage of the experiment. It can be `finetune` or `preference`.")
     max_length: int = Arg(default=256, help="Maximum length of the input sequence.")
     max_prompt_length: int = Arg(default=256, help="Maximum length of the prompt sequence.")
     num_samples: Optional[int] = Arg(
