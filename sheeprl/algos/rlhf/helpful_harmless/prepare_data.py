@@ -25,7 +25,7 @@ def prepare(
     stage: str = "sft",
     max_length: int = 512,
     max_prompt_length: int = 512,
-    mask_prompt: bool = False,
+    mask_prompt: bool = True,
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
     remove_same_output: bool = True,
@@ -41,14 +41,14 @@ def prepare(
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
         dataset = load_dataset("Dahoas/static-hh", split=split, cache_dir=cache_dir)
-        if stage == "sft" or stage == "ppo":
+        if stage == "finetune":
             # first half of the dataset
             dataset = dataset.select(range(len(dataset) // 2))
-        elif stage == "rm":
+        elif stage == "preference":
             # second half of the dataset
             dataset = dataset.select(range(len(dataset) // 2, len(dataset)))
         else:
-            raise ValueError(f"stage must be one of 'rm', 'sft', 'ppo', but got {stage}")
+            raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
 
         if num_samples is not None:
             dataset = dataset.select(range(num_samples))
@@ -66,7 +66,9 @@ def prepare(
             if len(encoded_prompt_input_ids) > max_prompt_length:
                 skipped += 1
                 continue
-            if stage == "sft":
+            num_prompt_input_ids = len(encoded_prompt["input_ids"].squeeze())
+            output["prompt_len"] = num_prompt_input_ids
+            if stage == "finetune":
                 # we use prompt and choosen as data
                 prompt_response = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_response = tokenizer(
@@ -81,7 +83,8 @@ def prepare(
                 if mask_prompt:
                     targets[: len(encoded_prompt_input_ids)] = ignore_index
                 output["targets"] = targets
-            elif stage == "rm":
+                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
+            elif stage == "preference":
                 # we need pairs of prompt and choosen and prompt and rejected
                 prompt_chosen = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_chosen = tokenizer(
@@ -104,7 +107,7 @@ def prepare(
                 output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
                 output["rejected_input_ids"] = encoded_prompt_rejected["input_ids"].squeeze()
             else:
-                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
+                raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
             samples.append(output)
         print(f"Processed {len(samples)} samples, skipped {skipped} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
@@ -139,11 +142,9 @@ if __name__ == "__main__":
         data_args = TextDataArgs(
             destination_dir="data/Dahoas/static-hh",
             tokenizer_name=OPT().model_name,
-            stage="sft",
-            max_length=256,
-            max_prompt_length=256,
-            remove_same_output=True,
-            mask_prompt=True,
+            stage="preference",
+            max_length=512,
+            max_prompt_length=512,
         )
     prepare(**asdict(data_args))
     with open(Path(data_args.destination_dir) / "args.json", "w") as f:

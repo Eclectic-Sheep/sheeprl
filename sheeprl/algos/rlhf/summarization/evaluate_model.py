@@ -1,47 +1,55 @@
+from dataclasses import asdict
 import os
 import sys
 from _pytest.cacheprovider import Path
 import lightning
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
-from sheeprl.algos.rlhf.args import EvaluateArgs, ModelArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import SFTCollate
-from sheeprl.algos.rlhf.loss import finetune_loss
+from transformers import AutoTokenizer, GenerationConfig
+from sheeprl.algos.rlhf.args import EvaluateArgs, GenerationArgs, ModelArgs, TextDataArgs
+from sheeprl.algos.rlhf.data import EvaluateCollate
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json
 from sheeprl.utils.parser import HfArgumentParser
 from tqdm.auto import tqdm
 from dotenv import load_dotenv
+import evaluate
+import pandas as pd
+
+rouge_metric = evaluate.load("rouge")
 
 
 @torch.inference_mode()
 def evaluate(
     model: CasualModel,
-    eval_args: EvaluateArgs,
-    data_args: TextDataArgs,
+    generation_config: GenerationConfig,
+    tokenizer: AutoTokenizer,
     test_dataloader: DataLoader,
 ):
-    eval_counter = 0
-    total_loss = 0.0
+    generated_list = []
+    target_list = []
     pbar = tqdm(test_dataloader, total=len(test_dataloader), desc="Evaluating")
     for batch in pbar:
-        outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-        targets = batch["targets"] if eval_args.use_targets else batch["input_ids"].detach().clone()
-        loss = finetune_loss(
-            outputs=outputs,
-            targets=targets,
-            ignore_index=data_args.ignore_index,
-            label_smoothing=eval_args.label_smoothing,
+        generated_input_ids = model.generate(
+            input_ids=batch["prompt_input_ids"],
+            attention_mask=batch["prompt_attention_mask"],
+            generation_config=generation_config,
+            use_cache=True,
         )
-        total_loss += loss
-        eval_counter += 1
-    average_loss = total_loss / eval_counter
-    try:
-        perplexity = torch.exp(average_loss).item()
-    except OverflowError:
-        perplexity = float("inf")
-    return perplexity
+        response_ground_truth = []
+        response_generated = []
+        for i in range(len(batch["input_ids"])):
+            prompt_len = batch["prompt_len"][i]
+            response_ground_truth.append(batch["input_ids"][i][prompt_len:])
+            response_generated.append(generated_input_ids[i][prompt_len:])
+
+        generated_response_text = tokenizer.batch_decode(response_generated, skip_special_tokens=True)
+        target_response_text = tokenizer.batch_decode(response_ground_truth, skip_special_tokens=True)
+
+        generated_list.extend(generated_response_text)
+        target_list.extend(target_response_text)
+    rouge_score = rouge_metric.compute(predictions=generated_list, references=target_list)
+    return rouge_score
 
 
 def main():
@@ -54,6 +62,7 @@ def main():
     exp_args = load_args_from_json(experiment_dir=eval_args.experiment_dir)
     model_args = ModelArgs(**exp_args["model_args"])
     data_args = TextDataArgs(**exp_args["data_args"])
+    gen_args = GenerationArgs(**exp_args["gen_args"])
     checkpoint_path = get_last_checkpoint_path(experiment_dir=eval_args.experiment_dir)
 
     fabric = lightning.Fabric(accelerator="auto")
@@ -86,9 +95,9 @@ def main():
     fabric.print("Model loaded")
 
     # Setup Dataloaders
-    collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
+    collator = EvaluateCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
+    test_data = torch.load(Path(data_args.destination_dir) / f"finetune_test.pt")
 
-    test_data = torch.load(Path(data_args.destination_dir) / f"sft_test.pt")
     test_dataloader = DataLoader(
         test_data,
         shuffle=False,
@@ -97,13 +106,25 @@ def main():
         num_workers=eval_args.num_workers,
     )
     test_dataloader = fabric.setup_dataloaders(test_dataloader)
+
+    # Setup Generation Config
+    try:
+        eval_generation_config = GenerationConfig.from_pretrained(model_args.model_name, **asdict(gen_args))
+    except EnvironmentError:
+        # If the model does not have `generation_config.json` file, we create from scratch
+        fabric.print("`generation_config.json` not found, creating `GenerationConfig` from scratch")
+        eval_generation_config = GenerationConfig(**asdict(eval_args))
+        eval_generation_config.pad_token_id = tokenizer.pad_token_id
+        eval_generation_config.eos_token_id = tokenizer.eos_token_id
+        eval_generation_config.bos_token_id = tokenizer.bos_token_id
+
     result = evaluate(
         model=model,
-        eval_args=eval_args,
-        data_args=data_args,
+        generation_config=eval_generation_config,
         test_dataloader=test_dataloader,
+        tokenizer=tokenizer,
     )
-    fabric.print(f"Perplexity: {result}")
+    fabric.print(f"Rouge Scores: {result}")
 
 
 if __name__ == "__main__":

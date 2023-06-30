@@ -63,11 +63,12 @@ def prepare(
                 max_length=max_length,
                 return_tensors="pt",
             )
-            encoded_prompt_input_ids = encoded_prompt["input_ids"].squeeze()
-            if len(encoded_prompt_input_ids) > max_prompt_length:
+            num_prompt_input_ids = len(encoded_prompt["input_ids"].squeeze())
+            output["prompt_len"] = num_prompt_input_ids
+            if num_prompt_input_ids > max_prompt_length:
                 skipped += 1
                 continue
-            if stage == "sft":
+            if stage == "finetune":
                 # we use prompt and choosen as data
                 chosen = sample["chosen"][8:]  # remove "TL;DR: "
                 prompt_response = prompt + chosen + tokenizer.eos_token
@@ -81,10 +82,10 @@ def prepare(
                 targets = input_ids.clone()
                 output["input_ids"] = input_ids
                 if mask_prompt:
-                    targets[: len(encoded_prompt_input_ids)] = ignore_index
+                    targets[:num_prompt_input_ids] = ignore_index
                 output["targets"] = targets
-                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
-            elif stage == "rm":
+
+            elif stage == "preference":
                 # we need pairs of prompt and choosen and prompt and rejected
                 chosen = sample["chosen"][8:]  # remove "TL;DR: "
                 rejected = sample["rejected"][8:]  # remove "TL;DR: "
@@ -95,7 +96,6 @@ def prepare(
                     truncation=True,
                     return_tensors="pt",
                 )
-
                 prompt_rejected = prompt + rejected + tokenizer.eos_token
                 encoded_prompt_rejected = tokenizer(
                     prompt_rejected,
@@ -108,6 +108,8 @@ def prepare(
                     continue
                 output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
                 output["rejected_input_ids"] = encoded_prompt_rejected["input_ids"].squeeze()
+            else:
+                raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
             samples.append(output)
         print(f"Processed {len(samples)} samples, skipped {skipped} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")

@@ -110,15 +110,19 @@ class EvaluateArgs:
     seed: int = Arg(default=42, help="Seed for reproducibility")
     mini_batch_size: int = Arg(default=4, help="Mini batch size for evaluation")
     num_workers: int = Arg(default=4, help="Number of workers for data loading")
+    use_pretrained: bool = Arg(default=False, help="Whether to use pretrained model for evaluation or finetuned model")
+
+
+@dataclass
+class EvaluatePerplexityArgs(EvaluateArgs):
     label_smoothing: float = Arg(
         default=0.0,
-        help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. Label smoothing helps when the model is overconfident.",
+        help="Label smoothing value for cross entropy loss. For evaluation, it is better to use 0.0",
     )
     use_targets: bool = Arg(
         default=True,
         help="Whether to use masked targets for training. We would like to evaluate models on possible generated responses.",
     )
-    use_pretrained: bool = Arg(default=False, help="Whether to use pretrained model for evaluation or finetuned model")
 
 
 ### Model Arguments ###
@@ -208,7 +212,11 @@ class Pythia(ModelArgs):
 class TextDataArgs:
     destination_dir: str = Arg(help="Path to the directory where the dataset will be created.")
     tokenizer_name: str = Arg(help="Name of the tokenizer. It will be used to load huggingface tokenizer.")
-    stage: str = Arg(default="finetune", metadata={"choices": ["finetune", "preference"]}, help="Stage of the experiment. It can be `finetune` or `preference`.")
+    stage: str = Arg(
+        default="finetune",
+        metadata={"choices": ["finetune", "preference"]},
+        help="Stage of the experiment. It can be `finetune` or `preference`.",
+    )
     max_length: int = Arg(default=256, help="Maximum length of the input sequence.")
     max_prompt_length: int = Arg(default=256, help="Maximum length of the prompt sequence.")
     num_samples: Optional[int] = Arg(
