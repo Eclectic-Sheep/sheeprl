@@ -50,6 +50,7 @@ def train(
     aggregator: MetricAggregator,
     args: DreamerV2Args,
     is_continuous: bool,
+    actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -302,12 +303,21 @@ def train(
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
-    entropy = args.actor_ent_coef * torch.sum(torch.cat([p.entropy() for p in policy]))
+    entropy = args.actor_ent_coef * torch.cat([p.entropy() for p in policy], -1)
     if is_continuous:
         objective = lambda_values[1:]
     else:
         advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
-        objective = policy.log_prob(imagined_actions[1:-1].detach()).unsqueeze(-1) * advantage
+        objective = (
+            torch.cat(
+                [
+                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                    for p, imgnd_act in zip(policy, torch.split(imagined_actions, actions_dim, -1))
+                ],
+                -1,
+            )
+            * advantage
+        )
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
@@ -597,6 +607,7 @@ def main():
                     aggregator,
                     args,
                     is_continuous,
+                    actions_dim,
                 )
                 gradient_steps += 1
             step_before_training = args.train_every // (args.num_envs * fabric.world_size)
