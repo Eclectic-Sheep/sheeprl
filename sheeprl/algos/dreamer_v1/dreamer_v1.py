@@ -52,7 +52,8 @@ def train(
 
     The follwing designations are used:
         - recurrent_state: is what is called ht or deterministic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is waht is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - stochastic_state: is what is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+            It can be both posterior or prior.
         - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
         - p: the output of the representation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         - q: the output of the transition model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
@@ -68,8 +69,8 @@ def train(
         - Encoder: encode the observations.
         - Recurrent Model: compute the recurrent state from the previous recurrent state,
             the previous stochastic state, and from the previous actions.
-        - Transition Model: predict the stochastic state from the recurrent state, i.e., the deterministic state or ht.
-        - Representation Model: compute the actual stochastic state from the recurrent state and
+        - Transition Model: predict the posterior state from the recurrent state, i.e., the deterministic state or ht.
+        - Representation Model: compute the posterior state from the recurrent state and
             from the embedded observations provided by the environment.
         - Observation Model: reconstructs observations from latent states.
         - Reward Model: estimate rewards from the latent states.
@@ -104,47 +105,47 @@ def train(
     # the recurrent state is the deterministic state (or ht) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
-    # initialize the stochastic_state that must be of dimension (batch_size, 1, stochastic_size)
+    # initialize the posterior that must be of dimension (batch_size, 1, stochastic_size)
     # the stochastic state is the stochastic state (or st) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
-    stochastic_state = torch.zeros(1, batch_size, args.stochastic_size, device=device)
+    posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
 
     # initialize the tensors for dynamic learning
     # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
     # and its dimension is (sequence_length, batch_size, recurrent_state_size)
     recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
-    # stochastic_states will contain all the stochastic states computed during the dynamic learning phase,
+    # posteriors will contain all the posterior states computed during the dynamic learning phase,
     # and its dimension is (sequence_length, batch_size, stochastic_size)
-    stochastic_states = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # states_mean and states_std will contain all the actual means and stds of the sthocastic states respectively,
+    # posteriors_mean and posteriors_std will contain all the actual means and stds of the posterior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
-    states_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    states_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # pred_states_mean and pred_states_std will contain all the predicted means and stds of the sthocastic states respectively,
+    # priors_mean and priors_std will contain all the predicted means and stds of the prior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
-    pred_states_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    pred_states_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
     embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
 
     for i in range(0, sequence_length):
-        # one step of dynamic learning, take the stochastic state, the recurrent state, the action, and the observation
-        # compute the actual mean and std of the stochastic state, the new recurrent state, the new stochastic state,
-        # and the predicted mean and std of the stochastic state
-        state_mean_std, recurrent_state, stochastic_state, pred_state_mean_std = world_model.rssm.dynamic(
-            stochastic_state, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+        # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
+        # compute the mean and std of both the posterior and prior state, the new recurrent state
+        # and the new posterior state
+        recurrent_state, posterior, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
+            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
         )
         recurrent_states[i] = recurrent_state
-        stochastic_states[i] = stochastic_state
-        states_mean[i] = state_mean_std[0]
-        states_std[i] = state_mean_std[1]
-        pred_states_mean[i] = pred_state_mean_std[0]
-        pred_states_std[i] = pred_state_mean_std[1]
+        posteriors[i] = posterior
+        posteriors_mean[i] = posterior_mean_std[0]
+        posteriors_std[i] = posterior_mean_std[1]
+        priors_mean[i] = prior_state_mean_std[0]
+        priors_std[i] = prior_state_mean_std[1]
 
-    # concatenate the stochastic states with the recurrent states on the last dimension
+    # concatenate the posterior states with the recurrent states on the last dimension
     # latent_states tensor has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size)
-    latent_states = torch.cat((stochastic_states, recurrent_states), -1)
+    latent_states = torch.cat((posteriors, recurrent_states), -1)
 
     # compute predictions for the observations
     decoded_information = cnn_forward(
@@ -169,12 +170,12 @@ def train(
     else:
         qc = continue_targets = None
 
-    # compute the distributions of the states (actual and predicted)
+    # compute the distributions of the states (posteriors and priors)
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the stochastic size
-    p = Independent(Normal(states_mean, states_std), 1)
-    q = Independent(Normal(pred_states_mean, pred_states_std), 1)
+    p = Independent(Normal(posteriors_mean, posteriors_std), 1)
+    q = Independent(Normal(priors_mean, priors_std), 1)
 
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
@@ -205,18 +206,18 @@ def train(
     aggregator.update("State/q_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
-    # unflatten first 2 dimensions of recurernt and stochastic states in order to have all the states on the first dimension.
+    # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
     # The 1 in the second dimension is needed for the recurrent model in the imagination step,
     # 1 because the agent imagines one state at a time.
     # (1, batch_size * sequence_length, stochastic_size)
-    imagined_stochastic_state = stochastic_states.detach().reshape(1, -1, args.stochastic_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
 
     # initialize the recurrent state of the recurrent model with the recurrent states computed
     # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
 
     # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
-    imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+    imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
 
     # initialize the tensor of the imagined states
     imagined_trajectories = torch.empty(
@@ -229,12 +230,12 @@ def train(
         actions = actor(imagined_latent_states.detach())
 
         # imagination step
-        imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
-            imagined_stochastic_state, recurrent_state, actions
+        imagined_prior, recurrent_state = world_model.rssm.imagination(
+            imagined_prior, recurrent_state, actions
         )
 
         # update current state
-        imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+        imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_states
 
     # predict values and rewards

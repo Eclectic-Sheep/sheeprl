@@ -124,7 +124,6 @@ def train(
     recurrent_states = torch.zeros(sequence_length, batch_size, args.recurrent_state_size, device=device)
 
     # initialize all the tensor to collect priors and posteriors states with their associated logits
-    priors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
     priors_logits = torch.empty(sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
     posteriors_logits = torch.empty(
@@ -137,11 +136,10 @@ def train(
     for i in range(0, sequence_length):
         # one step of dynamic learning, which take the posterior state, the recurrent state, the action
         # and the observation and compute the next recurrent, prior and posterior states
-        recurrent_state, prior_logits, prior, posterior_logits, posterior = world_model.rssm.dynamic(
+        recurrent_state, posterior, posterior_logits, prior_logits = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
         recurrent_states[i] = recurrent_state
-        priors[i] = prior
         priors_logits[i] = prior_logits
         posteriors[i] = posterior
         posteriors_logits[i] = posterior_logits

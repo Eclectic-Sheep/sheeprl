@@ -88,7 +88,7 @@ class RSSM(nn.Module):
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -108,19 +108,18 @@ class RSSM(nn.Module):
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The prior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             The posterior stochastic state (Tensor): computed by the representation model
-            from the recurrent state and the embbedded observation.
             The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
+            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
+            from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_out)
+        prior_logits, _ = self._transition(recurrent_out)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, prior_logits, prior, posterior_logits, posterior
+        return recurrent_state, posterior, posterior_logits, prior_logits
 
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
