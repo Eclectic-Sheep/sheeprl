@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -228,9 +228,7 @@ class Actor(nn.Module):
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
 
-    def forward(
-        self, state: Tensor, is_training: bool = True
-    ) -> Tuple[Sequence[Tensor], Union[Distribution, Sequence[Distribution]]]:
+    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -264,6 +262,7 @@ class Actor(nn.Module):
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
             actions = (actions,)
+            actions_dist = (actions_dist,)
         else:
             actions_logits = torch.split(out, self.actions_dim), -1
             actions_dist = []

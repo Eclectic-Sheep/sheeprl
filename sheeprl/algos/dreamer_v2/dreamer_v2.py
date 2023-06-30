@@ -302,7 +302,7 @@ def train(
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
-    entropy = args.actor_ent_coef * policy.entropy()
+    entropy = args.actor_ent_coef * torch.sum(torch.cat([p.entropy() for p in policy]))
     if is_continuous:
         objective = lambda_values[1:]
     else:
