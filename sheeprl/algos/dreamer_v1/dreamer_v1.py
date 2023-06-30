@@ -230,9 +230,7 @@ def train(
         actions = actor(imagined_latent_states.detach())
 
         # imagination step
-        imagined_prior, recurrent_state = world_model.rssm.imagination(
-            imagined_prior, recurrent_state, actions
-        )
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
 
         # update current state
         imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)

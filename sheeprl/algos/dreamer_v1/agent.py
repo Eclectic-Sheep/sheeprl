@@ -5,7 +5,13 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import Independent, Normal, OneHotCategoricalStraightThrough, TanhTransform, TransformedDistribution
+from torch.distributions import (
+    Independent,
+    Normal,
+    OneHotCategoricalStraightThrough,
+    TanhTransform,
+    TransformedDistribution,
+)
 
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state, init_weights
@@ -143,9 +149,7 @@ class RSSM(nn.Module):
             The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
             The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
         """
-        recurrent_out, recurrent_state = self.recurrent_model(
-            torch.cat((posterior, action), -1), recurrent_state
-        )
+        recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_state_mean_std, _ = self._transition(recurrent_out)
         posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, posterior, posterior_mean_std, prior_state_mean_std

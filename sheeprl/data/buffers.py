@@ -417,7 +417,13 @@ class EpisodeBuffer:
         episode.to(self.device)
         self._buf.append(episode)
 
-    def sample(self, batch_size: int, n_samples: int = 1, prioritize_ends: bool = False) -> TensorDictBase:
+    def sample(
+        self,
+        batch_size: int,
+        clone: bool = False,
+        n_samples: int = 1,
+        prioritize_ends: bool = False,
+    ) -> TensorDictBase:
         """Sample trajectories from the replay buffer.
 
         Args:
@@ -451,4 +457,7 @@ class EpisodeBuffer:
             )
             indices = start_idxes + self._chunk_length
             samples.append(self._buf[i][indices])
-        return torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        samples = torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        if clone:
+            return samples.clone()
+        return samples

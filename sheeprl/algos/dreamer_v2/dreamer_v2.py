@@ -25,7 +25,7 @@ from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_lambda_values, make_env, test
-from sheeprl.data.buffers import SequentialReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -465,11 +465,19 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
-    rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
+    buffer_type = args.buffer_type.lower()
+    if buffer_type == "sequential":
+        rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
+    elif buffer_type == "episode":
+        rb = EpisodeBuffer(
+            buffer_size, sequence_length=args.per_rank_sequence_length, device="cpu", memmap=args.memmap_buffer
+        )
+    else:
+        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], SequentialReplayBuffer):
+        elif isinstance(state["rb"], (SequentialReplayBuffer, EpisodeBuffer)):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
@@ -494,13 +502,17 @@ def main():
         )
 
     # Get the first environment observation and start the optimization
+    episode_steps = []
     obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, action_dim)
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
     step_data["observations"] = obs
-    rb.add(step_data[None, ...])
+    if buffer_type == "sequential":
+        rb.add(step_data[None, ...])
+    else:
+        episode_steps.append(step_data[None, ...])
     player.init_states()
 
     gradient_steps = 0
@@ -525,6 +537,8 @@ def main():
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
         next_obs, rewards, dones, truncated, infos = env.step(real_actions)
         dones = np.logical_or(dones, truncated)
+        if args.dry_run and buffer_type == "episode":
+            dones = np.ones_like(dones)
 
         if (dones or truncated) and "episode" in infos:
             fabric.print(f"Rank-0: global_step={global_step}, reward_env_{0}={infos['episode']['r'][0]}")
@@ -543,9 +557,17 @@ def main():
         step_data["actions"] = actions
         step_data["observations"] = obs
         step_data["rewards"] = clip_rewards_fn(rewards)
-        rb.add(step_data[None, ...])
+        data_to_add = step_data[None, ...]
+        if buffer_type == "sequential":
+            rb.add(data_to_add)
+        else:
+            episode_steps.append(data_to_add)
 
         if dones or truncated:
+            # Add entire episode if needed
+            if buffer_type == "episode" and len(episode_steps) >= args.per_rank_batch_size:
+                rb.add(torch.cat(episode_steps, dim=0))
+                episode_steps = []
             obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(
                 args.num_envs, *observation_shape
             )  # [N_envs, N_obs]
@@ -554,7 +576,11 @@ def main():
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
             step_data["observations"] = obs
-            rb.add(step_data[None, ...])
+            data_to_add = step_data[None, ...]
+            if buffer_type == "sequential":
+                rb.add(data_to_add)
+            else:
+                episode_steps.append(data_to_add)
             player.init_states()
 
         step_before_training -= 1
@@ -562,11 +588,18 @@ def main():
         # Train the agent
         if global_step >= learning_starts and step_before_training <= 0:
             fabric.barrier()
-            local_data = rb.sample(
-                args.per_rank_batch_size,
-                sequence_length=args.per_rank_sequence_length,
-                n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
-            ).to(device)
+            if buffer_type == "sequential":
+                local_data = rb.sample(
+                    args.per_rank_batch_size,
+                    sequence_length=args.per_rank_sequence_length,
+                    n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
+                ).to(device)
+            else:
+                local_data = rb.sample(
+                    args.per_rank_batch_size,
+                    n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
+                    prioritize_ends=args.prioritize_ends,
+                ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
                 if gradient_steps % args.critic_target_network_update_freq == 0:
