@@ -94,10 +94,10 @@ class RSSM(nn.Module):
 
     Args:
         recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multu-layer perceptron to compute the stochastic part of the latent state.
+        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the posterior state.
             For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-            The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
+            The model is composed by a multu-layer perceptron to predict the prior state.
         min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
             Default to 0.1.
     """
@@ -117,41 +117,41 @@ class RSSM(nn.Module):
 
     def dynamic(
         self,
-        stochastic_state: Tensor,
+        posterior: Tensor,
         recurrent_state: Tensor,
         action: Tensor,
         embedded_obs: Tensor,
-    ) -> Tuple[Tuple[Tensor, Tensor], Tensor, Tensor, Tuple[Tensor, Tensor]]:
+    ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
                 i.e., it computes the deterministic state (or ht).
-            Transition model: predict the stochastic state from the recurrent output.
-            Representation model: compute the stochasitc state from the recurrent state and from
+            Transition model: predict the prior state from the recurrent output.
+            Representation model: compute the posterior state from the recurrent state and from
                 the embedded observations provided by the environment.
         For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
         Args:
-            stochastic_state (Tensor): the stochastic state.
+            posterior (Tensor): the posterior state.
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
 
         Returns:
-            The actual mean and std (Tuple[Tensor, Tensor]): the actual mean and std of the distribution of the latent state.
             The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
-            The actual stochastic state (Tensor): computed by the representation model from the recurrent state and the embbedded observation.
-            The predicted mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the latent state.
+            The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
+            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
+            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
         """
         recurrent_out, recurrent_state = self.recurrent_model(
-            torch.cat((stochastic_state, action), -1), recurrent_state
+            torch.cat((posterior, action), -1), recurrent_state
         )
-        predicted_state_mean_std, _ = self._transition(recurrent_out)
-        state_mean_std, stochastic_state = self._representation(recurrent_state, embedded_obs)
-        return state_mean_std, recurrent_state, stochastic_state, predicted_state_mean_std
+        prior_state_mean_std, _ = self._transition(recurrent_out)
+        posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)
+        return recurrent_state, posterior, posterior_mean_std, prior_state_mean_std
 
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
-        """Compute the distribution of the stochastic part of the latent state.
+        """Compute the distribution of the posterior state.
 
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
@@ -159,15 +159,15 @@ class RSSM(nn.Module):
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
-            state_mean_std (Tensor, Tensor): the mean and the standard deviation of the distribution of the latent state.
-            stochastic_state (Tensor): the sampled stochastic part of the latent state.
+            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation of the distribution of the posterior state.
+            posterior (Tensor): the sampled posterior.
         """
-        state_mean_std, stochastic_state = compute_stochastic_state(
+        posterior_mean_std, posterior = compute_stochastic_state(
             self.representation_model(torch.cat((recurrent_state, embedded_obs), -1)),
             event_shape=1,
             min_std=self.min_std,
         )
-        return state_mean_std, stochastic_state
+        return posterior_mean_std, posterior
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
         """
@@ -177,11 +177,11 @@ class RSSM(nn.Module):
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
 
         Returns:
-            The predicted mean and the standard deviation of the distribution of the latent state (Tensor, Tensor).
-            The stochastic part of the latent state (Tensor): the sampled stochastic parts of the latent state predicted by the transition model.
+            The predicted mean and the standard deviation of the distribution of the prior state (Tensor, Tensor).
+            The prior state (Tensor): the sampled prior state predicted by the transition model.
         """
-        predicted_mean_std = self.transition_model(recurrent_out)
-        return compute_stochastic_state(predicted_mean_std, event_shape=1, min_std=self.min_std)
+        prior_mean_std = self.transition_model(recurrent_out)
+        return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -189,21 +189,21 @@ class RSSM(nn.Module):
         It can be used several times to imagine trajectories in the latent space (Transition Model).
 
         Args:
-            stochastic_state (Tensor): the stochastic part of the latent space.
+            stochastic_state (Tensor): the stochastic space (can be either the posterior or the prior).
                 Shape (batch_size, 1, stochastic_size).
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             actions (Tensor): the actions taken by the agent.
                 Shape (batch_size, 1, stochastic_size).
 
         Returns:
-            The imagined stochastic state (Tuple[Tensor, Tensor]): the imagined stochastic state.
+            The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
         recurrent_output, recurrent_state = self.recurrent_model(
             torch.cat((stochastic_state, actions), -1), recurrent_state
         )
-        _, imagined_stochastic_state = self._transition(recurrent_output)
-        return imagined_stochastic_state, recurrent_state
+        _, imagined_prior = self._transition(recurrent_output)
+        return imagined_prior, recurrent_state
 
 
 class Actor(nn.Module):
