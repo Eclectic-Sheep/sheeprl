@@ -56,6 +56,7 @@ atari = [
   "gymnasium[accept-rom-license]==0.28.*",
   "gymnasium[other]==0.28.*",
 ]
+minedojo = ["minedojo==0.1"]
 
 [tool.ruff]
 line-length = 120
