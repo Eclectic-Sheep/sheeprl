@@ -420,9 +420,9 @@ class EpisodeBuffer:
     def sample(
         self,
         batch_size: int,
-        clone: bool = False,
         n_samples: int = 1,
         prioritize_ends: bool = False,
+        clone: bool = False,
     ) -> TensorDictBase:
         """Sample trajectories from the replay buffer.
 
