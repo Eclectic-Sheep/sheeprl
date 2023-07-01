@@ -567,7 +567,7 @@ def main():
             # Add entire episode if needed
             if buffer_type == "episode" and len(episode_steps) >= args.per_rank_batch_size:
                 rb.add(torch.cat(episode_steps, dim=0))
-                episode_steps = []
+            episode_steps = []
             obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(
                 args.num_envs, *observation_shape
             )  # [N_envs, N_obs]
