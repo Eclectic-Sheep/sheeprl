@@ -217,19 +217,21 @@ class TextDataArgs:
         metadata={"choices": ["finetune", "preference"]},
         help="Stage of the experiment. It can be `finetune` or `preference`.",
     )
-    max_length: int = Arg(default=256, help="Maximum length of the input sequence.")
-    max_prompt_length: int = Arg(default=256, help="Maximum length of the prompt sequence.")
+    max_length: int = Arg(default=512, help="Maximum length of the input sequence.")
+    max_prompt_length: int = Arg(default=512, help="Maximum length of the prompt sequence.")
     num_samples: Optional[int] = Arg(
         default=None, help="Number of samples to use from the dataset. If None, all samples will be used."
     )
-    mask_prompt: bool = Arg(default=False, help="Whether to mask prompt tokens.")
+    mask_prompt: bool = Arg(default=True, help="Whether to mask prompt tokens.")
     ignore_index: int = Arg(
         default=-1,
         help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss calculation if it is enabled.",
     )
-    remove_same_output: bool = Arg(
+    remove_same_responses: bool = Arg(
         default=True, help="Whether to remove samples with same chosen and rejected outputs."
     )
+    remove_same_prompts: bool = Arg(default=True, help="Whether to remove samples with same prompts.")
+    minimum_response_length: int = Arg(default=5, help="Minimum length of the response.")
 
     def to_dict(self) -> dict:
         return {"data_args": asdict(self)}

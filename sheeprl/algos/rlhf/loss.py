@@ -31,16 +31,28 @@ def reward_loss_average(
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from average of all output tokens excluding padding tokens"""
-    pad_mask_chosen = chosen != pad_token_id  # (B, T)
-    pad_mask_rejected = rejected != pad_token_id  # (B, T)
+    mask_chosen = chosen != pad_token_id  # (B, T)
+    mask_rejected = rejected != pad_token_id  # (B, T)
 
-    chosen_rewards_average = chosen_rewards * pad_mask_chosen
-    chosen_rewards_average = chosen_rewards_average.sum(dim=1) / pad_mask_chosen.sum(dim=1)
-    rejected_rewards_average = rejected_rewards * pad_mask_rejected
-    rejected_rewards_average = rejected_rewards_average.sum(dim=1) / pad_mask_rejected.sum(dim=1)
+    divergence = ((chosen - rejected) != 0).int().argmax(1)
+
+    # TODO: implement it in vectorized way
+    for i, d in enumerate(divergence):
+        mask_chosen[i, :d] = 0
+        mask_rejected[i, :d] = 0
+
+    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True)
+    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True)
+    last_chosen_rewards = torch.gather(chosen_rewards, dim=-1, index=last_chosen_token_idx).squeeze(-1)
+    last_rejected_rewards = torch.gather(rejected_rewards, dim=-1, index=last_rejected_token_idx).squeeze(-1)
+
+    chosen_rewards_average = chosen_rewards * mask_chosen
+    chosen_rewards_average = chosen_rewards_average.sum(dim=1) / mask_chosen.sum(dim=1)
+    rejected_rewards_average = rejected_rewards * mask_rejected
+    rejected_rewards_average = rejected_rewards_average.sum(dim=1) / mask_rejected.sum(dim=1)
 
     filtered_rewards = chosen_rewards_average - rejected_rewards_average
-    return -F.logsigmoid(filtered_rewards).mean(), chosen_rewards_average, rejected_rewards_average
+    return -F.logsigmoid(filtered_rewards).mean(), last_chosen_rewards, last_rejected_rewards
 
 
 def reward_loss_per_sample(

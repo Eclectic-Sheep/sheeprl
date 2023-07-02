@@ -137,3 +137,13 @@ def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_arg
 
     else:
         raise ValueError(f"Unknown finetuning mode {finetune_mode}")
+
+def compute_grad_norm(model: torch.nn.Module) -> float:
+    total_norm = 0
+    parameters = [p for p in model.parameters() if p.grad is not None and p.requires_grad]
+    for p in parameters:
+        param_norm = p.grad.detach().data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** 0.5
+    return total_norm
+

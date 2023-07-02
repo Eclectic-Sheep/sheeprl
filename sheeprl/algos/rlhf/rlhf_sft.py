@@ -23,6 +23,7 @@ from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
+    compute_grad_norm,
     log_text,
     prepare_optimizer_parameters,
     save_args_to_json,
@@ -193,6 +194,7 @@ def main():
     iterator = tqdm(range(num_training_steps)) if fabric.is_global_zero else range(num_training_steps)
     test_loss = None
     data_iterator = None
+    grad_norm = None
     for k in iterator:
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
@@ -225,6 +227,7 @@ def main():
 
         dt = time.time() - t0
         if not is_accumulating:
+            grad_norm = compute_grad_norm(model)
             fabric.clip_gradients(model, optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -248,8 +251,12 @@ def main():
             fabric.log("train/time", dt, step=k)
             fabric.log("train/lr", lr, step=k)
             fabric.log("train/loss", loss.item(), step=k)
+            if grad_norm is not None:
+                fabric.log("train/grad_norm", grad_norm, step=k)
             if isinstance(iterator, tqdm):
                 description = f"iter {k}, train/loss {loss.item():.4f}, time: {dt*1000:.2f}ms"
+                if grad_norm is not None:
+                    description += f", grad_norm {grad_norm:.2f}"
                 if test_loss is not None:
                     description += f", test/loss {test_loss:.2f}"
                 iterator.set_description(description)
