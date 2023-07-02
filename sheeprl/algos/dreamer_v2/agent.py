@@ -404,9 +404,9 @@ def build_models(
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: DreamerV2Args,
-    world_model_state: Dict[str, Tensor] = None,
-    actor_state: Dict[str, Tensor] = None,
-    critic_state: Dict[str, Tensor] = None,
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 
