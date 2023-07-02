@@ -20,20 +20,19 @@ if not _IS_TRANSFORMERS_AVAILABLE:
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.args import OPT, ExploreArgs, GenerationArgs, ModelArgs, PPOArgs, TextDataArgs
-from sheeprl.algos.rlhf.lora_utils import add_lora
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel
 from sheeprl.algos.rlhf.utils import (
     get_last_checkpoint_path,
-    load_model_args_from_json,
+    load_args_from_json,
     log_text,
     prepare_optimizer_parameters,
     save_args_to_json,
+    setup_finetuning,
     trainable_parameter_summary,
 )
 
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import EmptyInitOnDevice
 
 
 __all__ = ["main"]
@@ -62,7 +61,7 @@ def generate(
     last_token_idx = torch.argmax(torch.cumsum(action_mask, dim=1) * action_mask, dim=1, keepdim=True)
     reward_score = torch.gather(reward, dim=-1, index=last_token_idx).squeeze(-1)
     actor_model.train()
-    return tokenizer.decode(generated_input_ids[0]), reward_score.item()
+    return tokenizer.decode(generated_input_ids[0],skip_special_tokens=True), reward_score.item()
 
 
 @register_algorithm()
@@ -78,19 +77,8 @@ def main():
         train_args = PPOArgs(data_dir="data/Dahoas/static-hh")
         model_args = OPT()
         gen_args = ExploreArgs()
-
-        train_args.actor_learning_rate = 5e-7
-        train_args.critic_learning_rate = 5e-7
-        train_args.epochs = 1
-        train_args.eval_interval = 5
-        train_args.micro_batch_size = 4
-        train_args.mini_batch_size = 4
-        train_args.rollout_size = 16
-        train_args.ppo_epochs = 1
         train_args.sft_experiment_dir = os.environ.get("SFT_DIR")
         train_args.rm_experiment_dir = os.environ.get("RM_DIR")
-        train_args.save_interval = 1000
-        model_args.disable_dropout = True
 
     if train_args.sft_experiment_dir is None or train_args.rm_experiment_dir is None:
         raise ValueError("For PPO, checkpoints coming from SFT and RM training are required.")
@@ -128,64 +116,51 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    sft_model_args = load_model_args_from_json(experiment_dir=train_args.sft_experiment_dir)
+    sft_exp_args = load_args_from_json(experiment_dir=train_args.sft_experiment_dir)
+    sft_model_args = ModelArgs(**sft_exp_args["model_args"])
     sft_checkpoint_path = get_last_checkpoint_path(train_args.sft_experiment_dir)
 
     # Reference actor model for checking kl divergence
     fabric.print("\nLoading reference model")
-    with EmptyInitOnDevice(fabric.device):
-        ref_model = ActorModel.from_checkpoint(
-            device=fabric.device,
-            model_args=sft_model_args,
-            path=sft_checkpoint_path,
-            freeze=True,
-        )
-        ref_model.eval()
-    trainable_parameter_summary(fabric, ref_model, show_names=False)
+    ref_model = ActorModel.from_checkpoint(
+        device=fabric.device,
+        model_args=sft_model_args,
+        path=sft_checkpoint_path,
+        freeze=True,
+    )
+    ref_model.eval()
+    trainable_parameter_summary(model=ref_model, show_names=False, fabric=fabric)
 
     # Actor model for PPO training
     fabric.print("\nLoading actor model")
-    with EmptyInitOnDevice(fabric.device):
-        actor_model = ActorModel.from_checkpoint(
-            device=fabric.device, model_args=model_args, path=sft_checkpoint_path, freeze=model_args.apply_lora
-        )
-        if model_args.apply_lora:
-            add_lora(actor_model, model_args)
-        else:
-            fabric.print("Not applying LORA, Finetuning all parameters")
-            for param in actor_model.parameters():
-                param.requires_grad = True
-    trainable_parameter_summary(fabric, actor_model, show_names=False)
+    actor_model = ActorModel.from_checkpoint(
+        device=fabric.device, model_args=model_args, path=sft_checkpoint_path, freeze=True
+    )
+    setup_finetuning(fabric, actor_model, model_args)
+    trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
 
-    rm_model_args = load_model_args_from_json(experiment_dir=train_args.rm_experiment_dir)
+    rm_exp_args = load_args_from_json(experiment_dir=train_args.rm_experiment_dir)
+    rm_model_args = ModelArgs(**rm_exp_args["model_args"])
     rm_checkpoint_path = get_last_checkpoint_path(train_args.rm_experiment_dir)
 
     # Critic Model for PPO training
     fabric.print("\nLoading critic model")
-    with EmptyInitOnDevice(fabric.device):
-        critic_model = CriticModel.from_checkpoint(
-            device=fabric.device, model_args=rm_model_args, path=rm_checkpoint_path, freeze=model_args.apply_lora
-        )
-        if model_args.apply_lora:
-            add_lora(actor_model, model_args)
-        else:
-            fabric.print("Not applying LORA, Finetuning all parameters")
-            for param in critic_model.parameters():
-                param.requires_grad = True
-
-    trainable_parameter_summary(fabric, critic_model, show_names=False)
+    critic_model = CriticModel.from_checkpoint(
+        device=fabric.device, model_args=rm_model_args, path=rm_checkpoint_path, freeze=True
+    )
+    setup_finetuning(fabric, critic_model, model_args)
+    trainable_parameter_summary(model=critic_model, show_names=False, fabric=fabric)
 
     # Reward model
     fabric.print("\nLoading reward model")
-    with EmptyInitOnDevice(fabric.device):
-        reward_model = CriticModel.from_checkpoint(
-            device=fabric.device,
-            model_args=rm_model_args,
-            path=rm_checkpoint_path,
-            freeze=True,
-        )
-        reward_model.eval()
-    trainable_parameter_summary(fabric, reward_model, show_names=False)
+    reward_model = CriticModel.from_checkpoint(
+        device=fabric.device,
+        model_args=rm_model_args,
+        path=rm_checkpoint_path,
+        freeze=True,
+    )
+    reward_model.eval()
+    trainable_parameter_summary(model=reward_model, show_names=False, fabric=fabric)
 
     # Setup Generation Config
     try:
@@ -206,7 +181,7 @@ def main():
 
     # Setup Dataloaders
     collator = LeftPadCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / f"ppo_train.pt")
+    train_data = torch.load(Path(train_args.data_dir) / f"finetune_train.pt")
     train_dataloader = DataLoader(
         train_data,
         shuffle=True,

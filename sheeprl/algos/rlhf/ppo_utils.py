@@ -70,7 +70,7 @@ def collect_rollout(
 
     rewards = reward_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
 
-    action_masks = (input_ids != generation_config.pad_token_id).int()[:, -num_new_tokens:]  # (B, num_new_tokens)
+    action_masks = attention_mask[:, -num_new_tokens:]  # (B, num_new_tokens)
 
     estimated_kl_div = estimate_kl_divergence(actor_log_probs=actor_log_probs, ref_log_probs=ref_log_probs)
     rewards -= train_args.kl_coeff * estimated_kl_div  # (B, num_new_tokens)
@@ -102,7 +102,7 @@ def collect_rollout(
         "info/advantage_std": advantages.std().item(),
         "info/returns_mean": returns.mean().item(),
         "info/returns_std": returns.std().item(),
-        "info/rollout_sample": tokenizer.decode(input_ids[0]),
+        "info/rollout_sample": tokenizer.decode(input_ids[0], skip_special_tokens=True),
     }
     actor_model.train()
     critic_model.train()
