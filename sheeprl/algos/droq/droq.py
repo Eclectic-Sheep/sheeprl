@@ -161,7 +161,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
