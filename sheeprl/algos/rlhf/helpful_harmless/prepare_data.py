@@ -28,7 +28,9 @@ def prepare(
     mask_prompt: bool = True,
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
-    remove_same_output: bool = True,
+    remove_same_responses: bool = True,
+    remove_same_prompts: bool = True,
+    minimum_response_length: int = 5,
 ) -> None:
     destination_dir = Path(destination_dir)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -37,7 +39,6 @@ def prepare(
         tokenizer.pad_token_id = tokenizer.eos_token_id
     os.makedirs(destination_dir, exist_ok=True)
     cache_dir = destination_dir / "cache"
-    skipped = 0
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
         dataset = load_dataset("Dahoas/static-hh", split=split, cache_dir=cache_dir)
@@ -53,24 +54,35 @@ def prepare(
         if num_samples is not None:
             dataset = dataset.select(range(num_samples))
         samples = []
+        hashes = []
+        skipped = 0
         for sample in tqdm(dataset):
             output = {}
+            prompt = sample["prompt"]
+            prompt_hash = hash(prompt)
+            chosen = sample["chosen"]
+            rejected = sample["rejected"]
+            if remove_same_prompts and prompt_hash in hashes:
+                skipped += 1
+                continue
             encoded_prompt = tokenizer(
-                sample["prompt"],
+                prompt,
                 padding=False,
                 truncation=True,
                 max_length=max_length,
                 return_tensors="pt",
             )
-            encoded_prompt_input_ids = encoded_prompt["input_ids"].squeeze()
-            if len(encoded_prompt_input_ids) > max_prompt_length:
-                skipped += 1
-                continue
             num_prompt_input_ids = len(encoded_prompt["input_ids"].squeeze())
             output["prompt_len"] = num_prompt_input_ids
+            if num_prompt_input_ids > max_prompt_length:
+                skipped += 1
+                continue
             if stage == "finetune":
                 # we use prompt and choosen as data
-                prompt_response = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
+                if len(chosen) < minimum_response_length:
+                    skipped += 1
+                    continue
+                prompt_response = prompt + chosen + tokenizer.eos_token
                 encoded_prompt_response = tokenizer(
                     prompt_response,
                     truncation=True,
@@ -81,11 +93,15 @@ def prepare(
                 targets = input_ids.clone()
                 output["input_ids"] = input_ids
                 if mask_prompt:
-                    targets[: len(encoded_prompt_input_ids)] = ignore_index
+                    targets[:num_prompt_input_ids] = ignore_index
                 output["targets"] = targets
-                output["prompt_input_ids"] = encoded_prompt["input_ids"].squeeze()
             elif stage == "preference":
                 # we need pairs of prompt and choosen and prompt and rejected
+                chosen = sample["chosen"]
+                rejected = sample["rejected"]
+                if len(chosen) < minimum_response_length or len(rejected) < minimum_response_length:
+                    skipped += 1
+                    continue
                 prompt_chosen = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_chosen = tokenizer(
                     prompt_chosen,
@@ -101,7 +117,7 @@ def prepare(
                     truncation=True,
                     return_tensors="pt",
                 )
-                if remove_same_output and prompt_chosen == prompt_rejected:
+                if remove_same_responses and prompt_chosen == prompt_rejected:
                     skipped += 1
                     continue
                 output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
@@ -109,6 +125,7 @@ def prepare(
             else:
                 raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
             samples.append(output)
+            hashes.append(prompt_hash)
         print(f"Processed {len(samples)} samples, skipped {skipped} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
 
@@ -142,7 +159,7 @@ if __name__ == "__main__":
         data_args = TextDataArgs(
             destination_dir="data/Dahoas/static-hh",
             tokenizer_name=OPT().model_name,
-            stage="preference",
+            stage="finetune",
             max_length=512,
             max_prompt_length=512,
         )
