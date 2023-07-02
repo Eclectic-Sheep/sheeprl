@@ -161,7 +161,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -230,7 +231,7 @@ def main():
     buffer_size = (
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
     )
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables

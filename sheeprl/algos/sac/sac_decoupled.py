@@ -54,7 +54,8 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -102,7 +103,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Local data
     buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -238,7 +239,8 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=False)])
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env([make_env(args.env_id, 0, 0, False, None, mask_velocities=False)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric

@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 
 import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -70,7 +69,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -125,7 +125,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -294,7 +294,8 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Create the actor and critic models
