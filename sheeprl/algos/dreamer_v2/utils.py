@@ -94,7 +94,7 @@ def make_env(
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
     if args.max_episode_steps > 0:
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps // args.action_repeat)
     env = gym.wrappers.RecordEpisodeStatistics(env)
     if args.capture_video and rank == 0 and run_name is not None:
         env = gym.experimental.wrappers.RecordVideoV0(

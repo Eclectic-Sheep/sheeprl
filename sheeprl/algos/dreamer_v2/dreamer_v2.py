@@ -464,7 +464,9 @@ def main():
         aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
+    buffer_size = (
+        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
+    )
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
         rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
@@ -487,11 +489,11 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    step_before_training = args.train_every // fabric.world_size if not args.dry_run else 0
-    num_updates = int(args.total_steps // fabric.world_size) if not args.dry_run else 1
-    learning_starts = args.learning_starts // fabric.world_size if not args.dry_run else 0
+    step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
+    learning_starts = args.learning_starts // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
     if args.checkpoint_path and not args.checkpoint_buffer:
-        learning_starts = start_step + args.learning_starts // int(fabric.world_size)
+        learning_starts = start_step + args.learning_starts // int((fabric.world_size * args.action_repeat))
     max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
     if args.checkpoint_path:
         player.expl_amount = polynomial_decay(
@@ -620,7 +622,7 @@ def main():
                     is_continuous,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every // (args.num_envs * fabric.world_size)
+            step_before_training = args.train_every // (args.num_envs * (fabric.world_size * args.action_repeat))
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
@@ -630,10 +632,8 @@ def main():
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update(
-            "Time/step_per_second", int(global_step * args.action_repeat / (time.perf_counter() - start_time))
-        )
-        fabric.log_dict(aggregator.compute(), global_step * args.action_repeat)
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
+        fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
         # Checkpoint Model
