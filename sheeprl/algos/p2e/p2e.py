@@ -24,7 +24,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_lambda_values, init_weights, make_env, test
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
 from sheeprl.algos.p2e.agent import build_models
 from sheeprl.algos.p2e.args import P2EArgs
 from sheeprl.algos.p2e.loss import ensemble_loss
@@ -34,7 +34,7 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
 
 os.environ["MINEDOJO_HEADLESS"] = "1"
 
