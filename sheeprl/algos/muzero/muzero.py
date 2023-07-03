@@ -350,7 +350,7 @@ def main():
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
-                visits_count = visits_count / temperature
+                visits_count = visits_count / (temperature * args.num_simulations)
                 action = torch.distributions.Categorical(logits=visits_count).sample()
                 print(f"Mcts completed, action: {action}")
                 # Single environment step
@@ -365,7 +365,7 @@ def main():
                             "actions": action.reshape(1, 1, -1),
                             "observations": obs.unsqueeze(0),
                             "rewards": torch.tensor([reward]).reshape(1, 1, -1),
-                            "values": node.value_sum.reshape(1, 1, -1),
+                            "values": node.value().reshape(1, 1, -1),
                         },
                         batch_size=(1, 1),
                         device=device,
@@ -380,7 +380,7 @@ def main():
                                     "actions": action.reshape(1, 1, -1),
                                     "observations": obs.unsqueeze(0),
                                     "rewards": torch.tensor([reward]).reshape(1, 1, -1),
-                                    "values": node.value_sum.reshape(1, 1, -1),
+                                    "values": node.value().reshape(1, 1, -1),
                                 },
                                 batch_size=(1, 1),
                                 device=device
@@ -407,8 +407,8 @@ def main():
                 # We sample one time to reduce the communications between processes
                 data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
 
-                target_rewards = data["rewards"]
-                target_values = data["values"]
+                target_rewards = data["rewards"].squeeze(-1)
+                target_values = data["values"].squeeze(-1)
                 target_policies = data["policies"].squeeze()
                 observations = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
                 actions = data["actions"].squeeze(2)
