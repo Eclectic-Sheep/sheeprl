@@ -133,7 +133,7 @@ def train(
         # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
         # compute the mean and std of both the posterior and prior state, the new recurrent state
         # and the new posterior state
-        recurrent_state, posterior, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
+        recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
         )
         recurrent_states[i] = recurrent_state

@@ -128,7 +128,7 @@ class RSSM(nn.Module):
         recurrent_state: Tensor,
         action: Tensor,
         embedded_obs: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -147,13 +147,14 @@ class RSSM(nn.Module):
         Returns:
             The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
             The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
+            The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
             The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
             The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
         """
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_state_mean_std, _ = self._transition(recurrent_out)
+        prior_state_mean_std, prior = self._transition(recurrent_out)
         posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, posterior_mean_std, prior_state_mean_std
+        return recurrent_state, posterior, prior, posterior_mean_std, prior_state_mean_std
 
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
         """Compute the distribution of the posterior state.
@@ -176,7 +177,7 @@ class RSSM(nn.Module):
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
         """
-        Predict the stochastic part of the latent state (Transition Model).
+        Predict the prior state (Transition Model).
 
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
