@@ -126,8 +126,10 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+
     # Setup Model
-    model = CriticModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
+    model_path = train_args.sft_experiment_dir if train_args.sft_experiment_dir is not None else None
+    model = CriticModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True, path=model_path)
     setup_finetuning(fabric=fabric, model=model, model_args=model_args)
     model = model.to(fabric.device)
 
