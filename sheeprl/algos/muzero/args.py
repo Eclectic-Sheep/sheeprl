@@ -16,7 +16,7 @@ class MuzeroArgs(StandardArgs):
     mask_vel: bool = Arg(default=False, help="Whether to mask the velocity of in the observation.")
     # players
     total_steps: int = Arg(default=1e6, help="Total timesteps of the experiments.")
-    learning_starts: int = Arg(default=100, help="timestep to start learning")
+    learning_starts: int = Arg(default=128, help="Num of trajectories in the buffer before learning starts.")
     max_trajectory_len: int = Arg(default=1000, help="The maximum length of a trajectory.")
     num_simulations: int = Arg(default=50, help="The number of MCTS simulations to run for each action.")
     gamma: float = Arg(default=0.997, help="The discount factor.")
@@ -31,6 +31,6 @@ class MuzeroArgs(StandardArgs):
     decay_factor: float = Arg(default=0.1, help="The factor of the learning rate annealing.")
     update_epochs: int = Arg(default=5, help="The number of epochs to train the network.")
     # buffer
-    buffer_capacity: int = Arg(default=100_000, help="The maximum number of trajectories in the replay buffer.")
-    chunk_sequence_len: int = Arg(default=5, help="The length of a chunk of trajectory in a batch.")
-    chunks_per_batch: int = Arg(default=32, help="The number of chunks in a batch.")
+    buffer_capacity: int = Arg(default=500, help="The maximum number of trajectories in the replay buffer.")
+    chunk_sequence_len: int = Arg(default=10, help="The length of a chunk of trajectory in a batch.")
+    chunks_per_batch: int = Arg(default=160, help="The number of chunks in a batch.")

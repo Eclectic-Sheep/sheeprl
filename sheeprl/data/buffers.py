@@ -217,6 +217,9 @@ class TrajectoryReplayBuffer:
     def __getitem__(self, index: int):
         return self._buffer[index]
 
+    def num_samples(self):
+        return sum(len(t) for t in self._buffer)
+
     def add(self, trajectory: Optional[Trajectory]):
         if trajectory is None:
             return

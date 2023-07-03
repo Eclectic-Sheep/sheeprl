@@ -28,6 +28,18 @@ class MuzeroAgent(torch.nn.Module):
     def forward(self, action, hidden_state):
         return self.recurrent_inference(action, hidden_state)
 
+    @torch.no_grad()
+    def gradient_norm(self):
+        """Compute the norm of the parameters' gradients."""
+        total_norm = 0
+        p_with_grads = [p for p in self.parameters() if p.grad is not None]
+        if not p_with_grads:
+            raise RuntimeError("No parameters have gradients. Run the backward method first.")
+        for p in p_with_grads:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+        return total_norm**0.5
+
 
 class GruMlpDynamics(torch.nn.Module):
     def __init__(self, hidden_state_size=256):
