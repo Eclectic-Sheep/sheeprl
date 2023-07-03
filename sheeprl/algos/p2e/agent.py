@@ -7,8 +7,8 @@ from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.agent import RSSM, Actor, Encoder, RecurrentModel, WorldModel
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
-from sheeprl.algos.dreamer_v1.utils import init_weights
 from sheeprl.models.models import MLP, DeCNN
+from sheeprl.utils.utils import init_weights
 
 
 class RSSMP2E(RSSM):
