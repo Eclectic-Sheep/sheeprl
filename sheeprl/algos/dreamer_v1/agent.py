@@ -14,9 +14,10 @@ from torch.distributions import (
 )
 
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state
 from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.model import ArgsType, ModuleType
+from sheeprl.utils.utils import init_weights
 
 
 class Encoder(nn.Module):

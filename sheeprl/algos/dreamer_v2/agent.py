@@ -17,9 +17,10 @@ from torch.distributions import (
 )
 
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state
 from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.utils import init_weights
 
 
 class RecurrentModel(nn.Module):
