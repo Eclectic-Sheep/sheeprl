@@ -9,14 +9,16 @@
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm  | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
-| ---------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
-| A3C        | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
-| PPO        | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC        | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ       | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
-| Dreamer-V1 | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| Algorithm    | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
+| ----------   | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C          | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| A3C          | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
+| PPO          | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC          | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ         | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
+| Dreamer-V1   | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2   | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| Plan2Explore | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
@@ -70,8 +72,10 @@ source .venv/bin/activate
 pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with atari and mujuco environment support, do
 pip install "sheeprl[atari,mujoco,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with minedojo environment support, do
+pip install "sheeprl[minedojo,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install all extras, do
-pip install "sheeprl[atari,mujoco,dev,test]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
 </details>
@@ -79,6 +83,8 @@ pip install "sheeprl[atari,mujoco,dev,test]  @ git+https://github.com/Eclectic-S
 > **Note**
 >
 > if you are on an M-series mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
+>
+> if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 
 <details>
     <summary>Installing SWIG</summary>

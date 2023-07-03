@@ -8,7 +8,6 @@ from math import prod
 import gymnasium as gym
 import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
@@ -105,7 +104,8 @@ def player(args: PPOAtariArgs, world_collective: TorchCollective, player_trainer
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -321,7 +321,8 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,

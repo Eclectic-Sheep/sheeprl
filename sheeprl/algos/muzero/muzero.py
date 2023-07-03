@@ -24,7 +24,6 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
 
 
 def make_env(
@@ -79,7 +78,7 @@ class MinMaxStats:
         self.minimum = min(self.minimum, value)
 
     def normalize(self, value: float) -> float:
-        if self.maximum > self.minimum and self.maximum != float("inf") and self.minimum != -float("inf"):
+        if self.maximum > self.minimum != -float("inf") and self.maximum != float("inf"):
             # We normalize only when we have set the maximum and minimum values.
             return (value - self.minimum) / (self.maximum - self.minimum)
         return value
@@ -186,7 +185,8 @@ class Node:
 
             while node.expanded():
                 # Select the child with the highest UCB score
-                ucb_scores = [[
+                ucb_scores = [
+                    [
                         ucb_score(
                             parent=node,
                             child=child_node,
@@ -200,22 +200,25 @@ class Node:
                     ]
                     for action, child_node in node.children.items()
                 ]
-                _, imagined_action, child = max(
-                    ucb_scores
-                )
+                _, imagined_action, child = max(ucb_scores)
                 search_path.append(child)
                 node = child
 
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             parent = search_path[-2]
             hidden_state, reward, policy_logits, value = agent.recurrent_inference(
-                torch.tensor([imagined_action]).view(1, 1, 1).to(device=parent.hidden_state.device, dtype=torch.float32), parent.hidden_state
+                torch.tensor([imagined_action])
+                .view(1, 1, 1)
+                .to(device=parent.hidden_state.device, dtype=torch.float32),
+                parent.hidden_state,
             )
             node.hidden_state = hidden_state
             node.reward = reward
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             for action in range(normalized_policy.numel()):
-                node.children[action] = Node(normalized_policy.squeeze()[action].item(), device=normalized_policy.device)
+                node.children[action] = Node(
+                    normalized_policy.squeeze()[action].item(), device=normalized_policy.device
+                )
 
             # Backpropagate the search path to update the nodes' statistics
             for node in reversed(search_path):
@@ -231,7 +234,7 @@ def ucb_score(
 ) -> float:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
-    device=parent.hidden_state.device
+    device = parent.hidden_state.device
     pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
     pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
 
@@ -283,7 +286,7 @@ def main():
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
     else:
-        data = [None]
+        data = [""]
         world_collective.broadcast_object_list(data, src=0)
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
@@ -328,7 +331,6 @@ def main():
     num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // args.num_players if not args.dry_run else 0
 
-    
     for update_step in range(1, num_updates + 1):
         with torch.no_grad():
             # reset the episode at every update
@@ -345,7 +347,6 @@ def main():
 
                 # start MCTS
                 node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
-                
 
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
@@ -383,11 +384,10 @@ def main():
                                     "values": node.value().reshape(1, 1, -1),
                                 },
                                 batch_size=(1, 1),
-                                device=device
+                                device=device,
                             ),
                         ],
                     )
-                
 
                 if done or truncated:
                     break
@@ -398,7 +398,7 @@ def main():
             fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
             aggregator.update("Rewards/rew_avg", rew_sum)
             aggregator.update("Game/ep_len_avg", trajectory_step)
-            print("Finished episode")            
+            print("Finished episode")
             rb.add(trajectory=steps_data)
 
         if update_step >= args.learning_starts - 1:
@@ -410,7 +410,7 @@ def main():
                 target_rewards = data["rewards"].squeeze(-1)
                 target_values = data["values"].squeeze(-1)
                 target_policies = data["policies"].squeeze()
-                observations = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
+                observations: torch.Tensor = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
                 actions = data["actions"].squeeze(2)
 
                 hidden_states, policy_0, value_0 = agent.initial_inference(
@@ -425,14 +425,14 @@ def main():
 
                 for sequence_idx in range(1, args.chunk_sequence_len):
                     hidden_states, rewards, policies, values = agent.recurrent_inference(
-                        actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32), hidden_states
+                        actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32, dest=device), hidden_states
                     )  # action should be (1, N, 1)
                     # Policy loss
-                    pg_loss += policy_loss(policies, target_policies[sequence_idx:sequence_idx+1])
+                    pg_loss += policy_loss(policies, target_policies[sequence_idx : sequence_idx + 1])
                     # Value loss
-                    v_loss += value_loss(values, target_values[sequence_idx:sequence_idx+1])
+                    v_loss += value_loss(values, target_values[sequence_idx : sequence_idx + 1])
                     # Reward loss
-                    r_loss += reward_loss(rewards, target_rewards[sequence_idx:sequence_idx+1])
+                    r_loss += reward_loss(rewards, target_rewards[sequence_idx : sequence_idx + 1])
 
                 # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
                 loss = (pg_loss + v_loss + r_loss) / args.chunk_sequence_len
