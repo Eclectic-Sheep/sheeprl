@@ -16,7 +16,7 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
-from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
@@ -192,6 +192,8 @@ def train(
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
+    aggregator.update("State/p_entropy", OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach())
+    aggregator.update("State/q_entropy", OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach())
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurrent and stochastic states in order to have all the states on the first dimension.
