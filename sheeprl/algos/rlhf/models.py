@@ -146,7 +146,9 @@ class CriticModel(torch.nn.Module):
         else:
             embedding_dim = getattr(transformer_config, model_args.embedding_dim_name, None)
             if embedding_dim is None:
-                raise ValueError(f"`embedding_dim_name={model_args.embedding_dim_name}` not found in transformer_config")
+                raise ValueError(
+                    f"`embedding_dim_name={model_args.embedding_dim_name}` not found in transformer_config"
+                )
         model = cls(model=model, embedding_dim=embedding_dim, transformer_name=None)
         if path is not None:
             sd = torch.load(path, map_location=device)

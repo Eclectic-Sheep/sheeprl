@@ -39,7 +39,8 @@ class TrainArgs:
     def __post_init__(self):
         self.gradient_accumulation_steps = int(self.mini_batch_size // self.micro_batch_size)
         timestamp = datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
-        self.experiment_dir = str(os.path.join(self.log_dir, self.experiment_name, timestamp))
+        data_dir_name = os.path.basename(self.data_dir)
+        self.experiment_dir = str(os.path.join(self.log_dir, self.experiment_name, data_dir_name, timestamp))
 
     def to_dict(self) -> dict:
         return {"train_args": asdict(self)}
@@ -53,7 +54,7 @@ class SFTArgs(TrainArgs):
         help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. Label smoothing helps when the model is overconfident.",
     )
     use_targets: bool = Arg(
-        default=True, help="Whether to use masked targets for training. Using masked targets may lead to overfitting."
+        default=False, help="Whether to use masked targets for training. Using masked targets may lead to overfitting."
     )
     learning_rate: float = Arg(default=1e-4, help="Learning rate for optimizer")
     lr_warmup_steps: int = Arg(
