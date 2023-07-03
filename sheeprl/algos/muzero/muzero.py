@@ -324,7 +324,9 @@ def main():
 
     # Local data
     buffer_size = args.buffer_capacity // int(fabric.world_size) if not args.dry_run else 1
-    rb = TrajectoryReplayBuffer(max_num_trajectories=buffer_size)  # TODO device=device, memmap=args.memmap_buffer)
+    rb = TrajectoryReplayBuffer(
+        max_num_trajectories=buffer_size, memmap=True
+    )  # TODO device=device, memmap=args.memmap_buffer)
 
     # Global variables
     start_time = time.perf_counter()
@@ -359,35 +361,21 @@ def main():
                 rew_sum += reward
 
                 # Store the current step data
+                trajectory_step_data = Trajectory(
+                    {
+                        "policies": visits_count.reshape(1, 1, -1),
+                        "actions": action.reshape(1, 1, -1),
+                        "observations": obs.unsqueeze(0),
+                        "rewards": torch.tensor([reward]).reshape(1, 1, -1),
+                        "values": node.value_sum.reshape(1, 1, -1),
+                    },
+                    batch_size=(1, 1),
+                    device=device,
+                )
                 if steps_data is None:
-                    steps_data = Trajectory(
-                        {
-                            "policies": visits_count.reshape(1, 1, -1),
-                            "actions": action.reshape(1, 1, -1),
-                            "observations": obs.unsqueeze(0),
-                            "rewards": torch.tensor([reward]).reshape(1, 1, -1),
-                            "values": node.value_sum.reshape(1, 1, -1),
-                        },
-                        batch_size=(1, 1),
-                        device=device,
-                    )
+                    steps_data = trajectory_step_data
                 else:
-                    steps_data = torch.cat(
-                        [
-                            steps_data,
-                            Trajectory(
-                                {
-                                    "policies": visits_count.reshape(1, 1, -1),
-                                    "actions": action.reshape(1, 1, -1),
-                                    "observations": obs.unsqueeze(0),
-                                    "rewards": torch.tensor([reward]).reshape(1, 1, -1),
-                                    "values": node.value_sum.reshape(1, 1, -1),
-                                },
-                                batch_size=(1, 1),
-                                device=device,
-                            ),
-                        ],
-                    )
+                    steps_data = torch.cat([steps_data, trajectory_step_data])
 
                 if done or truncated:
                     break
@@ -439,6 +427,7 @@ def main():
 
                 optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
+                fabric.clip_gradients()
                 print("UPDATING")
                 optimizer.step()
 

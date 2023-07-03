@@ -192,16 +192,20 @@ class Trajectory(TensorDict):
     def __len__(self):
         return self.shape[0]
 
-    def sample(self, position: int, num_samples: int) -> Optional[TensorDictBase]:
-        if len(self) < position + num_samples:
+    def sample(self, position: int, chunk_len: int) -> Optional[TensorDictBase]:
+        if len(self) < position + chunk_len:
             return
-        return self[position : position + num_samples]
+        return self[position : position + chunk_len]
 
 
 class TrajectoryReplayBuffer:
-    def __init__(self, max_num_trajectories: int):
+    def __init__(self, max_num_trajectories: int, device: Union[str, torch.device] = "cpu", memmap: bool = False):
         self._buffer = []
         self.max_num_trajectories = max_num_trajectories
+        if isinstance(device, str):
+            device = torch.device(device=device)
+        self._device = device
+        self._memmap = memmap
 
     @property
     def buffer(self):
@@ -217,8 +221,11 @@ class TrajectoryReplayBuffer:
         if trajectory is None:
             return
         if not isinstance(trajectory, TensorDict):
-            raise TypeError("Trajectory must be an instance of Trajectory")
-        self._buffer.append(Trajectory(trajectory))  # convert to trajectory if tensordict
+            raise TypeError("Trajectory must be an instance of TensorDict")
+        trajectory = Trajectory(trajectory)
+        if self._memmap:
+            trajectory.memmap_()
+        self._buffer.append(trajectory)  # convert to trajectory if tensordict
         if len(self) > self.max_num_trajectories:
             self._buffer.pop(0)
 
