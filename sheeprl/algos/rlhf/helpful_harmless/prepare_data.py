@@ -130,7 +130,7 @@ def prepare(
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
 
     example_prompt_path = destination_dir / "example_prompt.pt"
-    example_prompt = create_example_prompt(tokenizer)
+    example_prompt = create_example_prompt(tokenizer, max_length=max_length)
     torch.save(example_prompt, example_prompt_path)
 
 
@@ -138,7 +138,7 @@ def wrap_prompt(prompt: str) -> str:
     return "\n\nHuman: " + prompt + "\n\nAssistant: "
 
 
-def create_example_prompt(tokenizer: PreTrainedTokenizer, max_length: int = 256) -> Dict[str, Any]:
+def create_example_prompt(tokenizer: PreTrainedTokenizer, max_length: int ) -> Dict[str, Any]:
     prompt = "How does the computer work?"
     wrapped_prompt = wrap_prompt(prompt)
     encoded_prompt = tokenizer(wrapped_prompt, max_length=max_length, truncation=True, return_tensors="pt")
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         data_args = TextDataArgs(
             destination_dir="data/Dahoas/static-hh",
             tokenizer_name=OPT().model_name,
-            stage="finetune",
+            stage="preference",
             max_length=512,
             max_prompt_length=512,
         )

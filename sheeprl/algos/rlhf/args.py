@@ -131,8 +131,9 @@ class EvaluatePerplexityArgs(EvaluateArgs):
 @dataclass
 class ModelArgs:
     model_name: str = Arg(help="Name of the model. It will be used to load huggingface model.")
-    embedding_dim_name: str = Arg(
-        help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer."
+    embedding_dim_name: Optional[str] = Arg(
+        default=None,
+        help="Name of the embedding dimension in the model config. If it is None, the code will try to call `get_input_embeddings` method. It is used for Critic models where we add head layer after the embedding layer.",
     )
     transformer_name: Optional[str] = Arg(
         default=None, help="Name of the transformer module that is loaded from huggingface."

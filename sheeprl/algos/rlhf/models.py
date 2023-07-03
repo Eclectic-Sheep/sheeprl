@@ -138,7 +138,15 @@ class CriticModel(torch.nn.Module):
         model_args.casual = False
         model = load_hf_transformer(model_args)
         transformer_config = model.base_model.config
-        embedding_dim = getattr(transformer_config, model_args.embedding_dim_name, None)
+        if model_args.embedding_dim_name is None:
+            if hasattr(model, "get_input_embeddings"):
+                embedding_dim = model.get_input_embeddings().weight.shape[-1]
+            else:
+                raise ValueError("embedding_dim_name is None and model does not have `get_input_embeddings` method")
+        else:
+            embedding_dim = getattr(transformer_config, model_args.embedding_dim_name, None)
+            if embedding_dim is None:
+                raise ValueError(f"`embedding_dim_name={model_args.embedding_dim_name}` not found in transformer_config")
         model = cls(model=model, embedding_dim=embedding_dim, transformer_name=None)
         if path is not None:
             sd = torch.load(path, map_location=device)
