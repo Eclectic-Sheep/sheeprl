@@ -7,7 +7,6 @@ from math import prod
 
 import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -141,7 +140,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,

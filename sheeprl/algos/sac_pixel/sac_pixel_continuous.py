@@ -11,7 +11,6 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
@@ -178,7 +177,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -271,8 +271,10 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
-    step_data = TensorDict({}, batch_size=[args.num_envs], device="cpu")
+    rb = ReplayBuffer(
+        buffer_size, args.num_envs, device=fabric.device if args.memmap_buffer else "cpu", memmap=args.memmap_buffer
+    )
+    step_data = TensorDict({}, batch_size=[args.num_envs], device=fabric.device if args.memmap_buffer else "cpu")
 
     # Global variables
     start_time = time.time()
