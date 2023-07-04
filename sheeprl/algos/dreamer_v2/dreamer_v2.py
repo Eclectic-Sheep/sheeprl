@@ -302,9 +302,6 @@ def train(
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
-
-    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
-    entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
     if is_continuous:
         objective = lambda_values[1:]
     else:
@@ -320,6 +317,11 @@ def train(
             ).sum(-1)
             * advantage
         )
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
+    try:
+        entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
+    except NotImplementedError:
+        entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
