@@ -11,7 +11,6 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
@@ -178,7 +177,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
