@@ -63,7 +63,8 @@ rlhf = [
   "gradio==3.28.3",
   "nltk==3.8.1",
   "rouge-score==0.1.2",
-  "evaluate==0.4.0"
+  "evaluate==0.4.0",
+  "einops==0.6.1"
 ]
 minedojo = ["minedojo==0.1"]
 

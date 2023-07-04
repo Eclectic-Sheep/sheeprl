@@ -194,6 +194,16 @@ class OPT(ModelArgs):
         help="LoRA target layer names for the model.",
     )
 
+@dataclass
+class Falcon(ModelArgs):
+    model_name: str = Arg(
+        default="tiiuae/falcon-rw-1b", help="Name of the model. It will be used to load huggingface model."
+    )
+    lora_targets: Optional[str] = Arg(
+        default="('query_key_value',)",
+        help="LoRA target layer names for the model.",
+    )
+
 
 @dataclass
 class Pythia(ModelArgs):

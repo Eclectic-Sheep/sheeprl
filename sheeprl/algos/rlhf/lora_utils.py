@@ -241,14 +241,20 @@ def add_lora(model: torch.nn.Module, model_args: ModelArgs):
         },
     }
 
-    def _target_module(name: str):
+    def _is_target_module_name(name: str):
         return any(t in name for t in lora_targets)
+
+    def _get_lora_data(module: torch.nn.Module):
+        for module_cls, data in lora_config.items():
+            if isinstance(module, module_cls):
+                return data
+        raise ValueError(f"module {module} not supported is not instance of {lora_config.keys()}")
 
     named_modules = list(model.named_modules())
     for n, m in named_modules:
-        type_m = type(m)
-        if _target_module(n) and type_m in lora_config.keys():
-            for attr_name, parametrization in lora_config[type_m].items():
+        if _is_target_module_name(n):
+            lora_data = _get_lora_data(m)
+            for attr_name, parametrization in lora_data.items():
                 p = getattr(m, attr_name)
                 if p.data.dtype != torch.get_default_dtype():
                     # fix it otherwise we have to set unsafe=true

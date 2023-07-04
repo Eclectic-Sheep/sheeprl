@@ -18,8 +18,9 @@ from sheeprl.algos.rlhf.lora_utils import add_lora, get_lora_state_dict, merge_l
 
 def load_hf_transformer(model_args: ModelArgs) -> PreTrainedModel:
     model_cls = AutoModel if not model_args.casual else AutoModelForCausalLM
-    model_config = AutoConfig.from_pretrained(model_args.model_name)
-    model_config.dropout = 0.0 if model_args.disable_dropout else model_config.dropout
+    model_config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=model_args.trust_remote_code)
+    if hasattr(model_config,"dropout"):
+        model_config.dropout = 0.0 if model_args.disable_dropout else model_config.dropout
     model_config.use_cache = model_args.use_cache
     model_config.torch_dtype = torch.get_default_dtype()
     model = model_cls.from_pretrained(
