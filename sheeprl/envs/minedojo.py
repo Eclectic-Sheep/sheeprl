@@ -51,7 +51,7 @@ class MineDojoWrapper(core.Env):
         self._width = width
         self._pitch_limits = pitch_limits
         self._pos = kwargs.pop("start_position", None)
-        self._break_speed_multiplier = kwargs.pop("start_position", 100)
+        self._break_speed_multiplier = kwargs.pop("break_speed_multiplier", 100)
         self._start_pos = copy.deepcopy(self._pos)
         self._sticky_attack = sticky_attack
         self._sticky_jump = sticky_jump
