@@ -5,9 +5,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import gym
 import gymnasium
+import minerl
 import numpy as np
 from gymnasium import core
 
+ALL_ITEMS = minerl.herobraine.hero.mc.ALL_ITEMS
 ACTION_MAP = {
     0: {
         "attack": 0,
