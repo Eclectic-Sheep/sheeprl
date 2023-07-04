@@ -212,8 +212,8 @@ class MineRLWrapper(core.Env):
         self._observation_space = gymnasium.spaces.Dict(
             {
                 "rgb": gymnasium.spaces.Box(0, 255, (3, 64, 64), np.uint8),
-                "inventory": gymnasium.spaces.Dict({"dirt": gymnasium.spaces.Box(low=0, high=2304, shape=())}),
-                "compass": gymnasium.spaces.Dict({"angle": gymnasium.spaces.Box(low=-180.0, high=180.0, shape=())}),
+                "inventory_dirt": gymnasium.spaces.Box(low=0, high=2304, shape=(1,)),
+                "compass": gymnasium.spaces.Box(low=-180.0, high=180.0, shape=(1,)),
             }
         )
         self._pos = {
@@ -261,9 +261,9 @@ class MineRLWrapper(core.Env):
 
     def _convert_obs(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
         return {
-            "rgb": obs["pov"].copy().transpose(1, 2, 0),
-            "inventory": obs["inventory"],
-            "compass": obs["compass"],
+            "rgb": obs["pov"].copy().transpose(2, 0, 1),
+            "inventory_dirt": obs["inventory"]["dirt"].reshape(-1),
+            "compass": obs["compass"]["angle"].reshape(-1),
         }
 
     def seed(self, seed: Optional[int] = None) -> None:
@@ -295,6 +295,9 @@ class MineRLWrapper(core.Env):
             "yaw": 0.0,
         }
         return self._convert_obs(obs), {}
+
+    def render(self, mode: Optional[str] = "rgb_array"):
+        return self._env.render(self.render_mode)
 
     def close(self):
         self._env.close()
