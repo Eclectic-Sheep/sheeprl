@@ -12,15 +12,16 @@ def reward_loss_last_token(
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from last token"""
-    pad_mask_chosen = chosen != pad_token_id  # (B, T)
-    pad_mask_rejected = rejected != pad_token_id  # (B, T)
-    total_pad_mask = pad_mask_chosen | pad_mask_rejected  # (B, T)
+    mask_chosen = chosen != pad_token_id  # (B, T)
+    mask_rejected = rejected != pad_token_id  # (B, T)
 
-    last_token_idx = torch.argmax(torch.cumsum(total_pad_mask, dim=1) * total_pad_mask, dim=1, keepdim=True)
-    chosen_last_rewards = torch.gather(chosen_rewards, dim=-1, index=last_token_idx).squeeze(-1)
-    rejected_last_rewards = torch.gather(rejected_rewards, dim=-1, index=last_token_idx).squeeze(-1)
-    filtered_rewards = chosen_last_rewards - rejected_last_rewards
-    return -F.logsigmoid(filtered_rewards).mean(), chosen_last_rewards, rejected_last_rewards
+    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True)
+    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True)
+    last_chosen_rewards = torch.gather(chosen_rewards, dim=-1, index=last_chosen_token_idx).squeeze(-1)
+    last_rejected_rewards = torch.gather(rejected_rewards, dim=-1, index=last_rejected_token_idx).squeeze(-1)
+
+    filtered_rewards = last_chosen_rewards - last_rejected_rewards
+    return -F.logsigmoid(filtered_rewards).mean(), last_chosen_rewards, last_rejected_rewards
 
 
 def reward_loss_average(

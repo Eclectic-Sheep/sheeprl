@@ -19,7 +19,7 @@ from sheeprl.algos.rlhf.lora_utils import add_lora, get_lora_state_dict, merge_l
 def load_hf_transformer(model_args: ModelArgs) -> PreTrainedModel:
     model_cls = AutoModel if not model_args.casual else AutoModelForCausalLM
     model_config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=model_args.trust_remote_code)
-    if hasattr(model_config,"dropout"):
+    if hasattr(model_config, "dropout"):
         model_config.dropout = 0.0 if model_args.disable_dropout else model_config.dropout
     model_config.use_cache = model_args.use_cache
     model_config.torch_dtype = torch.get_default_dtype()
@@ -106,7 +106,18 @@ class CriticModel(torch.nn.Module):
     def __init__(self, model, embedding_dim, transformer_name):
         super().__init__()
         if transformer_name is None:
-            self.transformer = model
+            if isinstance(model, AutoModelForCausalLM):
+                # lets try to find the transformer
+                if hasattr(model, "transformer"):
+                    self.transformer = model.transformer
+                elif hasattr(model, "model"):
+                    self.transformer = model.model
+                else:
+                    raise ValueError(
+                        f"{model} Could not find transformer, seached for 'transformer' and 'model' attributes"
+                    )
+            else:
+                self.transformer = model
         else:
             self.transformer = getattr(model, transformer_name)
         self.head = torch.nn.Linear(embedding_dim, 1, bias=False)
