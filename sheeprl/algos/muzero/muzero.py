@@ -11,6 +11,7 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from torch.optim import Adam
 from torchmetrics import MeanMetric
+from tqdm import tqdm
 
 from sheeprl.algos.muzero.agent import RecurrentMuzero
 from sheeprl.algos.muzero.args import MuzeroArgs
@@ -123,7 +124,8 @@ def main():
                 rew_sum = 0.0
 
             steps_data = None
-            for trajectory_step in range(0, args.max_trajectory_len):
+            print(f"Update {update_step} started")
+            for trajectory_step in tqdm(range(0, args.max_trajectory_len)):
                 node = Node(prior=0, image=obs, device=device)
 
                 # start MCTS
@@ -134,7 +136,6 @@ def main():
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
                 visits_count = visits_count / (temperature * args.num_simulations)
                 action = torch.distributions.Categorical(logits=visits_count).sample()
-                print(f"Mcts completed, action: {action}")
                 # Single environment step
                 next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
                 rew_sum += reward
@@ -169,8 +170,7 @@ def main():
             rb.add(trajectory=steps_data)
 
         if update_step >= args.learning_starts - 1:
-            training_steps = args.learning_starts if update_step == args.learning_starts - 1 else 1
-            for _ in range(training_steps):
+            for _ in range(args.update_epochs):
                 # We sample one time to reduce the communications between processes
                 data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
 

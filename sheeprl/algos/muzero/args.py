@@ -29,7 +29,7 @@ class MuzeroArgs(StandardArgs):
     anneal_lr: bool = Arg(default=True, help="Whether to anneal the learning rate.")
     decay_period: int = Arg(default=350_000, help="The period of the learning rate annealing.")
     decay_factor: float = Arg(default=0.1, help="The factor of the learning rate annealing.")
-    update_epochs: int = Arg(default=5, help="The number of epochs to train the network.")
+    update_epochs: int = Arg(default=50, help="The number of epochs to train the network.")
     # buffer
     buffer_capacity: int = Arg(default=500, help="The maximum number of trajectories in the replay buffer.")
     chunk_sequence_len: int = Arg(default=10, help="The length of a chunk of trajectory in a batch.")
