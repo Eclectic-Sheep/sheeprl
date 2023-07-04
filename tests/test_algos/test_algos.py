@@ -475,9 +475,9 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["AdventureNoFrameskip-v4", "CarRacing-v2"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_p2e(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.p2e.p2e")
-    root_dir = os.path.join("pytest_" + start_time, "p2e", os.environ["LT_DEVICES"])
+def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
+    task = importlib.import_module("sheeprl.algos.p2e.p2e_dv1.p2e_dv1")
+    root_dir = os.path.join("pytest_" + start_time, "p2e_dv1", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))

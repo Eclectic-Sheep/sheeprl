@@ -17,6 +17,8 @@ def create_layer_with_args(layer_type: ModuleType, layer_args: Optional[ArgType]
         layer_type (ModuleType): the type of the layer to be created.
         layer_args (ArgType, optional): the arguments to be passed to the layer.
     """
+    if layer_type is None:
+        raise ValueError("`layer_type` must be not None")
     if isinstance(layer_args, tuple):
         return layer_type(*layer_args)
     elif isinstance(layer_args, dict):
@@ -24,7 +26,7 @@ def create_layer_with_args(layer_type: ModuleType, layer_args: Optional[ArgType]
     elif layer_args is None:
         return layer_type()
     else:
-        raise ValueError(f"layer_args must be None, tuple or dict, got {type(layer_args)}")
+        raise ValueError(f"`layer_args` must be None, tuple or dict, got {type(layer_args)}")
 
 
 def miniblock(

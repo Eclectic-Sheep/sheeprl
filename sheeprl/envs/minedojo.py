@@ -1,7 +1,7 @@
 """Adapted from https://github.com/denisyarats/dmc2gym/blob/master/dmc2gym/wrappers.py"""
 
 import copy
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, SupportsFloat, Tuple
 
 import gymnasium as gym
 import minedojo
@@ -76,14 +76,12 @@ class MineDojoWrapper(core.Env):
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
-        # inventory
         self._inventory = {}
         self._inventory_names = None
-        # action and observations space
-        self._action_space = gym.spaces.MultiDiscrete(
+        self.action_space = gym.spaces.MultiDiscrete(
             np.array([len(ACTION_MAP.keys()), len(ALL_CRAFT_SMELT_ITEMS), N_ALL_ITEMS])
         )
-        self._observation_space = gym.spaces.Dict(
+        self.observation_space = gym.spaces.Dict(
             {
                 "rgb": gym.spaces.Box(0, 255, self._env.observation_space["rgb"].shape, np.uint8),
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
@@ -99,25 +97,11 @@ class MineDojoWrapper(core.Env):
                 ),
             }
         )
-        # render
-        self._render_mode: str = "rgb_array"
-        # set seed
+        self.render_mode: str = "rgb_array"
         self.seed(seed=seed)
 
     def __getattr__(self, name):
         return getattr(self._env, name)
-
-    @property
-    def render_mode(self) -> str:
-        return self._render_mode
-
-    @property
-    def action_space(self) -> gym.spaces.Space:
-        return self._action_space
-
-    @property
-    def observation_space(self) -> gym.spaces.Space:
-        return self._observation_space
 
     def _convert_inventory(self, inventory: Dict[str, Any]) -> np.ndarray:
         converted_inventory = np.zeros(N_ALL_ITEMS)
@@ -193,7 +177,7 @@ class MineDojoWrapper(core.Env):
         self.observation_space.seed(seed)
         self.action_space.seed(seed)
 
-    def step(self, action: np.ndarray) -> Dict[str, Any]:
+    def step(self, action: np.ndarray) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         a = action
         action = self._convert_action(action)
         next_pitch = self._pos["pitch"] + (action[3] - 12) * 15

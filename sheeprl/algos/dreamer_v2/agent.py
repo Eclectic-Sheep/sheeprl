@@ -18,9 +18,10 @@ from torch.distributions import (
 )
 
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state
 from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.utils import init_weights
 
 
 class RecurrentModel(nn.Module):
@@ -419,9 +420,9 @@ def build_models(
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: DreamerV2Args,
-    world_model_state: Dict[str, Tensor] = None,
-    actor_state: Dict[str, Tensor] = None,
-    critic_state: Dict[str, Tensor] = None,
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 

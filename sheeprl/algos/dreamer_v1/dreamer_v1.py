@@ -23,13 +23,13 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_lambda_values, make_env, test
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -133,7 +133,7 @@ def train(
         # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
         # compute the mean and std of both the posterior and prior state, the new recurrent state
         # and the new posterior state
-        recurrent_state, posterior, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
+        recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
         )
         recurrent_states[i] = recurrent_state
@@ -230,9 +230,7 @@ def train(
         actions = actor(imagined_latent_states.detach())
 
         # imagination step
-        imagined_prior, recurrent_state = world_model.rssm.imagination(
-            imagined_prior, recurrent_state, actions
-        )
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
 
         # update current state
         imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
