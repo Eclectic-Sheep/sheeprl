@@ -24,17 +24,16 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_lambda_values, init_weights, make_env, test
-from sheeprl.algos.p2e.agent import build_models
-from sheeprl.algos.p2e.args import P2EArgs
-from sheeprl.algos.p2e.loss import ensemble_loss
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
+from sheeprl.algos.p2e.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
 
 os.environ["MINEDOJO_HEADLESS"] = "1"
 
@@ -104,53 +103,41 @@ def train(
 
     # Dynamic Learning
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
-    stochastic_state = torch.zeros(1, batch_size, args.stochastic_size, device=device)
-
+    posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
     recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
-    stochastic_states = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    pred_stochastic_states = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-
-    states_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    states_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    pred_states_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    pred_states_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-
+    posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
 
     for i in range(0, sequence_length):
-        (
-            state_mean_std,
-            recurrent_state,
-            stochastic_state,
-            pred_state_mean_std,
-            predicted_stochastic_state,
-        ) = world_model.rssm.dynamic(
-            stochastic_state, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+        recurrent_state, posterior, prior, posterior_mean_std, prior_mean_std = world_model.rssm.dynamic(
+            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
         )
         recurrent_states[i] = recurrent_state
-        stochastic_states[i] = stochastic_state
-        states_mean[i] = state_mean_std[0]
-        states_std[i] = state_mean_std[1]
-        pred_states_mean[i] = pred_state_mean_std[0]
-        pred_states_std[i] = pred_state_mean_std[1]
-        pred_stochastic_states[i] = predicted_stochastic_state
-    latent_states = torch.cat((stochastic_states, recurrent_states), -1)
+        posteriors[i] = posterior
+        posteriors_mean[i] = posterior_mean_std[0]
+        posteriors_std[i] = posterior_mean_std[1]
+        priors_mean[i] = prior_mean_std[0]
+        priors_std[i] = prior_mean_std[1]
+        priors[i] = prior
+    latent_states = torch.cat((posteriors, recurrent_states), -1)
 
     decoded_information = cnn_forward(
         world_model.observation_model, latent_states, (latent_states.shape[-1],), observation_shape
     )
     qo = Independent(Normal(decoded_information, 1), len(observation_shape))
-
     qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
-
     if args.use_continues and world_model.continue_model:
         qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
         qc = continue_targets = None
-
-    p = Independent(Normal(states_mean, states_std), 1)
-    q = Independent(Normal(pred_states_mean, pred_states_std), 1)
+    p = Independent(Normal(posteriors_mean, posteriors_std), 1)
+    q = Independent(Normal(priors_mean, priors_std), 1)
 
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -183,14 +170,12 @@ def train(
 
     if is_exploring:
         # Ensemble Learning
-        loss = 0
+        loss = 0.0
         ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
-            out = ens(
-                torch.cat((pred_stochastic_states.detach(), recurrent_states.detach(), data["actions"].detach()), -1)
-            )[:-1]
+            out = ens(torch.cat((priors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-            loss += ensemble_loss(next_obs_embedding_dist, embedded_obs.detach()[1:])
+            loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
         loss.backward()
         if args.ensemble_clip_gradients is not None and args.ensemble_clip_gradients > 0:
             ensemble_grad = fabric.clip_gradients(
@@ -204,10 +189,9 @@ def train(
         aggregator.update(f"Loss/ensemble_loss", loss.detach().cpu())
 
         # Behaviour Learning Exploration
-        imagined_stochastic_state = stochastic_states.detach().reshape(1, -1, args.stochastic_size)
+        imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
         recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
         imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
-
         imagined_trajectories = torch.empty(
             args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
         )
@@ -299,7 +283,7 @@ def train(
     world_optimizer.zero_grad(set_to_none=True)
 
     # Behaviour Learning Task
-    imagined_stochastic_state = stochastic_states.detach().reshape(1, -1, args.stochastic_size)
+    imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
     imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
     imagined_trajectories = torch.empty(
@@ -451,7 +435,7 @@ def main():
     # initialize the ensembles with different seeds to be sure they have different weights
     ens_list = []
     with isolate_rng():
-        for i in range(5):
+        for i in range(args.num_ensembles):
             fabric.seed_everything(args.seed + i)
             ens_list.append(
                 MLP(

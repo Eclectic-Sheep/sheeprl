@@ -1,10 +1,10 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
 
 
 class CheckpointCallback:
@@ -20,13 +20,18 @@ class CheckpointCallback:
     """
 
     def on_checkpoint_coupled(
-        self, fabric: Fabric, ckpt_path: str, state: Dict[str, Any], replay_buffer: Optional["ReplayBuffer"] = None
+        self,
+        fabric: Fabric,
+        ckpt_path: str,
+        state: Dict[str, Any],
+        replay_buffer: Optional[Union["ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
-            # clone the true done
-            true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
-            # substitute the last done with all True values (all the environment are truncated)
-            replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            if isinstance(replay_buffer, ReplayBuffer):
+                # clone the true done
+                true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
+                # substitute the last done with all True values (all the environment are truncated)
+                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
             state["rb"] = replay_buffer
             if fabric.world_size > 1:
                 # We need to collect the buffers from all the ranks
@@ -45,7 +50,7 @@ class CheckpointCallback:
                 else:
                     checkpoint_collective.gather_object(replay_buffer, None)
         fabric.save(ckpt_path, state)
-        if replay_buffer is not None:
+        if replay_buffer is not None and isinstance(replay_buffer, ReplayBuffer):
             # reinsert the true dones in the buffer
             replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
 
