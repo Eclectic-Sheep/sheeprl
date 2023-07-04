@@ -79,7 +79,7 @@ for module, algos in tasks.items():
     for algo in algos:
         try:
             algo_name = algo
-            task = importlib.import_module(f"sheeprl.algos.{module}.{algo_name}")
+            task = importlib.import_module(f"{module}.{algo_name}")
 
             for command in task.__all__:
                 command = task.__dict__[command]

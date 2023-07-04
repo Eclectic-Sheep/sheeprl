@@ -25,9 +25,8 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
-from sheeprl.algos.p2e.agent import build_models
-from sheeprl.algos.p2e.args import P2EArgs
-from sheeprl.algos.p2e.loss import ensemble_loss
+from sheeprl.algos.p2e.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
@@ -171,12 +170,12 @@ def train(
 
     if is_exploring:
         # Ensemble Learning
-        loss = 0
+        loss = 0.0
         ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
             out = ens(torch.cat((priors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-            loss += ensemble_loss(next_obs_embedding_dist, embedded_obs.detach()[1:])
+            loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
         loss.backward()
         if args.ensemble_clip_gradients is not None and args.ensemble_clip_gradients > 0:
             ensemble_grad = fabric.clip_gradients(
