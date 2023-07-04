@@ -63,7 +63,6 @@ class MineDojoWrapper(core.Env):
                 f"The initial position must respect the pitch limits {self._pitch_limits}, given {self._pos['pitch']}"
             )
 
-        # create task
         self._env = minedojo.make(
             task_id=task_id,
             image_size=(height, width),
@@ -76,14 +75,12 @@ class MineDojoWrapper(core.Env):
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
-        # inventory
         self._inventory = {}
         self._inventory_names = None
-        # action and observations space
-        self._action_space = gym.spaces.MultiDiscrete(
+        self.action_space = gym.spaces.MultiDiscrete(
             np.array([len(ACTION_MAP.keys()), len(ALL_CRAFT_SMELT_ITEMS), N_ALL_ITEMS])
         )
-        self._observation_space = gym.spaces.Dict(
+        self.observation_space = gym.spaces.Dict(
             {
                 "rgb": gym.spaces.Box(0, 255, self._env.observation_space["rgb"].shape, np.uint8),
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
@@ -99,12 +96,7 @@ class MineDojoWrapper(core.Env):
                 ),
             }
         )
-        # Env attributes
         self.render_mode: str = "rgb_array"
-        self.action_space = gym.spaces.Discrete(len(ACTION_MAP.keys()))
-        self.observation_space = self._env.observation_space["rgb"]
-
-        # Set seed
         self.seed(seed=seed)
 
     def __getattr__(self, name):
