@@ -4,15 +4,14 @@ from typing import TYPE_CHECKING, Optional, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn.functional as F
 from lightning import Fabric
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent, Normal
+from torch.distributions import OneHotCategoricalStraightThrough
 
 if TYPE_CHECKING:
-    from sheeprl.algos.dreamer_v1.agent import Player
+    from sheeprl.algos.dreamer_v2.agent import Player
 
-from sheeprl.algos.dreamer_v1.args import DreamerV1Args
+from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.envs.wrappers import ActionRepeat
 
 
@@ -20,7 +19,7 @@ def make_env(
     env_id: str,
     seed: int,
     rank: int,
-    args: DreamerV1Args,
+    args: DreamerV2Args,
     run_name: Optional[str] = None,
     prefix: str = "",
 ) -> gym.Env:
@@ -32,7 +31,7 @@ def make_env(
         env_id (str): the id of the environment to initialize.
         seed (int): the seed to use.
         rank (int): the rank of the process.
-        args (DreamerV1Args): the configs of the experiment.
+        args (DreamerV2Args): the configs of the experiment.
         run_name (str, optional): the name of the run.
             Default to None.
         prefix (str): the prefix to add to the video folder.
@@ -54,30 +53,6 @@ def make_env(
             frame_skip=args.action_repeat,
             seed=seed,
         )
-    elif "minedojo" in env_id.lower():
-        from sheeprl.envs.minedojo import MineDojoWrapper
-
-        task_id = "_".join(env_id.split("_")[1:])
-        start_position = (
-            {
-                "x": args.mine_start_position[0],
-                "y": args.mine_start_position[1],
-                "z": args.mine_start_position[2],
-                "pitch": args.mine_start_position[3],
-                "yaw": args.mine_start_position[4],
-            }
-            if args.mine_start_position is not None
-            else None
-        )
-        env = MineDojoWrapper(
-            task_id,
-            height=64,
-            width=64,
-            pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
-            seed=args.seed,
-            start_position=start_position,
-        )
-        env = ActionRepeat(env, args.action_repeat)
     else:
         env_spec = gym.spec(env_id).entry_point
         if "mujoco" in env_spec:
@@ -100,7 +75,7 @@ def make_env(
                 screen_size=64,
                 grayscale_obs=args.grayscale_obs,
                 scale_obs=False,
-                terminal_on_life_loss=True,
+                terminal_on_life_loss=False,
                 grayscale_newaxis=True,
             )
         else:
@@ -130,35 +105,24 @@ def make_env(
 
 
 def compute_stochastic_state(
-    state_information: Tensor,
-    event_shape: Optional[int] = 1,
-    min_std: Optional[float] = 0.1,
-) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
+    logits: Tensor,
+    discrete: int = 32,
+) -> Tensor:
     """
-    Compute the stochastic state from the information of the distribution of the stochastic state.
+    Compute the stochastic state from the logits computed by the transition or representaiton model.
 
     Args:
-        state_information (Tensor): information about the distribution of the stochastic state,
-            it is the output of either the representation model or the transition model.
-        event_shape (int, optional): how many batch dimensions have to be reinterpreted as event dims.
-            Default to 1.
-        min_std (float, optional): the minimum value for the standard deviation.
-            Default to 0.1.
+        logits (Tensor): logits from either the representation model or the transition model.
+        discrete (int, optional): the size of the Categorical variables.
+            Defaults to 32.
 
     Returns:
         The mean and the standard deviation of the distribution of the stochastic state.
         The sampled stochastic state.
     """
-    mean, std = torch.chunk(state_information, 2, -1)
-    std = F.softplus(std) + min_std
-    state_distribution: Distribution = Normal(mean, std)
-    if event_shape:
-        # it is necessary an Independent distribution because
-        # it is necessary to create (batch_size * sequence_length) independent distributions,
-        # each producing a sample of size equal to the stochastic size
-        state_distribution = Independent(state_distribution, event_shape)
-    stochastic_state = state_distribution.rsample()
-    return (mean, std), stochastic_state
+    logits = logits.view(*logits.shape[:-1], -1, discrete)
+    dist = OneHotCategoricalStraightThrough(logits=logits)
+    return dist.rsample()
 
 
 def cnn_forward(
@@ -222,16 +186,14 @@ def cnn_forward(
 
 
 @torch.no_grad()
-def test(player: "Player", fabric: Fabric, args: DreamerV1Args, test_name: str = ""):
+def test(player: "Player", fabric: Fabric, args: DreamerV2Args):
     """Test the model on the environment with the frozen model.
 
     Args:
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
     """
-    env: gym.Env = make_env(
-        args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
-    )
+    env: gym.Env = make_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test")
     done = False
     cumulative_rew = 0
     next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)

@@ -15,7 +15,8 @@ def _register(fn: Callable[..., Any], decoupled: bool = False) -> Callable[..., 
     if fn.__module__ == "__main__":
         return fn
     module_split = fn.__module__.split(".")
-    module, algorithm = module_split[-2:]
+    algorithm = module_split[-1]
+    module = ".".join(module_split[:-1])
     algos = tasks.get(module, None)
     if algos is None:
         tasks[module] = [algorithm]

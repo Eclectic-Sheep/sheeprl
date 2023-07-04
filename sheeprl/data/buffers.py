@@ -58,7 +58,9 @@ class ReplayBuffer:
         return self._n_envs
 
     @property
-    def shape(self) -> Size:
+    def shape(self) -> Optional[Size]:
+        if self.buffer is None:
+            return None
         return self.buffer.shape
 
     @property
@@ -90,6 +92,8 @@ class ReplayBuffer:
             data = data.buffer
         elif not isinstance(data, TensorDictBase):
             raise TypeError("`data` must be a TensorDictBase or a sheeprl.data.ReplayBuffer")
+        if data is None:
+            raise RuntimeError("The `data` replay buffer must be not None")
         if len(data.shape) != 2:
             raise RuntimeError(
                 "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
@@ -178,10 +182,14 @@ class ReplayBuffer:
     def __getitem__(self, key: str) -> torch.Tensor:
         if not isinstance(key, str):
             raise TypeError("`key` must be a string")
+        if self._buf is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         return self._buf.get(key)
 
     def __setitem__(self, key: str, t: Tensor) -> None:
-        self.buffer.set(key, t, inplace=True)
+        if self._buf is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
+        self._buf.set(key, t, inplace=True)
 
 
 class SequentialReplayBuffer(ReplayBuffer):
@@ -239,6 +247,8 @@ class SequentialReplayBuffer(ReplayBuffer):
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
+        if self._buf is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         if batch_dim > self._buf.shape[0]:
             raise ValueError(
                 f"n_samples * batch size ({batch_dim}) is larger than the replay buffer size ({self._buf.shape[0]})"
@@ -339,8 +349,8 @@ class EpisodeBuffer:
             )
         self._buffer_size = buffer_size
         self._sequence_length = sequence_length
-        self._buf = []
-        self._cum_lengths = []
+        self._buf: List[TensorDictBase] = []
+        self._cum_lengths: List[int] = []
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
@@ -417,7 +427,13 @@ class EpisodeBuffer:
         episode.to(self.device)
         self._buf.append(episode)
 
-    def sample(self, batch_size: int, n_samples: int = 1, prioritize_ends: bool = False) -> TensorDictBase:
+    def sample(
+        self,
+        batch_size: int,
+        n_samples: int = 1,
+        prioritize_ends: bool = False,
+        clone: bool = False,
+    ) -> TensorDictBase:
         """Sample trajectories from the replay buffer.
 
         Args:
@@ -451,4 +467,7 @@ class EpisodeBuffer:
             )
             indices = start_idxes + self._chunk_length
             samples.append(self._buf[i][indices])
-        return torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        samples = torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        if clone:
+            return samples.clone()
+        return samples

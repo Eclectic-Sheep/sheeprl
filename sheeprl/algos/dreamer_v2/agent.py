@@ -1,4 +1,5 @@
-from typing import Dict, Optional, Sequence, Tuple, Union
+import copy
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -6,61 +7,20 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import (
+    Distribution,
     Independent,
     Normal,
+    OneHotCategorical,
     OneHotCategoricalStraightThrough,
     TanhTransform,
     TransformedDistribution,
 )
 
-from sheeprl.algos.dreamer_v1.args import DreamerV1Args
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state
+from sheeprl.algos.dreamer_v2.args import DreamerV2Args
+from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state
 from sheeprl.models.models import CNN, MLP, DeCNN
-from sheeprl.utils.model import ArgsType, ModuleType
+from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.utils import init_weights
-
-
-class Encoder(nn.Module):
-    """The wrapper class for the encoder.
-
-    Args:
-        input_channels (int): the number of channels in input.
-        hidden_channels (Sequence[int]): the hidden channels of the CNN.
-        layer_args (ArgsType): the args of the layers of the CNN.
-        activation (Optional[Union[ModuleType, Sequence[ModuleType]]]): the activation function to use in the CNN.
-            Default nn.ReLU.
-        observation_shape (Tuple[int, int, int]): the dimension of the observations, channels first.
-            Default to (3, 64, 64).
-    """
-
-    def __init__(
-        self,
-        input_channels: int,
-        hidden_channels: Sequence[int],
-        layer_args: ArgsType,
-        activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
-        observation_shape: Tuple[int, int, int] = (3, 64, 64),
-    ) -> None:
-        super().__init__()
-        self._module = nn.Sequential(
-            CNN(
-                input_channels=input_channels,
-                hidden_channels=hidden_channels,
-                layer_args=layer_args,
-                activation=activation,
-            ),
-            nn.Flatten(-3, -1),
-        )
-        self._observation_shape = observation_shape
-        with torch.no_grad():
-            self._output_size = self._module(torch.zeros(*observation_shape)).shape[-1]
-
-    @property
-    def output_size(self) -> None:
-        return self._output_size
-
-    def forward(self, x) -> Tensor:
-        return self._module(x)
 
 
 class RecurrentModel(nn.Module):
@@ -101,12 +61,14 @@ class RSSM(nn.Module):
 
     Args:
         recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the posterior state.
-            For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-            The model is composed by a multu-layer perceptron to predict the prior state.
+        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
+            For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+            The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
         min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
             Default to 0.1.
+        discrete (int, optional): the size of the Categorical variables.
+            Defaults to 32.
     """
 
     def __init__(
@@ -115,99 +77,91 @@ class RSSM(nn.Module):
         representation_model: nn.Module,
         transition_model: nn.Module,
         min_std: Optional[float] = 0.1,
+        discrete: Optional[int] = 32,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.transition_model = transition_model
         self.min_std = min_std
+        self.discrete = discrete
 
     def dynamic(
-        self,
-        posterior: Tensor,
-        recurrent_state: Tensor,
-        action: Tensor,
-        embedded_obs: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
+        self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
                 i.e., it computes the deterministic state (or ht).
-            Transition model: predict the prior state from the recurrent output.
-            Representation model: compute the posterior state from the recurrent state and from
+            Transition model: predict the prior from the recurrent output.
+            Representation model: compute the posterior from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
         Args:
-            posterior (Tensor): the posterior state.
+            posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected
+                to be of dimension `[stoch_size, self.discrete]`, which by default is `[32, 32]`.
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
+            is_first (Tensor): if this is the first step in the episode.
 
         Returns:
-            The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
-            The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
-            The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
-            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
-            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
+            The recurrent state (Tensor): the recurrent state of the recurrent model.
+            The posterior stochastic state (Tensor): computed by the representation model
+            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
+            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
+            from the recurrent state and the embbedded observation.
         """
+        action = (1 - is_first) * action
+        posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
+        recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_state_mean_std, prior = self._transition(recurrent_out)
-        posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, prior, posterior_mean_std, prior_state_mean_std
+        prior_logits, _ = self._transition(recurrent_out)
+        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
+        return recurrent_state, posterior, posterior_logits, prior_logits
 
-    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
-        """Compute the distribution of the posterior state.
-
+    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
+        """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
                 what is called h or deterministic state in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
-            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation of the distribution of the posterior state.
-            posterior (Tensor): the sampled posterior.
+            logits (Tensor): the logits of the distribution of the posterior state.
+            posterior (Tensor): the sampled posterior stochastic state.
         """
-        posterior_mean_std, posterior = compute_stochastic_state(
-            self.representation_model(torch.cat((recurrent_state, embedded_obs), -1)),
-            event_shape=1,
-            min_std=self.min_std,
-        )
-        return posterior_mean_std, posterior
+        logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
-    def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
+    def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
-        Predict the prior state (Transition Model).
-
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
 
         Returns:
-            The predicted mean and the standard deviation of the distribution of the prior state (Tensor, Tensor).
-            The prior state (Tensor): the sampled prior state predicted by the transition model.
+            logits (Tensor): the logits of the distribution of the prror state.
+            prior (Tensor): the sampled prior stochastic state.
         """
-        prior_mean_std = self.transition_model(recurrent_out)
-        return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
+        logits = self.transition_model(recurrent_out)
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
-    def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+    def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
         One-step imagination of the next latent state.
         It can be used several times to imagine trajectories in the latent space (Transition Model).
 
         Args:
-            stochastic_state (Tensor): the stochastic space (can be either the posterior or the prior).
-                Shape (batch_size, 1, stochastic_size).
-            recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
+            prior (Tensor): the prior state.
+            recurrent_state (Tensor): the recurrent state of the recurrent model.
             actions (Tensor): the actions taken by the agent.
-                Shape (batch_size, 1, stochastic_size).
 
         Returns:
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_output, recurrent_state = self.recurrent_model(
-            torch.cat((stochastic_state, actions), -1), recurrent_state
-        )
+        recurrent_output, recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
         _, imagined_prior = self._transition(recurrent_output)
         return imagined_prior, recurrent_state
 
@@ -221,8 +175,6 @@ class Actor(nn.Module):
         action_dim (int): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
-        mean_scale (float): how much to scale the mean.
-            Default to 1.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 5.
         min_std (float): the minimum standard deviation for the actions.
@@ -231,8 +183,10 @@ class Actor(nn.Module):
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
-        num_layers (int): the number of MLP layers.
-            Default to 4.
+        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
+            `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
+            space is a discrete one, `trunc_normal` otherwise.
+            Defaults to `auto`.
     """
 
     def __init__(
@@ -240,29 +194,40 @@ class Actor(nn.Module):
         latent_state_size: int,
         action_dim: int,
         is_continuous: bool,
-        mean_scale: float = 5.0,
-        init_std: float = 5.0,
-        min_std: float = 1e-4,
+        init_std: float = 0.0,
+        min_std: float = 0.1,
         dense_units: int = 400,
         dense_act: nn.Module = nn.ELU,
-        num_layers: int = 4,
+        mlp_layers: int = 4,
+        distribution: str = "auto",
     ) -> None:
         super().__init__()
+        self.distribution = distribution.lower()
+        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
+            raise ValueError(
+                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
+                f"Found: {self.distribution}"
+            )
+        if self.distribution == "discrete" and is_continuous:
+            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        if self.distribution == "auto":
+            if is_continuous:
+                self.distribution = "trunc_normal"
+            else:
+                self.distribution = "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=action_dim * 2 if is_continuous else action_dim,
-            hidden_sizes=[dense_units] * num_layers,
+            hidden_sizes=[dense_units] * mlp_layers,
             activation=dense_act,
             flatten_dim=None,
         )
         self.action_dim = action_dim
         self.is_continuous = is_continuous
-        self.mean_scale = torch.tensor(mean_scale)
         self.init_std = torch.tensor(init_std)
-        self.raw_init_std = torch.log(torch.exp(self.init_std) - 1)
         self.min_std = min_std
 
-    def forward(self, state: Tensor, is_training: bool = True) -> Tensor:
+    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Tensor, Distribution]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -272,14 +237,23 @@ class Actor(nn.Module):
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
+            The distribution of the actions
         """
         out: Tensor = self.model(state)
         if self.is_continuous:
             mean, std = torch.chunk(out, 2, -1)
-            mean = self.mean_scale * torch.tanh(mean / self.mean_scale)
-            std = F.softplus(std + self.raw_init_std) + self.min_std
-            actions_dist = Normal(mean, std)
-            actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+            if self.distribution == "tanh_normal":
+                mean = 5 * torch.tanh(mean / 5)
+                std = F.softplus(std + self.init_std) + self.min_std
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+            elif self.distribution == "normal":
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
+            elif self.distribution == "trunc_normal":
+                std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                actions_dist = Independent(dist, 1)
             if is_training:
                 actions = actions_dist.rsample()
             else:
@@ -292,7 +266,7 @@ class Actor(nn.Module):
                 actions = actions_dist.rsample()
             else:
                 actions = actions_dist.mode
-        return actions
+        return actions, actions_dist
 
 
 class WorldModel(nn.Module):
@@ -338,6 +312,9 @@ class Player(nn.Module):
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (torch.device): the device to work on.
+        discrete_size (int): the dimension of a single Categorical variable in the
+            stochastic state (prior or posterior).
+            Defaults to 32.
     """
 
     def __init__(
@@ -352,6 +329,7 @@ class Player(nn.Module):
         stochastic_size: int,
         recurrent_state_size: int,
         device: torch.device,
+        discrete_size: int = 32,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -359,13 +337,12 @@ class Player(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-
         self.expl_amount = expl_amount
         self.action_dim = action_dim
         self.stochastic_size = stochastic_size
+        self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-
         self.init_states()
 
     def init_states(self) -> None:
@@ -373,7 +350,9 @@ class Player(nn.Module):
         Initialize the states and the actions for the ended environments.
         """
         self.actions = torch.zeros(1, self.num_envs, self.action_dim, device=self.device)
-        self.stochastic_state = torch.zeros(1, self.num_envs, self.stochastic_size, device=self.device)
+        self.stochastic_state = torch.zeros(
+            1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
+        )
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
 
     def get_exploration_action(self, obs: Tensor, is_continuous: bool) -> Tensor:
@@ -388,10 +367,10 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         actions = self.get_greedy_action(obs)
-        if is_continuous:
+        if is_continuous and self.expl_amount > 0.0:
             actions = torch.clip(Normal(actions, self.expl_amount).sample(), -1, 1)
         else:
-            sample = OneHotCategoricalStraightThrough(logits=torch.zeros_like(actions)).sample().to(self.device)
+            sample = OneHotCategorical(logits=torch.zeros_like(actions)).sample().to(self.device)
             actions = torch.where(torch.rand(actions.shape[:1], device=self.device) < self.expl_amount, sample, actions)
         return actions
 
@@ -411,10 +390,12 @@ class Player(nn.Module):
         _, self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
-        _, self.stochastic_state = compute_stochastic_state(
-            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
+        posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
+        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
+        self.stochastic_state = stochastic_state.view(
+            *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        self.actions = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        self.actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
         return self.actions
 
 
@@ -423,11 +404,11 @@ def build_models(
     action_dim: int,
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
-    args: DreamerV1Args,
-    world_model_state: Dict[str, Tensor] = None,
-    actor_state: Dict[str, Tensor] = None,
-    critic_state: Dict[str, Tensor] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
+    args: DreamerV2Args,
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -436,19 +417,13 @@ def build_models(
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
         args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
-        world_model_state (Dict[str, Tensor]): the state of the world model.
-            Default to None.
-        actor_state (Dict[str, Tensor]): the state of the actor.
-            Default to None.
-        critic_state (Dict[str, Tensor]): the state of the critic.
-            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
+    n_obs_channels = 1 if args.grayscale_obs else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -469,25 +444,29 @@ def build_models(
         )
 
     # Define models
-    encoder = Encoder(
-        input_channels=n_obs_channels,
-        hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
-        layer_args={"kernel_size": 4, "stride": 2},
-        activation=cnn_act,
-        observation_shape=observation_shape,
+    encoder = nn.Sequential(
+        CNN(
+            input_channels=n_obs_channels,
+            hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
+            layer_args={"kernel_size": 4, "stride": 2},
+            activation=cnn_act,
+        ),
+        nn.Flatten(-3, -1),
     )
-
-    recurrent_model = RecurrentModel(action_dim + args.stochastic_size, args.recurrent_state_size)
+    with torch.no_grad():
+        encoder_output_size = encoder(torch.zeros(*observation_shape)).shape[-1]
+    stochastic_size = args.stochastic_size * args.discrete_size
+    recurrent_model = RecurrentModel(action_dim + stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.output_size,
-        output_dim=args.stochastic_size * 2,
+        input_dims=args.recurrent_state_size + encoder_output_size,
+        output_dim=stochastic_size,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
-        output_dim=args.stochastic_size * 2,
+        output_dim=stochastic_size,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
@@ -497,12 +476,13 @@ def build_models(
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),
         args.min_std,
+        args.discrete_size,
     )
     observation_model = nn.Sequential(
-        nn.Linear(args.stochastic_size + args.recurrent_state_size, encoder.output_size),
-        nn.Unflatten(1, (encoder.output_size, 1, 1)),
+        nn.Linear(stochastic_size + args.recurrent_state_size, encoder_output_size),
+        nn.Unflatten(1, (encoder_output_size, 1, 1)),
         DeCNN(
-            input_channels=encoder.output_size,
+            input_channels=encoder_output_size,
             hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
             layer_args=[
                 {"kernel_size": 5, "stride": 2},
@@ -514,17 +494,17 @@ def build_models(
         ),
     )
     reward_model = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.num_layers,
+        hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
     )
     if args.use_continues:
         continue_model = MLP(
-            input_dims=args.stochastic_size + args.recurrent_state_size,
+            input_dims=stochastic_size + args.recurrent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units] * args.num_layers,
+            hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -536,20 +516,19 @@ def build_models(
         continue_model.apply(init_weights) if args.use_continues else None,
     )
     actor = Actor(
-        args.stochastic_size + args.recurrent_state_size,
+        stochastic_size + args.recurrent_state_size,
         action_dim,
         is_continuous,
-        args.actor_mean_scale,
         args.actor_init_std,
         args.actor_min_std,
         args.dense_units,
         dense_act,
-        args.num_layers,
+        args.mlp_layers,
     )
     critic = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.num_layers,
+        hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
     )
@@ -575,5 +554,6 @@ def build_models(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+    target_critic = copy.deepcopy(critic.module)
 
-    return world_model, actor, critic
+    return world_model, actor, critic, target_critic
