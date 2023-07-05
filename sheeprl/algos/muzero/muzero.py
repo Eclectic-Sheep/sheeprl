@@ -77,6 +77,7 @@ def main():
 
     # Create the model
     embedding_size = 10
+    full_support_size = 2 * args.support_size + 1
     agent = MuzeroAgent(
         representation=MLP(
             input_dims=env.observation_space.shape,
@@ -84,8 +85,10 @@ def main():
             output_dim=embedding_size,
             activation=torch.nn.ELU,
         ),
-        dynamics=MlpDynamics(embedding_size=embedding_size),
-        prediction=Predictor(embedding_size=embedding_size, num_actions=env.action_space.n),
+        dynamics=MlpDynamics(embedding_size=embedding_size, full_support_size=full_support_size),
+        prediction=Predictor(
+            embedding_size=embedding_size, num_actions=env.action_space.n, full_support_size=full_support_size
+        ),
     )
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4, weight_decay=args.weight_decay)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -129,7 +132,14 @@ def main():
                 node = Node(prior=0, image=obs, device=device)
 
                 # start MCTS
-                node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
+                node.mcts(
+                    agent,
+                    args.num_simulations,
+                    args.gamma,
+                    args.dirichlet_alpha,
+                    args.exploration_fraction,
+                    support_size=args.support_size,
+                )
 
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
@@ -198,11 +208,11 @@ def main():
                         actions[sequence_idx : sequence_idx + 1].to(dtype=torch.float32), hidden_states
                     )  # action should be (1, N, 1)
                     # Policy loss
-                    pg_loss += policy_loss(policies, target_policies[sequence_idx : sequence_idx + 1])
+                    pg_loss += policy_loss(policies.squeeze(), target_policies[sequence_idx])
                     # Value loss
-                    v_loss += value_loss(values, target_values[sequence_idx : sequence_idx + 1])
+                    v_loss += value_loss(values.squeeze(), target_values[sequence_idx])
                     # Reward loss
-                    r_loss += reward_loss(rewards, target_rewards[sequence_idx : sequence_idx + 1])
+                    r_loss += reward_loss(rewards.squeeze(), target_rewards[sequence_idx])
                     entropy += torch.distributions.Categorical(logits=policies.detach()).entropy()
 
                 # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer

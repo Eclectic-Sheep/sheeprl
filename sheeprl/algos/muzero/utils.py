@@ -10,6 +10,12 @@ from lightning import Fabric
 
 from sheeprl.algos.muzero.agent import MuzeroAgent
 from sheeprl.algos.muzero.args import MuzeroArgs
+from sheeprl.utils.utils import inverse_symsqrt, two_hot_decoder
+
+
+def support_to_scalar(support: torch.Tensor, support_range: int) -> torch.Tensor:
+    """Converts a support representation to a scalar."""
+    return inverse_symsqrt(two_hot_decoder(support, support_range))
 
 
 def make_env(
@@ -128,10 +134,10 @@ class Node:
         """
         return len(self.children) > 0
 
-    def value(self) -> float:
+    def value(self) -> torch.Tensor:
         """Returns the value of the node."""
         if self.visit_count == 0:
-            return 0.0
+            return self.value_sum
         return self.value_sum / self.visit_count
 
     def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
@@ -149,6 +155,7 @@ class Node:
         gamma: float = 0.997,
         dirichlet_alpha: float = 0.25,
         exploration_fraction: float = 0.25,
+        support_size: int = 300,
     ):
         """Runs MCTS for num_simulations"""
         # Initialize the hidden state and compute the actor's policy logits
@@ -165,28 +172,25 @@ class Node:
         # Expand until an unvisited node (i.e. not yet expanded) is reached
         min_max_stats = MinMaxStats()
 
-        for sim_num in range(num_simulations):
+        for _ in range(num_simulations):
             node = self
             search_path = [node]
 
             while node.expanded():
                 # Select the child with the highest UCB score
-                ucb_scores = [
-                    [
-                        ucb_score(
-                            parent=node,
-                            child=child_node,
-                            min_max_stats=min_max_stats,
-                            gamma=gamma,
-                            pb_c_base=19652,
-                            pb_c_init=1.25,
-                        ),
-                        action,
-                        child_node,
-                    ]
-                    for action, child_node in node.children.items()
-                ]
-                _, imagined_action, child = max(ucb_scores)
+                ucb_scores = ucb_score(
+                    parent=node,
+                    min_max_stats=min_max_stats,
+                    gamma=gamma,
+                    pb_c_base=19652,
+                    pb_c_init=1.25,
+                )
+
+                ucb_scores = ucb_scores + 1e-7 * torch.rand(
+                    ucb_scores.shape
+                )  # Add tiny bit of randomness for tie break
+                imagined_action = torch.argmax(ucb_scores)
+                child = node.children[imagined_action.item()]
                 search_path.append(child)
                 node = child
 
@@ -198,8 +202,9 @@ class Node:
                 .to(device=parent.hidden_state.device, dtype=torch.float32),
                 parent.hidden_state,
             )
+            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size)
             node.hidden_state = hidden_state
-            node.reward = reward
+            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), support_size)
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             for action in range(normalized_policy.numel()):
                 node.children[action] = Node(
@@ -207,28 +212,28 @@ class Node:
                 )
 
             # Backpropagate the search path to update the nodes' statistics
-            for node in reversed(search_path):
-                node.value_sum += value.squeeze()
-                node.visit_count += 1
-                min_max_stats.update(node.value())
+            for visited_node in reversed(search_path):
+                visited_node.value_sum += value.squeeze()
+                visited_node.visit_count += 1
+                min_max_stats.update(visited_node.value())
+                value = visited_node.reward + gamma * value
 
-                value = node.reward + gamma * value
 
-
-def ucb_score(
-    parent: Node, child: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float
-) -> float:
+def ucb_score(parent: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float) -> float:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
-    device = parent.hidden_state.device
+    children_visit_counts = torch.tensor([child.visit_count for child in parent.children.values()], dtype=torch.float32)
+    children_values = torch.tensor([child.value() for child in parent.children.values()], dtype=torch.float32)
+    children_priors = torch.tensor([child.prior for child in parent.children.values()], dtype=torch.float32)
+    children_rewards = torch.tensor([child.reward for child in parent.children.values()], dtype=torch.float32)
     pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
-    pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+    pb_c *= math.sqrt(parent.visit_count) / (children_visit_counts + 1)
 
-    prior_score = pb_c * child.prior
-    if child.visit_count > 0:
-        value_score = child.reward.squeeze() + gamma * min_max_stats.normalize(child.value())
-    else:
-        value_score = torch.tensor(0.0, device=device)
+    prior_score = pb_c * children_priors
+    value_score = children_rewards + gamma * min_max_stats.normalize(children_values)
+    min_value = torch.min(value_score)
+    max_value = torch.max(value_score) + 1e-7  # TODO add parent score and epsilon
+    value_score = (value_score - min_value) / (max_value - min_value)  # Normalize to be in [0, 1] range
     return prior_score + value_score
 
 

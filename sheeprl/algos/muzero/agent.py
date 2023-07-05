@@ -47,10 +47,15 @@ class MuzeroAgent(torch.nn.Module):
 
 
 class GruMlpDynamics(torch.nn.Module):
-    def __init__(self, embedding_size=256, mlp_hidden_sizes=(64, 64)):
+    def __init__(self, embedding_size=256, mlp_hidden_sizes=(64, 64), full_support_size=601):
         super().__init__()
         self.gru = torch.nn.GRU(input_size=1, hidden_size=embedding_size)
-        self.mlp = MLP(input_dims=embedding_size, hidden_sizes=mlp_hidden_sizes, activation=torch.nn.ELU, output_dim=1)
+        self.mlp = MLP(
+            input_dims=embedding_size,
+            hidden_sizes=mlp_hidden_sizes,
+            activation=torch.nn.ELU,
+            output_dim=full_support_size,
+        )
 
     def forward(self, x, h0):
         y, h1 = self.gru(x, h0)
@@ -59,11 +64,16 @@ class GruMlpDynamics(torch.nn.Module):
 
 
 class MlpDynamics(torch.nn.Module):
-    def __init__(self, embedding_size=256, state_hidden_sizes=(64, 64, 16), rew_hidden_sizes=(64, 64, 16)):
+    def __init__(
+        self, embedding_size=256, state_hidden_sizes=(64, 64, 16), rew_hidden_sizes=(64, 64, 16), full_support_size=601
+    ):
         super().__init__()
         self.hstate = MLP(input_dims=embedding_size + 1, hidden_sizes=state_hidden_sizes, output_dim=embedding_size)
         self.mlp = MLP(
-            input_dims=embedding_size + 1, hidden_sizes=rew_hidden_sizes, activation=torch.nn.ELU, output_dim=1
+            input_dims=embedding_size + 1,
+            hidden_sizes=rew_hidden_sizes,
+            activation=torch.nn.ELU,
+            output_dim=full_support_size,
         )
 
     def forward(self, x, h0):
@@ -74,7 +84,12 @@ class MlpDynamics(torch.nn.Module):
 
 class Predictor(torch.nn.Module):
     def __init__(
-        self, embedding_size=256, policy_hidden_sizes=(64, 64, 16), value_hidden_sizes=(64, 64, 16), num_actions=4
+        self,
+        embedding_size=256,
+        policy_hidden_sizes=(64, 64, 16),
+        value_hidden_sizes=(64, 64, 16),
+        num_actions=4,
+        full_support_size=601,
     ):
         super().__init__()
         self.mlp_actor = MLP(
@@ -82,7 +97,10 @@ class Predictor(torch.nn.Module):
         )
 
         self.mlp_value = MLP(
-            input_dims=embedding_size, hidden_sizes=value_hidden_sizes, activation=torch.nn.ELU, output_dim=1
+            input_dims=embedding_size,
+            hidden_sizes=value_hidden_sizes,
+            activation=torch.nn.ELU,
+            output_dim=full_support_size,
         )
 
     def forward(self, x):

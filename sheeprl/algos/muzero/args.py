@@ -15,6 +15,7 @@ class MuzeroArgs(StandardArgs):
     )
     mask_vel: bool = Arg(default=False, help="Whether to mask the velocity of in the observation.")
     # players
+    support_size: int = Arg(default=300, help="The size of the support of the reward and value.")
     total_steps: int = Arg(default=1e6, help="Total timesteps of the experiments.")
     learning_starts: int = Arg(default=128, help="Num of trajectories in the buffer before learning starts.")
     max_trajectory_len: int = Arg(default=1000, help="The maximum length of a trajectory.")

@@ -153,3 +153,13 @@ def two_hot_decoder(tensor: torch.Tensor, support_range: int) -> torch.Tensor:
         raise ValueError("support_size must be odd")
     support = torch.linspace(-support_range, support_range, num_buckets).to(tensor.device)
     return torch.sum(tensor * support, dim=-1, keepdim=True)
+
+
+def symsqrt(x, eps=0.001):
+    """Scales the tensor using the formula sign(x) * sqrt(abs(x) + 1) - 1 + eps * x."""
+    return torch.sign(x) * torch.sqrt(torch.abs(x) + 1) - 1 + eps * x
+
+
+def inverse_symsqrt(x, eps=0.001):
+    """Inverts symsqrt."""
+    return torch.sign(x) * (((torch.sqrt(1 + 4 * eps * (torch.abs(x) + 1 + eps * x)) - 1) / (2 * eps)) ** 2 - 1)

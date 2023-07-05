@@ -26,6 +26,7 @@ repos:
         language: python
         types: [python]
         files: \.py$
+        args: ["--profile", "black"]
 
   - repo: https://github.com/psf/black
     rev: 23.3.0
