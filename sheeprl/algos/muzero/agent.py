@@ -77,17 +77,17 @@ class Predictor(torch.nn.Module):
         self, embedding_size=256, policy_hidden_sizes=(64, 64, 16), value_hidden_sizes=(64, 64, 16), num_actions=4
     ):
         super().__init__()
-        self.mlp_actor1 = MLP(
+        self.mlp_actor = MLP(
             input_dims=embedding_size, hidden_sizes=policy_hidden_sizes, activation=torch.nn.ELU, output_dim=num_actions
         )
 
-        self.mlp_value1 = MLP(
+        self.mlp_value = MLP(
             input_dims=embedding_size, hidden_sizes=value_hidden_sizes, activation=torch.nn.ELU, output_dim=1
         )
 
     def forward(self, x):
-        policy = self.mlp_actor2(self.act_actor(self.mlp_actor1(x)))
-        value = self.mlp_value2(self.act_value(self.mlp_value1(x)))
+        policy = self.mlp_actor(x)
+        value = self.mlp_value(x)
         return policy, value
 
 
