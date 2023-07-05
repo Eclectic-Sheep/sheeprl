@@ -86,14 +86,10 @@ class MineDojoWrapper(core.Env):
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
                 "equipment": gym.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32),
                 "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
-                "masks": gym.spaces.Dict(
-                    {
-                        "action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), np.bool_),
-                        "equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
-                        "desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
-                        "craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), np.bool_),
-                    }
-                ),
+                "mask_action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), np.bool_),
+                "mask_equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
+                "mask_desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
+                "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), np.bool_),
             }
         )
         self.render_mode: str = "rgb_array"
@@ -130,10 +126,10 @@ class MineDojoWrapper(core.Env):
             equip_mask[idx] = eqp_mask
             destroy_mask[idx] = dst_mask
         return {
-            "action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
-            "equip/place": equip_mask,
-            "desrtoy": destroy_mask,
-            "craft_smelt": masks["craft_smelt"],
+            "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
+            "mask_equip/place": equip_mask,
+            "mask_desrtoy": destroy_mask,
+            "mask_craft_smelt": masks["craft_smelt"],
         }
 
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
@@ -169,7 +165,7 @@ class MineDojoWrapper(core.Env):
             "life_stats": np.concatenate(
                 (obs["life_stats"]["life"], obs["life_stats"]["food"], obs["life_stats"]["oxygen"])
             ),
-            "masks": self._convert_masks(obs["masks"]),
+            **self._convert_masks(obs["masks"]),
         }
 
     def seed(self, seed: Optional[int] = None) -> None:
