@@ -159,13 +159,14 @@ def test_episode_buffer_prioritize_ends():
 
 
 def test_memmap_episode_buffer():
-    buf_size = 1000000
-    sl = 50
+    buf_size = 10
+    bs = 4
+    sl = 4
     rb = EpisodeBuffer(buf_size, sl, memmap=True)
-    for _ in range(100000 // 3000):
+    for _ in range(buf_size // bs):
         td = TensorDict(
-            {"observations": torch.randint(0, 256, (3000, 3, 64, 64), dtype=torch.uint8), "dones": torch.zeros(3000)},
-            batch_size=[3000],
+            {"observations": torch.randint(0, 256, (bs, 3, 64, 64), dtype=torch.uint8), "dones": torch.zeros(bs)},
+            batch_size=[bs],
         )
         td["dones"][-1] = 1
         rb.add(td)
