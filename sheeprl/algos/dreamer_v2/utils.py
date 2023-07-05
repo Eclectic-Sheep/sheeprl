@@ -40,7 +40,23 @@ def make_env(
     Returns:
         The callable function that initializes the environment.
     """
-    if "dmc" in env_id.lower():
+    _env_id = env_id.lower()
+    if "dummy" in _env_id:
+        if "continuous" in _env_id:
+            from sheeprl.envs.dummy import ContinuousDummyEnv
+
+            env = ContinuousDummyEnv()
+        elif "multidiscrete" in _env_id:
+            from sheeprl.envs.dummy import MultiDiscreteDummyEnv
+
+            env = MultiDiscreteDummyEnv()
+        elif "discrete" in _env_id:
+            from sheeprl.envs.dummy import DiscreteDummyEnv
+
+            env = DiscreteDummyEnv()
+        else:
+            raise ValueError(f"Unrecognized dummy environment: {env_id}")
+    elif "dmc" in _env_id:
         from sheeprl.envs.dmc import DMCWrapper
 
         _, domain, task = env_id.lower().split("_")
@@ -200,7 +216,7 @@ def test(player: "Player", fabric: Fabric, args: DreamerV2Args):
     player.init_states()
     while not done:
         # Act greedly through the environment
-        action = player.get_greedy_action(next_obs / 255 - 0.5, False).cpu().numpy()
+        action = torch.cat(player.get_greedy_action(next_obs / 255 - 0.5, False), -1).cpu().numpy()
 
         # Single environment step
         if player.actor.is_continuous:

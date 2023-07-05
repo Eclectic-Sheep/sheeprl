@@ -242,7 +242,7 @@ def train(
     # imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions = torch.cat(actor(imagined_latent_state.detach())[0])
+        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
         imagined_actions[i] = actions
 
         # imagination step
@@ -312,6 +312,7 @@ def train(
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
     if is_continuous:
         objective = lambda_values[1:]
     else:
@@ -327,7 +328,6 @@ def train(
             ).sum(-1)
             * advantage
         )
-    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
     try:
         entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
     except NotImplementedError:

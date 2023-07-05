@@ -528,7 +528,7 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["AdventureNoFrameskip-v4", "CarRacing-v2"])
+@pytest.mark.parametrize("env_id", ["multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
