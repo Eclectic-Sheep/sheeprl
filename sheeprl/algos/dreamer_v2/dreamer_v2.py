@@ -414,8 +414,8 @@ def main():
         mlp_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) < 3 and k != "masks"]
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
-    if cnn_keys == []:
-        raise RuntimeError(f"There must be at least one pixels-based observation")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(f"There must be at least one valid observation")
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
