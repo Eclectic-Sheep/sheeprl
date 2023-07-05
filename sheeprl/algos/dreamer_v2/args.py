@@ -26,7 +26,7 @@ class DreamerV2Args(StandardArgs):
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
     checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
     buffer_type: str = Arg(
-        default="episode",
+        default="sequential",
         help="which buffer to use: `sequential` or `episode`. The `episode` "
         "buffer will save an entire episode, while the sequential will save every step.",
     )

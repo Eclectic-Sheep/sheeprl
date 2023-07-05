@@ -4,6 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
+from typing import Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -21,10 +22,10 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -50,6 +51,7 @@ def train(
     aggregator: MetricAggregator,
     args: DreamerV2Args,
     is_continuous: bool,
+    actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -134,7 +136,7 @@ def train(
     for i in range(0, sequence_length):
         # one step of dynamic learning, which take the posterior state, the recurrent state, the action
         # and the observation and compute the next recurrent, prior and posterior states
-        recurrent_state, posterior, posterior_logits, prior_logits = world_model.rssm.dynamic(
+        recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
         recurrent_states[i] = recurrent_state
@@ -164,6 +166,10 @@ def train(
     else:
         pc = continue_targets = None
 
+    # Reshape posterior and prior logits to shape [B, T, 32, 32]
+    priors_logits = priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
+    posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
+
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -171,8 +177,8 @@ def train(
         batch_obs,
         pr,
         data["rewards"],
-        priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
-        posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
+        priors_logits,
+        posteriors_logits,
         args.kl_balancing_alpha,
         args.kl_free_nats,
         args.kl_free_avg,
@@ -192,8 +198,14 @@ def train(
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
-    aggregator.update("State/p_entropy", OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach())
-    aggregator.update("State/q_entropy", OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach())
+    aggregator.update(
+        "State/p_entropy",
+        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+    )
+    aggregator.update(
+        "State/q_entropy",
+        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+    )
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurrent and stochastic states in order to have all the states on the first dimension.
@@ -230,7 +242,7 @@ def train(
     # imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions, _ = actor(imagined_latent_state.detach())
+        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
         imagined_actions[i] = actions
 
         # imagination step
@@ -300,14 +312,26 @@ def train(
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
-    policy: Distribution = actor(imagined_trajectories[:-2].detach())[1]
-    entropy = args.actor_ent_coef * policy.entropy()
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
     if is_continuous:
         objective = lambda_values[1:]
     else:
         baseline = target_critic(imagined_trajectories)
         advantage = (lambda_values[1:] - baseline[:-2]).detach()
-        objective = policy.log_prob(imagined_actions[1:-1].detach()).unsqueeze(-1) * advantage
+        objective = (
+            torch.stack(
+                [
+                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+                ],
+                -1,
+            ).sum(-1)
+            * advantage
+        )
+    try:
+        entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
+    except NotImplementedError:
+        entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
@@ -405,13 +429,18 @@ def main():
     )
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    action_dim = env.action_space.shape[0] if is_continuous else env.action_space.n
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = (
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
-        action_dim,
+        actions_dim,
         observation_shape,
         is_continuous,
         args,
@@ -424,7 +453,7 @@ def main():
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
         actor.module,
-        action_dim,
+        actions_dim,
         args.expl_amount,
         args.num_envs,
         args.stochastic_size,
@@ -509,7 +538,7 @@ def main():
     episode_steps = []
     obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, action_dim)
+    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
     step_data["observations"] = obs
@@ -525,21 +554,26 @@ def main():
         if global_step <= learning_starts and args.checkpoint_path is None:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
-                actions = F.one_hot(torch.tensor(actions), action_dim).numpy()
+                actions = np.concatenate(
+                    [
+                        F.one_hot(torch.tensor(act), act_dim).numpy()
+                        for act, act_dim in zip(actions.reshape(len(actions_dim)), actions_dim)
+                    ],
+                    axis=-1,
+                )
         else:
             with torch.no_grad():
                 real_actions = actions = player.get_exploration_action(
                     obs[None, ...].to(device) / 255 - 0.5, is_continuous
                 )
-                actions = actions.cpu().numpy()
-                real_actions = real_actions.cpu().numpy()
+                actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = real_actions.reshape(action_dim)
+                    real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
-                    real_actions = real_actions.argmax()
+                    real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
-        next_obs, rewards, dones, truncated, infos = env.step(real_actions)
+        next_obs, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
@@ -569,14 +603,14 @@ def main():
 
         if dones or truncated:
             # Add entire episode if needed
-            if buffer_type == "episode" and len(episode_steps) >= args.per_rank_batch_size:
+            if buffer_type == "episode" and len(episode_steps) >= args.per_rank_sequence_length:
                 rb.add(torch.cat(episode_steps, dim=0))
             episode_steps = []
             obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(
                 args.num_envs, *observation_shape
             )  # [N_envs, N_obs]
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, action_dim)
+            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
             step_data["observations"] = obs
@@ -622,6 +656,7 @@ def main():
                     aggregator,
                     args,
                     is_continuous,
+                    actions_dim,
                 )
                 gradient_steps += 1
             step_before_training = args.train_every // (args.num_envs * (fabric.world_size * args.action_repeat))
