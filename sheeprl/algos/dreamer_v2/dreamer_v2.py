@@ -166,6 +166,10 @@ def train(
     else:
         pc = continue_targets = None
 
+    # Reshape posterior and prior logits to shape [B, T, 32, 32]
+    priors_logits = priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
+    posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
+
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -173,8 +177,8 @@ def train(
         batch_obs,
         pr,
         data["rewards"],
-        priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
-        posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size),
+        priors_logits,
+        posteriors_logits,
         args.kl_balancing_alpha,
         args.kl_free_nats,
         args.kl_free_avg,
@@ -194,8 +198,14 @@ def train(
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
-    aggregator.update("State/p_entropy", OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach())
-    aggregator.update("State/q_entropy", OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach())
+    aggregator.update(
+        "State/p_entropy",
+        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+    )
+    aggregator.update(
+        "State/q_entropy",
+        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+    )
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurrent and stochastic states in order to have all the states on the first dimension.
