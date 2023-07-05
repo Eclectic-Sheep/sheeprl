@@ -4,7 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
-from typing import Sequence
+from typing import Dict, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -151,7 +151,7 @@ def train(
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # compute predictions for the observations
-    decoded_information = world_model.observation_model(latent_states)
+    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # compute the distribution over the reconstructed observations
     po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
@@ -409,8 +409,13 @@ def main():
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     action_dim = env.action_space.shape[0] if is_continuous else env.action_space.n
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
-    cnn_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) == 3]
-    mlp_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) < 3]
+    if isinstance(env.observation_space, gym.spaces.Dict):
+        cnn_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) == 3 and k != "masks"]
+        mlp_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) < 3 and k != "masks"]
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
+    if cnn_keys == []:
+        raise RuntimeError(f"There must be at least one pixels-based observation")
 
     world_model, actor, critic, target_critic = build_models(
         fabric,

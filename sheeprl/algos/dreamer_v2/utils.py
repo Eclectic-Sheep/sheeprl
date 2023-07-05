@@ -1,6 +1,7 @@
 import os
 from typing import TYPE_CHECKING, Optional, Tuple, Union
 
+import cv2
 import gymnasium as gym
 import numpy as np
 import torch
@@ -40,6 +41,7 @@ def make_env(
     Returns:
         The callable function that initializes the environment.
     """
+    env_spec = ""
     if "dmc" in env_id.lower():
         from sheeprl.envs.dmc import DMCWrapper
 
@@ -78,18 +80,44 @@ def make_env(
                 terminal_on_life_loss=False,
                 grayscale_newaxis=True,
             )
-        else:
-            env = ActionRepeat(env, args.action_repeat)
-            if isinstance(env.observation_space, gym.spaces.Box) or len(env.observation_space.shape) < 3:
-                env = gym.wrappers.PixelObservationWrapper(env)
-                env = gym.wrappers.TransformObservation(env, lambda obs: obs["pixels"])
-                env.observation_space = env.observation_space["pixels"]
-            env = gym.wrappers.ResizeObservation(env, (64, 64))
-            if args.grayscale_obs:
-                env = gym.wrappers.GrayScaleObservation(env, keep_dim=True)
-        env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1))
-        env.observation_space = gym.spaces.Box(
-            0, 255, (env.observation_space.shape[-1], *env.observation_space.shape[:2]), np.uint8
+
+    # action repeat
+    if "atari" not in env_spec:
+        env = ActionRepeat(env, args.action_repeat)
+
+    # create dict
+    if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 3:
+        env = gym.wrappers.PixelObservationWrapper(env, pixels_only=False, pixel_keys=("rgb",))
+    elif isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
+        env = gym.wrappers.TransformObservation(env, lambda obs: {"rgb": obs})
+        env.observation_space = gym.spaces.Dict({"rgb": env.observation_space})
+
+    # resize image
+    if "atari" not in env_spec and "mujoco" not in env_spec and "minedojo" not in env_id:
+        env = gym.wrappers.TransformObservation(
+            env,
+            lambda obs: obs.update(
+                {"rgb": cv2.resize(obs["rgb"], (64, 64), interpolation=cv2.INTER_AREA).reshape(64, 64, 3)}
+            )
+            or obs,
+        )
+        env.observation_space["rgb"] = gym.spaces.Box(0, 255, (64, 64, 3), np.uint8)
+
+    # grayscale
+    if args.grayscale_obs and "atari" not in env_spec:
+        env = gym.wrappers.TransformObservation(
+            env,
+            lambda obs: obs.update({"rgb": np.expand_dims(cv2.cvtColor(obs["rgb"], cv2.COLOR_RGB2GRAY), -1)}) or obs,
+        )
+        env.observation_space["rgb"] = gym.spaces.Box(0, 255, (64, 64, 1), np.uint8)
+
+    # channels first
+    if "minedojo" not in env_id:
+        env = gym.wrappers.TransformObservation(
+            env, lambda obs: obs.update({"rgb": obs["rgb"].transpose(2, 0, 1)}) or obs
+        )
+        env.observation_space["rgb"] = gym.spaces.Box(
+            0, 255, (env.observation_space["rgb"].shape[-1], *env.observation_space["rgb"].shape[:2]), np.uint8
         )
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
