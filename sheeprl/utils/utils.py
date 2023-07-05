@@ -101,3 +101,55 @@ def make_env(
         return env
 
     return thunk
+
+
+def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optional[int] = None) -> Tensor:
+    """Encode a tensor representing a floating point number `x` as a tensor with all zeros except for two entries in the
+    indexes of the two buckets closer to `x` in the support of the distribution.
+    Check https://arxiv.org/pdf/2301.04104v1.pdf equation 9 for more details.
+
+    Args:
+        tensor (Tensor): tensor to encode of shape (..., batch_size, 1)
+        support_range (int): range of the support of the distribution, going from -support_range to support_range
+        num_buckets (int): number of buckets in the support of the distribution
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, support_size)
+    """
+    if tensor.shape == torch.Size([]):
+        tensor = tensor.unsqueeze(0)
+    if num_buckets is None:
+        num_buckets = support_range * 2 + 1
+    if num_buckets % 2 == 0:
+        raise ValueError("support_size must be odd")
+    tensor = tensor.clip(-support_range, support_range)
+    buckets = torch.linspace(-support_range, support_range, num_buckets, device=tensor.device)
+    bucket_size = buckets[1] - buckets[0] if len(buckets) > 1 else 1.0
+
+    right_idxs = torch.bucketize(tensor, buckets)
+    left_idxs = (right_idxs - 1).clip(min=0)
+
+    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device)
+    left_value = torch.abs(buckets[right_idxs] - tensor) / bucket_size
+    right_value = 1 - left_value
+    two_hot.scatter_add_(-1, left_idxs, left_value)
+    two_hot.scatter_add_(-1, right_idxs, right_value)
+
+    return two_hot
+
+
+def two_hot_decoder(tensor: torch.Tensor, support_range: int) -> torch.Tensor:
+    """Decode a tensor representing a two-hot vector as a tensor of floating point numbers.
+
+    Args:
+        tensor (Tensor): tensor to decode of shape (..., batch_size, support_size)
+        support_range (int): range of the support of the values, going from -support_range to support_range
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, 1)
+    """
+    num_buckets = tensor.shape[-1]
+    if num_buckets % 2 == 0:
+        raise ValueError("support_size must be odd")
+    support = torch.linspace(-support_range, support_range, num_buckets).to(tensor.device)
+    return torch.sum(tensor * support, dim=-1, keepdim=True)
