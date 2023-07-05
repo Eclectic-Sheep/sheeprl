@@ -124,7 +124,7 @@ def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optio
         raise ValueError("support_size must be odd")
     tensor = tensor.clip(-support_range, support_range)
     buckets = torch.linspace(-support_range, support_range, num_buckets, device=tensor.device)
-    bucket_size = buckets[1] - buckets[0]
+    bucket_size = buckets[1] - buckets[0] if len(buckets) > 1 else 1.0
 
     right_idxs = torch.bucketize(tensor, buckets)
     left_idxs = (right_idxs - 1).clip(min=0)
