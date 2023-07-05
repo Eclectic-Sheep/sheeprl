@@ -144,7 +144,7 @@ class RSSM(nn.Module):
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
 
         Returns:
-            logits (Tensor): the logits of the distribution of the prror state.
+            logits (Tensor): the logits of the distribution of the prior state.
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)

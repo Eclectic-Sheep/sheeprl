@@ -20,7 +20,6 @@ def compute_stochastic_state(
             Defaults to 32.
 
     Returns:
-        The mean and the standard deviation of the distribution of the stochastic state.
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
