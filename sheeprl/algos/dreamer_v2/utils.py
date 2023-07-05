@@ -8,6 +8,8 @@ from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import OneHotCategoricalStraightThrough
 
+from sheeprl.utils.utils import get_dummy_env
+
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import Player
 
@@ -42,20 +44,7 @@ def make_env(
     """
     _env_id = env_id.lower()
     if "dummy" in _env_id:
-        if "continuous" in _env_id:
-            from sheeprl.envs.dummy import ContinuousDummyEnv
-
-            env = ContinuousDummyEnv()
-        elif "multidiscrete" in _env_id:
-            from sheeprl.envs.dummy import MultiDiscreteDummyEnv
-
-            env = MultiDiscreteDummyEnv()
-        elif "discrete" in _env_id:
-            from sheeprl.envs.dummy import DiscreteDummyEnv
-
-            env = DiscreteDummyEnv()
-        else:
-            raise ValueError(f"Unrecognized dummy environment: {env_id}")
+        env = get_dummy_env(_env_id)
     elif "dmc" in _env_id:
         from sheeprl.envs.dmc import DMCWrapper
 
