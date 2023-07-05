@@ -51,7 +51,7 @@ class MineDojoWrapper(core.Env):
         self._width = width
         self._pitch_limits = pitch_limits
         self._pos = kwargs.pop("start_position", None)
-        self._break_speed_multiplier = kwargs.pop("start_position", 100)
+        self._break_speed_multiplier = kwargs.pop("break_speed_multiplier", 100)
         self._start_pos = copy.deepcopy(self._pos)
         self._sticky_attack = sticky_attack
         self._sticky_jump = sticky_jump
@@ -63,7 +63,6 @@ class MineDojoWrapper(core.Env):
                 f"The initial position must respect the pitch limits {self._pitch_limits}, given {self._pos['pitch']}"
             )
 
-        # create task
         self._env = minedojo.make(
             task_id=task_id,
             image_size=(height, width),
@@ -87,14 +86,10 @@ class MineDojoWrapper(core.Env):
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
                 "equipment": gym.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32),
                 "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
-                "masks": gym.spaces.Dict(
-                    {
-                        "action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), np.bool_),
-                        "equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
-                        "desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), np.bool_),
-                        "craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), np.bool_),
-                    }
-                ),
+                "mask_action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), bool),
+                "mask_equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
+                "mask_desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
+                "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), bool),
             }
         )
         self.render_mode: str = "rgb_array"
@@ -104,14 +99,17 @@ class MineDojoWrapper(core.Env):
         return getattr(self._env, name)
 
     def _convert_inventory(self, inventory: Dict[str, Any]) -> np.ndarray:
+        # the inventory counts, as a vector with one entry for each Minecraft item
         converted_inventory = np.zeros(N_ALL_ITEMS)
-        self._inventory = {}
-        self._inventory_names = inventory["name"].copy()
+        self._inventory = {}  # map for each item the position in the inventory
+        self._inventory_names = inventory["name"].copy()  # names of the objects in the inventory
         for i, (item, quantity) in enumerate(zip(inventory["name"], inventory["quantity"])):
+            # save all the position of the items in the inventory
             if item not in self._inventory:
                 self._inventory[item] = [i]
             else:
                 self._inventory[item].append(i)
+            # count the items in the inventory
             if item == "air":
                 converted_inventory[ITEM_NAME_TO_ID[item]] += 1
             else:
@@ -131,32 +129,48 @@ class MineDojoWrapper(core.Env):
             equip_mask[idx] = eqp_mask
             destroy_mask[idx] = dst_mask
         return {
-            "action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
-            "equip/place": equip_mask,
-            "desrtoy": destroy_mask,
-            "craft_smelt": masks["craft_smelt"],
+            "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
+            "mask_equip/place": equip_mask,
+            "mask_desrtoy": destroy_mask,
+            "mask_craft_smelt": masks["craft_smelt"],
         }
 
     def _convert_action(self, action: np.ndarray) -> np.ndarray:
         converted_action = ACTION_MAP[int(action[0])].copy()
         if self._sticky_attack:
+            # 5 is the index of the functional actions (e.g., use, attack, equip, ...)
+            # 3 is the value for the attack action
             if converted_action[5] == 3:
-                self._sticky_attack_counter = self._sticky_attack
-            if self._sticky_attack_counter > 0:
+                self._sticky_attack_counter = self._sticky_attack - 1
+            # if sticky attack is greater than zero and the agent did not select a functional action
+            # (0 in the position 5 of the converted actions), then the attack action is repeated
+            if self._sticky_attack_counter > 0 and converted_action[5] == 0:
                 converted_action[5] = 3
-                converted_action[2] = 0
                 self._sticky_attack_counter -= 1
+            # it the selected action is not attack, then the agent stops the sticky attack
+            elif converted_action[5] != 3:
+                self._sticky_attack = 0
         if self._sticky_jump:
+            # 2 is the index of the jump/sneak/sprint actions, 1 is the value for the jump action
             if converted_action[2] == 1:
-                self._sticky_jump_counter = self._sticky_jump
-            if self._sticky_jump_counter > 0:
+                self._sticky_jump_counter = self._sticky_jump - 1
+            # if sticky jump is greater than zero and the agent did not select a jump/sneak/sprint action
+            # (0 in the position 2 of the converted actions), then the jump action is repeated
+            if self._sticky_jump_counter > 0 and converted_action[0] == 0:
                 converted_action[2] = 1
+                # if the agent jumps because of the sticky action, then it goes forward if only if
+                # it has not chosen another movement action (all 0 in the indices 0 and 1 of the converted actions)
                 if converted_action[0] == converted_action[1] == 0:
                     converted_action[0] = 1
                 self._sticky_jump_counter -= 1
-
+            # it the selected action is not jump, then the agent stops the sticky jump
+            elif converted_action[2] != 1:
+                self._sticky_jump_counter = 0
+        # if the agent selects the craft action (value 4 in index 5 of the converted actions), then it also selects the element to craft
         converted_action[6] = int(action[1]) if converted_action[5] == 4 else 0
-        if converted_action[5] == 5 or converted_action[5] == 6 or converted_action[5] == 7:
+        # if the agent selects the equip/place/destroy action (value 5 or 6 or 7 in index 5 of the converted actions),
+        # then it also selects the element to equip/place/destroy
+        if converted_action[5] in {5, 6, 7}:
             converted_action[7] = self._inventory[ITEM_ID_TO_NAME[int(action[2])]][0]
         else:
             converted_action[7] = 0
@@ -170,7 +184,7 @@ class MineDojoWrapper(core.Env):
             "life_stats": np.concatenate(
                 (obs["life_stats"]["life"], obs["life_stats"]["food"], obs["life_stats"]["oxygen"])
             ),
-            "masks": self._convert_masks(obs["masks"]),
+            **self._convert_masks(obs["masks"]),
         }
 
     def seed(self, seed: Optional[int] = None) -> None:
