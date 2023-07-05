@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -17,8 +17,9 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
+from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.utils import init_weights
@@ -89,7 +90,7 @@ class RSSM(nn.Module):
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -110,6 +111,7 @@ class RSSM(nn.Module):
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior stochastic state (Tensor): computed by the representation model
+            The prior stochastic state (Tensor): computed by the transition model
             The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
             The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             from the recurrent state and the embbedded observation.
@@ -118,9 +120,9 @@ class RSSM(nn.Module):
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, _ = self._transition(recurrent_out)
+        prior_logits, prior = self._transition(recurrent_out)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, posterior_logits, prior_logits
+        return recurrent_state, posterior, prior, posterior_logits, prior_logits
 
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -169,7 +171,7 @@ class RSSM(nn.Module):
 
 class Actor(nn.Module):
     """
-    The wrapper class of the Dreamer_v1 Actor model.
+    The wrapper class of the Dreamer_v2 Actor model.
 
     Args:
         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
@@ -261,19 +263,19 @@ class Actor(nn.Module):
                 sample = actions_dist.sample((100,))
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
-            actions = (actions,)
-            actions_dist = (actions_dist,)
+            actions = [actions]
+            actions_dist = [actions_dist]
         else:
             actions_logits = torch.split(out, self.actions_dim, -1)
-            actions_dist = []
-            actions = []
+            actions_dist: List[Distribution] = []
+            actions: List[Tensor] = []
             for logits in actions_logits:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
-        return actions, actions_dist
+        return tuple(actions), tuple(actions_dist)
 
 
 class WorldModel(nn.Module):
@@ -374,10 +376,11 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         actions = self.get_greedy_action(obs)
-        if is_continuous and self.expl_amount > 0.0:
-            actions = torch.cat(actions, -1)
-            self.actions = torch.clip(Normal(actions, self.expl_amount).sample(), -1, 1)
-            expl_actions = self.actions
+        if is_continuous:
+            self.actions = torch.cat(actions, -1)
+            if self.expl_amount > 0.0:
+                self.actions = torch.clip(Normal(self.actions, self.expl_amount).sample(), -1, 1)
+            expl_actions = [self.actions]
         else:
             expl_actions = []
             for act in actions:
@@ -386,7 +389,7 @@ class Player(nn.Module):
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
             self.actions = torch.cat(expl_actions, -1)
-        return expl_actions
+        return tuple(expl_actions)
 
     def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Sequence[Tensor]:
         """

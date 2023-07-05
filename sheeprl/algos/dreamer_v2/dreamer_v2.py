@@ -22,10 +22,10 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -136,7 +136,7 @@ def train(
     for i in range(0, sequence_length):
         # one step of dynamic learning, which take the posterior state, the recurrent state, the action
         # and the observation and compute the next recurrent, prior and posterior states
-        recurrent_state, posterior, posterior_logits, prior_logits = world_model.rssm.dynamic(
+        recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
             posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
         recurrent_states[i] = recurrent_state
@@ -568,14 +568,12 @@ def main():
                 )
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = torch.cat(real_actions, -1).cpu().numpy().reshape(np.sum(actions_dim))
+                    real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
-                    if not is_multidiscrete:
-                        real_actions = real_actions.item()
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
-        next_obs, rewards, dones, truncated, infos = env.step(real_actions)
+        next_obs, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
