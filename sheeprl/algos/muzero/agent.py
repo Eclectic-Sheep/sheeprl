@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -6,12 +6,17 @@ from sheeprl.models.models import MLP, NatureCNN
 
 
 class MuzeroAgent(torch.nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        representation: Optional[torch.nn.Module] = None,
+        prediction: Optional[torch.nn.Module] = None,
+        dynamics: Optional[torch.nn.Module] = None,
+    ):
         super().__init__()
-        self.representation: torch.nn.Module
-        self.prediction: torch.nn.Module
-        self.dynamics: torch.nn.Module
-        self.training_steps: int = 0
+        self.representation: torch.nn.Module = representation
+        self.prediction: torch.nn.Module = prediction
+        self.dynamics: torch.nn.Module = dynamics
+        self.training_steps = 0
 
     def initial_inference(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden_state = self.representation(observation)
@@ -42,10 +47,10 @@ class MuzeroAgent(torch.nn.Module):
 
 
 class GruMlpDynamics(torch.nn.Module):
-    def __init__(self, hidden_state_size=256):
+    def __init__(self, embedding_size=256, mlp_hidden_sizes=(64, 64)):
         super().__init__()
-        self.gru = torch.nn.GRU(input_size=1, hidden_size=hidden_state_size)
-        self.mlp = MLP(input_dims=hidden_state_size, output_dim=1)
+        self.gru = torch.nn.GRU(input_size=1, hidden_size=embedding_size)
+        self.mlp = MLP(input_dims=embedding_size, hidden_sizes=mlp_hidden_sizes, activation=torch.nn.ELU, output_dim=1)
 
     def forward(self, x, h0):
         y, h1 = self.gru(x, h0)
@@ -53,16 +58,32 @@ class GruMlpDynamics(torch.nn.Module):
         return y, h1
 
 
-class Predictor(torch.nn.Module):
-    def __init__(self, hidden_state_size=256, num_actions=4):
+class MlpDynamics(torch.nn.Module):
+    def __init__(self, embedding_size=256, state_hidden_sizes=(64, 64, 16), rew_hidden_sizes=(64, 64, 16)):
         super().__init__()
-        self.mlp_actor1 = torch.nn.Linear(in_features=hidden_state_size, out_features=16)
-        self.act_actor = torch.nn.ELU()
-        self.mlp_actor2 = torch.nn.Linear(in_features=16, out_features=num_actions)
+        self.hstate = MLP(input_dims=embedding_size + 1, hidden_sizes=state_hidden_sizes, output_dim=embedding_size)
+        self.mlp = MLP(
+            input_dims=embedding_size + 1, hidden_sizes=rew_hidden_sizes, activation=torch.nn.ELU, output_dim=1
+        )
 
-        self.mlp_value1 = torch.nn.Linear(in_features=hidden_state_size, out_features=16)
-        self.act_value = torch.nn.ELU()
-        self.mlp_value2 = torch.nn.Linear(in_features=16, out_features=1)
+    def forward(self, x, h0):
+        h1 = self.hstate(torch.cat([x, h0], dim=-1))
+        y = self.mlp(torch.cat([x, h0], dim=-1))
+        return y, h1
+
+
+class Predictor(torch.nn.Module):
+    def __init__(
+        self, embedding_size=256, policy_hidden_sizes=(64, 64, 16), value_hidden_sizes=(64, 64, 16), num_actions=4
+    ):
+        super().__init__()
+        self.mlp_actor1 = MLP(
+            input_dims=embedding_size, hidden_sizes=policy_hidden_sizes, activation=torch.nn.ELU, output_dim=num_actions
+        )
+
+        self.mlp_value1 = MLP(
+            input_dims=embedding_size, hidden_sizes=value_hidden_sizes, activation=torch.nn.ELU, output_dim=1
+        )
 
     def forward(self, x):
         policy = self.mlp_actor2(self.act_actor(self.mlp_actor1(x)))

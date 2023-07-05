@@ -24,7 +24,7 @@ class MuzeroArgs(StandardArgs):
     exploration_fraction: float = Arg(default=0.25, help="The fraction of the exploration phase.")
     checkpoint_every: int = Arg(default=-1, help="How often to make the checkpoint, -1 to deactivate the checkpoint.")
     # trainer
-    lr: float = Arg(default=0.05, help="The learning rate of the optimizer.")
+    lr: float = Arg(default=0.002, help="The learning rate of the optimizer.")
     weight_decay: float = Arg(default=1e-4, help="The weight decay of the optimizer.")
     anneal_lr: bool = Arg(default=True, help="Whether to anneal the learning rate.")
     decay_period: int = Arg(default=350_000, help="The period of the learning rate annealing.")
@@ -33,4 +33,4 @@ class MuzeroArgs(StandardArgs):
     # buffer
     buffer_capacity: int = Arg(default=500, help="The maximum number of trajectories in the replay buffer.")
     chunk_sequence_len: int = Arg(default=10, help="The length of a chunk of trajectory in a batch.")
-    chunks_per_batch: int = Arg(default=160, help="The number of chunks in a batch.")
+    chunks_per_batch: int = Arg(default=128, help="The number of chunks in a batch.")

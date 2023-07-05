@@ -13,17 +13,15 @@ from torch.optim import Adam
 from torchmetrics import MeanMetric
 from tqdm import tqdm
 
-from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
+from sheeprl.algos.muzero.agent import RecurrentMuzero
 from sheeprl.algos.muzero.args import MuzeroArgs
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
-from sheeprl.algos.muzero.utils import Node, test, visit_softmax_temperature
+from sheeprl.algos.muzero.utils import Node, make_env, test, visit_softmax_temperature
 from sheeprl.data.buffers import Trajectory, TrajectoryReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
 
 
 @register_algorithm()
@@ -72,21 +70,21 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    env = make_env(args.env_id, seed=args.seed + rank, idx=rank, capture_video=False)()
+    env = make_env(
+        args.env_id,
+        args.seed + rank,
+        rank,
+        args.capture_video,
+        logger.log_dir,
+        "train",
+        frame_stack=1,
+        action_repeat=args.action_repeat,
+        vector_env_idx=rank,
+    )()
     assert isinstance(env.action_space, gym.spaces.Discrete), "Only discrete action space is supported"
 
     # Create the model
-    embedding_size = 10
-    agent = MuzeroAgent(
-        representation=MLP(
-            input_dims=env.observation_space.shape,
-            hidden_sizes=tuple(),
-            output_dim=embedding_size,
-            activation=torch.nn.ELU,
-        ),
-        dynamics=MlpDynamics(embedding_size=embedding_size),
-        prediction=Predictor(embedding_size=embedding_size, num_actions=env.action_space.n),
-    )
+    agent = RecurrentMuzero(num_actions=env.action_space.n).to(device)
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4, weight_decay=args.weight_decay)
     optimizer = fabric.setup_optimizers(optimizer)
 
@@ -120,7 +118,9 @@ def main():
             # reset the episode at every update
             with device:
                 # Get the first environment observation and start the optimization
-                obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).reshape(1, -1)
+                obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).view(
+                    1, 3, 64, 64
+                )  # shape (1, C, H, W)
                 rew_sum = 0.0
 
             steps_data = None
@@ -161,17 +161,15 @@ def main():
                     break
                 else:
                     with device:
-                        obs = torch.tensor(next_obs).reshape(1, -1)
+                        obs = torch.tensor(next_obs).view(1, 3, 64, 64)
 
             fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
             aggregator.update("Rewards/rew_avg", rew_sum)
             aggregator.update("Game/ep_len_avg", trajectory_step)
             print("Finished episode")
-            if len(steps_data) >= args.chunk_sequence_len:
-                rb.add(trajectory=steps_data)
+            rb.add(trajectory=steps_data)
 
-        if len(rb) >= args.learning_starts:
-            print("UPDATING")
+        if update_step >= args.learning_starts - 1:
             for _ in range(args.update_epochs):
                 # We sample one time to reduce the communications between processes
                 data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
@@ -195,7 +193,7 @@ def main():
 
                 for sequence_idx in range(1, args.chunk_sequence_len):
                     hidden_states, rewards, policies, values = agent.recurrent_inference(
-                        actions[sequence_idx : sequence_idx + 1].to(dtype=torch.float32), hidden_states
+                        actions[sequence_idx].unsqueeze(0).to(dtype=torch.float32), hidden_states
                     )  # action should be (1, N, 1)
                     # Policy loss
                     pg_loss += policy_loss(policies, target_policies[sequence_idx : sequence_idx + 1])
@@ -210,6 +208,7 @@ def main():
 
                 optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
+                print("UPDATING")
                 optimizer.step()
 
                 # Update metrics
@@ -245,7 +244,7 @@ def main():
             args.env_id,
             None,
             0,
-            True,
+            args.capture_video,
             fabric.logger.log_dir,
             "test",
             vector_env_idx=0,
