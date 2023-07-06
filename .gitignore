@@ -163,3 +163,4 @@ cython_debug/
 logs
 poetry.lock
 notebooks
+pytest_*
