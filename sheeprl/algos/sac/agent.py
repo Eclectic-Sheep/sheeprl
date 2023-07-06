@@ -6,7 +6,6 @@ import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
-from torch.nn.parallel import DistributedDataParallel
 
 from sheeprl.models.models import MLP
 
@@ -15,12 +14,14 @@ LOG_STD_MIN = -5
 
 
 class SACCritic(nn.Module):
-    def __init__(self, observation_dim: int, num_critics: int = 1):
+    def __init__(self, observation_dim: int, hidden_size: int = 256, num_critics: int = 1):
         """The SAC critic. The architecture is the one specified in https://arxiv.org/abs/1812.05905
 
         Args:
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
+            hidden_size (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
             num_critics (int, optional): the number of critic values to output.
                 This is useful if one wants to have a single shared backbone that outputs
                 `num_critics` critic values.
@@ -30,7 +31,7 @@ class SACCritic(nn.Module):
         self.model = MLP(
             input_dims=observation_dim,
             output_dim=num_critics,
-            hidden_sizes=(256, 256),
+            hidden_sizes=(hidden_size, hidden_size),
             activation=nn.ReLU,
             flatten_dim=None,
         )
@@ -54,6 +55,7 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
+        hidden_size: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
@@ -63,13 +65,15 @@ class SACActor(nn.Module):
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
+            hidden_size (int): the hidden sizes for both of the two-layer MLP.
+                Defaults to 256.
             action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
                 Defaults to -1.0.
             action_high (Union[SupportsFloat, NDArray], optional): the action higher bound.
                 Defaults to 1.0.
         """
         super().__init__()
-        self.model = MLP(input_dims=observation_dim, output_dim=0, hidden_sizes=(256, 256), flatten_dim=None)
+        self.model = MLP(input_dims=observation_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
 
@@ -160,15 +164,20 @@ class SACAgent(nn.Module):
         self._num_critics = len(critics)
         self._actor = actor
         self._qfs = nn.ModuleList(critics)
-        qfs_target = []
+
+        # Create target critic unwrapping the DDP module from the critics to prevent
+        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
+        # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
+        # This happens when we're using the decoupled version of SAC for example
+        qfs_unwrapped_modules = []
         for critic in critics:
-            if isinstance(critic, (DistributedDataParallel, _FabricModule)):
-                qfs_target.append(copy.deepcopy(critic.module))
-            elif isinstance(critic, nn.Module):
-                qfs_target.append(copy.deepcopy(critic))
+            if hasattr(critic, "module"):
+                critic_module = critic.module
             else:
-                raise ValueError("Every critic must be a subclass of `torch.nn.Module`")
-        self._qfs_target = nn.ModuleList(qfs_target)
+                critic_module = critic
+            qfs_unwrapped_modules.append(critic_module)
+        self._qfs_unwrapped = nn.ModuleList(qfs_unwrapped_modules)
+        self._qfs_target = copy.deepcopy(self._qfs_unwrapped)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
 
@@ -186,6 +195,10 @@ class SACAgent(nn.Module):
     @property
     def qfs(self) -> nn.ModuleList:
         return self._qfs
+
+    @property
+    def qfs_unwrapped(self) -> nn.ModuleList:
+        return self._qfs_unwrapped
 
     @property
     def actor(self) -> Union[SACActor, _FabricModule]:
@@ -231,5 +244,5 @@ class SACAgent(nn.Module):
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs.parameters(), self.qfs_target.parameters()):
+        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)

@@ -1,47 +1,62 @@
-[tool.poetry]
-name = "sheeprl"
-version = "0.0.1"
-description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with research-friendly features"
-authors = [
-  "Federico Belotti <federico.belotti@orobix.com>",
-  "Davide Angioni <davide.angioni@orobix.com>",
-  "Refik Can Malli <refikcan.malli@orobix.com>",
-]
-packages = [{ include = "sheeprl" }]
-keywords = ["reinforcement", "machine", "learning", "research"]
-license = "MIT"
-readme = "README.md"
-
-[tool.poetry.scripts]
-sheeprl = 'sheeprl.cli:run'
-
-[tool.poetry.dependencies]
-python = ">=3.8,<3.10"
-gymnasium = { extras = ["box2d"], version = "^0.28.1" }
-moviepy = "^1.0.3"
-tensordict = "^0.1.0"
-tensorboard = "^2.12.2"
-python-dotenv = "^1.0.0"
-lightning = "^2.0.2"
-lightning-utilities = "^0.8.0"
-
-[tool.poetry.group.dev.dependencies]
-pre-commit = "^2.20.0"
-mypy = "^1.2.0"
-black = "^23.3.0"
-isort = "^5.12.0"
-autoflake = "^2.1.1"
-pytest = "^7.3.1"
-pytest-timeout = "^2.1.0"
-pytest-coverage = "^0.0"
-
-[tool.poetry.group.mujoco.dependencies]
-mujoco = "2.3.3"
-gymnasium = {extras = ["mujoco"], version = "^0.28.1"}
-
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools >= 61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sheeprl"
+description = "High-quality, single file and distributed implementation of Deep Reinforcement Learning algorithms with production-friendly features"
+authors = [
+  { name = "Federico Belotti", email = "federico.belotti@orobix.com" },
+  { name = "Davide Angioni", email = "davide.angioni@orobix.com" },
+  { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
+  { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
+]
+keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
+license = { file = "LICENSE" }
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.8,<3.11"
+classifiers = ["Programming Language :: Python"]
+dependencies = [
+  "gymnasium[box2d]==0.28.*",
+  "moviepy==1.0.*",
+  "tensordict==0.1.*",
+  "tensorboard>=2.10",
+  "python-dotenv>=1.0.0",
+  "lightning==2.0.*",
+  "lightning-utilities<0.9",
+]
+dynamic = ["version"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["sheeprl", "sheeprl.*"]
+
+[project.scripts]
+sheeprl = "sheeprl.cli:run"
+
+[project.urls]
+homepage = "https://eclecticsheep.ai"
+repository = "https://github.com/Eclectic-Sheep/sheeprl"
+
+[project.optional-dependencies]
+test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage"]
+dev = [
+  "pre-commit==2.20.0",
+  "mypy==1.2.0",
+  "black==23.3.0",
+  "isort==5.12.0",
+  "autoflake==2.1.1",
+]
+mujoco = ["mujoco==2.3.3", "gymnasium[mujoco]==0.28.*"]
+dmc = ["dm_control==1.0.11"]
+atari = [
+  "gymnasium[atari]==0.28.*",
+  "gymnasium[accept-rom-license]==0.28.*",
+  "gymnasium[other]==0.28.*",
+]
+minedojo = ["minedojo==0.1"]
 
 [tool.ruff]
 line-length = 120

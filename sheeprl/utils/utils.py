@@ -3,9 +3,10 @@ from typing import Optional, Tuple
 
 import gymnasium as gym
 import torch
+import torch.nn as nn
 from torch import Tensor
 
-from sheeprl.envs.wrappers import MaskVelocityWrapper
+from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper
 
 
 @torch.no_grad()
@@ -51,6 +52,61 @@ def gae(
     return returns, advantages
 
 
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    done_mask: Tensor,
+    last_values: Tensor,
+    horizon: int = 15,
+    lmbda: float = 0.95,
+) -> Tensor:
+    """
+    Compute the lambda values by keeping the gradients of the variables.
+
+    Args:
+        rewards (Tensor): the estimated rewards in the latent space.
+        values (Tensor): the estimated values in the latent space.
+        done_mask (Tensor): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        last_values (Tensor): the next values for the last state in the horzon.
+        horizon: (int, optional): the horizon of imagination.
+            Default to 15.
+        lmbda (float, optional): the discout lmbda factor for the lambda values computation.
+            Default to 0.95.
+
+    Returns:
+        The tensor of the computed lambda values.
+    """
+    last_values = torch.clone(last_values)
+    last_lambda_values = 0
+    lambda_targets = []
+    for step in reversed(range(horizon - 1)):
+        if step == horizon - 2:
+            next_values = last_values
+        else:
+            next_values = values[step + 1] * (1 - lmbda)
+        delta = rewards[step] + next_values * done_mask[step]
+        last_lambda_values = delta + lmbda * done_mask[step] * last_lambda_values
+        lambda_targets.append(last_lambda_values)
+    return torch.stack(list(reversed(lambda_targets)), dim=0)
+
+
+def init_weights(m: nn.Module):
+    """
+    Initialize the parameters of the m module acording to the method described in
+    [https://arxiv.org/abs/1502.01852](https://arxiv.org/abs/1502.01852) using a uniform distribution.
+
+    Args:
+        m (nn.Module): the module to be initialized.
+    """
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        nn.init.kaiming_uniform_(m.weight.data, nonlinearity="relu")
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.kaiming_uniform_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)
+
+
 @torch.no_grad()
 def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None):
     if mask is None:
@@ -74,18 +130,20 @@ def polynomial_decay(
 
 def make_env(
     env_id: str,
-    seed: int,
+    seed: Optional[int],
     idx: int,
     capture_video: bool,
     run_name: Optional[str] = None,
     prefix: str = "",
     mask_velocities: bool = False,
     vector_env_idx: int = 0,
+    action_repeat: int = 1,
 ):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         if mask_velocities:
             env = MaskVelocityWrapper(env)
+        env = ActionRepeat(env, action_repeat)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
             if vector_env_idx == 0 and idx == 0 and run_name is not None:
@@ -99,3 +157,21 @@ def make_env(
         return env
 
     return thunk
+
+
+def get_dummy_env(env_id: str):
+    if "continuous" in env_id:
+        from sheeprl.envs.dummy import ContinuousDummyEnv
+
+        env = ContinuousDummyEnv()
+    elif "multidiscrete" in env_id:
+        from sheeprl.envs.dummy import MultiDiscreteDummyEnv
+
+        env = MultiDiscreteDummyEnv()
+    elif "discrete" in env_id:
+        from sheeprl.envs.dummy import DiscreteDummyEnv
+
+        env = DiscreteDummyEnv()
+    else:
+        raise ValueError(f"Unrecognized dummy environment: {env_id}")
+    return env

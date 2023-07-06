@@ -1,6 +1,6 @@
+import gymnasium as gym
 import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning import Fabric
 
 from sheeprl.algos.sac.agent import SACActor
@@ -8,11 +8,10 @@ from sheeprl.algos.sac.args import SACArgs
 
 
 @torch.no_grad()
-def test(actor: SACActor, envs: SyncVectorEnv, fabric: Fabric, args: SACArgs):
+def test(actor: SACActor, env: gym.Env, fabric: Fabric, args: SACArgs):
     actor.eval()
     done = False
     cumulative_rew = 0
-    env = envs.envs[0]
     next_obs = torch.tensor(
         np.array(env.reset(seed=args.seed)[0]), device=fabric.device, dtype=torch.float32
     ).unsqueeze(0)

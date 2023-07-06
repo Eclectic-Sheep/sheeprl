@@ -7,8 +7,6 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
     Gym environment observation wrapper used to mask velocity terms in
     observations. The intention is the make the MDP partially observable.
     Adapted from https://github.com/LiuWenlin595/FinalProject.
-
-    :param env: Gym environment
     """
 
     # Supported envs
@@ -37,3 +35,30 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
 
     def observation(self, observation: np.ndarray) -> np.ndarray:
         return observation * self.mask
+
+
+class ActionRepeat(gym.Wrapper):
+    def __init__(self, env: gym.Env, amount: int = 1):
+        super().__init__(env)
+        if amount <= 0:
+            raise ValueError("`amount` should be a positive integer")
+        self._env = env
+        self._amount = amount
+
+    @property
+    def action_repeat(self) -> int:
+        return self._amount
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
+
+    def step(self, action):
+        done = False
+        truncated = False
+        current_step = 0
+        total_reward = 0.0
+        while current_step < self._amount and not (done or truncated):
+            obs, reward, done, truncated, info = self._env.step(action)
+            total_reward += reward
+            current_step += 1
+        return obs, total_reward, done, truncated, info

@@ -25,6 +25,7 @@ from sheeprl.algos.sac.args import SACArgs
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -86,7 +87,7 @@ def main():
     args: SACArgs = parser.parse_args_into_dataclasses()[0]
 
     # Initialize Fabric
-    fabric = Fabric()
+    fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -103,9 +104,17 @@ def main():
         world_collective.setup()
         world_collective.create_group()
     if rank == 0:
-        log_dir = os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
+        root_dir = (
+            args.root_dir
+            if args.root_dir is not None
+            else os.path.join("logs", "sac", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        )
+        run_name = (
+            args.run_name
+            if args.run_name is not None
+            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        )
+        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
@@ -118,7 +127,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = gym.vector.SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -142,12 +152,15 @@ def main():
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
+            hidden_size=args.actor_hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
-        fabric.setup_module(SACCritic(observation_dim=obs_dim + act_dim, num_critics=1))
+        fabric.setup_module(
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=args.critic_hidden_size, num_critics=1)
+        )
         for _ in range(args.num_critics)
     ]
     target_entropy = -act_dim
@@ -175,11 +188,11 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device)
+    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
-    start_time = time.time()
+    start_time = time.perf_counter()
     num_updates = int(args.total_steps // (args.num_envs * fabric.world_size)) if not args.dry_run else 1
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
@@ -188,10 +201,13 @@ def main():
         obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        # Sample an action given the observation received by the environment
-        with torch.no_grad():
-            actions, _ = actor.module(obs)
-            actions = actions.cpu().numpy()
+        if global_step < args.learning_starts:
+            actions = envs.action_space.sample()
+        else:
+            # Sample an action given the observation received by the environment
+            with torch.no_grad():
+                actions, _ = actor.module(obs)
+                actions = actions.cpu().numpy()
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
@@ -220,7 +236,8 @@ def main():
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        step_data["next_observations"] = real_next_obs
+        if not args.sample_next_obs:
+            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
@@ -228,74 +245,83 @@ def main():
         obs = real_next_obs
 
         # Train the agent
-        if global_step > args.learning_starts:
-            # We sample one time to reduce the communications between processes
-            sample = rb.sample(args.gradient_steps * args.per_rank_batch_size)  # [G*B, 1]
-            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
-            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
-            if fabric.world_size > 1:
-                dist_sampler: DistributedSampler = DistributedSampler(
-                    range(len(gathered_data)),
-                    num_replicas=fabric.world_size,
-                    rank=fabric.global_rank,
-                    shuffle=True,
-                    seed=args.seed,
-                    drop_last=False,
-                )
-                sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            else:
-                sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
-                )
-            for batch_idxes in sampler:
-                train(
-                    fabric,
-                    agent,
-                    actor_optimizer,
-                    qf_optimizer,
-                    alpha_optimizer,
-                    gathered_data[batch_idxes],
-                    aggregator,
-                    global_step,
-                    args,
-                )
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        if global_step >= args.learning_starts - 1:
+            training_steps = args.learning_starts if global_step == args.learning_starts - 1 else 1
+            for _ in range(training_steps):
+                # We sample one time to reduce the communications between processes
+                sample = rb.sample(
+                    args.gradient_steps * args.per_rank_batch_size, sample_next_obs=args.sample_next_obs
+                )  # [G*B, 1]
+                gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+                gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+                if fabric.world_size > 1:
+                    dist_sampler: DistributedSampler = DistributedSampler(
+                        range(len(gathered_data)),
+                        num_replicas=fabric.world_size,
+                        rank=fabric.global_rank,
+                        shuffle=True,
+                        seed=args.seed,
+                        drop_last=False,
+                    )
+                    sampler: BatchSampler = BatchSampler(
+                        sampler=dist_sampler, batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                else:
+                    sampler = BatchSampler(
+                        sampler=range(len(gathered_data)), batch_size=args.per_rank_batch_size, drop_last=False
+                    )
+                for batch_idxes in sampler:
+                    train(
+                        fabric,
+                        agent,
+                        actor_optimizer,
+                        qf_optimizer,
+                        alpha_optimizer,
+                        gathered_data[batch_idxes],
+                        aggregator,
+                        global_step,
+                        args,
+                    )
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
-            true_done = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+        if (
+            (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0)
+            or args.dry_run
+            or global_step == num_updates
+        ):
             state = {
                 "agent": agent.state_dict(),
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
                 "args": asdict(args),
-                "rb": rb,
                 "global_step": global_step,
             }
-            if fabric.world_size > 1:
-                # We need to collect the buffers from all the ranks
-                # The collective it is needed because the `gather_object` function is not implemented in Fabric
-                checkpoint_collective = TorchCollective()
-                checkpoint_collective.create_group(ranks=list(range(fabric.world_size)))
-                gathered_rb = [None for _ in range(fabric.world_size)]
-                if fabric.global_rank == 0:
-                    checkpoint_collective.gather_object(rb, gathered_rb)
-                    state["rb"] = gathered_rb
-                else:
-                    checkpoint_collective.gather_object(rb, None)
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = true_done
+            fabric.call(
+                "on_checkpoint_coupled",
+                fabric=fabric,
+                ckpt_path=ckpt_path,
+                state=state,
+                replay_buffer=rb if args.checkpoint_buffer else None,
+            )
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, envs, fabric, args)
+        test_env = make_env(
+            args.env_id,
+            None,
+            0,
+            args.capture_video,
+            fabric.logger.log_dir,
+            "test",
+            mask_velocities=False,
+            vector_env_idx=0,
+        )()
+        test(actor.module, test_env, fabric, args)
 
 
 if __name__ == "__main__":

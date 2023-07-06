@@ -11,7 +11,6 @@ from typing import List
 
 import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -29,6 +28,7 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.args import RecurrentPPOArgs
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data import ReplayBuffer
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -119,7 +119,7 @@ def main():
         warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
 
     # Initialize Fabric
-    fabric = Fabric()
+    fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
@@ -137,9 +137,17 @@ def main():
         world_collective.setup()
         world_collective.create_group()
     if rank == 0:
-        log_dir = os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        run_name = f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        logger = TensorBoardLogger(root_dir=log_dir, name=run_name)
+        root_dir = (
+            args.root_dir
+            if args.root_dir is not None
+            else os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        )
+        run_name = (
+            args.run_name
+            if args.run_name is not None
+            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        )
+        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         fabric._loggers = [logger]
         log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
@@ -152,7 +160,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -173,7 +182,16 @@ def main():
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)
     agent = fabric.setup_module(
-        RecurrentPPOAgent(observation_dim=obs_dim, action_dim=envs.single_action_space.n, num_envs=args.num_envs)
+        RecurrentPPOAgent(
+            observation_dim=obs_dim,
+            action_dim=envs.single_action_space.n,
+            lstm_hidden_size=args.lstm_hidden_size,
+            actor_hidden_size=args.actor_hidden_size,
+            actor_pre_lstm_hidden_size=args.actor_pre_lstm_hidden_size,
+            critic_hidden_size=args.critic_hidden_size,
+            critic_pre_lstm_hidden_size=args.critic_pre_lstm_hidden_size,
+            num_envs=args.num_envs,
+        )
     )
     optimizer = fabric.setup_optimizers(Adam(params=agent.parameters(), lr=args.lr, eps=1e-4))
 
@@ -191,12 +209,12 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[1, args.num_envs], device=device)
 
     # Global variables
     global_step = 0
-    start_time = time.time()
+    start_time = time.perf_counter()
     single_global_rollout = int(args.num_envs * args.rollout_steps * world_size)
     num_updates = args.total_steps // single_global_rollout if not args.dry_run else 1
 
@@ -331,12 +349,12 @@ def main():
 
         # Log metrics
         metrics_dict = aggregator.compute()
-        fabric.log("Time/step_per_second", int(global_step / (time.time() - start_time)), global_step)
+        fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 
-        # Checkpoint Model
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
+        # Checkpoint model
+        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run or update == num_updates:
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
@@ -345,11 +363,21 @@ def main():
                 "scheduler": scheduler.state_dict() if args.anneal_lr else None,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
-            fabric.save(ckpt_path, state)
+            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.module, envs, fabric, args)
+        test_env = make_env(
+            args.env_id,
+            None,
+            0,
+            args.capture_video,
+            fabric.logger.log_dir,
+            "test",
+            mask_velocities=args.mask_vel,
+            vector_env_idx=0,
+        )()
+        test(agent.module, test_env, fabric, args)
 
 
 if __name__ == "__main__":

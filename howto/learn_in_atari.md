@@ -3,12 +3,13 @@ Atari games are harder to solve then basic gym environments, since they rely on 
 
 In this section, we will learn how to train an agent using a CNN model on Atari games.
 
-The code for this section is available in `algos/ppo/ppo_atari.py`.
+The code for this section is available in `algos/ppo_pixel/ppo_atari.py`.
 
 ## Install Atari environments
 First we should install the Atari environments with:
 
 ```bash
+pip install gymnasium[other]
 pip install gymnasium[atari]
 pip install gymnasium[accept-rom-license]
 ```
@@ -142,15 +143,15 @@ from sheeprl.algos.sac import sac, sac_decoupled
 load_dotenv()
 ```
 
-We should see `ppo_atari` under the `Commands` section when running `python main.py`:
+We should see `ppo_atari` under the `Commands` section when running `python sheeprl.py`:
 
 ```bash
-Usage: main.py [OPTIONS] COMMAND [ARGS]...
+Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
 
-  Fabric-RL zero-code command line utility.
+  SheepRL zero-code command line utility.
 
 Options:
-  --fabricrl_help  Show this message and exit.
+  --sheeprl_help  Show this message and exit.
 
 Commands:
   droq
@@ -166,5 +167,5 @@ Commands:
 Once this is done, we are all set. We can now train the model by running:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 main.py ppo_atari --env_id PongNoFrameskip-v4
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo_atari --env_id PongNoFrameskip-v4
 ```

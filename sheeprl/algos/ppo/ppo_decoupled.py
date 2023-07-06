@@ -3,11 +3,10 @@ import os
 import time
 import warnings
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import gymnasium as gym
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
@@ -28,6 +27,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
+from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -49,15 +49,19 @@ class Agent(torch.nn.Module):
 
 @torch.no_grad()
 def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}"
-
-    logger = TensorBoardLogger(
-        root_dir=os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S")), name=run_name
+    root_dir = (
+        args.root_dir
+        if args.root_dir is not None
+        else os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
+    run_name = (
+        args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+    )
+    logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
 
     # Initialize Fabric object
-    fabric = Fabric(loggers=logger)
+    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -65,7 +69,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
                 args.env_id,
@@ -87,13 +92,13 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     actor = MLP(
         input_dims=envs.single_observation_space.shape,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
         activation=torch.nn.ReLU,
     ).to(device)
     critic = MLP(
         input_dims=envs.single_observation_space.shape,
         output_dim=1,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
         activation=torch.nn.ReLU,
     ).to(device)
 
@@ -120,12 +125,12 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device)
+    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
     global_step = 0
-    start_time = time.time()
+    start_time = time.perf_counter()
     single_global_step = int(args.num_envs * args.rollout_steps)
     num_updates = args.total_steps // single_global_step if not args.dry_run else 1
     if single_global_step < world_collective.world_size - 1:
@@ -231,22 +236,45 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
         # Log metrics
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
+        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
         fabric.log_dict(metrics[0], global_step)
         fabric.log_dict(aggregator.compute(), global_step)
         aggregator.reset()
 
-        # Checkpoint Model
+        # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-            state = [None]
-            player_trainer_collective.broadcast_object_list(state, src=1)
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
-            fabric.save(ckpt_path, state[0])
+            fabric.call(
+                "on_checkpoint_player",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+            )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
+
+    # Last Checkpoint
+    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{num_updates}_{fabric.global_rank}.ckpt"
+    fabric.call(
+        "on_checkpoint_player",
+        fabric=fabric,
+        player_trainer_collective=player_trainer_collective,
+        ckpt_path=ckpt_path,
+    )
+
     envs.close()
     if fabric.is_global_zero:
-        test(actor, envs, fabric, args)
+        test_env = make_env(
+            args.env_id,
+            None,
+            0,
+            args.capture_video,
+            fabric.logger.log_dir,
+            "test",
+            mask_velocities=args.mask_vel,
+            vector_env_idx=0,
+        )()
+        test(actor, test_env, fabric, args)
 
 
 def trainer(
@@ -258,7 +286,7 @@ def trainer(
     global_rank = world_collective.rank
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg))
+    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
@@ -266,18 +294,22 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     # Create the actor and critic models
     actor = MLP(
         input_dims=envs.single_observation_space.shape,
         output_dim=envs.single_action_space.n,
-        hidden_sizes=(64, 64),
+        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
         activation=torch.nn.ReLU,
     )
     critic = MLP(
-        input_dims=envs.single_observation_space.shape, output_dim=1, hidden_sizes=(64, 64), activation=torch.nn.ReLU
+        input_dims=envs.single_observation_space.shape,
+        output_dim=1,
+        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
+        activation=torch.nn.ReLU,
     )
     agent = Agent(actor, critic)
 
@@ -324,6 +356,16 @@ def trainer(
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
+            # Last Checkpoint
+            if global_rank == 1:
+                state = {
+                    "agent": actor.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "args": asdict(args),
+                    "update_step": update,
+                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                }
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
         update += 1
@@ -421,9 +463,7 @@ def trainer(
                     "update_step": update,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                player_trainer_collective.broadcast_object_list([state], src=1)
-            # Fake save for the other ranks
-            fabric.barrier()
+                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
 
 
 @register_algorithm(decoupled=True)
@@ -432,7 +472,7 @@ def main():
     if devices is None or devices == "1":
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 main.py ...`"
+            "`lightning run model --devices=2 sheeprl.py ...`"
         )
 
     parser = HfArgumentParser(PPOArgs)
@@ -446,21 +486,26 @@ def main():
 
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
-    world_collective.setup(backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo")
+    world_collective.setup(
+        backend="nccl" if os.environ.get("LT_ACCELERATOR", None) in ("gpu", "cuda") else "gloo",
+        timeout=timedelta(days=1),
+    )
 
     # Create a global group, assigning it to the collective: used by the player to exchange
     # collected experiences with the trainers
-    world_collective.create_group()
+    world_collective.create_group(timeout=timedelta(days=1))
     global_rank = world_collective.rank
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
-    player_trainer_collective.create_group(ranks=[0, 1])
+    player_trainer_collective.create_group(ranks=[0, 1], timeout=timedelta(days=1))
 
     # Create a new group, without assigning it to the collective: in this way the trainers can
     # still communicate with the player through the global group, but they can optimize the agent
     # between themselves
-    optimization_pg = world_collective.new_group(ranks=list(range(1, world_collective.world_size)))
+    optimization_pg = world_collective.new_group(
+        ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
+    )
     if global_rank == 0:
         player(args, world_collective, player_trainer_collective)
     else:
