@@ -157,3 +157,21 @@ def make_env(
         return env
 
     return thunk
+
+
+def get_dummy_env(env_id: str):
+    if "continuous" in env_id:
+        from sheeprl.envs.dummy import ContinuousDummyEnv
+
+        env = ContinuousDummyEnv()
+    elif "multidiscrete" in env_id:
+        from sheeprl.envs.dummy import MultiDiscreteDummyEnv
+
+        env = MultiDiscreteDummyEnv()
+    elif "discrete" in env_id:
+        from sheeprl.envs.dummy import DiscreteDummyEnv
+
+        env = DiscreteDummyEnv()
+    else:
+        raise ValueError(f"Unrecognized dummy environment: {env_id}")
+    return env

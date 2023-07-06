@@ -202,7 +202,7 @@ def train(
 
         # imagine trajectories in the latent space
         for i in range(args.horizon):
-            actions = actor_exploration(imagined_latent_states.detach())
+            actions = torch.cat(actor_exploration(imagined_latent_states.detach()), dim=-1)
             imagined_actions[i] = actions
             imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
                 imagined_stochastic_state, recurrent_state, actions
@@ -290,7 +290,7 @@ def train(
         args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
     )
     for i in range(args.horizon):
-        actions = actor_task(imagined_latent_states.detach())
+        actions = torch.cat(actor_task(imagined_latent_states.detach()), dim=-1)
         imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
             imagined_stochastic_state, recurrent_state, actions
         )
@@ -415,13 +415,18 @@ def main():
     )
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    action_dim = env.action_space.shape[0] if is_continuous else env.action_space.n
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = (
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
     observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
 
     world_model, actor_task, critic_task, actor_exploration, critic_exploration = build_models(
         fabric,
-        action_dim,
+        actions_dim,
         observation_shape,
         is_continuous,
         args,
@@ -439,7 +444,7 @@ def main():
             fabric.seed_everything(args.seed + i)
             ens_list.append(
                 MLP(
-                    input_dims=int(action_dim + args.recurrent_state_size + args.stochastic_size),
+                    input_dims=int(np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size),
                     output_dim=world_model.encoder.output_size,
                     hidden_sizes=[args.dense_units] * args.num_layers,
                 ).apply(init_weights)
@@ -453,7 +458,7 @@ def main():
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
         actor_exploration.module,
-        action_dim,
+        actions_dim,
         args.expl_amount,
         args.num_envs,
         args.stochastic_size,
@@ -564,7 +569,7 @@ def main():
         args.num_envs, *observation_shape
     )  # [N_envs, N_obs]
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, action_dim)
+    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["observations"] = obs
     rb.add(step_data[None, ...])
@@ -583,19 +588,24 @@ def main():
         if global_step <= learning_starts and args.checkpoint_path is None:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
-                actions = F.one_hot(torch.tensor(actions), action_dim).numpy()
+                actions = np.concatenate(
+                    [
+                        F.one_hot(torch.tensor(act), act_dim).numpy()
+                        for act, act_dim in zip(actions.reshape(len(actions_dim)), actions_dim)
+                    ],
+                    axis=-1,
+                )
         else:
             with torch.no_grad():
                 real_actions = actions = player.get_exploration_action(
                     obs[None, ...].to(device) / 255 - 0.5, is_continuous
                 )
-                actions = actions.cpu().numpy()
-                real_actions = real_actions.cpu().numpy()
+                actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = real_actions.reshape(action_dim)
+                    real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
-                    real_actions = real_actions.argmax()
-        next_obs, rewards, dones, truncated, infos = env.step(real_actions)
+                    real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
+        next_obs, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
 
         if (dones or truncated) and "episode" in infos:
@@ -622,7 +632,7 @@ def main():
                 args.num_envs, *observation_shape
             )  # [N_envs, N_obs]
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, action_dim)
+            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["observations"] = obs
             rb.add(step_data[None, ...])

@@ -1,5 +1,5 @@
 import os
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional
 
 import cv2
 import gymnasium as gym
@@ -8,6 +8,8 @@ import torch
 from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import OneHotCategoricalStraightThrough
+
+from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import Player
@@ -42,10 +44,13 @@ def make_env(
         The callable function that initializes the environment.
     """
     env_spec = ""
-    if "dmc" in env_id.lower():
+    _env_id = env_id.lower()
+    if "dummy" in _env_id:
+        env = get_dummy_env(_env_id)
+    elif "dmc" in _env_id:
         from sheeprl.envs.dmc import DMCWrapper
 
-        _, domain, task = env_id.lower().split("_")
+        _, domain, task = _env_id.split("_")
         env = DMCWrapper(
             domain,
             task,
@@ -54,6 +59,29 @@ def make_env(
             width=64,
             frame_skip=args.action_repeat,
             seed=seed,
+        )
+    elif "minedojo" in _env_id:
+        from sheeprl.envs.minedojo import MineDojoWrapper
+
+        task_id = "_".join(env_id.split("_")[1:])
+        start_position = (
+            {
+                "x": args.mine_start_position[0],
+                "y": args.mine_start_position[1],
+                "z": args.mine_start_position[2],
+                "pitch": args.mine_start_position[3],
+                "yaw": args.mine_start_position[4],
+            }
+            if args.mine_start_position is not None
+            else None
+        )
+        env = MineDojoWrapper(
+            task_id,
+            height=64,
+            width=64,
+            pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
+            seed=args.seed,
+            start_position=start_position,
         )
     else:
         env_spec = gym.spec(env_id).entry_point
@@ -93,7 +121,7 @@ def make_env(
         env.observation_space = gym.spaces.Dict({"rgb": env.observation_space})
 
     # resize image
-    if "atari" not in env_spec and "mujoco" not in env_spec and "minedojo" not in env_id:
+    if "atari" not in env_spec and "dmc" not in env_id and "minedojo" not in env_id:
         env = gym.wrappers.TransformObservation(
             env,
             lambda obs: obs.update(
@@ -145,99 +173,8 @@ def compute_stochastic_state(
             Defaults to 32.
 
     Returns:
-        The mean and the standard deviation of the distribution of the stochastic state.
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
     dist = OneHotCategoricalStraightThrough(logits=logits)
     return dist.rsample()
-
-
-def cnn_forward(
-    model: nn.Module,
-    input: Tensor,
-    input_dim: Union[torch.Size, Tuple[int, ...]],
-    output_dim: Union[torch.Size, Tuple[int, ...]],
-) -> Tensor:
-    """
-    Compute the forward of either the encoder or the observation model of the World model.
-    It flattens all the dimensions before the model input_size, i.e., (C_in, H, W) for the encoder
-    and (recurrent_state_size + stochastic_size) for the observation model.
-
-    Args:
-        model (nn.Module): the model.
-        input (Tensor): the input tensor of dimension (*, C_in, H, W) or (*, recurrent_state_size + stochastic_size),
-            where * means any number of dimensions including None.
-        input_dim (Union[torch.Size, Tuple[int, ...]]): the input dimensions,
-            i.e., either (C_in, H, W) or (recurrent_state_size + stochastic_size).
-        output_dim: the desired dimensions in output.
-
-    Returns:
-        The output of dimensions (*, *output_dim).
-
-    Examples:
-        >>> encoder
-        CNN(
-            (network): Sequential(
-                (0): Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-                (1): ReLU()
-                (2): Conv2d(4, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-                (3): ReLU()
-                (4): Flatten(start_dim=1, end_dim=-1)
-                (5): Linear(in_features=128, out_features=25, bias=True)
-            )
-        )
-        >>> input = torch.rand(10, 20, 3, 4, 4)
-        >>> cnn_forward(encoder, input, (3, 4, 4), -1).shape
-        torch.Size([10, 20, 25])
-
-        >>> observation_model
-        Sequential(
-            (0): Linear(in_features=230, out_features=1024, bias=True)
-            (1): Unflatten(dim=-1, unflattened_size=(1024, 1, 1))
-            (2): ConvTranspose2d(1024, 128, kernel_size=(5, 5), stride=(2, 2))
-            (3): ReLU()
-            (4): ConvTranspose2d(128, 64, kernel_size=(5, 5), stride=(2, 2))
-            (5): ReLU()
-            (6): ConvTranspose2d(64, 32, kernel_size=(6, 6), stride=(2, 2))
-            (7): ReLU()
-            (8): ConvTranspose2d(32, 3, kernel_size=(6, 6), stride=(2, 2))
-        )
-        >>> input = torch.rand(10, 20, 230)
-        >>> cnn_forward(model, input, (230,), (3, 64, 64)).shape
-        torch.Size([10, 20, 3, 64, 64])
-    """
-    batch_shapes = input.shape[: -len(input_dim)]
-    flatten_input = input.reshape(-1, *input_dim)
-    model_out = model(flatten_input)
-    return model_out.reshape(*batch_shapes, *output_dim)
-
-
-@torch.no_grad()
-def test(player: "Player", fabric: Fabric, args: DreamerV2Args):
-    """Test the model on the environment with the frozen model.
-
-    Args:
-        player (Player): the agent which contains all the models needed to play.
-        fabric (Fabric): the fabric instance.
-    """
-    env: gym.Env = make_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test")
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, *env.observation_space.shape)
-    player.init_states()
-    while not done:
-        # Act greedly through the environment
-        action = player.get_greedy_action(next_obs / 255 - 0.5, False).cpu().numpy()
-
-        # Single environment step
-        if player.actor.is_continuous:
-            next_obs, reward, done, truncated, _ = env.step(action[0, 0])
-        else:
-            next_obs, reward, done, truncated, _ = env.step(action.argmax())
-        done = done or truncated or args.dry_run
-        cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=fabric.device).view(1, 1, *env.observation_space.shape)
-    fabric.print("Test - Reward:", cumulative_rew)
-    fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
-    env.close()
