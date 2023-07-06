@@ -25,8 +25,8 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
-from sheeprl.algos.p2e.p2e_dv1.agent import build_models
-from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
+from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.args import P2EDV1Args
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
@@ -48,7 +48,7 @@ def train(
     critic_task_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: P2EArgs,
+    args: P2EDV1Args,
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -350,8 +350,8 @@ def train(
 
 @register_algorithm()
 def main():
-    parser = HfArgumentParser(P2EArgs)
-    args: P2EArgs = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser(P2EDV1Args)
+    args: P2EDV1Args = parser.parse_args_into_dataclasses()[0]
     args.num_envs = 1
     torch.set_num_threads(1)
 
@@ -367,7 +367,7 @@ def main():
     if args.checkpoint_path:
         state = fabric.load(args.checkpoint_path)
         state["args"]["checkpoint_path"] = args.checkpoint_path
-        args = P2EArgs(**state["args"])
+        args = P2EDV1Args(**state["args"])
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
@@ -383,7 +383,7 @@ def main():
         root_dir = (
             args.root_dir
             if args.root_dir is not None
-            else os.path.join("logs", "p2e", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+            else os.path.join("logs", "p2e_dv1", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
             args.run_name
@@ -446,7 +446,7 @@ def main():
                 MLP(
                     input_dims=int(np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size),
                     output_dim=world_model.encoder.output_size,
-                    hidden_sizes=[args.dense_units] * args.num_layers,
+                    hidden_sizes=[args.dense_units] * args.mlp_layers,
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)

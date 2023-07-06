@@ -256,7 +256,6 @@ def train(
     # predict values and rewards
     predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
-
     if args.use_continues and world_model.continue_model:
         done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
         true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
