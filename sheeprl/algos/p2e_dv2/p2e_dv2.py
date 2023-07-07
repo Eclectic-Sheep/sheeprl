@@ -146,11 +146,11 @@ def train(
     po = Independent(Normal(decoded_information, 1), len(observation_shape))
 
     # compute the distribution over the rewards
-    pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
 
     # compute the distribution over the terminal steps, if required
     if args.use_continues and world_model.continue_model:
-        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * args.gamma
     else:
         pc = continue_targets = None
@@ -252,7 +252,6 @@ def train(
             imagined_prior = imagined_prior.view(1, -1, args.stochastic_size * args.discrete_size)
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
             imagined_trajectories[i] = imagined_latent_state
-
         predicted_target_values = target_critic_exploration(imagined_trajectories)
 
         # Predict intrinsic reward

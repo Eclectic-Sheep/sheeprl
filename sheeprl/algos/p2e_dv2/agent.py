@@ -48,8 +48,10 @@ def build_models(
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor_task (_FabricModule).
         The critic_task (_FabricModule).
+        The target_critic_task (nn.Module).
         The actor_exploration (_FabricModule).
         The critic_exploration (_FabricModule).
+        The target_critic_exploration (nn.Module).
     """
     # minecraft environment does not support grayscale observations
     n_obs_channels = 1 if args.grayscale_obs else 3
