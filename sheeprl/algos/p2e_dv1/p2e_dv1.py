@@ -189,9 +189,9 @@ def train(
         aggregator.update(f"Loss/ensemble_loss", loss.detach().cpu())
 
         # Behaviour Learning Exploration
-        imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
+        imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
         recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
-        imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories = torch.empty(
             args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
         )
@@ -202,21 +202,21 @@ def train(
 
         # imagine trajectories in the latent space
         for i in range(args.horizon):
-            actions = torch.cat(actor_exploration(imagined_latent_states.detach()), dim=-1)
+            actions = torch.cat(actor_exploration(imagined_latent_state.detach()), dim=-1)
             imagined_actions[i] = actions
-            imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
-                imagined_stochastic_state, recurrent_state, actions
+            imagined_prior, recurrent_state = world_model.rssm.imagination(
+                imagined_prior, recurrent_state, actions
             )
-            imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
-            imagined_trajectories[i] = imagined_latent_states
-        predicted_values = Independent(Normal(critic_exploration(imagined_trajectories), 1), 1).mean
+            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+            imagined_trajectories[i] = imagined_latent_state
+        predicted_values = critic_exploration(imagined_trajectories)
 
         # Predict intrinsic reward
         next_obs_embedding = torch.zeros(
             len(ensembles),
             args.horizon,
             batch_size * sequence_length,
-            world_model.encoder.output_size,
+            embedded_obs.shape[-1],
             device=device,
         )
         for i, ens in enumerate(ensembles):
@@ -283,22 +283,22 @@ def train(
     world_optimizer.zero_grad(set_to_none=True)
 
     # Behaviour Learning Task
-    imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
-    imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
     imagined_trajectories = torch.empty(
         args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
     )
     for i in range(args.horizon):
-        actions = torch.cat(actor_task(imagined_latent_states.detach()), dim=-1)
-        imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
-            imagined_stochastic_state, recurrent_state, actions
+        actions = torch.cat(actor_task(imagined_latent_state.detach()), dim=-1)
+        imagined_prior, recurrent_state = world_model.rssm.imagination(
+            imagined_prior, recurrent_state, actions
         )
-        imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_states
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories[i] = imagined_latent_state
 
-    predicted_values = Independent(Normal(critic_task(imagined_trajectories), 1), 1).mean
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
+    predicted_values = critic_task(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
     if args.use_continues and world_model.continue_model:
         predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     else:
