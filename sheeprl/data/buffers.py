@@ -423,6 +423,8 @@ class EpisodeBuffer:
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
+            for k,v in episode.items():
+                episode[k] = MemmapTensor.from_tensor(v)
             episode.memmap_()
         episode.to(self.device)
         self._buf.append(episode)
