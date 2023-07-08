@@ -82,14 +82,18 @@ class PPOArgs(TrainArgs):
     experiment_name: str = Arg(default="rlhf-ppo", help="Name of the experiment")
     rollout_size: int = Arg(default=128, help="Rollout size for PPO")
     ppo_epochs: int = Arg(
-        default=4, help="Number of ppo epochs to training. `ppo_step` will be called `ppo_epochs` times"
+        default=1, help="Number of ppo epochs to training. `ppo_step` will be called `ppo_epochs` times"
     )
-    kl_coeff: float = Arg(
-        default=0.02,
+    normalize_rewards: bool = Arg(default=True, help="Whether to whiten rewards")
+    normalize_advantages: bool = Arg(default=True, help="Whether to whiten advantages")
+    adaptive_kl_coeff: bool = Arg(default=False, help="Whether to use adaptively changing KL divergence coefficient")
+    init_kl_coeff: float = Arg(
+        default=0.2,
         help="KL divergence coefficient for comparing actor model with reference model. Higher value means more trust to reference model.",
     )
+    target_kl_coeff: float = Arg(default=0.1, help="Target KL divergence coefficient")
     clip_coeff: float = Arg(default=0.2, help="Clip coefficient for PPO loss")
-    vf_coeff: float = Arg(default=0.5, help="Value function coefficient for PPO loss")
+    vf_coeff: float = Arg(default=0.1, help="Value function coefficient for PPO loss")
     gae_gamma: float = Arg(default=1.0, help="Discount factor for GAE")
     gae_lambd: float = Arg(default=0.95, help="Lambda for GAE")
     sft_experiment_dir: Optional[str] = Arg(
@@ -172,7 +176,7 @@ class ModelArgs:
 
 @dataclass
 class GPT2(ModelArgs):
-    model_name: str = Arg(default="gpt2", help="Name of the model. It will be used to load huggingface model.")
+    model_name: str = Arg(default="gpt2-medium", help="Name of the model. It will be used to load huggingface model.")
     embedding_dim_name: str = Arg(
         default="n_embd",
         help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
@@ -193,6 +197,7 @@ class OPT(ModelArgs):
         default="('q_proj','v_proj')",
         help="LoRA target layer names for the model.",
     )
+
 
 @dataclass
 class Falcon(ModelArgs):
@@ -242,8 +247,9 @@ class TextDataArgs:
     remove_same_responses: bool = Arg(
         default=True, help="Whether to remove samples with same chosen and rejected outputs."
     )
-    remove_same_prompts: bool = Arg(default=True, help="Whether to remove samples with same prompts.")
-    minimum_response_length: int = Arg(default=5, help="Minimum length of the response.")
+    remove_same_inputs: bool = Arg(default=True, help="Whether to remove samples with same prompt and chosen pairs.")
+    minimum_response_length: int = Arg(default=2, help="Minimum length of the response.")
+    seed: int = Arg(default=42, help="Seed for reproducibility")
 
     def to_dict(self) -> dict:
         return {"data_args": asdict(self)}
@@ -265,9 +271,9 @@ class GenerationArgs:
     )
     num_beams: int = Arg(default=1, help="Number of beams to use for beam search. It is used for `generate` method.")
     do_sample: bool = Arg(
-        default=False, help="Whether to use sampling for generation. It is used for `generate` method."
+        default=True, help="Whether to use sampling for generation. It is used for `generate` method."
     )
-    top_k: int = Arg(default=50.0, help="Top k value for top-k sampling. It is used for `generate` method.")
+    top_k: int = Arg(default=50, help="Top k value for top-k sampling. It is used for `generate` method.")
     top_p: float = Arg(default=1.0, help="Top p value for top-p sampling. It is used for `generate` method.")
     temperature: float = Arg(default=1.0, help="Temperature value for sampling. It is used for `generate` method.")
     num_return_sequences: int = Arg(default=1, help="Number of sequences to return. It is used for `generate` method.")

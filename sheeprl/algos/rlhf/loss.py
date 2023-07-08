@@ -98,9 +98,11 @@ def reward_loss_per_sample(
             divergence_ind = divergence_ind[0]
 
         # Find padding tokens
-        pad_mask_chosen = (chosen_actions != pad_token_id).nonzero()
-        pad_mask_rejected = (rejected_actions != pad_token_id).nonzero()
-        end_ind = torch.max(pad_mask_chosen[-1], pad_mask_rejected[-1])
+        pad_mask_chosen = (chosen_actions == pad_token_id).nonzero()
+        chosen_last_index = pad_mask_chosen[0].item() if len(pad_mask_chosen) > 0 else chosen.shape[1]
+        pad_mask_rejected = (rejected_actions == pad_token_id).nonzero()
+        rejected_last_index = pad_mask_rejected[0].item() if len(pad_mask_rejected) > 0 else rejected.shape[1]
+        end_ind = max(chosen_last_index, rejected_last_index)
 
         if divergence_ind > end_ind:
             continue

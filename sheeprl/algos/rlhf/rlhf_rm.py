@@ -25,6 +25,7 @@ from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
     prepare_optimizer_parameters,
+    prepare_tokenizer,
     save_args_to_json,
     setup_finetuning,
     trainable_parameter_summary,
@@ -119,13 +120,7 @@ def main():
     reward_loss = load_reward_loss(train_args.loss_type)
 
     # Setup Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-
-    # Setup Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = prepare_tokenizer(model_args.model_name)
 
     # Setup Model
     model_path = train_args.sft_experiment_dir if train_args.sft_experiment_dir is not None else None

@@ -6,7 +6,8 @@ from typing import Any, Dict, Optional
 
 from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizer
-from sheeprl.algos.rlhf.args import OPT, TextDataArgs
+from sheeprl.algos.rlhf.args import GPT2, OPT, TextDataArgs
+from sheeprl.algos.rlhf.utils import prepare_tokenizer
 
 from sheeprl.utils.parser import HfArgumentParser
 import json
@@ -29,19 +30,19 @@ def prepare(
     num_samples: Optional[int] = None,
     ignore_index: int = -1,
     remove_same_responses: bool = True,
-    remove_same_prompts: bool = True,
-    minimum_response_length: int = 5,
+    remove_same_inputs: bool = True,
+    minimum_response_length: int = 2,
+    seed: int = 42,
 ) -> None:
     destination_dir = Path(destination_dir)
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = prepare_tokenizer(tokenizer_name)
     os.makedirs(destination_dir, exist_ok=True)
     cache_dir = destination_dir / "cache"
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
-        dataset = load_dataset("Dahoas/static-hh", split=split, cache_dir=cache_dir)
+        dataset = load_dataset("Dahoas/full-hh-rlhf", split=split, cache_dir=cache_dir)
+        # shuffle the dataset
+        dataset = dataset.shuffle(seed=seed)
         if stage == "finetune":
             # first half of the dataset
             dataset = dataset.select(range(len(dataset) // 2))
@@ -55,39 +56,45 @@ def prepare(
             dataset = dataset.select(range(num_samples))
         samples = []
         hashes = []
-        skipped = 0
+        skipped_samples = []
         for sample in tqdm(dataset):
             output = {}
             prompt = sample["prompt"]
-            prompt_hash = hash(prompt)
             chosen = sample["chosen"]
             rejected = sample["rejected"]
-            if remove_same_prompts and prompt_hash in hashes:
-                skipped += 1
+            input_hash = hash(prompt + chosen)
+            if remove_same_inputs and input_hash in hashes:
+                skipped_samples.append(
+                    {"prompt": prompt, "chosen": chosen, "rejected": rejected, "reason": "duplicate input"}
+                )
                 continue
             encoded_prompt = tokenizer(
-                prompt,
+                tokenizer.bos_token + prompt,
                 padding=False,
                 truncation=True,
                 max_length=max_length,
                 return_tensors="pt",
+                add_special_tokens=False,
             )
             num_prompt_input_ids = len(encoded_prompt["input_ids"].squeeze())
             output["prompt_len"] = num_prompt_input_ids
             if num_prompt_input_ids > max_prompt_length:
-                skipped += 1
+                skipped_samples.append({"prompt": prompt, "chosen": chosen, "rejected": rejected, "reason": "too long"})
                 continue
             if stage == "finetune":
                 # we use prompt and choosen as data
                 if len(chosen) < minimum_response_length:
-                    skipped += 1
+                    skipped_samples.append(
+                        {"prompt": prompt, "chosen": chosen, "rejected": rejected, "reason": "too short"}
+                    )
                     continue
-                prompt_response = prompt + chosen + tokenizer.eos_token
+                prompt_response = tokenizer.bos_token + prompt + chosen + tokenizer.eos_token
                 encoded_prompt_response = tokenizer(
                     prompt_response,
                     truncation=True,
                     max_length=max_length,
                     return_tensors="pt",
+                    add_special_tokens=False,
                 )
                 input_ids = encoded_prompt_response["input_ids"].squeeze()
                 targets = input_ids.clone()
@@ -100,34 +107,41 @@ def prepare(
                 chosen = sample["chosen"]
                 rejected = sample["rejected"]
                 if len(chosen) < minimum_response_length or len(rejected) < minimum_response_length:
-                    skipped += 1
+                    skipped_samples.append(
+                        {"prompt": prompt, "chosen": chosen, "rejected": rejected, "reason": "too short"}
+                    )
                     continue
-                prompt_chosen = sample["prompt"] + sample["chosen"] + tokenizer.eos_token
+                prompt_chosen = tokenizer.bos_token + sample["prompt"] + sample["chosen"] + tokenizer.eos_token
                 encoded_prompt_chosen = tokenizer(
                     prompt_chosen,
                     max_length=max_length,
                     truncation=True,
                     return_tensors="pt",
+                    add_special_tokens=False,
                 )
 
-                prompt_rejected = sample["prompt"] + sample["rejected"] + tokenizer.eos_token
+                prompt_rejected = tokenizer.bos_token + sample["prompt"] + sample["rejected"] + tokenizer.eos_token
                 encoded_prompt_rejected = tokenizer(
                     prompt_rejected,
                     max_length=max_length,
                     truncation=True,
                     return_tensors="pt",
+                    add_special_tokens=False,
                 )
                 if remove_same_responses and prompt_chosen == prompt_rejected:
-                    skipped += 1
+                    skipped_samples.append(
+                        {"prompt": prompt, "chosen": chosen, "rejected": rejected, "reason": "same response"}
+                    )
                     continue
                 output["chosen_input_ids"] = encoded_prompt_chosen["input_ids"].squeeze()
                 output["rejected_input_ids"] = encoded_prompt_rejected["input_ids"].squeeze()
             else:
                 raise ValueError(f"stage must be one of 'finetune', 'preference', but got {stage}")
             samples.append(output)
-            hashes.append(prompt_hash)
-        print(f"Processed {len(samples)} samples, skipped {skipped} samples")
+            hashes.append(input_hash)
+        print(f"Processed {len(samples)} samples, skipped {len(skipped_samples)} samples")
         torch.save(samples, destination_dir / f"{stage}_{split}.pt")
+        json.dump(skipped_samples, open(destination_dir / f"{stage}_{split}_skipped.json", "w"), indent=4)
 
     example_prompt_path = destination_dir / "example_prompt.pt"
     example_prompt = create_example_prompt(tokenizer, max_length=max_length)
@@ -138,10 +152,12 @@ def wrap_prompt(prompt: str) -> str:
     return "\n\nHuman: " + prompt + "\n\nAssistant: "
 
 
-def create_example_prompt(tokenizer: PreTrainedTokenizer, max_length: int ) -> Dict[str, Any]:
+def create_example_prompt(tokenizer: PreTrainedTokenizer, max_length: int) -> Dict[str, Any]:
     prompt = "How does the computer work?"
-    wrapped_prompt = wrap_prompt(prompt)
-    encoded_prompt = tokenizer(wrapped_prompt, max_length=max_length, truncation=True, return_tensors="pt")
+    wrapped_prompt = tokenizer.bos_token + wrap_prompt(prompt)
+    encoded_prompt = tokenizer(
+        wrapped_prompt, max_length=max_length, truncation=True, add_special_tokens=False, return_tensors="pt"
+    )
     output = {
         "prompt": wrapped_prompt,
         "input_ids": encoded_prompt["input_ids"],
@@ -157,9 +173,9 @@ if __name__ == "__main__":
         data_args: TextDataArgs = dataclasses[0]
     else:
         data_args = TextDataArgs(
-            destination_dir="data/Dahoas/static-hh",
-            tokenizer_name=OPT().model_name,
-            stage="preference",
+            destination_dir="data/Dahoas/full-hh-rlhf-gpt2",
+            tokenizer_name=GPT2().model_name,
+            stage="finetune",
             max_length=512,
             max_prompt_length=512,
         )

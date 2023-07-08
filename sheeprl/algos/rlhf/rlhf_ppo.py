@@ -12,7 +12,7 @@ from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sheeprl.algos.rlhf.data import LeftPadCollate
-from sheeprl.algos.rlhf.ppo_utils import collect_rollout, ppo_step
+from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, ppo_step
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
@@ -22,9 +22,11 @@ from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 from sheeprl.algos.rlhf.args import OPT, ExploreArgs, GenerationArgs, ModelArgs, PPOArgs, TextDataArgs
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel
 from sheeprl.algos.rlhf.utils import (
+    compute_grad_norm,
     get_last_checkpoint_path,
     load_args_from_json,
     log_text,
+    prepare_generation_config,
     prepare_optimizer_parameters,
     save_args_to_json,
     setup_finetuning,
@@ -52,6 +54,7 @@ def generate(
         input_ids=example_prompt["input_ids"].to(device),
         attention_mask=example_prompt["attention_mask"].to(device),
         generation_config=generation_config,
+        use_cache=True,
     )
     prompt_length = example_prompt["input_ids"].shape[1]
     generated_attention_mask = (generated_input_ids != generation_config.pad_token_id).int()
@@ -61,7 +64,7 @@ def generate(
     last_token_idx = torch.argmax(torch.cumsum(action_mask, dim=1) * action_mask, dim=1, keepdim=True)
     reward_score = torch.gather(reward, dim=-1, index=last_token_idx).squeeze(-1)
     actor_model.train()
-    return tokenizer.decode(generated_input_ids[0],skip_special_tokens=True), reward_score.item()
+    return tokenizer.decode(generated_input_ids[0], skip_special_tokens=True), reward_score.item()
 
 
 @register_algorithm()
@@ -134,7 +137,7 @@ def main():
     # Actor model for PPO training
     fabric.print("\nLoading actor model")
     actor_model = ActorModel.from_checkpoint(
-        device=fabric.device, model_args=model_args, path=sft_checkpoint_path, freeze=True
+        device=fabric.device, model_args=sft_model_args, path=sft_checkpoint_path, freeze=True
     )
     setup_finetuning(fabric, actor_model, model_args)
     trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
@@ -162,22 +165,19 @@ def main():
     reward_model.eval()
     trainable_parameter_summary(model=reward_model, show_names=False, fabric=fabric)
 
-    # Setup Generation Config
-    try:
-        generation_config = GenerationConfig.from_pretrained(model_args.model_name, **asdict(gen_args))
-        eval_generation_config = GenerationConfig.from_pretrained(model_args.model_name, **asdict(eval_args))
-    except EnvironmentError:
-        # If the model does not have `generation_config.json` file, we create from scratch
-        fabric.print("`generation_config.json` not found, creating `GenerationConfig` from scratch")
-        generation_config = GenerationConfig(**asdict(gen_args))
-        generation_config.pad_token_id = tokenizer.pad_token_id
-        generation_config.eos_token_id = tokenizer.eos_token_id
-        generation_config.bos_token_id = tokenizer.bos_token_id
-
-        eval_generation_config = GenerationConfig(**asdict(eval_args))
-        eval_generation_config.pad_token_id = tokenizer.pad_token_id
-        eval_generation_config.eos_token_id = tokenizer.eos_token_id
-        eval_generation_config.bos_token_id = tokenizer.bos_token_id
+    # Setup Generation Configs
+    generation_config = prepare_generation_config(
+        tokenizer=tokenizer,
+        model_args=model_args,
+        gen_args=gen_args,
+        fabric=fabric,
+    )
+    eval_generation_config = prepare_generation_config(
+        tokenizer=tokenizer,
+        model_args=model_args,
+        gen_args=eval_args,
+        fabric=fabric,
+    )
 
     # Setup Dataloaders
     collator = LeftPadCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
@@ -219,9 +219,19 @@ def main():
 
     iterator = tqdm(range(num_training_steps)) if fabric.is_global_zero else range(num_training_steps)
 
+    # KL Controller
+    if train_args.adaptive_kl_coeff:
+        kl_controller = AdaptiveKLController(
+            init_kl_coef=train_args.init_kl_coeff, target=train_args.target_kl_coeff, kl_horizon=num_training_steps
+        )
+    else:
+        kl_controller = FixedKLController(kl_coeff=train_args.init_kl_coeff)
+
     actor_model.train()
     critic_model.train()
     data_iterator = None
+    actor_grads = None
+    critic_grads = None
     for k in iterator:
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
@@ -241,6 +251,7 @@ def main():
             ref_model=ref_model,
             reward_model=reward_model,
             generation_config=generation_config,
+            kl_controller=kl_controller,
             train_args=train_args,
             tokenizer=tokenizer,
         )
@@ -266,12 +277,14 @@ def main():
                     fabric.backward(policy_loss / train_args.gradient_accumulation_steps)
                     fabric.backward(value_loss / train_args.gradient_accumulation_steps)
                 if not is_accumulating:
+                    actor_grads = compute_grad_norm(model=actor_model)
                     fabric.clip_gradients(
                         actor_model, actor_optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True
                     )
                     actor_optimizer.step()
                     actor_optimizer.zero_grad(set_to_none=True)
 
+                    critic_grads = compute_grad_norm(model=critic_model)
                     fabric.clip_gradients(
                         critic_model, critic_optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True
                     )
@@ -296,6 +309,11 @@ def main():
             metrics["train/value_loss"] = value_loss.item()
             metrics["train/rollout_time"] = time_rollout
             metrics["train/ppo_time"] = time_ppo
+            metrics["ino/kl_div"] = kl_controller.value
+            if actor_grads is not None:
+                metrics["info/actor_grad_norm"] = actor_grads
+            if critic_grads is not None:
+                metrics["info/critic_grad_norm"] = critic_grads
             if isinstance(iterator, tqdm):
                 description = f"iter {k}"
                 for key, value in metrics.items():

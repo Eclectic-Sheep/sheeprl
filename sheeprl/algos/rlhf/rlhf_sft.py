@@ -25,7 +25,9 @@ from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
     log_text,
+    prepare_generation_config,
     prepare_optimizer_parameters,
+    prepare_tokenizer,
     save_args_to_json,
     setup_finetuning,
     trainable_parameter_summary,
@@ -126,10 +128,7 @@ def main():
         fabric.logger.log_hyperparams(all_args)
 
     # Setup Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = prepare_tokenizer(model_args.model_name)
     # Setup Model
     model = CasualModel.from_checkpoint(device=fabric.device, model_args=model_args, freeze=True)
     setup_finetuning(fabric, model, model_args)
@@ -138,15 +137,12 @@ def main():
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
 
     # Setup Generation Config
-    try:
-        generation_config = GenerationConfig.from_pretrained(model_args.model_name, **asdict(gen_args))
-    except EnvironmentError:
-        # If the model does not have `generation_config.json` file, we create from scratch
-        fabric.print("`generation_config.json` not found, creating `GenerationConfig` from scratch")
-        generation_config = GenerationConfig(**asdict(gen_args))
-        generation_config.pad_token_id = tokenizer.pad_token_id
-        generation_config.eos_token_id = tokenizer.eos_token_id
-        generation_config.bos_token_id = tokenizer.bos_token_id
+    generation_config = prepare_generation_config(
+        tokenizer=tokenizer,
+        model_args=model_args,
+        gen_args=gen_args,
+        fabric=fabric,
+    )
 
     # Setup Dataloaders
     collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)

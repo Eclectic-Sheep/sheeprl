@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 import torch
 from tensordict import make_tensordict
 
@@ -10,6 +10,28 @@ from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 if not _IS_TRANSFORMERS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
 from transformers import GenerationConfig, PreTrainedTokenizer
+
+
+class FixedKLController:
+    def __init__(self, kl_coeff):
+        self.value = kl_coeff
+
+    def update(self, current, n_steps):
+        pass
+
+
+class AdaptiveKLController:
+    def __init__(self, init_kl_coeff, target_kl_coeff, kl_horizon, clip_range):
+        self.value = init_kl_coeff
+        self.target_kl_coeff = target_kl_coeff
+        self.kl_horizon = kl_horizon
+        self.clip_range = clip_range
+
+    def update(self, current, n_steps):
+        target = self.target_kl_coeff
+        proportional_error = torch.clamp(current / target - 1, -self.clip_range, self.clip_range)
+        mult = 1 + proportional_error * n_steps / self.kl_horizon
+        self.value *= mult
 
 
 @torch.no_grad()
@@ -35,13 +57,28 @@ def compute_advantages_and_returns(
         advantages_reversed.append(lastgaelam)
     advantages = torch.stack(advantages_reversed[::-1], dim=1)
     returns = advantages + values
-    return advantages.detach(), returns
+    return advantages, returns
 
 
-def masked_normalize(data: torch.Tensor, mask: torch.Tensor, epsilon: float = 1e-8):
-    masked_mean = (data * mask).sum() / mask.sum()
-    masked_std = torch.sqrt(((data - masked_mean) ** 2 * mask).sum() / mask.sum())
-    return (data - masked_mean) / (masked_std + epsilon)
+def masked_mean(tensor: torch.Tensor, mask: torch.Tensor, dim: int = 1) -> torch.Tensor:
+    tensor = tensor * mask
+    tensor = tensor.sum(dim=dim, keepdim=True)
+    mask_sum = mask.sum(dim=dim, keepdim=True)
+    mean = tensor / (mask_sum + 1e-8)
+    return mean
+
+
+def masked_normalize(
+    tensor: torch.Tensor, mask: torch.Tensor, shift_mean: bool = True, dim: int = 1, eps: float = 1e-8
+) -> torch.Tensor:
+    tensor = tensor * mask
+    mean = masked_mean(tensor, mask, dim=dim)
+    mean_centered = tensor - mean
+    var = masked_mean(mean_centered**2, mask, dim=dim)
+    normalized = mean_centered * var.clamp(min=eps).rsqrt()
+    if not shift_mean:
+        normalized += mean
+    return normalized
 
 
 @torch.inference_mode()
@@ -51,6 +88,7 @@ def collect_rollout(
     critic_model: torch.nn.Module,
     ref_model: torch.nn.Module,
     reward_model: torch.nn.Module,
+    kl_controller: Union[FixedKLController, AdaptiveKLController],
     generation_config: GenerationConfig,
     train_args: PPOArgs,
     tokenizer: PreTrainedTokenizer,
@@ -59,7 +97,7 @@ def collect_rollout(
     critic_model.eval()
     num_new_tokens = generation_config.max_new_tokens
     data = {"input_ids": batch["prompt_input_ids"], "attention_mask": batch["prompt_attention_mask"]}
-    input_ids = actor_model.generate(**data, generation_config=generation_config)
+    input_ids = actor_model.generate(**data, generation_config=generation_config, use_cache=True)
     attention_mask = (input_ids != generation_config.pad_token_id).int()
     data = {"input_ids": input_ids, "attention_mask": attention_mask}
 
@@ -67,21 +105,29 @@ def collect_rollout(
     actor_log_probs = actor_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
     ref_log_probs = ref_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
     values = critic_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
-
-    rewards = reward_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
-
     action_masks = attention_mask[:, -num_new_tokens:]  # (B, num_new_tokens)
+    reward_outputs = reward_model(**data)[:, -num_new_tokens:]  # (B, num_new_tokens)
+
+    last_token_idx = torch.argmax(torch.cumsum(action_masks, dim=1) * action_masks, dim=1, keepdim=True)
+    reward_scores = torch.gather(reward_outputs, dim=-1, index=last_token_idx).squeeze(-1)
 
     estimated_kl_div = estimate_kl_divergence(actor_log_probs=actor_log_probs, ref_log_probs=ref_log_probs)
-    rewards -= train_args.kl_coeff * estimated_kl_div  # (B, num_new_tokens)
-    last_token_idx = torch.argmax(torch.cumsum(action_masks, dim=1) * action_masks, dim=1, keepdim=True)
-    reward_scores = torch.gather(rewards, dim=-1, index=last_token_idx).squeeze(-1)
+    mean_kl_div = estimated_kl_div.sum(dim=1).mean()
+
+    rewards = estimated_kl_div.detach().clone()
+    rewards.scatter_add_(dim=1, index=last_token_idx, src=reward_scores.unsqueeze(-1))
+    kl_controller.update(mean_kl_div, n_steps=rewards.shape[1])
+
+    if train_args.normalize_rewards:
+        rewards = masked_normalize(rewards, action_masks, shift_mean=False)
     advantages, returns = compute_advantages_and_returns(
         rewards=rewards * action_masks,
         values=values * action_masks,
         gamma=train_args.gae_gamma,
         lambd=train_args.gae_lambd,
     )
+    if train_args.normalize_advantages:
+        advantages = masked_normalize(advantages, action_masks)
     rollout = {
         "input_ids": input_ids,  # (B, T) (B, (prompt + generated))
         "attention_mask": attention_mask,  # (B, T) (B, (prompt + generated))
@@ -92,8 +138,9 @@ def collect_rollout(
         "action_mask": action_masks,  # (B, num_new_tokens)
     }
     rollout = make_tensordict(rollout)
+    sample_from_rollout = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     metrics = {
-        "train/kl_div": estimated_kl_div.mean().item(),
+        "train/kl_div": mean_kl_div.item(),
         "train/last_reward_mean": reward_scores.mean().item(),
         "info/last_reward_std": reward_scores.std().item(),
         "info/all_reward_mean": rewards.mean().item(),
@@ -102,7 +149,7 @@ def collect_rollout(
         "info/advantage_std": advantages.std().item(),
         "info/returns_mean": returns.mean().item(),
         "info/returns_std": returns.std().item(),
-        "info/rollout_sample": tokenizer.decode(input_ids[0], skip_special_tokens=True),
+        "info/rollout_sample": sample_from_rollout,
     }
     actor_model.train()
     critic_model.train()
