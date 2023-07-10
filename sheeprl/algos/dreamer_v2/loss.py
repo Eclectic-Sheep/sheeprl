@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, OneHotCategoricalStraightThrough
+from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
 
 
@@ -58,12 +58,12 @@ def reconstruction_loss(
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()),
-        OneHotCategoricalStraightThrough(logits=priors_logits),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
     rhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits),
-        OneHotCategoricalStraightThrough(logits=priors_logits.detach()),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
     )
     kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:
