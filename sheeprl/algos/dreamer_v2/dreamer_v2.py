@@ -565,7 +565,7 @@ def main():
     o = env.reset(seed=args.seed)[0]
     obs = {}
     for k in o.keys():
-        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
         step_data[k] = torch_obs
         obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
@@ -581,7 +581,7 @@ def main():
     gradient_steps = 0
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and args.checkpoint_path is None:
+        if global_step <= learning_starts and args.checkpoint_path is None and "minedojo" not in args.env_id:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -621,7 +621,7 @@ def main():
 
         next_obs = {}
         for k in o.keys():  # [N_envs, N_obs]
-            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
@@ -648,8 +648,9 @@ def main():
             o = env.reset(seed=args.seed)[0]
             obs = {}
             for k in o.keys():
-                step_data[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
-                obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+                torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
+                step_data[k] = torch_obs
+                obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
