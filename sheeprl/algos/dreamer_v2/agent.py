@@ -354,7 +354,9 @@ class Actor(nn.Module):
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
 
-    def forward(self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+    def forward(
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -445,26 +447,34 @@ class MinedojoActor(Actor):
         actions_logits = torch.split(out, self.actions_dim, -1)
         actions_dist: List[Distribution] = []
         actions: List[Tensor] = []
-        if mask is not None:
-            mask = {k: torch.from_numpy(v).bool().to(out.device) for k, v in mask.items()}
+        functional_action = None
         for i, logits in enumerate(actions_logits):
-            if i == 0:
-                logits[mask["mask_action_type"].expand_as(logits)] = -torch.inf
-            elif i == 1:
-                logits[mask["mask_craft_smelt"].expand_as(logits)] = -torch.inf
-            else:
-                sampled_actions = actions[0].argmax(dim=-1)  # [T, B]
-                for t in range(sampled_actions[0]):
-                    for b in range(sampled_actions[1]):
-                        if sampled_actions[t, b] in (16, 17):  # Equip/Place action
-                            logits[t, b][mask["mask_equip/place"]] = -torch.inf
-                        elif sampled_actions[t, b] == 18:  # Destroy action
-                            logits[t, b][mask["mask_destroy"]] = -torch.inf
+            if mask is not None:
+                if i == 0:
+                    logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
+                elif i == 1:
+                    mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action == 15:  # Craft action
+                                logits[torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
+                elif 1 == 2:
+                    mask["mask_equip/place"] = mask["mask_equip/place"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action in (16, 17):  # Equip/Place action
+                                logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
+                            elif sampled_action == 18:  # Destroy action
+                                logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
             if is_training:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
+            if functional_action is None:
+                functional_action = actions[0].argmax(dim=-1)  # [T, B]
         return tuple(actions), tuple(actions_dist)
 
 
