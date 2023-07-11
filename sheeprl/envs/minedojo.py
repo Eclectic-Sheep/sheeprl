@@ -34,6 +34,16 @@ ACTION_MAP = {
 ITEM_ID_TO_NAME = dict(enumerate(ALL_ITEMS))
 ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
 
+# Minedojo functional actions:
+# 0: noop
+# 1: use
+# 2: drop
+# 3: attack
+# 4: craft
+# 5: equip
+# 6: place
+# 7: destroy
+
 
 class MineDojoWrapper(core.Env):
     def __init__(
@@ -102,8 +112,11 @@ class MineDojoWrapper(core.Env):
         # the inventory counts, as a vector with one entry for each Minecraft item
         converted_inventory = np.zeros(N_ALL_ITEMS)
         self._inventory = {}  # map for each item the position in the inventory
-        self._inventory_names = inventory["name"].copy()  # names of the objects in the inventory
+        self._inventory_names = np.array(
+            ["_".join(item.split(" ")) for item in inventory["name"].copy().tolist()]
+        )  # names of the objects in the inventory
         for i, (item, quantity) in enumerate(zip(inventory["name"], inventory["quantity"])):
+            item = "_".join(item.split(" "))
             # save all the position of the items in the inventory
             if item not in self._inventory:
                 self._inventory[item] = [i]
@@ -118,7 +131,7 @@ class MineDojoWrapper(core.Env):
 
     def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
         equip = np.zeros(N_ALL_ITEMS, dtype=np.int32)
-        equip[ITEM_NAME_TO_ID[equipment["name"][0]]] = 1
+        equip[ITEM_NAME_TO_ID["_".join(equipment["name"][0].split(" "))]] = 1
         return equip
 
     def _convert_masks(self, masks: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -128,6 +141,8 @@ class MineDojoWrapper(core.Env):
             idx = ITEM_NAME_TO_ID[item]
             equip_mask[idx] = eqp_mask
             destroy_mask[idx] = dst_mask
+        masks["action_type"][5:7] *= np.any(equip_mask).item()
+        masks["action_type"][7] *= np.any(destroy_mask).item()
         return {
             "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
             "mask_equip/place": equip_mask,
