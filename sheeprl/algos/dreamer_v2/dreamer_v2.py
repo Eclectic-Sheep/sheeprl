@@ -200,11 +200,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update(
         "State/p_entropy",
-        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
         "State/q_entropy",
-        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
     # Behaviour Learning

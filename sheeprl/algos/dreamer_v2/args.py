@@ -74,7 +74,7 @@ class DreamerV2Args(StandardArgs):
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
-        default="ReLU",
+        default="ELU",
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
