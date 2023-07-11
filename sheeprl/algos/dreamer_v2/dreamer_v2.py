@@ -439,7 +439,7 @@ def main():
     if isinstance(env.observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in env.observation_space.spaces.items():
-            if k in args.cnn_keys:
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -449,7 +449,7 @@ def main():
                     )
         mlp_keys = []
         for k, v in env.observation_space.spaces.items():
-            if k in args.mlp_keys:
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -565,8 +565,9 @@ def main():
     o = env.reset(seed=args.seed)[0]
     obs = {}
     for k in o.keys():
-        step_data[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
-        obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+        step_data[k] = torch_obs
+        obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
@@ -592,14 +593,14 @@ def main():
                 )
         else:
             with torch.no_grad():
-                conv_obs = {}
+                preprocessed_obs = {}
                 for k, v in obs.items():
-                    if len(v.shape) >= 3:
-                        conv_obs[k] = v[None, ...].to(device) / 255 - 0.5
+                    if k in cnn_keys:
+                        preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
                     else:
-                        conv_obs[k] = v[None, ...].to(device)
+                        preprocessed_obs[k] = v[None, ...].to(device)
                 real_actions = actions = player.get_exploration_action(
-                    conv_obs, is_continuous, {k: v for k, v in obs.items() if k.startswith("mask")}
+                    preprocessed_obs, is_continuous, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                 )
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
@@ -608,7 +609,7 @@ def main():
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
-        next_obs, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
+        o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
@@ -620,8 +621,9 @@ def main():
 
         next_obs = {}
         for k in o.keys():  # [N_envs, N_obs]
-            step_data[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
-            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+            step_data[k] = torch_obs
+            next_obs[k] = torch_obs
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
         dones = torch.tensor([bool(dones)]).view(args.num_envs, -1).float()

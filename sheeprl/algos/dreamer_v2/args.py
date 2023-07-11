@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional
 
 from sheeprl.algos.args import StandardArgs
 from sheeprl.utils.parser import Arg
@@ -94,5 +94,14 @@ class DreamerV2Args(StandardArgs):
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
-    cnn_keys: Tuple[str] = Arg(default=("rgb",), help="a list of observation keys to be processed by the CNN encoder")
-    mlp_keys: Tuple[str] = Arg(default=(), help="a list of observation keys to be processed by the MLP encoder")
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )
+    mine_min_pitch: int = Arg(default=-60, help="The minimum value of pitch in Minecraft environmnets.")
+    mine_max_pitch: int = Arg(default=60, help="The maximum value of pitch in Minecraft environmnets.")
+    mine_start_position: Optional[List[str]] = Arg(
+        default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
+    )
