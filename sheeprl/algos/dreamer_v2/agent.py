@@ -19,11 +19,10 @@ from torch.distributions import (
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
-from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.model import ModuleType
-from sheeprl.utils.utils import init_weights
 
 
 class MultiEncoder(nn.Module):
@@ -33,10 +32,9 @@ class MultiEncoder(nn.Module):
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         cnn_channels_multiplier: int,
-        mlp_output_dim: int,
         mlp_layers: int = 4,
-        mlp_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
+        dense_units: int = 512,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
         mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
         device: Union[str, torch.device] = "cpu",
     ) -> None:
@@ -66,8 +64,8 @@ class MultiEncoder(nn.Module):
             self.cnn_output_dim = 0
 
         if self.mlp_keys != []:
-            self.mlp_encoder = MLP(self.mlp_input_dim, mlp_output_dim, [mlp_units] * mlp_layers, activation=mlp_act)
-            self.mlp_output_dim = mlp_output_dim
+            self.mlp_encoder = MLP(self.mlp_input_dim, None, [dense_units] * mlp_layers, activation=mlp_act)
+            self.mlp_output_dim = dense_units
         else:
             self.mlp_output_dim = 0
 
@@ -95,8 +93,8 @@ class MultiDecoder(nn.Module):
         cnn_decoder_input_dim: int,
         cnn_decoder_output_dim: Tuple[int, int, int],
         mlp_layers: int = 4,
-        mlp_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
+        dense_units: int = 512,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
         mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
         device: Union[str, torch.device] = "cpu",
     ) -> None:
@@ -128,9 +126,9 @@ class MultiDecoder(nn.Module):
                 ),
             )
         if self.mlp_keys != []:
-            self.mlp_decoder = MLP(latent_state_size, mlp_output_dim, [mlp_units] * mlp_layers, activation=mlp_act)
+            self.mlp_decoder = MLP(latent_state_size, mlp_output_dim, [dense_units] * mlp_layers, activation=mlp_act)
 
-    def forward(self, latent_states):
+    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
         if self.cnn_keys != []:
             cnn_out = cnn_forward(
@@ -153,17 +151,22 @@ class RecurrentModel(nn.Module):
 
     Args:
         input_size (int): the input size of the model.
+        dense_units (int): the number of dense units.
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to ELU.
+        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
+            Defaults to True.
     """
 
-    def __init__(self, input_size: int, recurrent_state_size: int, activation_fn: nn.Module = nn.ELU) -> None:
+    def __init__(
+        self, input_size: int, recurrent_state_size: int, dense_units: int, activation_fn: nn.Module = nn.ELU
+    ) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation_fn())
-        self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
+        self.mlp = nn.Sequential(nn.Linear(input_size, dense_units), activation_fn())
+        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=True)
 
-    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
         Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
 
@@ -175,9 +178,8 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
-        self.rnn.flatten_parameters()
-        out, recurrent_state = self.rnn(feat, recurrent_state)
-        return out, recurrent_state
+        out = self.rnn(feat, recurrent_state)
+        return out
 
 
 class RSSM(nn.Module):
@@ -241,8 +243,8 @@ class RSSM(nn.Module):
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = (1 - is_first) * recurrent_state
-        recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_out)
+        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
+        prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, posterior, prior, posterior_logits, prior_logits
 
@@ -286,8 +288,8 @@ class RSSM(nn.Module):
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_output, recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
-        _, imagined_prior = self._transition(recurrent_output)
+        recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
+        _, imagined_prior = self._transition(recurrent_state)
         return imagined_prior, recurrent_state
 
 
@@ -526,7 +528,7 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         embedded_obs = self.encoder(obs)
-        _, self.recurrent_state = self.recurrent_model(
+        self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
@@ -590,7 +592,6 @@ def build_models(
         cnn_keys,
         mlp_keys,
         args.cnn_channels_multiplier,
-        args.dense_units,
         args.mlp_layers,
         args.dense_units,
         cnn_act,
@@ -598,7 +599,7 @@ def build_models(
         fabric.device,
     )
     stochastic_size = args.stochastic_size * args.discrete_size
-    recurrent_model = RecurrentModel(np.sum(actions_dim) + stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(np.sum(actions_dim) + stochastic_size, args.recurrent_state_size, args.dense_units)
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=stochastic_size,

@@ -1,18 +1,17 @@
 import os
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import cv2
 import gymnasium as gym
 import numpy as np
-import torch
-from lightning import Fabric
+import torch.nn as nn
 from torch import Tensor, nn
-from torch.distributions import OneHotCategoricalStraightThrough
+from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
-    from sheeprl.algos.dreamer_v2.agent import Player
+    pass
 
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.envs.wrappers import ActionRepeat
@@ -85,15 +84,10 @@ def make_env(
         )
     else:
         env_spec = gym.spec(env_id).entry_point
+        env = gym.make(env_id, render_mode="rgb_array")
         if "mujoco" in env_spec:
-            try:
-                env = gym.make(env_id, render_mode="rgb_array", terminate_when_unhealthy=False)
-            except:
-                env = gym.make(env_id, render_mode="rgb_array")
             env.frame_skip = 0
-        else:
-            env = gym.make(env_id, render_mode="rgb_array")
-        if "atari" in env_spec:
+        elif "atari" in env_spec:
             if args.atari_noop_max < 0:
                 raise ValueError(
                     f"Negative value of atart_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
@@ -110,43 +104,54 @@ def make_env(
             )
 
     # action repeat
-    if "atari" not in env_spec:
+    if "atari" not in env_spec and "dmc" not in env_id:
         env = ActionRepeat(env, args.action_repeat)
 
     # create dict
     if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 3:
-        env = gym.wrappers.PixelObservationWrapper(env, pixels_only=False, pixel_keys=("rgb",))
+        env = gym.wrappers.PixelObservationWrapper(
+            env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=("rgb",)
+        )
     elif isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
         env = gym.wrappers.TransformObservation(env, lambda obs: {"rgb": obs})
         env.observation_space = gym.spaces.Dict({"rgb": env.observation_space})
 
-    # resize image
-    if "atari" not in env_spec and "dmc" not in env_id and "minedojo" not in env_id:
-        env = gym.wrappers.TransformObservation(
-            env,
-            lambda obs: obs.update(
-                {"rgb": cv2.resize(obs["rgb"], (64, 64), interpolation=cv2.INTER_AREA).reshape(64, 64, 3)}
-            )
-            or obs,
-        )
-        env.observation_space["rgb"] = gym.spaces.Box(0, 255, (64, 64, 3), np.uint8)
+    shape = env.observation_space["rgb"].shape
+    is_3d = len(shape) == 3
+    is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
+    channel_first = not is_3d or shape[0] in (1, 3)
 
-    # grayscale
-    if args.grayscale_obs and "atari" not in env_spec:
-        env = gym.wrappers.TransformObservation(
-            env,
-            lambda obs: obs.update({"rgb": np.expand_dims(cv2.cvtColor(obs["rgb"], cv2.COLOR_RGB2GRAY), -1)}) or obs,
-        )
-        env.observation_space["rgb"] = gym.spaces.Box(0, 255, (64, 64, 1), np.uint8)
+    def transform_obs(obs: Dict[str, Any]):
+        # to 3D image
+        if not is_3d:
+            obs.update({"rgb": np.expand_dims(obs["rgb"], axis=0)})
 
-    # channels first
-    if "minedojo" not in env_id:
-        env = gym.wrappers.TransformObservation(
-            env, lambda obs: obs.update({"rgb": obs["rgb"].transpose(2, 0, 1)}) or obs
-        )
-        env.observation_space["rgb"] = gym.spaces.Box(
-            0, 255, (env.observation_space["rgb"].shape[-1], *env.observation_space["rgb"].shape[:2]), np.uint8
-        )
+        # channel last (opencv needs it)
+        if channel_first:
+            obs.update({"rgb": obs["rgb"].transpose(1, 2, 0)})
+
+        # resize
+        if obs["rgb"].shape[:-1] != (64, 64):
+            obs.update({"rgb": cv2.resize(obs["rgb"], (64, 64), interpolation=cv2.INTER_AREA)})
+
+        # to grayscale
+        if args.grayscale_obs and not is_grayscale:
+            obs.update({"rgb": cv2.cvtColor(obs["rgb"], cv2.COLOR_RGB2GRAY)})
+
+        # back to 3D
+        if len(obs["rgb"].shape) == 2:
+            obs.update({"rgb": np.expand_dims(obs["rgb"], axis=-1)})
+            if not args.grayscale_obs:
+                obs.update({"rgb": np.repeat(obs["rgb"], 3, axis=-1)})
+
+        # channel first (PyTorch default)
+        obs.update({"rgb": obs["rgb"].transpose(2, 0, 1)})
+
+        return obs
+
+    env = gym.wrappers.TransformObservation(env, transform_obs)
+    env.observation_space["rgb"] = gym.spaces.Box(0, 255, (1 if args.grayscale_obs else 3, 64, 64), np.uint8)
+
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
     if args.max_episode_steps > 0:
@@ -176,5 +181,22 @@ def compute_stochastic_state(
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    dist = OneHotCategoricalStraightThrough(logits=logits)
+    dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
     return dist.rsample()
+
+
+def init_weights(m: nn.Module):
+    """
+    Initialize the parameters of the m module acording to the Xavier
+    normal method.
+
+    Args:
+        m (nn.Module): the module to be initialized.
+    """
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        nn.init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.xavier_normal_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)

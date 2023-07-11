@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from sheeprl.algos.args import StandardArgs
 from sheeprl.utils.parser import Arg
@@ -74,7 +74,7 @@ class DreamerV2Args(StandardArgs):
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
-        default="ReLU",
+        default="ELU",
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
@@ -94,3 +94,5 @@ class DreamerV2Args(StandardArgs):
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
+    cnn_keys: Tuple[str] = Arg(default=("rgb",), help="a list of observation keys to be processed by the CNN encoder")
+    mlp_keys: Tuple[str] = Arg(default=(), help="a list of observation keys to be processed by the MLP encoder")

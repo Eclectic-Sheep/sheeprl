@@ -22,10 +22,11 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.utils import make_env, test
+from sheeprl.algos.dreamer_v1.utils import test
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v2.utils import make_env
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -36,7 +37,6 @@ from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
 # os.environ["MUJOCO_GL"] = "osmesa"
-torch.set_float32_matmul_precision("medium")
 
 
 def train(
@@ -109,7 +109,6 @@ def train(
     device = fabric.device
     batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
-    data["is_first"] = torch.zeros_like(data["is_first"])
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
@@ -201,11 +200,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update(
         "State/p_entropy",
-        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
         "State/q_entropy",
-        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
     # Behaviour Learning
@@ -438,12 +437,30 @@ def main():
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
     if isinstance(env.observation_space, gym.spaces.Dict):
-        cnn_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) == 3 and k != "masks"]
-        mlp_keys = [k for k, v in env.observation_space.spaces.items() if len(v.shape) < 3 and k != "masks"]
+        cnn_keys = []
+        for k, v in env.observation_space.spaces.items():
+            if k in args.cnn_keys:
+                if len(v.shape) == 3:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        mlp_keys = []
+        for k, v in env.observation_space.spaces.items():
+            if k in args.mlp_keys:
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation")
+        raise RuntimeError(f"There must be at least one valid observation.")
 
     world_model, actor, critic, target_critic = build_models(
         fabric,

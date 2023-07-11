@@ -88,7 +88,7 @@ class MineDojoWrapper(core.Env):
                 "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
                 "mask_action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), bool),
                 "mask_equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
-                "mask_desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
+                "mask_destroy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
                 "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), bool),
             }
         )
@@ -131,7 +131,7 @@ class MineDojoWrapper(core.Env):
         return {
             "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
             "mask_equip/place": equip_mask,
-            "mask_desrtoy": destroy_mask,
+            "mask_destroy": destroy_mask,
             "mask_craft_smelt": masks["craft_smelt"],
         }
 
