@@ -79,8 +79,6 @@ class MineDojoWrapper(core.Env):
             world_seed=seed,
             start_position=self._pos,
             generate_world_type="default",
-            allow_mob_spawn=False,
-            allow_time_passage=False,
             fast_reset=True,
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
