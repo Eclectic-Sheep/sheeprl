@@ -458,8 +458,9 @@ class MinedojoActor(Actor):
                         for b in range(functional_action.shape[1]):
                             sampled_action = functional_action[t, b].item()
                             if sampled_action == 15:  # Craft action
-                                logits[torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
-                elif 1 == 2:
+                                logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
+                elif i == 2:
+                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip/place"] = mask["mask_equip/place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
