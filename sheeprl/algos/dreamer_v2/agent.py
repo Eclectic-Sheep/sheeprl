@@ -354,7 +354,7 @@ class Actor(nn.Module):
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
 
-    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+    def forward(self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -399,6 +399,72 @@ class Actor(nn.Module):
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
+        return tuple(actions), tuple(actions_dist)
+
+
+class MinedojoActor(Actor):
+    def __init__(
+        self,
+        latent_state_size: int,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
+        init_std: float = 0,
+        min_std: float = 0.1,
+        dense_units: int = 400,
+        dense_act: nn.Module = nn.ELU,
+        mlp_layers: int = 4,
+        distribution: str = "auto",
+    ) -> None:
+        super().__init__(
+            latent_state_size,
+            actions_dim,
+            is_continuous,
+            init_std,
+            min_std,
+            dense_units,
+            dense_act,
+            mlp_layers,
+            distribution,
+        )
+
+    def forward(
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+        """
+        Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
+        where * means any number of dimensions including None.
+
+        Args:
+            state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+
+        Returns:
+            The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
+            The distribution of the actions
+        """
+        out: Tensor = self.model(state)
+        actions_logits = torch.split(out, self.actions_dim, -1)
+        actions_dist: List[Distribution] = []
+        actions: List[Tensor] = []
+        if mask is not None:
+            mask = {k: torch.from_numpy(v).bool().to(out.device) for k, v in mask.items()}
+        for i, logits in enumerate(actions_logits):
+            if i == 0:
+                logits[mask["mask_action_type"].expand_as(logits)] = -torch.inf
+            elif i == 1:
+                logits[mask["mask_craft_smelt"].expand_as(logits)] = -torch.inf
+            else:
+                sampled_actions = actions[0].argmax(dim=-1)  # [T, B]
+                for t in range(sampled_actions[0]):
+                    for b in range(sampled_actions[1]):
+                        if sampled_actions[t, b] in (16, 17):  # Equip/Place action
+                            logits[t, b][mask["mask_equip/place"]] = -torch.inf
+                        elif sampled_actions[t, b] == 18:  # Destroy action
+                            logits[t, b][mask["mask_destroy"]] = -torch.inf
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            if is_training:
+                actions.append(actions_dist[-1].rsample())
+            else:
+                actions.append(actions_dist[-1].mode)
         return tuple(actions), tuple(actions_dist)
 
 
@@ -488,18 +554,20 @@ class Player(nn.Module):
         )
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
 
-    def get_exploration_action(self, obs: Tensor, is_continuous: bool) -> Tensor:
+    def get_exploration_action(
+        self, obs: Dict[str, Tensor], is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
 
         Returns:
             The actions the agent has to perform.
         """
-        actions = self.get_greedy_action(obs)
+        actions = self.get_greedy_action(obs, mask=mask)
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
@@ -515,12 +583,14 @@ class Player(nn.Module):
             self.actions = torch.cat(expl_actions, -1)
         return tuple(expl_actions)
 
-    def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Sequence[Tensor]:
+    def get_greedy_action(
+        self, obs: Dict[str, Tensor], is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Sequence[Tensor]:
         """
         Return the greedy actions.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
 
@@ -536,7 +606,7 @@ class Player(nn.Module):
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -658,16 +728,28 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if args.use_continues else None,
     )
-    actor = Actor(
-        stochastic_size + args.recurrent_state_size,
-        actions_dim,
-        is_continuous,
-        args.actor_init_std,
-        args.actor_min_std,
-        args.dense_units,
-        dense_act,
-        args.mlp_layers,
-    )
+    if "minedojo" in args.env_id:
+        actor = MinedojoActor(
+            stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+        )
+    else:
+        actor = Actor(
+            stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+        )
     critic = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,
