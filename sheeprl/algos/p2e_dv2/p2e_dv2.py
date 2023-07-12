@@ -213,7 +213,6 @@ def train(
                 )
             )[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-            # loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
             loss -= next_obs_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
             ).mean()
