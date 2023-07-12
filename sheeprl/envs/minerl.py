@@ -1,185 +1,42 @@
-"""Adapted from https://github.com/denisyarats/dmc2gym/blob/master/dmc2gym/wrappers.py"""
-
 import copy
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, SupportsFloat, Tuple
 
-import gym
 import gymnasium
 import minerl
 import numpy as np
 from gymnasium import core
+from minerl.herobraine.hero import mc
 
-ALL_ITEMS = minerl.herobraine.hero.mc.ALL_ITEMS
-ACTION_MAP = {
-    0: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # no-op
-    1: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 1,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # forward
-    2: {
-        "attack": 0,
-        "back": 1,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # back
-    3: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 1,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # left
-    4: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 1,
-        "sneak": 0,
-        "sprint": 0,
-    },  # right
-    5: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 1,
-        "jump": 1,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # jump + forward
-    6: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 1,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 1,
-        "sprint": 0,
-    },  # sneak + forward
-    7: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 1,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 1,
-    },  # sprint + forward
-    8: {
-        "attack": 0,
-        "back": 0,
-        "camera": np.array([-15, 0]),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # pitch down (-15)
-    9: {
-        "attack": 0,
-        "back": 0,
-        "camera": np.array([15, 0]),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # pitch up (+15)
-    10: {
-        "attack": 0,
-        "back": 0,
-        "camera": np.array([0, -15]),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # yaw down (-15)
-    11: {
-        "attack": 0,
-        "back": 0,
-        "camera": np.array([0, 15]),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "none",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # yaw up (+15)
-    12: {
-        "attack": 0,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "dirt",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # place
-    13: {
-        "attack": 1,
-        "back": 0,
-        "camera": (0, 0),
-        "forward": 0,
-        "jump": 0,
-        "left": 0,
-        "place": "dirt",
-        "right": 0,
-        "sneak": 0,
-        "sprint": 0,
-    },  # attack
+from sheeprl.envs.minerl_envs.navigate import CustomNavigate
+from sheeprl.envs.minerl_envs.obtain import CustomObtainDiamond, CustomObtainIronPickaxe
+
+# In order to use the environment as a gym you need to register it with gym
+CUSTOM_ENVS = {
+    "custom_navigate": CustomNavigate,
+    "custom_obtain_diamond": CustomObtainDiamond,
+    "custom_obtain_iron_pickaxe": CustomObtainIronPickaxe,
 }
+
+
+N_ALL_ITEMS = len(mc.ALL_ITEMS)
+NOOP = {
+    "camera": (0, 0),
+    "forward": 0,
+    "back": 0,
+    "left": 0,
+    "right": 0,
+    "attack": 0,
+    "sprint": 0,
+    "jump": 0,
+    "sneak": 0,
+    "craft": "none",
+    "nearbyCraft": "none",
+    "nearbySmelt": "none",
+    "place": "none",
+    "equip": "none",
+}
+ITEM_ID_TO_NAME = dict(enumerate(mc.ALL_ITEMS))
+ITEM_NAME_TO_ID = dict(zip(mc.ALL_ITEMS, range(N_ALL_ITEMS)))
 
 
 class MineRLWrapper(core.Env):
@@ -192,6 +49,7 @@ class MineRLWrapper(core.Env):
         seed: Optional[int] = None,
         sticky_attack: Optional[int] = 30,
         sticky_jump: Optional[int] = 10,
+        break_speed_multiplier: Optional[int] = 100,
         **kwargs: Optional[Dict[Any, Any]],
     ):
         self._height = height
@@ -201,84 +59,121 @@ class MineRLWrapper(core.Env):
         self._sticky_jump = sticky_jump
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
+        self._break_speed_multiplier = break_speed_multiplier
 
-        # create task
-        self._env = gym.make(id=task_id)
-        # inventory
-        self._inventory = {}
-        self._inventory_names = None
+        self._env = CUSTOM_ENVS[task_id.lower()](break_speed=break_speed_multiplier, **kwargs)
+        self.ACTIONS_MAP = {0: {}}
+        act_idx = 1
+        for act in self._env.action_space:
+            if isinstance(self._env.action_space[act], minerl.herobraine.hero.spaces.Enum):
+                act_val = set(self._env.action_space[act].values.tolist()) - {"none"}
+                act_len = len(act_val)
+            elif act != "camera":
+                act_len = 1
+                act_val = [1]
+            else:
+                act_len = 4
+                act_val = [
+                    np.array([-15, 0]),
+                    np.array([15, 0]),
+                    np.array([0, -15]),
+                    np.array([0, 15]),
+                ]
+            action = dict(zip((np.arange(act_len) + act_idx).tolist(), [{act: v} for v in act_val]))
+            if act in {"jump", "sneak", "sprint"}:
+                action[act_idx]["forward"] = 1
+            self.ACTIONS_MAP.update(action)
+            act_idx += act_len
+
         # action and observations space
-        self._action_space = gymnasium.spaces.Discrete(len(ACTION_MAP.keys()))
-        self._observation_space = gymnasium.spaces.Dict(
-            {
-                "rgb": gymnasium.spaces.Box(0, 255, (3, 64, 64), np.uint8),
-                "inventory_dirt": gymnasium.spaces.Box(low=0, high=2304, shape=(1,)),
-                "compass": gymnasium.spaces.Box(low=-180.0, high=180.0, shape=(1,)),
-            }
-        )
+        self.action_space = gymnasium.spaces.Discrete(len(self.ACTIONS_MAP))
+
+        obs_space = {
+            "rgb": gymnasium.spaces.Box(0, 255, (3, 64, 64), np.uint8),
+            "life_stats": gymnasium.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
+            "inventory": gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+            "max_inventory": gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+        }
+        if "compass" in self._env.observation_space.spaces:
+            obs_space["compass"] = gymnasium.spaces.Box(-180, 180, (1,), np.float32)
+        if "equipped_items" in self._env.observation_space.spaces:
+            obs_space["equipment"] = gymnasium.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32)
+        self.observation_space = gymnasium.spaces.Dict(obs_space)
         self._pos = {
             "pitch": 0.0,
             "yaw": 0.0,
         }
-        # render
-        self._render_mode: str = "rgb_array"
-        # set seed
+        self._max_inventory = np.zeros(N_ALL_ITEMS)
+        self.render_mode: str = "rgb_array"
         self.seed(seed=seed)
 
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-    @property
-    def render_mode(self) -> str:
-        return self._render_mode
-
-    @property
-    def action_space(self) -> gym.spaces.Space:
-        return self._action_space
-
-    @property
-    def observation_space(self) -> gym.spaces.Space:
-        return self._observation_space
-
-    def _convert_action(self, action: np.ndarray) -> np.ndarray:
-        converted_action = copy.deepcopy(ACTION_MAP[int(action.item())])
+    def _convert_actions(self, action: np.ndarray) -> Dict[str, Any]:
+        converted_actions = copy.deepcopy(NOOP)
+        converted_actions.update(self.ACTIONS_MAP[action.item()])
         if self._sticky_attack:
-            if converted_action["attack"] == 1:
+            if converted_actions["attack"]:
                 self._sticky_attack_counter = self._sticky_attack
             if self._sticky_attack_counter > 0:
-                converted_action["attack"] = 1
-                converted_action["jump"] = 0
+                converted_actions["attack"] = 1
+                converted_actions["jump"] = 0
                 self._sticky_attack_counter -= 1
         if self._sticky_jump:
-            if converted_action["jump"] == 1:
+            if converted_actions["jump"]:
                 self._sticky_jump_counter = self._sticky_jump
             if self._sticky_jump_counter > 0:
-                converted_action["jump"] = 1
-                if converted_action["forward"] == converted_action["back"] == 0:
-                    converted_action["forward"] = 1
+                converted_actions["jump"] = 1
+                converted_actions["forward"] = 1
                 self._sticky_jump_counter -= 1
-        return converted_action
+        return converted_actions
+
+    def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
+        equip = np.zeros(N_ALL_ITEMS, dtype=np.int32)
+        equip[ITEM_NAME_TO_ID[equipment["mainhand"]["type"]]] = 1
+        return equip
+
+    def _convert_inventory(self, inventory: Dict[str, Any]) -> Dict[str, np.ndarray]:
+        # the inventory counts, as a vector with one entry for each Minecraft item
+        converted_inventory = {"inventory": np.zeros(N_ALL_ITEMS)}
+        for i, (item, quantity) in enumerate(inventory.items()):
+            # count the items in the inventory
+            if item == "air":
+                converted_inventory["inventory"][ITEM_NAME_TO_ID[item]] += 1
+            else:
+                converted_inventory["inventory"][ITEM_NAME_TO_ID[item]] += quantity
+        converted_inventory["max_inventory"] = np.maximum(converted_inventory["inventory"], self._max_inventory)
+        self._max_inventory = converted_inventory["max_inventory"].copy()
+        return converted_inventory
 
     def _convert_obs(self, obs: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        return {
+        converted_obs = {
             "rgb": obs["pov"].copy().transpose(2, 0, 1),
-            "inventory_dirt": obs["inventory"]["dirt"].reshape(-1),
-            "compass": obs["compass"]["angle"].reshape(-1),
+            "life_stats": np.array(
+                [obs["life_stats"]["life"], obs["life_stats"]["food"], obs["life_stats"]["air"]], dtype=np.float32
+            ),
+            **self._convert_inventory(obs["inventory"]),
         }
+        if "equipment" in self.observation_space.spaces:
+            converted_obs["equipment"] = self._convert_equipment(obs["equipped_items"])
+        if "compass" in self.observation_space.spaces:
+            converted_obs["compass"] = obs["compass"]["angle"].reshape(-1)
+        return converted_obs
 
     def seed(self, seed: Optional[int] = None) -> None:
         self.observation_space.seed(seed)
         self.action_space.seed(seed)
 
-    def step(self, action: np.ndarray) -> Dict[str, Any]:
-        action = self._convert_action(action)
-        next_pitch = self._pos["pitch"] + action["camera"][0]
-        next_yaw = ((self._pos["yaw"] + action["camera"][1]) + 180) % 360 - 180
+    def step(self, actions: np.ndarray) -> Tuple[Dict[str, Any], SupportsFloat, bool, bool, Dict[str, Any]]:
+        converted_actions = self._convert_actions(actions)
+        next_pitch = self._pos["pitch"] + converted_actions["camera"][0]
+        next_yaw = ((self._pos["yaw"] + converted_actions["camera"][1]) + 180) % 360 - 180
         if not (self._pitch_limits[0] <= next_pitch <= self._pitch_limits[1]):
-            action[3] = action["camera"][0] = 0
+            converted_actions["camera"] = np.array([0, converted_actions["camera"][1]])
             next_pitch = self._pos["pitch"]
 
-        obs, reward, done, info = self._env.step(action)
+        obs, reward, done, info = self._env.step(converted_actions)
         self._pos = {
             "pitch": next_pitch,
             "yaw": next_yaw,
@@ -290,6 +185,9 @@ class MineRLWrapper(core.Env):
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         obs = self._env.reset()
+        self._max_inventory = np.zeros(N_ALL_ITEMS)
+        self._sticky_attack_counter = 0
+        self._sticky_jump_counter = 0
         self._pos = {
             "pitch": 0.0,
             "yaw": 0.0,
