@@ -4,7 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
-from typing import Sequence
+from typing import Dict, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -22,10 +22,10 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v2.utils import make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -51,6 +51,8 @@ def train(
     aggregator: MetricAggregator,
     args: DreamerV2Args,
     is_continuous: bool,
+    cnn_keys: Sequence[str],
+    mlp_keys: Sequence[str],
     actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
@@ -103,10 +105,9 @@ def train(
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
-    observation_shape = data["observations"].shape[-3:]
     device = fabric.device
-    batch_obs = data["observations"] / 255 - 0.5
-    data["is_first"] = torch.zeros_like(data["is_first"])
+    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
+    batch_obs.update({k: data[k] for k in mlp_keys})
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
@@ -131,7 +132,7 @@ def train(
     )
 
     # embedded observations from the environment
-    embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
+    embedded_obs = world_model.encoder(batch_obs)
 
     for i in range(0, sequence_length):
         # one step of dynamic learning, which take the posterior state, the recurrent state, the action
@@ -149,12 +150,10 @@ def train(
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # compute predictions for the observations
-    decoded_information = cnn_forward(
-        world_model.observation_model, latent_states, (latent_states.shape[-1],), observation_shape
-    )
+    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # compute the distribution over the reconstructed observations
-    po = Independent(Normal(decoded_information, 1), len(observation_shape))
+    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
 
     # compute the distribution over the rewards
     pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
@@ -200,11 +199,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update(
         "State/p_entropy",
-        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
         "State/q_entropy",
-        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
     # Behaviour Learning
@@ -434,15 +433,49 @@ def main():
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    observation_shape = env.observation_space.shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(env.observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in env.observation_space.spaces.items():
+            if args.cnn_keys and (
+                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
+            ):
+                if len(v.shape) == 3:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        mlp_keys = []
+        for k, v in env.observation_space.spaces.items():
+            if args.mlp_keys and (
+                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
+            ):
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(f"There must be at least one valid observation.")
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
         actions_dim,
-        observation_shape,
         is_continuous,
         args,
+        env.observation_space,
+        cnn_keys,
+        mlp_keys,
         state["world_model"] if args.checkpoint_path else None,
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
@@ -535,12 +568,16 @@ def main():
 
     # Get the first environment observation and start the optimization
     episode_steps = []
-    obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(args.num_envs, *observation_shape)  # [N_envs, N_obs]
+    o = env.reset(seed=args.seed)[0]
+    obs = {}
+    for k in o.keys():
+        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
+        step_data[k] = torch_obs
+        obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
-    step_data["observations"] = obs
     if buffer_type == "sequential":
         rb.add(step_data[None, ...])
     else:
@@ -550,7 +587,7 @@ def main():
     gradient_steps = 0
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and args.checkpoint_path is None:
+        if global_step <= learning_starts and args.checkpoint_path is None and "minedojo" not in args.env_id:
             real_actions = actions = np.array(env.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -562,8 +599,14 @@ def main():
                 )
         else:
             with torch.no_grad():
+                preprocessed_obs = {}
+                for k, v in obs.items():
+                    if k in cnn_keys:
+                        preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
+                    else:
+                        preprocessed_obs[k] = v[None, ...].to(device)
                 real_actions = actions = player.get_exploration_action(
-                    obs[None, ...].to(device) / 255 - 0.5, is_continuous
+                    preprocessed_obs, is_continuous, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                 )
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
@@ -572,7 +615,7 @@ def main():
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
-        next_obs, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
+        o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
@@ -582,7 +625,11 @@ def main():
             aggregator.update("Rewards/rew_avg", infos["episode"]["r"][0])
             aggregator.update("Game/ep_len_avg", infos["episode"]["l"][0])
 
-        next_obs = torch.from_numpy(next_obs).view(args.num_envs, *observation_shape)
+        next_obs = {}
+        for k in o.keys():  # [N_envs, N_obs]
+            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
+            step_data[k] = torch_obs
+            next_obs[k] = torch_obs
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
         dones = torch.tensor([bool(dones)]).view(args.num_envs, -1).float()
@@ -592,7 +639,6 @@ def main():
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = obs
         step_data["rewards"] = clip_rewards_fn(rewards)
         data_to_add = step_data[None, ...]
         if buffer_type == "sequential":
@@ -605,14 +651,16 @@ def main():
             if buffer_type == "episode" and len(episode_steps) >= args.per_rank_sequence_length:
                 rb.add(torch.cat(episode_steps, dim=0))
             episode_steps = []
-            obs = torch.from_numpy(env.reset(seed=args.seed)[0]).view(
-                args.num_envs, *observation_shape
-            )  # [N_envs, N_obs]
+            o = env.reset(seed=args.seed)[0]
+            obs = {}
+            for k in o.keys():
+                torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
+                step_data[k] = torch_obs
+                obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
-            step_data["observations"] = obs
             data_to_add = step_data[None, ...]
             if buffer_type == "sequential":
                 rb.add(data_to_add)
@@ -655,6 +703,8 @@ def main():
                     aggregator,
                     args,
                     is_continuous,
+                    cnn_keys,
+                    mlp_keys,
                     actions_dim,
                 )
                 gradient_steps += 1
@@ -701,7 +751,7 @@ def main():
 
     env.close()
     if fabric.is_global_zero:
-        test(player, fabric, args)
+        test(player, fabric, args, cnn_keys, mlp_keys)
 
 
 if __name__ == "__main__":

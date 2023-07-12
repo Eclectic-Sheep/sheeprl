@@ -1,13 +1,13 @@
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, OneHotCategoricalStraightThrough
+from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
 
 
 def reconstruction_loss(
-    po: Distribution,
+    po: Dict[str, Distribution],
     observations: Tensor,
     pr: Distribution,
     rewards: Tensor,
@@ -25,7 +25,7 @@ def reconstruction_loss(
     Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     Args:
-        po (Distribution): the distribution returned by the observation_model (decoder).
+        po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
         observations (Tensor): the observations provided by the environment.
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
@@ -53,17 +53,17 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    device = observations.device
-    observation_loss = -po.log_prob(observations).mean()
+    device = rewards.device
+    observation_loss = -sum([po[k].log_prob(observations[k]).mean() for k in po.keys()])
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()),
-        OneHotCategoricalStraightThrough(logits=priors_logits),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
     rhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits),
-        OneHotCategoricalStraightThrough(logits=priors_logits.detach()),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
     )
     kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:
