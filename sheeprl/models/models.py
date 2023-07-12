@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from sheeprl.utils.model import ArgsType, ModuleType, create_layers, miniblock
+from sheeprl.utils.model import ArgsType, Conv2dSame, ModuleType, create_layers, miniblock
 
 
 class MLP(nn.Module):
@@ -146,6 +146,7 @@ class CNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int],
+        cnn_layer: ModuleType = nn.Conv2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -181,7 +182,7 @@ class CNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(in_dim, out_dim, nn.Conv2d, l_args, drop, drop_args, norm, norm_args, activ, act_args)
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)
@@ -227,6 +228,7 @@ class DeCNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int] = (),
+        cnn_layer: ModuleType = nn.ConvTranspose2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -262,9 +264,7 @@ class DeCNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(
-                in_dim, out_dim, nn.ConvTranspose2d, l_args, drop, drop_args, norm, norm_args, activ, act_args
-            )
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)

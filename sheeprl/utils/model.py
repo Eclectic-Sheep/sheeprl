@@ -1,13 +1,34 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+import collections
+from itertools import repeat
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-from torch import nn
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
 
 ModuleType = Optional[Type[nn.Module]]
 ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
 ArgsType = Union[ArgType, List[ArgType]]
+
+
+def _ntuple(n):
+    """Copied from PyTorch since it's not importable as an internal function
+
+    https://github.com/pytorch/pytorch/blob/v1.10.0/torch/nn/modules/utils.py#L6
+    """
+
+    def parse(x):
+        if isinstance(x, collections.abc.Iterable):
+            return tuple(x)
+        return tuple(repeat(x, n))
+
+    return parse
+
+
+_pair = _ntuple(2)
 
 
 def create_layer_with_args(layer_type: ModuleType, layer_args: Optional[ArgType]) -> nn.Module:
@@ -154,3 +175,181 @@ def per_layer_ortho_init_weights(module: nn.Module, gain: float = 1.0, bias: flo
     elif isinstance(module, (nn.Sequential, nn.ModuleList)):
         for i in range(len(module)):
             per_layer_ortho_init_weights(module[i], gain=gain, bias=bias)
+
+
+class Conv2dSame(nn.Module):
+    """Manual convolution with same padding
+
+    Although PyTorch >= 1.10.0 supports ``padding='same'`` as a keyword argiument,
+    this does not export to CoreML as of coremltools 5.1.0, so we need to
+    implement the internal torch logic manually. Currently the ``RuntimeError`` is
+
+    "PyTorch convert function for op '_convolution_mode' not implemented"
+
+    Also same padding is not supported for strided convolutions at the moment
+    https://github.com/pytorch/pytorch/blob/v1.10.0/torch/nn/modules/conv.py#L93
+    """
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, **kwargs):
+        """Wrap base convolution layer
+
+        See official PyTorch documentation for parameter details
+        https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
+        """
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=dilation,
+            **kwargs,
+        )
+
+        # Setup internal representations
+        kernel_size_ = _pair(kernel_size)
+        dilation_ = _pair(dilation)
+        self._reversed_padding_repeated_twice = [0, 0] * len(kernel_size_)
+
+        # Follow the logic from ``nn._ConvNd``
+        # https://github.com/pytorch/pytorch/blob/v1.10.0/torch/nn/modules/conv.py#L116
+        for d, k, i in zip(dilation_, kernel_size_, range(len(kernel_size_) - 1, -1, -1)):
+            total_padding = d * (k - 1)
+            left_pad = total_padding // 2
+            self._reversed_padding_repeated_twice[2 * i] = left_pad
+            self._reversed_padding_repeated_twice[2 * i + 1] = total_padding - left_pad
+
+    def forward(self, imgs):
+        """Setup padding so same spatial dimensions are returned
+
+        All shapes (input/output) are ``(N, C, W, H)`` convention
+
+        :param torch.Tensor imgs:
+        :return torch.Tensor:
+        """
+        padded = F.pad(imgs, self._reversed_padding_repeated_twice)
+        return self.conv(padded)
+
+
+class ConvTranspose2dSame(nn.Module):
+    """Manual convolution with same padding
+
+    Although PyTorch >= 1.10.0 supports ``padding='same'`` as a keyword argiument,
+    this does not export to CoreML as of coremltools 5.1.0, so we need to
+    implement the internal torch logic manually. Currently the ``RuntimeError`` is
+
+    "PyTorch convert function for op '_convolution_mode' not implemented"
+
+    Also same padding is not supported for strided convolutions at the moment
+    https://github.com/pytorch/pytorch/blob/v1.10.0/torch/nn/modules/conv.py#L93
+    """
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, **kwargs):
+        """Wrap base convolution layer
+
+        See official PyTorch documentation for parameter details
+        https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
+        """
+        super().__init__()
+        self.conv = nn.ConvTranspose2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=dilation,
+            **kwargs,
+        )
+
+        # Setup internal representations
+        kernel_size_ = _pair(kernel_size)
+        dilation_ = _pair(dilation)
+        self._reversed_padding_repeated_twice = [0, 0] * len(kernel_size_)
+
+        # Follow the logic from ``nn._ConvNd``
+        # https://github.com/pytorch/pytorch/blob/v1.10.0/torch/nn/modules/conv.py#L116
+        for d, k, i in zip(dilation_, kernel_size_, range(len(kernel_size_) - 1, -1, -1)):
+            total_padding = d * (k - 1)
+            left_pad = total_padding // 2
+            self._reversed_padding_repeated_twice[2 * i] = left_pad
+            self._reversed_padding_repeated_twice[2 * i + 1] = total_padding - left_pad
+
+    def forward(self, imgs):
+        """Setup padding so same spatial dimensions are returned
+
+        All shapes (input/output) are ``(N, C, W, H)`` convention
+
+        :param torch.Tensor imgs:
+        :return torch.Tensor:
+        """
+        padded = F.pad(imgs, self._reversed_padding_repeated_twice)
+        c = self.conv(padded)
+        return F.pad(c, self._reversed_padding_repeated_twice)
+
+
+class LayerNormChannelLast(nn.LayerNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() == 4:
+            x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        return x.permute(0, 3, 1, 2)
+
+
+class LayerNormGRUCell(nn.Module):
+    def __init__(
+        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.bias = bias
+        self.batch_first = batch_first
+        self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
+        if layer_norm:
+            self.layer_norm = torch.nn.LayerNorm(hidden_size)
+        else:
+            self.layer_norm = nn.Identity()
+
+    def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:
+        is_3d = False
+        if input.dim() == 3:
+            is_3d = True
+            if input.shape[int(self.batch_first)] == 1:
+                input = input.squeeze(int(self.batch_first))
+            else:
+                raise AssertionError(
+                    "LayerNormGRUCell: Expected input to be 3-D with sequence length equal to 1 but received "
+                    f"a sequence of length {input.shape[int(self.batch_first)]}"
+                )
+        if hx.dim() == 3:
+            hx = hx.squeeze(0)
+        assert input.dim() in (1, 2), (
+            f"LayerNormGRUCell: Expected input to be 1-D or 2-D " "but received {input.dim()}-D tensor"
+        )
+
+        is_batched = input.dim() == 2
+        if not is_batched:
+            input = input.unsqueeze(0)
+
+        if hx is None:
+            hx = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
+        else:
+            hx = hx.unsqueeze(0) if not is_batched else hx
+
+        input = torch.cat((hx, input), -1)
+        x = self.linear(input)
+        x = self.layer_norm(x)
+        reset, cand, update = torch.chunk(x, 3, -1)
+        reset = torch.sigmoid(reset)
+        cand = torch.tanh(reset * cand)
+        update = torch.sigmoid(update - 1)
+        hx = update * cand + (1 - update) * hx
+
+        if not is_batched:
+            hx = hx.squeeze(0)
+        if is_3d:
+            hx = hx.unsqueeze(int(self.batch_first))
+
+        return hx, hx
