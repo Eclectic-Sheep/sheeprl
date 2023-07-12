@@ -198,7 +198,7 @@ class Node:
             parent = search_path[-2]
             hidden_state, reward, policy_logits, value = agent.recurrent_inference(
                 torch.tensor([imagined_action])
-                .view(1, 1, 1)
+                .view(1, 1, -1)
                 .to(device=parent.hidden_state.device, dtype=torch.float32),
                 parent.hidden_state,
             )

@@ -65,20 +65,30 @@ class GruMlpDynamics(torch.nn.Module):
 
 class MlpDynamics(torch.nn.Module):
     def __init__(
-        self, embedding_size=256, state_hidden_sizes=(64, 64, 16), rew_hidden_sizes=(64, 64, 16), full_support_size=601
+        self,
+        num_actions,
+        embedding_size=256,
+        state_hidden_sizes=(64, 64, 16),
+        rew_hidden_sizes=(64, 64, 16),
+        full_support_size=601,
     ):
         super().__init__()
-        self.hstate = MLP(input_dims=embedding_size + 1, hidden_sizes=state_hidden_sizes, output_dim=embedding_size)
+        self.hstate = MLP(
+            input_dims=embedding_size + int(num_actions), hidden_sizes=state_hidden_sizes, output_dim=embedding_size
+        )
         self.mlp = MLP(
-            input_dims=embedding_size + 1,
+            input_dims=embedding_size + int(num_actions),
             hidden_sizes=rew_hidden_sizes,
             activation=torch.nn.ELU,
             output_dim=full_support_size,
         )
+        self.num_actions = num_actions
 
     def forward(self, x, h0):
-        h1 = self.hstate(torch.cat([x, h0], dim=-1))
-        y = self.mlp(torch.cat([x, h0], dim=-1))
+        one_hot_action = torch.nn.functional.one_hot(x.long(), num_classes=self.num_actions).float().squeeze(-2)
+        cat_input = torch.cat([one_hot_action, h0], dim=-1)
+        h1 = self.hstate(cat_input)
+        y = self.mlp(cat_input)
         return y, h1
 
 

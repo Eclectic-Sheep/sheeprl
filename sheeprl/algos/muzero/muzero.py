@@ -26,6 +26,17 @@ from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import make_env
 
 
+def apply_temperature(logits, temperature):
+    """Returns `logits / temperature`, supporting also temperature=0.
+
+    Taken from https://github.com/deepmind/mctx/blob/main/mctx/_src/policies.py#L409
+    """
+    # The max subtraction prevents +inf after dividing by a small temperature.
+    logits = logits.float() - torch.max(logits, keepdims=True, axis=-1)[0]
+    tiny = torch.finfo(logits.dtype).tiny
+    return logits / max(tiny, temperature)
+
+
 @register_algorithm()
 def main():
     parser = HfArgumentParser(MuzeroArgs)
@@ -85,7 +96,9 @@ def main():
             output_dim=embedding_size,
             activation=torch.nn.ELU,
         ),
-        dynamics=MlpDynamics(embedding_size=embedding_size, full_support_size=full_support_size),
+        dynamics=MlpDynamics(
+            num_actions=env.action_space.n, embedding_size=embedding_size, full_support_size=full_support_size
+        ),
         prediction=Predictor(
             embedding_size=embedding_size, num_actions=env.action_space.n, full_support_size=full_support_size
         ),
@@ -144,8 +157,10 @@ def main():
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
-                visits_count = visits_count / (temperature * args.num_simulations)
-                action = torch.distributions.Categorical(logits=visits_count).sample()
+                visit_probs = visits_count / args.num_simulations
+                visit_probs = torch.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])
+                logits = apply_temperature(visit_probs, temperature)
+                action = torch.distributions.Categorical(logits=logits).sample()
                 # Single environment step
                 next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
                 rew_sum += reward
@@ -153,11 +168,12 @@ def main():
                 # Store the current step data
                 trajectory_step_data = Trajectory(
                     {
-                        "policies": visits_count.reshape(1, 1, -1),
+                        "policies": visit_probs.reshape(1, 1, -1),
                         "actions": action.reshape(1, 1, -1),
                         "observations": obs.unsqueeze(0),
                         "rewards": torch.tensor([reward]).reshape(1, 1, -1),
                         "values": node.value().reshape(1, 1, -1),
+                        "trajectory_steps": torch.tensor([update_step, trajectory_step]).reshape(1, 1, -1),
                     },
                     batch_size=(1, 1),
                     device=device,
