@@ -22,11 +22,10 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.utils import test
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import make_env
+from sheeprl.algos.dreamer_v2.utils import make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -436,10 +435,14 @@ def main():
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
+    cnn_keys = []
+    mlp_keys = []
     if isinstance(env.observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in env.observation_space.spaces.items():
-            if args.cnn_keys and k in args.cnn_keys:
+            if args.cnn_keys and (
+                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
+            ):
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -449,7 +452,9 @@ def main():
                     )
         mlp_keys = []
         for k, v in env.observation_space.spaces.items():
-            if args.mlp_keys and k in args.mlp_keys:
+            if args.mlp_keys and (
+                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
+            ):
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -461,6 +466,8 @@ def main():
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
     if cnn_keys == [] and mlp_keys == []:
         raise RuntimeError(f"There must be at least one valid observation.")
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
@@ -745,7 +752,7 @@ def main():
 
     env.close()
     if fabric.is_global_zero:
-        test(player, fabric, args)
+        test(player, fabric, args, cnn_keys, mlp_keys)
 
 
 if __name__ == "__main__":
