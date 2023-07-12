@@ -84,6 +84,7 @@ def make_env(
             seed=args.seed,
             start_position=start_position,
         )
+        args.action_repeat = 1
     else:
         env_spec = gym.spec(env_id).entry_point
         env = gym.make(env_id, render_mode="rgb_array")
