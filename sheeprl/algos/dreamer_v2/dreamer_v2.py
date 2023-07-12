@@ -605,9 +605,10 @@ def main():
                         preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
                     else:
                         preprocessed_obs[k] = v[None, ...].to(device)
-                real_actions = actions = player.get_exploration_action(
-                    preprocessed_obs, is_continuous, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
-                )
+                mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+                if len(mask) == 0:
+                    mask = None
+                real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
