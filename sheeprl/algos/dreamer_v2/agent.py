@@ -1,6 +1,7 @@
 import copy
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
@@ -16,11 +17,11 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
+from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import cnn_forward, compute_stochastic_state
-from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.utils import init_weights
 
 
 class RecurrentModel(nn.Module):
@@ -29,17 +30,22 @@ class RecurrentModel(nn.Module):
 
     Args:
         input_size (int): the input size of the model.
+        dense_units (int): the number of dense units.
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to ELU.
+        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
+            Defaults to True.
     """
 
-    def __init__(self, input_size: int, recurrent_state_size: int, activation_fn: nn.Module = nn.ELU) -> None:
+    def __init__(
+        self, input_size: int, recurrent_state_size: int, dense_units: int, activation_fn: nn.Module = nn.ELU
+    ) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation_fn())
-        self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
+        self.mlp = nn.Sequential(nn.Linear(input_size, dense_units), activation_fn())
+        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=True)
 
-    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
         Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
 
@@ -51,9 +57,8 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
-        self.rnn.flatten_parameters()
-        out, recurrent_state = self.rnn(feat, recurrent_state)
-        return out, recurrent_state
+        out = self.rnn(feat, recurrent_state)
+        return out
 
 
 class RSSM(nn.Module):
@@ -88,7 +93,7 @@ class RSSM(nn.Module):
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -109,6 +114,7 @@ class RSSM(nn.Module):
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior stochastic state (Tensor): computed by the representation model
+            The prior stochastic state (Tensor): computed by the transition model
             The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
             The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
             from the recurrent state and the embbedded observation.
@@ -116,10 +122,10 @@ class RSSM(nn.Module):
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = (1 - is_first) * recurrent_state
-        recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, _ = self._transition(recurrent_out)
+        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
+        prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, posterior_logits, prior_logits
+        return recurrent_state, posterior, prior, posterior_logits, prior_logits
 
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -141,7 +147,7 @@ class RSSM(nn.Module):
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
 
         Returns:
-            logits (Tensor): the logits of the distribution of the prror state.
+            logits (Tensor): the logits of the distribution of the prior state.
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)
@@ -161,18 +167,18 @@ class RSSM(nn.Module):
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_output, recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
-        _, imagined_prior = self._transition(recurrent_output)
+        recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
+        _, imagined_prior = self._transition(recurrent_state)
         return imagined_prior, recurrent_state
 
 
 class Actor(nn.Module):
     """
-    The wrapper class of the Dreamer_v1 Actor model.
+    The wrapper class of the Dreamer_v2 Actor model.
 
     Args:
         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        action_dim (int): the dimension in output of the actor.
+        actions_dim (Sequence[int]): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
@@ -192,7 +198,7 @@ class Actor(nn.Module):
     def __init__(
         self,
         latent_state_size: int,
-        action_dim: int,
+        actions_dim: Sequence[int],
         is_continuous: bool,
         init_std: float = 0.0,
         min_std: float = 0.1,
@@ -217,17 +223,17 @@ class Actor(nn.Module):
                 self.distribution = "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
-            output_dim=action_dim * 2 if is_continuous else action_dim,
+            output_dim=np.sum(actions_dim) * 2 if is_continuous else np.sum(actions_dim),
             hidden_sizes=[dense_units] * mlp_layers,
             activation=dense_act,
             flatten_dim=None,
         )
-        self.action_dim = action_dim
+        self.actions_dim = actions_dim
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
 
-    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Tensor, Distribution]:
+    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -260,13 +266,19 @@ class Actor(nn.Module):
                 sample = actions_dist.sample((100,))
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+            actions = [actions]
+            actions_dist = [actions_dist]
         else:
-            actions_dist = OneHotCategoricalStraightThrough(logits=out)
-            if is_training:
-                actions = actions_dist.rsample()
-            else:
-                actions = actions_dist.mode
-        return actions, actions_dist
+            actions_logits = torch.split(out, self.actions_dim, -1)
+            actions_dist: List[Distribution] = []
+            actions: List[Tensor] = []
+            for logits in actions_logits:
+                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+                if is_training:
+                    actions.append(actions_dist[-1].rsample())
+                else:
+                    actions.append(actions_dist[-1].mode)
+        return tuple(actions), tuple(actions_dist)
 
 
 class WorldModel(nn.Module):
@@ -306,7 +318,7 @@ class Player(nn.Module):
         recurrent_model (_FabricModule): the recurrent model.
         representation_model (_FabricModule): the representation model.
         actor (_FabricModule): the actor.
-        action_dim (int): the dimension of the actions.
+        actions_dim (Sequence[int]): the dimension of the actions.
         expl_amout (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
@@ -323,7 +335,7 @@ class Player(nn.Module):
         recurrent_model: _FabricModule,
         representation_model: _FabricModule,
         actor: _FabricModule,
-        action_dim: int,
+        actions_dim: Sequence[int],
         expl_amount: float,
         num_envs: int,
         stochastic_size: int,
@@ -338,7 +350,7 @@ class Player(nn.Module):
         self.actor = actor
         self.device = device
         self.expl_amount = expl_amount
-        self.action_dim = action_dim
+        self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
@@ -349,7 +361,7 @@ class Player(nn.Module):
         """
         Initialize the states and the actions for the ended environments.
         """
-        self.actions = torch.zeros(1, self.num_envs, self.action_dim, device=self.device)
+        self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
         self.stochastic_state = torch.zeros(
             1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
         )
@@ -367,14 +379,22 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         actions = self.get_greedy_action(obs)
-        if is_continuous and self.expl_amount > 0.0:
-            actions = torch.clip(Normal(actions, self.expl_amount).sample(), -1, 1)
+        if is_continuous:
+            self.actions = torch.cat(actions, -1)
+            if self.expl_amount > 0.0:
+                self.actions = torch.clip(Normal(self.actions, self.expl_amount).sample(), -1, 1)
+            expl_actions = [self.actions]
         else:
-            sample = OneHotCategorical(logits=torch.zeros_like(actions)).sample().to(self.device)
-            actions = torch.where(torch.rand(actions.shape[:1], device=self.device) < self.expl_amount, sample, actions)
-        return actions
+            expl_actions = []
+            for act in actions:
+                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(self.device)
+                expl_actions.append(
+                    torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
+                )
+            self.actions = torch.cat(expl_actions, -1)
+        return tuple(expl_actions)
 
-    def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Tensor:
+    def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Sequence[Tensor]:
         """
         Return the greedy actions.
 
@@ -387,7 +407,7 @@ class Player(nn.Module):
             The actions the agent has to perform.
         """
         embedded_obs: Tensor = cnn_forward(self.encoder, obs.clone(), obs.shape[-3:], (-1,))
-        _, self.recurrent_state = self.recurrent_model(
+        self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
@@ -395,13 +415,14 @@ class Player(nn.Module):
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        self.actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
-        return self.actions
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        self.actions = torch.cat(actions, -1)
+        return actions
 
 
 def build_models(
     fabric: Fabric,
-    action_dim: int,
+    actions_dim: Sequence[int],
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: DreamerV2Args,
@@ -413,7 +434,7 @@ def build_models(
 
     Args:
         fabric (Fabric): the fabric object.
-        action_dim (int): the dimension of the actions.
+        actions_dim (Sequence[int]): the dimension of the actions.
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
         args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
@@ -456,7 +477,7 @@ def build_models(
     with torch.no_grad():
         encoder_output_size = encoder(torch.zeros(*observation_shape)).shape[-1]
     stochastic_size = args.stochastic_size * args.discrete_size
-    recurrent_model = RecurrentModel(action_dim + stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(np.sum(actions_dim) + stochastic_size, args.recurrent_state_size, args.dense_units)
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder_output_size,
         output_dim=stochastic_size,
@@ -517,7 +538,7 @@ def build_models(
     )
     actor = Actor(
         stochastic_size + args.recurrent_state_size,
-        action_dim,
+        actions_dim,
         is_continuous,
         args.actor_init_std,
         args.actor_min_std,

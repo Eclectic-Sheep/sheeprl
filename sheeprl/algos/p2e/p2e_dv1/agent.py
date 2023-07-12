@@ -1,5 +1,6 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
@@ -13,7 +14,7 @@ from sheeprl.utils.utils import init_weights
 
 def build_models(
     fabric: Fabric,
-    action_dim: int,
+    actions_dim: Sequence[int],
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: P2EArgs,
@@ -79,7 +80,7 @@ def build_models(
         observation_shape=observation_shape,
     )
 
-    recurrent_model = RecurrentModel(action_dim + args.stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(np.sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.output_size,
         output_dim=args.stochastic_size * 2,
@@ -139,7 +140,7 @@ def build_models(
     )
     actor_task = Actor(
         args.stochastic_size + args.recurrent_state_size,
-        action_dim,
+        actions_dim,
         is_continuous,
         args.actor_mean_scale,
         args.actor_init_std,
@@ -160,7 +161,7 @@ def build_models(
 
     actor_exploration = Actor(
         args.stochastic_size + args.recurrent_state_size,
-        action_dim,
+        actions_dim,
         is_continuous,
         args.actor_mean_scale,
         args.actor_init_std,

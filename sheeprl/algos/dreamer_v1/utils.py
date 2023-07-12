@@ -9,6 +9,8 @@ from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, Normal
 
+from sheeprl.utils.utils import get_dummy_env
+
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v1.agent import Player
 
@@ -41,10 +43,13 @@ def make_env(
     Returns:
         The callable function that initializes the environment.
     """
-    if "dmc" in env_id.lower():
+    _env_id = env_id.lower()
+    if "dummy" in _env_id:
+        env = get_dummy_env(_env_id)
+    elif "dmc" in _env_id:
         from sheeprl.envs.dmc import DMCWrapper
 
-        _, domain, task = env_id.lower().split("_")
+        _, domain, task = _env_id.split("_")
         env = DMCWrapper(
             domain,
             task,
@@ -54,7 +59,7 @@ def make_env(
             frame_skip=args.action_repeat,
             seed=seed,
         )
-    elif "minedojo" in env_id.lower():
+    elif "minedojo" in _env_id:
         from sheeprl.envs.minedojo import MineDojoWrapper
 
         task_id = "_".join(env_id.split("_")[1:])
@@ -238,13 +243,14 @@ def test(player: "Player", fabric: Fabric, args: DreamerV1Args, test_name: str =
     player.init_states()
     while not done:
         # Act greedly through the environment
-        action = player.get_greedy_action(next_obs / 255 - 0.5, False).cpu().numpy()
+        action = player.get_greedy_action(next_obs / 255 - 0.5, False)
+        if not player.actor.is_continuous:
+            action = np.array([act.cpu().argmax() for act in action])
+        else:
+            action = action[0].cpu().numpy()
 
         # Single environment step
-        if player.actor.is_continuous:
-            next_obs, reward, done, truncated, _ = env.step(action[0, 0])
-        else:
-            next_obs, reward, done, truncated, _ = env.step(action.argmax())
+        next_obs, reward, done, truncated, _ = env.step(action.reshape(env.action_space.shape))
         done = done or truncated or args.dry_run
         cumulative_rew += reward
         next_obs = torch.tensor(next_obs, device=fabric.device).view(1, 1, *env.observation_space.shape)

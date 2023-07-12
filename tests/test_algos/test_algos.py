@@ -424,7 +424,7 @@ def test_ppo_pixel_continuous(standard_args, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["AdventureNoFrameskip-v4", "CarRacing-v2"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.dreamer_v1.dreamer_v1")
@@ -439,6 +439,7 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
+        "--horizon=2",
         "--env_id=" + env_id,
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,
@@ -473,7 +474,7 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["AdventureNoFrameskip-v4", "CarRacing-v2"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.p2e.p2e_dv1.p2e_dv1")
@@ -488,6 +489,7 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
+        "--horizon=2",
         "--env_id=" + env_id,
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,
@@ -528,7 +530,7 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["AdventureNoFrameskip-v4", "CarRacing-v2"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
@@ -543,6 +545,7 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
+        "--horizon=2",
         "--env_id=" + env_id,
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,

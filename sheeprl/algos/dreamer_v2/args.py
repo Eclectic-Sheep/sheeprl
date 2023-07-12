@@ -26,7 +26,7 @@ class DreamerV2Args(StandardArgs):
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
     checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
     buffer_type: str = Arg(
-        default="episode",
+        default="sequential",
         help="which buffer to use: `sequential` or `episode`. The `episode` "
         "buffer will save an entire episode, while the sequential will save every step.",
     )
@@ -74,7 +74,7 @@ class DreamerV2Args(StandardArgs):
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
-        default="ReLU",
+        default="ELU",
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
