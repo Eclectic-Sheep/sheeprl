@@ -63,7 +63,7 @@ class MineRLWrapper(core.Env):
         if "navigate" not in task_id.lower():
             kwargs.pop("extreme", None)
 
-        self._env = CUSTOM_ENVS[task_id.lower()](break_speed=break_speed_multiplier, **kwargs)
+        self._env = CUSTOM_ENVS[task_id.lower()](break_speed=break_speed_multiplier, **kwargs).make()
         self.ACTIONS_MAP = {0: {}}
         act_idx = 1
         for act in self._env.action_space:
