@@ -126,7 +126,8 @@ class MultiDecoder(nn.Module):
                 ),
             )
         if self.mlp_keys != []:
-            self.mlp_decoder = MLP(latent_state_size, mlp_output_dim, [dense_units] * mlp_layers, activation=mlp_act)
+            self.mlp_decoder = MLP(latent_state_size, None, [dense_units] * mlp_layers, activation=mlp_act)
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.mlp_splits])
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
@@ -139,9 +140,7 @@ class MultiDecoder(nn.Module):
             )
         if self.mlp_keys != []:
             mlp_out = self.mlp_decoder(latent_states)
-            reconstructed_obs.update(
-                {k: rec_obs for k, rec_obs in zip(self.mlp_keys, torch.split(mlp_out, self.mlp_splits, -1))}
-            )
+            reconstructed_obs.update({k: head(mlp_out) for k, head in zip(self.mlp_keys, self.mlp_heads)})
         return reconstructed_obs
 
 
