@@ -191,11 +191,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update(
         "State/p_entropy",
-        OneHotCategorical(logits=posteriors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
         "State/q_entropy",
-        OneHotCategorical(logits=priors_logits.detach()).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
     if is_exploring:
@@ -674,6 +674,7 @@ def main():
                 "Grads/ensemble": MeanMetric(sync_on_compute=False),
             }
         )
+    aggregator.to(device)
 
     # Local data
     buffer_size = (
@@ -781,13 +782,13 @@ def main():
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
         # Save stats
-        with jsonlines.open(stats_filename, mode="a+") as writer:
+        with jsonlines.open(stats_filename, mode="a") as writer:
             writer.write(
                 {
                     "life_stats": infos["life_stats"],
                     "location_stats": infos["location_stats"],
                     "action": real_actions.tolist(),
-                    "biomeid": infos["biomeid"]
+                    "biomeid": infos["biomeid"],
                 }
             )
 
