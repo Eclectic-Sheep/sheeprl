@@ -5,7 +5,7 @@ import gymnasium as gym
 import torch
 import torch.nn as nn
 from torch import Tensor
-
+from torch.utils._device import _device_constructors
 from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper
 
 
