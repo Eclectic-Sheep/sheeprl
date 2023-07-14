@@ -23,5 +23,11 @@ try:
 except ModuleNotFoundError:
     pass
 
+# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
+import numpy as np
+
+np.float = np.float32
+np.int = np.int64
+np.bool = bool
 
 __version__ = "0.1.0"

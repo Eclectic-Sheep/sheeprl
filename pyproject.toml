@@ -57,6 +57,7 @@ atari = [
   "gymnasium[other]==0.28.*",
 ]
 minedojo = ["minedojo==0.1"]
+minerl = ["minerl==0.4.4"]
 
 [tool.ruff]
 line-length = 120

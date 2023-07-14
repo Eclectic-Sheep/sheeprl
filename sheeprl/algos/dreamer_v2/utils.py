@@ -85,6 +85,22 @@ def make_env(
             start_position=start_position,
         )
         args.action_repeat = 1
+    elif "minerl" in _env_id:
+        from sheeprl.envs.minerl import MineRLWrapper
+
+        task_id = "_".join(env_id.split("_")[1:])
+        env = MineRLWrapper(
+            task_id,
+            height=64,
+            width=64,
+            pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
+            seed=args.seed,
+            break_speed_multiplier=args.mine_break_speed,
+            sticky_attack=args.mine_sticky_attack,
+            sticky_jump=args.mine_sticky_jump,
+            dense=args.minerl_dense,
+            extreme=args.minerl_extreme,
+        )
     else:
         env_spec = gym.spec(env_id).entry_point
         env = gym.make(env_id, render_mode="rgb_array")

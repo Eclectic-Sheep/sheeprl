@@ -9,9 +9,7 @@ The code for this section is available in `algos/ppo_pixel/ppo_atari.py`.
 First we should install the Atari environments with:
 
 ```bash
-pip install gymnasium[other]
-pip install gymnasium[atari]
-pip install gymnasium[accept-rom-license]
+pip install .[atari]
 ```
 
 For more information: https://gymnasium.farama.org/environments/atari/ 
@@ -154,14 +152,19 @@ Options:
   --sheeprl_help  Show this message and exit.
 
 Commands:
+  dreamer_v1
+  dreamer_v2
   droq
+  p2e_dv1
   ppo
   ppo_atari
   ppo_continuous
   ppo_decoupled
+  ppo_pixel_continuous
   ppo_recurrent
   sac
   sac_decoupled
+  sac_pixel_continuous
 ```
 
 Once this is done, we are all set. We can now train the model by running:
