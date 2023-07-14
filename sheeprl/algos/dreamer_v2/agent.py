@@ -374,13 +374,17 @@ class Actor(nn.Module):
                 self.distribution = "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
-            output_dim=np.sum(actions_dim) * 2 if is_continuous else np.sum(actions_dim),
+            output_dim=None,
             hidden_sizes=[dense_units] * mlp_layers,
             activation=dense_act,
             flatten_dim=None,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
         )
+        if is_continuous:
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
+        else:
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
         self.actions_dim = actions_dim
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
@@ -401,8 +405,9 @@ class Actor(nn.Module):
             The distribution of the actions
         """
         out: Tensor = self.model(state)
+        pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
         if self.is_continuous:
-            mean, std = torch.chunk(out, 2, -1)
+            mean, std = torch.chunk(pre_dist[0], 2, -1)
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
@@ -424,10 +429,9 @@ class Actor(nn.Module):
             actions = [actions]
             actions_dist = [actions_dist]
         else:
-            actions_logits = torch.split(out, self.actions_dim, -1)
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
-            for logits in actions_logits:
+            for logits in pre_dist:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
@@ -478,7 +482,7 @@ class MinedojoActor(Actor):
             The distribution of the actions
         """
         out: Tensor = self.model(state)
-        actions_logits = torch.split(out, self.actions_dim, -1)
+        actions_logits: List[Tensor] = [head(out) for head in self.mlp_heads]
         actions_dist: List[Distribution] = []
         actions: List[Tensor] = []
         functional_action = None
