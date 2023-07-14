@@ -12,7 +12,7 @@ sudo update-alternatives --config java
 
 > **Note**
 >
-> If you work on another OS, you can follow the instructions [here](https://docs.minedojo.org/sections/getting_started/install.html#on-macos){:target="_blank"} to install JDK 1.8.
+> If you work on another OS, you can follow the instructions [here](https://docs.minedojo.org/sections/getting_started/install.html#on-macos) to install JDK 1.8.
 
 Now, you can install the MineDojo environment:
 
@@ -25,7 +25,7 @@ It is possible to train your agents on all the tasks provided by MineDojo, you n
 For instance, you have to set the `env_id` argument to `"minedojo_open-ended"` to select the MineDojo open-ended environment.
 
 ### Observation Space
-We slightly modified the observation space, by reshaping it (based on the idea proposed by Hafner in [DreamerV3](https://arxiv.org/abs/2301.04104){:target="_blank"}):
+We slightly modified the observation space, by reshaping it (based on the idea proposed by Hafner in [DreamerV3](https://arxiv.org/abs/2301.04104)):
 - We represent the inventory with a vector with one entry for each item of the game which gives the quantity of the corresponding item in the inventory.
 - A max inventory vector with one entry for each item which contains the maximum number of items obtained by the agent so far in the episode.
 - A delta inventory vector with one entry for each item which contains the difference of the items in the inventory after the performed action.
@@ -51,4 +51,4 @@ Finally we added sticky action for the `jump` and `attack` actions. You can set 
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
 1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py dreamer_v2 --env_id=minedojo_open-ended`, or `MINEDOJO_HEADLESS=1 lightning run model --devices=1 sheeprl.py dreamer_v2 --env_id=minedojo_open-ended`.
-2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay){:target="_blank"} package.
+2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.
