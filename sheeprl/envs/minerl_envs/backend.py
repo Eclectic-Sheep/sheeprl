@@ -1,5 +1,4 @@
-# Copyright (c) 2020 All Rights Reserved
-# Author: William H. Guss, Brandon Houghton
+# adapted from https://github.com/minerllabs/minerl
 
 from abc import ABC
 from typing import List
@@ -45,6 +44,7 @@ class CustomSimpleEmbodimentEnvSpec(EnvSpec, ABC):
         return []  # No base monitor needed
 
 
+# adapted from https://github.com/danijar/diamond_env
 class BreakSpeedMultiplier(handler.Handler):
     def __init__(self, multiplier=1.0):
         self.multiplier = multiplier

@@ -1,5 +1,4 @@
-# Copyright (c) 2020 All Rights Reserved
-# Author: William H. Guss, Brandon Houghton
+# adapted from https://github.com/minerllabs/minerl
 
 from typing import Dict, List, Union
 
