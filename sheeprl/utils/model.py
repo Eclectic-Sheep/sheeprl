@@ -162,10 +162,9 @@ class LayerNormChannelLast(nn.LayerNorm):
         super().__init__(*args, **kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.dim() > 2:
-            x = x.transpose(-1, 1)
-            x = super().forward(x)
-            x = x.transpose(-1, 1)
-            return x
-        else:
-            return super().forward(x)
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
