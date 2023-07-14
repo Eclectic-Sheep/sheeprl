@@ -10,7 +10,6 @@ from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
-from sheeprl.envs.minerl import MineRLWrapper
 from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
@@ -87,6 +86,8 @@ def make_env(
         )
         args.action_repeat = 1
     elif "minerl" in _env_id:
+        from sheeprl.envs.minerl import MineRLWrapper
+
         task_id = "_".join(env_id.split("_")[1:])
         env = MineRLWrapper(
             task_id,
