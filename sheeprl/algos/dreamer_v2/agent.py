@@ -100,7 +100,6 @@ class MultiDecoder(nn.Module):
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         cnn_channels_multiplier: int,
-        mlp_output_dim: int,
         latent_state_size: int,
         cnn_decoder_input_dim: int,
         cnn_decoder_output_dim: Tuple[int, int, int],
@@ -144,7 +143,14 @@ class MultiDecoder(nn.Module):
                 ),
             )
         if self.mlp_keys != []:
-            self.mlp_decoder = MLP(latent_state_size, None, [dense_units] * mlp_layers, activation=mlp_act)
+            self.mlp_decoder = MLP(
+                latent_state_size,
+                None,
+                [dense_units] * mlp_layers,
+                activation=mlp_act,
+                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            )
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.mlp_splits])
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
@@ -755,7 +761,6 @@ def build_models(
         cnn_keys,
         mlp_keys,
         args.cnn_channels_multiplier,
-        encoder.mlp_input_dim,
         args.stochastic_size * args.discrete_size + args.recurrent_state_size,
         encoder.cnn_output_dim,
         encoder.cnn_input_dim,
@@ -773,7 +778,7 @@ def build_models(
         activation=dense_act,
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.hidden_size} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     if args.use_continues:
         continue_model = MLP(
