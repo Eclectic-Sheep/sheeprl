@@ -1,12 +1,12 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
-from sheeprl.algos.args import StandardArgs
+from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.utils.parser import Arg
 
 
 @dataclass
-class DreamerV2Args(StandardArgs):
+class DreamerV3Args(DreamerV2Args):
     env_id: str = Arg(default="dmc_walker_walk", help="the id of the environment")
 
     # Experiment settings
@@ -44,14 +44,11 @@ class DreamerV2Args(StandardArgs):
     discrete_size: int = Arg(default=32, help="the dimension of the discrete state")
     hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
     recurrent_state_size: int = Arg(default=200, help="the dimension of the recurrent state")
-    kl_balancing_alpha: float = Arg(default=0.8, help="the value for the kl-balancing alpha")
+    kl_dynamic: float = Arg(default=0.5, help="the regularizer for the KL dynamic loss")
+    kl_representation: float = Arg(default=0.1, help="the regularizer for the KL representation loss")
     kl_free_nats: float = Arg(default=1.0, help="the minimum value for the kl divergence")
-    kl_free_avg: bool = Arg(default=True, help="whether to apply free average")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
     continue_scale_factor: float = Arg(default=1.0, help="the scale factor for the continue loss")
-    min_std: float = Arg(
-        default=0.1, help="the minimum value of the standard deviation for the stochastic state distribution"
-    )
     actor_ent_coef: float = Arg(default=1e-4, help="the entropy coefficient for the actor loss")
     actor_init_std: float = Arg(
         default=0.0, help="the amout to sum to the input of the function of the standard deviation of the actions"
@@ -70,14 +67,24 @@ class DreamerV2Args(StandardArgs):
     )
     cnn_channels_multiplier: int = Arg(default=48, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
-        default="ELU",
+        default="SiLU",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
-        default="ReLU",
+        default="SiLU",
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
-    critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
+    critic_target_network_update_freq: int = Arg(default=1, help="the frequency to update the target critic network")
+    layer_norm: bool = Arg(
+        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
+    )
+    critic_tau: float = Arg(
+        default=0.02,
+        help="tau value to be used for the EMA critic update: `critic_param * tau + (1 - tau) * target_critic_param`",
+    )
+    unimix: float = Arg(
+        default=0.01, help="whether to use a mix of uniform and categorical for the stochastic state distribution"
+    )
 
     # Environment settings
     expl_amount: float = Arg(default=0.0, help="the exploration amout to add to the actions")
@@ -94,3 +101,19 @@ class DreamerV2Args(StandardArgs):
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )
+    mine_min_pitch: int = Arg(default=-60, help="The minimum value of pitch in Minecraft environmnets.")
+    mine_max_pitch: int = Arg(default=60, help="The maximum value of pitch in Minecraft environmnets.")
+    mine_start_position: Optional[List[str]] = Arg(
+        default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
+    )
+    minerl_dense: bool = Arg(default=False, help="whether or not the task has dense reward")
+    minerl_extreme: bool = Arg(default=False, help="whether or not the task is extreme")
+    mine_break_speed: int = Arg(default=100, help="the break speed multiplier of Minecraft environments")
+    mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
+    mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")

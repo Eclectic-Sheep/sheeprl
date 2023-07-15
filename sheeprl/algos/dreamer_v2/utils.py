@@ -10,10 +10,11 @@ from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
+from sheeprl.envs.minerl import MineRLWrapper
 from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
-    from sheeprl.algos.dreamer_v2.agent import Player
+    from sheeprl.algos.dreamer_v3.agent import Player
 
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.envs.wrappers import ActionRepeat
@@ -35,7 +36,7 @@ def make_env(
         env_id (str): the id of the environment to initialize.
         seed (int): the seed to use.
         rank (int): the rank of the process.
-        args (DreamerV2Args): the configs of the experiment.
+        args (DreamerV3Args): the configs of the experiment.
         run_name (str, optional): the name of the run.
             Default to None.
         prefix (str): the prefix to add to the video folder.
@@ -86,8 +87,6 @@ def make_env(
         )
         args.action_repeat = 1
     elif "minerl" in _env_id:
-        from sheeprl.envs.minerl import MineRLWrapper
-
         task_id = "_".join(env_id.split("_")[1:])
         env = MineRLWrapper(
             task_id,
@@ -184,10 +183,7 @@ def make_env(
     return env
 
 
-def compute_stochastic_state(
-    logits: Tensor,
-    discrete: int = 32,
-) -> Tensor:
+def compute_stochastic_state(logits: Tensor, discrete: int = 32, unimix: float = 0.0) -> Tensor:
     """
     Compute the stochastic state from the logits computed by the transition or representaiton model.
 
@@ -200,6 +196,11 @@ def compute_stochastic_state(
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
+    if unimix > 0.0:
+        probs = logits.softmax(dim=-1)
+        uniform = torch.ones_like(probs) / discrete
+        probs = (1 - unimix) * probs + unimix * uniform
+        logits = torch.log(probs)
     dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
     return dist.rsample()
 
@@ -218,6 +219,23 @@ def init_weights(m: nn.Module):
             nn.init.constant_(m.bias.data, 0)
     elif isinstance(m, nn.Linear):
         nn.init.xavier_normal_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)
+
+
+def zero_init_weights(m: nn.Module):
+    """
+    Initialize the parameters of the m module acording to the Xavier
+    normal method.
+
+    Args:
+        m (nn.Module): the module to be initialized.
+    """
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        nn.init.zeros_(m.weight.data)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.zeros_(m.weight.data)
         nn.init.constant_(m.bias.data, 0)
 
 

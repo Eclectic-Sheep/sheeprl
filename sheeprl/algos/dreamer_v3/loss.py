@@ -1,21 +1,21 @@
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, OneHotCategoricalStraightThrough
+from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
 
 
 def reconstruction_loss(
-    po: Distribution,
+    po: Dict[str, Distribution],
     observations: Tensor,
     pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
     posteriors_logits: Tensor,
-    kl_balancing_alpha: float = 0.8,
-    kl_free_nats: float = 0.0,
-    kl_free_avg: bool = True,
+    kl_dynamic: float = 0.5,
+    kl_representation: float = 0.1,
+    kl_free_nats: float = 1.0,
     kl_regularizer: float = 1.0,
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
@@ -25,16 +25,18 @@ def reconstruction_loss(
     Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     Args:
-        po (Distribution): the distribution returned by the observation_model (decoder).
+        po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
         observations (Tensor): the observations provided by the environment.
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
         posteriors_logits (Tensor): the logits of the posterior.
-        kl_balancing_alpha (float): the kl-balancing alpha value.
-            Defaults to 0.8.
+        kl_dynamic (float): the kl-balancing dynamic loss regularizer.
+            Defaults to 0.5.
+        kl_balancing_alpha (float): the kl-balancing representation loss regularizer.
+            Defaults to 0.1.
         kl_free_nats (float): lower bound of the KL divergence.
-            Default to 0.0.
+            Default to 1.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
         pc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
@@ -53,28 +55,24 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    device = observations.device
-    observation_loss = -po.log_prob(observations).mean()
-    reward_loss = -pr.log_prob(rewards).mean()
+    device = rewards.device
+    observation_loss = -sum([po[k].log_prob(observations[k]) for k in po.keys()])
+    reward_loss = -pr.log_prob(rewards)
     # KL balancing
-    lhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()),
-        OneHotCategoricalStraightThrough(logits=priors_logits),
+    kl_free_nats = torch.tensor([kl_free_nats], device=device)
+    dyn_loss = kl_divergence(
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
-    rhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits),
-        OneHotCategoricalStraightThrough(logits=priors_logits.detach()),
+    dyn_loss = kl_dynamic * torch.maximum(dyn_loss, kl_free_nats)
+    repr_loss = kl_divergence(
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
     )
-    kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
-    if kl_free_avg:
-        loss_lhs = torch.maximum(lhs.mean(), kl_free_nats)
-        loss_rhs = torch.maximum(rhs.mean(), kl_free_nats)
-    else:
-        loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
-        loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
-    kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
-    continue_loss = torch.tensor(0, device=device)
+    repr_loss = kl_representation * torch.maximum(repr_loss, kl_free_nats)
+    kl_loss = dyn_loss + repr_loss
+    continue_loss = torch.tensor(0.0, device=device)
     if pc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
-    reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
-    return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
+        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets)
+    reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
+    return reconstruction_loss, kl_loss.mean(), reward_loss.mean(), observation_loss.mean(), continue_loss.mean()
