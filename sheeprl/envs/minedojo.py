@@ -34,6 +34,16 @@ ACTION_MAP = {
 ITEM_ID_TO_NAME = dict(enumerate(ALL_ITEMS))
 ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
 
+# Minedojo functional actions:
+# 0: noop
+# 1: use
+# 2: drop
+# 3: attack
+# 4: craft
+# 5: equip
+# 6: place
+# 7: destroy
+
 
 class MineDojoWrapper(core.Env):
     def __init__(
@@ -69,14 +79,13 @@ class MineDojoWrapper(core.Env):
             world_seed=seed,
             start_position=self._pos,
             generate_world_type="default",
-            allow_mob_spawn=False,
-            allow_time_passage=False,
             fast_reset=True,
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
         self._inventory = {}
         self._inventory_names = None
+        self._inventory_max = np.zeros(N_ALL_ITEMS)
         self.action_space = gym.spaces.MultiDiscrete(
             np.array([len(ACTION_MAP.keys()), len(ALL_CRAFT_SMELT_ITEMS), N_ALL_ITEMS])
         )
@@ -84,11 +93,13 @@ class MineDojoWrapper(core.Env):
             {
                 "rgb": gym.spaces.Box(0, 255, self._env.observation_space["rgb"].shape, np.uint8),
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+                "inventory_max": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+                "inventory_delta": gym.spaces.Box(-np.inf, np.inf, (N_ALL_ITEMS,), np.float32),
                 "equipment": gym.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32),
                 "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
                 "mask_action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), bool),
                 "mask_equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
-                "mask_desrtoy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
+                "mask_destroy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
                 "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), bool),
             }
         )
@@ -102,23 +113,41 @@ class MineDojoWrapper(core.Env):
         # the inventory counts, as a vector with one entry for each Minecraft item
         converted_inventory = np.zeros(N_ALL_ITEMS)
         self._inventory = {}  # map for each item the position in the inventory
-        self._inventory_names = inventory["name"].copy()  # names of the objects in the inventory
+        self._inventory_names = np.array(
+            ["_".join(item.split(" ")) for item in inventory["name"].copy().tolist()]
+        )  # names of the objects in the inventory
         for i, (item, quantity) in enumerate(zip(inventory["name"], inventory["quantity"])):
+            item = "_".join(item.split(" "))
             # save all the position of the items in the inventory
             if item not in self._inventory:
                 self._inventory[item] = [i]
             else:
                 self._inventory[item].append(i)
             # count the items in the inventory
-            if item == "air":
-                converted_inventory[ITEM_NAME_TO_ID[item]] += 1
-            else:
-                converted_inventory[ITEM_NAME_TO_ID[item]] += quantity
+            converted_inventory[ITEM_NAME_TO_ID[item]] += quantity
+        self._inventory_max = np.maximum(converted_inventory, self._inventory_max)
         return converted_inventory
+
+    def _convert_inventory_delta(self, inventory_delta: Dict[str, Any]) -> np.ndarray:
+        # the inventory counts, as a vector with one entry for each Minecraft item
+        converted_inventory_delta = np.zeros(N_ALL_ITEMS)
+        for item, quantity in zip(inventory_delta["inc_name_by_craft"], inventory_delta["inc_quantity_by_craft"]):
+            item = "_".join(item.split(" "))
+            converted_inventory_delta[ITEM_NAME_TO_ID[item]] += quantity
+        for item, quantity in zip(inventory_delta["dec_name_by_craft"], inventory_delta["dec_quantity_by_craft"]):
+            item = "_".join(item.split(" "))
+            converted_inventory_delta[ITEM_NAME_TO_ID[item]] -= quantity
+        for item, quantity in zip(inventory_delta["inc_name_by_other"], inventory_delta["inc_quantity_by_other"]):
+            item = "_".join(item.split(" "))
+            converted_inventory_delta[ITEM_NAME_TO_ID[item]] += quantity
+        for item, quantity in zip(inventory_delta["dec_name_by_other"], inventory_delta["dec_quantity_by_other"]):
+            item = "_".join(item.split(" "))
+            converted_inventory_delta[ITEM_NAME_TO_ID[item]] -= quantity
+        return converted_inventory_delta
 
     def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
         equip = np.zeros(N_ALL_ITEMS, dtype=np.int32)
-        equip[ITEM_NAME_TO_ID[equipment["name"][0]]] = 1
+        equip[ITEM_NAME_TO_ID["_".join(equipment["name"][0].split(" "))]] = 1
         return equip
 
     def _convert_masks(self, masks: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -128,10 +157,12 @@ class MineDojoWrapper(core.Env):
             idx = ITEM_NAME_TO_ID[item]
             equip_mask[idx] = eqp_mask
             destroy_mask[idx] = dst_mask
+        masks["action_type"][5:7] *= np.any(equip_mask).item()
+        masks["action_type"][7] *= np.any(destroy_mask).item()
         return {
             "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
             "mask_equip/place": equip_mask,
-            "mask_desrtoy": destroy_mask,
+            "mask_destroy": destroy_mask,
             "mask_craft_smelt": masks["craft_smelt"],
         }
 
@@ -180,6 +211,8 @@ class MineDojoWrapper(core.Env):
         return {
             "rgb": obs["rgb"].copy(),
             "inventory": self._convert_inventory(obs["inventory"]),
+            "inventory_max": self._inventory_max,
+            "inventory_delta": self._convert_inventory_delta(obs["delta_inv"]),
             "equipment": self._convert_equipment(obs["equipment"]),
             "life_stats": np.concatenate(
                 (obs["life_stats"]["life"], obs["life_stats"]["food"], obs["life_stats"]["oxygen"])
@@ -229,6 +262,9 @@ class MineDojoWrapper(core.Env):
             "pitch": float(obs["location_stats"]["pitch"].item()),
             "yaw": float(obs["location_stats"]["yaw"].item()),
         }
+        self._sticky_jump_counter = 0
+        self._sticky_attack_counter = 0
+        self._inventory_max = np.zeros(N_ALL_ITEMS)
         return self._convert_obs(obs), {
             "life_stats": {
                 "life": float(obs["life_stats"]["life"].item()),

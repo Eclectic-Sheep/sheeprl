@@ -5,7 +5,6 @@ import collections
 from itertools import repeat
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -291,65 +290,9 @@ class LayerNormChannelLast(nn.LayerNorm):
         super().__init__(*args, **kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.dim() == 4:
-            x = x.permute(0, 2, 3, 1)
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        x = x.permute(0, 2, 3, 1)
         x = super().forward(x)
-        return x.permute(0, 3, 1, 2)
-
-
-class LayerNormGRUCell(nn.Module):
-    def __init__(
-        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
-    ) -> None:
-        super().__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.bias = bias
-        self.batch_first = batch_first
-        self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
-        if layer_norm:
-            self.layer_norm = torch.nn.LayerNorm(hidden_size)
-        else:
-            self.layer_norm = nn.Identity()
-
-    def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:
-        is_3d = False
-        if input.dim() == 3:
-            is_3d = True
-            if input.shape[int(self.batch_first)] == 1:
-                input = input.squeeze(int(self.batch_first))
-            else:
-                raise AssertionError(
-                    "LayerNormGRUCell: Expected input to be 3-D with sequence length equal to 1 but received "
-                    f"a sequence of length {input.shape[int(self.batch_first)]}"
-                )
-        if hx.dim() == 3:
-            hx = hx.squeeze(0)
-        assert input.dim() in (1, 2), (
-            f"LayerNormGRUCell: Expected input to be 1-D or 2-D " "but received {input.dim()}-D tensor"
-        )
-
-        is_batched = input.dim() == 2
-        if not is_batched:
-            input = input.unsqueeze(0)
-
-        if hx is None:
-            hx = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
-        else:
-            hx = hx.unsqueeze(0) if not is_batched else hx
-
-        input = torch.cat((hx, input), -1)
-        x = self.linear(input)
-        x = self.layer_norm(x)
-        reset, cand, update = torch.chunk(x, 3, -1)
-        reset = torch.sigmoid(reset)
-        cand = torch.tanh(reset * cand)
-        update = torch.sigmoid(update - 1)
-        hx = update * cand + (1 - update) * hx
-
-        if not is_batched:
-            hx = hx.squeeze(0)
-        if is_3d:
-            hx = hx.unsqueeze(int(self.batch_first))
-
-        return hx, hx
+        x = x.permute(0, 3, 1, 2)
+        return x
