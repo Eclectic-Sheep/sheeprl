@@ -22,7 +22,7 @@ from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.model import ModuleType, LayerNormChannelLast
+from sheeprl.utils.model import LayerNormChannelLast, ModuleType
 
 
 class MultiEncoder(nn.Module):

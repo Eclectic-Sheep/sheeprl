@@ -3,8 +3,7 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 """
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-from torch import nn
-from torch import Tensor
+from torch import Tensor, nn
 
 ModuleType = Optional[Type[nn.Module]]
 ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
