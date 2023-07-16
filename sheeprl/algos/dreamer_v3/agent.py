@@ -18,11 +18,12 @@ from torch.distributions import (
 )
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, zero_init_weights
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.agent import RecurrentModel
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
+from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType
+from sheeprl.utils.model import Conv2dSame, LayerNormChannelLast, ModuleType
 
 
 class MultiEncoder(nn.Module):
@@ -34,8 +35,8 @@ class MultiEncoder(nn.Module):
         cnn_channels_multiplier: int,
         mlp_layers: int = 4,
         dense_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
-        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
+        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
         device: Union[str, torch.device] = "cpu",
         layer_norm: bool = False,
     ) -> None:
@@ -54,6 +55,7 @@ class MultiEncoder(nn.Module):
                 CNN(
                     input_channels=cnn_input_channels,
                     hidden_channels=(torch.tensor([1, 2, 4, 8]) * cnn_channels_multiplier).tolist(),
+                    cnn_layer=Conv2dSame,
                     layer_args={"kernel_size": 4, "stride": 2},
                     activation=cnn_act,
                     norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
@@ -105,8 +107,8 @@ class MultiDecoder(nn.Module):
         cnn_decoder_output_dim: Tuple[int, int, int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
-        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
+        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
         device: Union[str, torch.device] = "cpu",
         layer_norm: bool = False,
     ) -> None:
@@ -128,12 +130,7 @@ class MultiDecoder(nn.Module):
                     input_channels=cnn_decoder_input_dim,
                     hidden_channels=(torch.tensor([4, 2, 1]) * cnn_channels_multiplier).tolist()
                     + [cnn_decoder_output_dim[0]],
-                    layer_args=[
-                        {"kernel_size": 5, "stride": 2},
-                        {"kernel_size": 5, "stride": 2},
-                        {"kernel_size": 6, "stride": 2},
-                        {"kernel_size": 6, "stride": 2},
-                    ],
+                    layer_args={"kernel_size": 4, "stride": 2, "padding": 1},
                     activation=[cnn_act, cnn_act, cnn_act, None],
                     norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
                     norm_args=[{"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier} for i in range(3)]
@@ -168,55 +165,6 @@ class MultiDecoder(nn.Module):
         return reconstructed_obs
 
 
-class RecurrentModel(nn.Module):
-    """
-    Recurrent model for the model-base Dreamer agent.
-
-    Args:
-        input_size (int): the input size of the model.
-        dense_units (int): the number of dense units.
-        recurrent_state_size (int): the size of the recurrent state.
-        activation_fn (nn.Module): the activation function.
-            Default to ELU.
-        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
-            Defaults to True.
-    """
-
-    def __init__(
-        self,
-        input_size: int,
-        recurrent_state_size: int,
-        dense_units: int,
-        activation_fn: nn.Module = nn.ELU,
-        layer_norm: bool = False,
-    ) -> None:
-        super().__init__()
-        self.mlp = MLP(
-            input_dims=input_size,
-            output_dim=None,
-            hidden_sizes=[dense_units],
-            activation=activation_fn,
-            norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
-        )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=True)
-
-    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
-        """
-        Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
-
-        Args:
-            input (Tensor): the input tensor composed by the stochastic state and the actions concatenated together.
-            recurrent_state (Tensor): the previous recurrent state.
-
-        Returns:
-            the computed recurrent output and recurrent state.
-        """
-        feat = self.mlp(input)
-        out = self.rnn(feat, recurrent_state)
-        return out
-
-
 class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
@@ -228,8 +176,6 @@ class RSSM(nn.Module):
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
-        unimix (float, optional): the percentage of the uniform distribution over the categorical one for the stochastic state.
-            Defaults to 0.01.
     """
 
     def __init__(
@@ -237,7 +183,7 @@ class RSSM(nn.Module):
         recurrent_model: nn.Module,
         representation_model: nn.Module,
         transition_model: nn.Module,
-        discrete: Optional[int] = 32,
+        discrete: int = 32,
         unimix: float = 0.01,
     ) -> None:
         super().__init__()
@@ -294,8 +240,15 @@ class RSSM(nn.Module):
             logits (Tensor): the logits of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior stochastic state.
         """
-        logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        return logits, compute_stochastic_state(logits, discrete=self.discrete, unimix=self.unimix)
+        logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
+        if self.unimix > 0.0:
+            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
+            probs = logits.softmax(dim=-1)
+            uniform = torch.ones_like(probs) / self.discrete
+            probs = (1 - self.unimix) * probs + self.unimix * uniform
+            logits = torch.log(probs)
+            logits = logits.view(*logits.shape[:-2], -1)
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -306,8 +259,15 @@ class RSSM(nn.Module):
             logits (Tensor): the logits of the distribution of the prior state.
             prior (Tensor): the sampled prior stochastic state.
         """
-        logits = self.transition_model(recurrent_out)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete, unimix=self.unimix)
+        logits: Tensor = self.transition_model(recurrent_out)
+        if self.unimix > 0.0:
+            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
+            probs = logits.softmax(dim=-1)
+            uniform = torch.ones_like(probs) / self.discrete
+            probs = (1 - self.unimix) * probs + self.unimix * uniform
+            logits = torch.log(probs)
+            logits = logits.view(*logits.shape[:-2], -1)
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -344,7 +304,7 @@ class Actor(nn.Module):
         dense_units (int): the dimension of the hidden dense layers.
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
-            Default to nn.ELU.
+            Default to nn.SiLU.
         distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
             `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
             space is a discrete one, `trunc_normal` otherwise.
@@ -359,7 +319,7 @@ class Actor(nn.Module):
         init_std: float = 0.0,
         min_std: float = 0.1,
         dense_units: int = 400,
-        dense_act: nn.Module = nn.ELU,
+        dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
         layer_norm: bool = False,
@@ -455,7 +415,7 @@ class MinedojoActor(Actor):
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 400,
-        dense_act: nn.Module = nn.ELU,
+        dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
         layer_norm: bool = False,
@@ -569,8 +529,6 @@ class Player(nn.Module):
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
-        unimix (float, optional): the percentage of the uniform distribution over the categorical one for the stochastic state.
-            Defaults to 0.01.
     """
 
     def __init__(
@@ -586,7 +544,6 @@ class Player(nn.Module):
         recurrent_state_size: int,
         device: torch.device,
         discrete_size: int = 32,
-        unimix: float = 0.01,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -598,7 +555,6 @@ class Player(nn.Module):
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
-        self.unimix = unimix
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.init_states()
@@ -661,7 +617,7 @@ class Player(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
-        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size, unimix=self.unimix)
+        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
@@ -758,7 +714,6 @@ def build_models(
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),
         args.discrete_size,
-        args.unimix,
     )
     observation_model = MultiDecoder(
         obs_space,
@@ -800,7 +755,7 @@ def build_models(
         encoder.apply(init_weights),
         rssm,
         observation_model.apply(init_weights),
-        reward_model.apply(zero_init_weights),
+        reward_model.apply(init_weights),
         continue_model.apply(init_weights) if args.use_continues else None,
     )
     if "minedojo" in args.env_id:
@@ -839,7 +794,7 @@ def build_models(
         norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     actor.apply(init_weights)
-    critic.apply(zero_init_weights)
+    critic.apply(init_weights)
 
     # Load models from checkpoint
     if world_model_state:
