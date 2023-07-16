@@ -46,7 +46,7 @@ def reconstruction_loss(
     qc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 10.0,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 10 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
@@ -79,9 +79,10 @@ def reconstruction_loss(
     device = observations.device
     observation_loss = -qo.log_prob(observations).mean()
     reward_loss = -qr.log_prob(rewards).mean()
-    state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl_divergence(p, q).mean())
+    kl = kl_divergence(p, q).mean()
+    state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl)
     continue_loss = torch.tensor(0, device=device)
     if qc is not None and continue_targets is not None:
         continue_loss = continue_scale_factor * qc.log_prob(continue_targets)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
-    return reconstruction_loss, state_loss, reward_loss, observation_loss, continue_loss
+    return reconstruction_loss, kl, state_loss, reward_loss, observation_loss, continue_loss
