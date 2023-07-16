@@ -183,7 +183,7 @@ def make_env(
     return env
 
 
-def compute_stochastic_state(logits: Tensor, discrete: int = 32, unimix: float = 0.0) -> Tensor:
+def compute_stochastic_state(logits: Tensor, discrete: int = 32) -> Tensor:
     """
     Compute the stochastic state from the logits computed by the transition or representaiton model.
 
@@ -196,11 +196,6 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, unimix: float =
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    if unimix > 0.0:
-        probs = logits.softmax(dim=-1)
-        uniform = torch.ones_like(probs) / discrete
-        probs = (1 - unimix) * probs + unimix * uniform
-        logits = torch.log(probs)
     dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
     return dist.rsample()
 
