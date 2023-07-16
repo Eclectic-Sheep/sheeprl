@@ -323,3 +323,78 @@ class NatureCNN(CNN):
         x = self.model(x)
         x = F.relu(self.fc(x.flatten(1)))
         return x
+
+
+class LayerNormGRUCell(nn.Module):
+    """A GRU cell with a LayerNorm, taken
+    from https://github.com/danijar/dreamerv2/blob/main/dreamerv2/common/nets.py#L317.
+
+    This particular GRU cell accepts 3-D inputs, with a sequence of length 1, and applies
+    a LayerNorm after the projection of the inputs.
+
+    Args:
+        input_size (int): the input size.
+        hidden_size (int): the hidden state size
+        bias (bool, optional): whether to apply a bias to the input projection.
+            Defaults to True.
+        batch_first (bool, optional): whether the first dimension represent the batch dimension or not.
+            Defaults to False.
+        layer_norm (bool, optional): whether to apply a LayerNorm after the input projection.
+            Defaults to False.
+    """
+
+    def __init__(
+        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.bias = bias
+        self.batch_first = batch_first
+        self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
+        if layer_norm:
+            self.layer_norm = torch.nn.LayerNorm(3 * hidden_size)
+        else:
+            self.layer_norm = nn.Identity()
+
+    def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:
+        is_3d = input.dim() == 3
+        if is_3d:
+            if input.shape[int(self.batch_first)] == 1:
+                input = input.squeeze(int(self.batch_first))
+            else:
+                raise AssertionError(
+                    "LayerNormGRUCell: Expected input to be 3-D with sequence length equal to 1 but received "
+                    f"a sequence of length {input.shape[int(self.batch_first)]}"
+                )
+        if hx.dim() == 3:
+            hx = hx.squeeze(0)
+        assert input.dim() in (
+            1,
+            2,
+        ), f"LayerNormGRUCell: Expected input to be 1-D or 2-D but received {input.dim()}-D tensor"
+
+        is_batched = input.dim() == 2
+        if not is_batched:
+            input = input.unsqueeze(0)
+
+        if hx is None:
+            hx = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
+        else:
+            hx = hx.unsqueeze(0) if not is_batched else hx
+
+        input = torch.cat((hx, input), -1)
+        x = self.linear(input)
+        x = self.layer_norm(x)
+        reset, cand, update = torch.chunk(x, 3, -1)
+        reset = torch.sigmoid(reset)
+        cand = torch.tanh(reset * cand)
+        update = torch.sigmoid(update - 1)
+        hx = update * cand + (1 - update) * hx
+
+        if not is_batched:
+            hx = hx.squeeze(0)
+        elif is_3d:
+            hx = hx.unsqueeze(0)
+
+        return hx

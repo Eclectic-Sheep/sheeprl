@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from sheeprl.algos.args import StandardArgs
 from sheeprl.utils.parser import Arg
@@ -74,10 +74,13 @@ class DreamerV2Args(StandardArgs):
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
-        default="ReLU",
+        default="ELU",
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
+    layer_norm: bool = Arg(
+        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
+    )
 
     # Environment settings
     expl_amount: float = Arg(default=0.0, help="the exploration amout to add to the actions")
@@ -94,3 +97,19 @@ class DreamerV2Args(StandardArgs):
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )
+    mine_min_pitch: int = Arg(default=-60, help="The minimum value of pitch in Minecraft environmnets.")
+    mine_max_pitch: int = Arg(default=60, help="The maximum value of pitch in Minecraft environmnets.")
+    mine_start_position: Optional[List[str]] = Arg(
+        default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
+    )
+    minerl_dense: bool = Arg(default=False, help="whether or not the task has dense reward")
+    minerl_extreme: bool = Arg(default=False, help="whether or not the task is extreme")
+    mine_break_speed: int = Arg(default=100, help="the break speed multiplier of Minecraft environments")
+    mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
+    mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")

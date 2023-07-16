@@ -140,7 +140,7 @@ def train(
     q = Independent(Normal(priors_mean, priors_std), 1)
 
     world_optimizer.zero_grad(set_to_none=True)
-    rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
         qo,
         batch_obs,
         qr,
@@ -165,6 +165,7 @@ def train(
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
+    aggregator.update("State/kl", kl.mean().detach())
     aggregator.update("State/p_entropy", p.entropy().mean().detach())
     aggregator.update("State/q_entropy", q.entropy().mean().detach())
 
@@ -513,6 +514,7 @@ def main():
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
                 "Loss/ensemble_loss": MeanMetric(sync_on_compute=False),
+                "State/kl": MeanMetric(sync_on_compute=False),
                 "State/p_entropy": MeanMetric(sync_on_compute=False),
                 "State/q_entropy": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),

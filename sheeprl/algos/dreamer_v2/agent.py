@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -19,10 +19,153 @@ from torch.distributions import (
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
-from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.utils import init_weights
+from sheeprl.utils.model import LayerNormChannelLast, ModuleType
+
+
+class MultiEncoder(nn.Module):
+    def __init__(
+        self,
+        obs_space: Dict[str, Any],
+        cnn_keys: Sequence[str],
+        mlp_keys: Sequence[str],
+        cnn_channels_multiplier: int,
+        mlp_layers: int = 4,
+        dense_units: int = 512,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        device: Union[str, torch.device] = "cpu",
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        if isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+        self.cnn_keys = cnn_keys
+        self.mlp_keys = mlp_keys
+        self.mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
+        cnn_input_channels = sum([obs_space[k].shape[0] for k in cnn_keys])
+        self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[1:])
+        if self.cnn_keys != []:
+            self.cnn_encoder = nn.Sequential(
+                CNN(
+                    input_channels=cnn_input_channels,
+                    hidden_channels=(torch.tensor([1, 2, 4, 8]) * cnn_channels_multiplier).tolist(),
+                    layer_args={"kernel_size": 4, "stride": 2},
+                    activation=cnn_act,
+                    norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
+                    norm_args=[{"normalized_shape": (2**i) * cnn_channels_multiplier} for i in range(4)]
+                    if layer_norm
+                    else None,
+                ),
+                nn.Flatten(-3, -1),
+            )
+            with torch.no_grad():
+                self.cnn_output_dim = self.cnn_encoder(torch.zeros(1, *self.cnn_input_dim)).shape[-1]
+        else:
+            self.cnn_output_dim = 0
+
+        if self.mlp_keys != []:
+            self.mlp_encoder = MLP(
+                self.mlp_input_dim,
+                None,
+                [dense_units] * mlp_layers,
+                activation=mlp_act,
+                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            )
+            self.mlp_output_dim = dense_units
+        else:
+            self.mlp_output_dim = 0
+
+    def forward(self, obs):
+        cnn_out = torch.tensor((), device=self.device)
+        mlp_out = torch.tensor((), device=self.device)
+        if self.cnn_keys != []:
+            cnn_input = torch.cat([obs[k] for k in self.cnn_keys], -3)  # channels dimension
+            cnn_out = cnn_forward(self.cnn_encoder, cnn_input, cnn_input.shape[-3:], (-1,))
+        if self.mlp_keys != []:
+            mlp_input = torch.cat([obs[k] for k in self.mlp_keys], -1).type(torch.float32)
+            mlp_out = self.mlp_encoder(mlp_input)
+        return torch.cat((cnn_out, mlp_out), -1)
+
+
+class MultiDecoder(nn.Module):
+    def __init__(
+        self,
+        obs_space: Dict[str, Any],
+        cnn_keys: Sequence[str],
+        mlp_keys: Sequence[str],
+        cnn_channels_multiplier: int,
+        latent_state_size: int,
+        cnn_decoder_input_dim: int,
+        cnn_decoder_output_dim: Tuple[int, int, int],
+        mlp_layers: int = 4,
+        dense_units: int = 512,
+        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ELU,
+        device: Union[str, torch.device] = "cpu",
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        if isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+        self.mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
+        self.cnn_splits = [obs_space[k].shape[0] for k in cnn_keys]
+        self.cnn_keys = cnn_keys
+        self.mlp_keys = mlp_keys
+        self.cnn_decoder_output_dim = cnn_decoder_output_dim
+        if self.cnn_keys != []:
+            self.cnn_decoder = nn.Sequential(
+                nn.Linear(latent_state_size, cnn_decoder_input_dim),
+                nn.Unflatten(1, (cnn_decoder_input_dim, 1, 1)),
+                DeCNN(
+                    input_channels=cnn_decoder_input_dim,
+                    hidden_channels=(torch.tensor([4, 2, 1]) * cnn_channels_multiplier).tolist()
+                    + [cnn_decoder_output_dim[0]],
+                    layer_args=[
+                        {"kernel_size": 5, "stride": 2},
+                        {"kernel_size": 5, "stride": 2},
+                        {"kernel_size": 6, "stride": 2},
+                        {"kernel_size": 6, "stride": 2},
+                    ],
+                    activation=[cnn_act, cnn_act, cnn_act, None],
+                    norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
+                    norm_args=[{"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier} for i in range(3)]
+                    + [None]
+                    if layer_norm
+                    else None,
+                ),
+            )
+        if self.mlp_keys != []:
+            self.mlp_decoder = MLP(
+                latent_state_size,
+                None,
+                [dense_units] * mlp_layers,
+                activation=mlp_act,
+                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            )
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.mlp_splits])
+
+    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+        reconstructed_obs = {}
+        if self.cnn_keys != []:
+            cnn_out = cnn_forward(
+                self.cnn_decoder, latent_states, (latent_states.shape[-1],), self.cnn_decoder_output_dim
+            )
+            reconstructed_obs.update(
+                {k: rec_obs for k, rec_obs in zip(self.cnn_keys, torch.split(cnn_out, self.cnn_splits, -3))}
+            )
+        if self.mlp_keys != []:
+            mlp_out = self.mlp_decoder(latent_states)
+            reconstructed_obs.update({k: head(mlp_out) for k, head in zip(self.mlp_keys, self.mlp_heads)})
+        return reconstructed_obs
 
 
 class RecurrentModel(nn.Module):
@@ -31,17 +174,34 @@ class RecurrentModel(nn.Module):
 
     Args:
         input_size (int): the input size of the model.
+        dense_units (int): the number of dense units.
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to ELU.
+        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
+            Defaults to True.
     """
 
-    def __init__(self, input_size: int, recurrent_state_size: int, activation_fn: nn.Module = nn.ELU) -> None:
+    def __init__(
+        self,
+        input_size: int,
+        recurrent_state_size: int,
+        dense_units: int,
+        activation_fn: nn.Module = nn.ELU,
+        layer_norm: bool = False,
+    ) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation_fn())
-        self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
+        self.mlp = MLP(
+            input_dims=input_size,
+            output_dim=None,
+            hidden_sizes=[dense_units],
+            activation=activation_fn,
+            norm_layer=[nn.LayerNorm] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
+        )
+        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=True)
 
-    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
         Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
 
@@ -53,9 +213,8 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
-        self.rnn.flatten_parameters()
-        out, recurrent_state = self.rnn(feat, recurrent_state)
-        return out, recurrent_state
+        out = self.rnn(feat, recurrent_state)
+        return out
 
 
 class RSSM(nn.Module):
@@ -119,8 +278,8 @@ class RSSM(nn.Module):
         action = (1 - is_first) * action
         posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = (1 - is_first) * recurrent_state
-        recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_out)
+        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
+        prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, posterior, prior, posterior_logits, prior_logits
 
@@ -164,8 +323,8 @@ class RSSM(nn.Module):
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_output, recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
-        _, imagined_prior = self._transition(recurrent_output)
+        recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
+        _, imagined_prior = self._transition(recurrent_state)
         return imagined_prior, recurrent_state
 
 
@@ -203,6 +362,7 @@ class Actor(nn.Module):
         dense_act: nn.Module = nn.ELU,
         mlp_layers: int = 4,
         distribution: str = "auto",
+        layer_norm: bool = False,
     ) -> None:
         super().__init__()
         self.distribution = distribution.lower()
@@ -220,17 +380,25 @@ class Actor(nn.Module):
                 self.distribution = "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
-            output_dim=np.sum(actions_dim) * 2 if is_continuous else np.sum(actions_dim),
+            output_dim=None,
             hidden_sizes=[dense_units] * mlp_layers,
             activation=dense_act,
             flatten_dim=None,
+            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
         )
+        if is_continuous:
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
+        else:
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
         self.actions_dim = actions_dim
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
 
-    def forward(self, state: Tensor, is_training: bool = True) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+    def forward(
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
         where * means any number of dimensions including None.
@@ -243,8 +411,9 @@ class Actor(nn.Module):
             The distribution of the actions
         """
         out: Tensor = self.model(state)
+        pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
         if self.is_continuous:
-            mean, std = torch.chunk(out, 2, -1)
+            mean, std = torch.chunk(pre_dist[0], 2, -1)
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
@@ -266,15 +435,91 @@ class Actor(nn.Module):
             actions = [actions]
             actions_dist = [actions_dist]
         else:
-            actions_logits = torch.split(out, self.actions_dim, -1)
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
-            for logits in actions_logits:
+            for logits in pre_dist:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
+        return tuple(actions), tuple(actions_dist)
+
+
+class MinedojoActor(Actor):
+    def __init__(
+        self,
+        latent_state_size: int,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
+        init_std: float = 0,
+        min_std: float = 0.1,
+        dense_units: int = 400,
+        dense_act: nn.Module = nn.ELU,
+        mlp_layers: int = 4,
+        distribution: str = "auto",
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__(
+            latent_state_size,
+            actions_dim,
+            is_continuous,
+            init_std,
+            min_std,
+            dense_units,
+            dense_act,
+            mlp_layers,
+            distribution,
+            layer_norm,
+        )
+
+    def forward(
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+        """
+        Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
+        where * means any number of dimensions including None.
+
+        Args:
+            state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+
+        Returns:
+            The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
+            The distribution of the actions
+        """
+        out: Tensor = self.model(state)
+        actions_logits: List[Tensor] = [head(out) for head in self.mlp_heads]
+        actions_dist: List[Distribution] = []
+        actions: List[Tensor] = []
+        functional_action = None
+        for i, logits in enumerate(actions_logits):
+            if mask is not None:
+                if i == 0:
+                    logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
+                elif i == 1:
+                    mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action == 15:  # Craft action
+                                logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
+                elif i == 2:
+                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_equip/place"] = mask["mask_equip/place"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action in (16, 17):  # Equip/Place action
+                                logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
+                            elif sampled_action == 18:  # Destroy action
+                                logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            if is_training:
+                actions.append(actions_dist[-1].rsample())
+            else:
+                actions.append(actions_dist[-1].mode)
+            if functional_action is None:
+                functional_action = actions[0].argmax(dim=-1)  # [T, B]
         return tuple(actions), tuple(actions_dist)
 
 
@@ -364,18 +609,20 @@ class Player(nn.Module):
         )
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
 
-    def get_exploration_action(self, obs: Tensor, is_continuous: bool) -> Tensor:
+    def get_exploration_action(
+        self, obs: Dict[str, Tensor], is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
 
         Returns:
             The actions the agent has to perform.
         """
-        actions = self.get_greedy_action(obs)
+        actions = self.get_greedy_action(obs, mask=mask)
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
@@ -391,20 +638,22 @@ class Player(nn.Module):
             self.actions = torch.cat(expl_actions, -1)
         return tuple(expl_actions)
 
-    def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Sequence[Tensor]:
+    def get_greedy_action(
+        self, obs: Dict[str, Tensor], is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+    ) -> Sequence[Tensor]:
         """
         Return the greedy actions.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
 
         Returns:
             The actions the agent has to perform.
         """
-        embedded_obs: Tensor = cnn_forward(self.encoder, obs.clone(), obs.shape[-3:], (-1,))
-        _, self.recurrent_state = self.recurrent_model(
+        embedded_obs = self.encoder(obs)
+        self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
@@ -412,7 +661,7 @@ class Player(nn.Module):
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -420,9 +669,11 @@ class Player(nn.Module):
 def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
-    observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: DreamerV2Args,
+    obs_space: Dict[str, Any],
+    cnn_keys: Sequence[str],
+    mlp_keys: Sequence[str],
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
@@ -441,7 +692,6 @@ def build_models(
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -462,25 +712,33 @@ def build_models(
         )
 
     # Define models
-    encoder = nn.Sequential(
-        CNN(
-            input_channels=n_obs_channels,
-            hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
-            layer_args={"kernel_size": 4, "stride": 2},
-            activation=cnn_act,
-        ),
-        nn.Flatten(-3, -1),
+    encoder = MultiEncoder(
+        obs_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        args.layer_norm,
     )
-    with torch.no_grad():
-        encoder_output_size = encoder(torch.zeros(*observation_shape)).shape[-1]
     stochastic_size = args.stochastic_size * args.discrete_size
-    recurrent_model = RecurrentModel(np.sum(actions_dim) + stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(
+        int(np.sum(actions_dim)) + stochastic_size,
+        args.recurrent_state_size,
+        args.dense_units,
+        layer_norm=args.layer_norm,
+    )
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder_output_size,
+        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=stochastic_size,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
@@ -488,6 +746,8 @@ def build_models(
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
     )
     rssm = RSSM(
         recurrent_model.apply(init_weights),
@@ -496,20 +756,20 @@ def build_models(
         args.min_std,
         args.discrete_size,
     )
-    observation_model = nn.Sequential(
-        nn.Linear(stochastic_size + args.recurrent_state_size, encoder_output_size),
-        nn.Unflatten(1, (encoder_output_size, 1, 1)),
-        DeCNN(
-            input_channels=encoder_output_size,
-            hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
-            layer_args=[
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-            ],
-            activation=[cnn_act, cnn_act, cnn_act, None],
-        ),
+    observation_model = MultiDecoder(
+        obs_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
+        encoder.cnn_output_dim,
+        encoder.cnn_input_dim,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        args.layer_norm,
     )
     reward_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
@@ -517,6 +777,8 @@ def build_models(
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     if args.use_continues:
         continue_model = MLP(
@@ -525,6 +787,10 @@ def build_models(
             hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
             flatten_dim=None,
+            norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+            norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)]
+            if args.layer_norm
+            else None,
         )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -533,22 +799,40 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if args.use_continues else None,
     )
-    actor = Actor(
-        stochastic_size + args.recurrent_state_size,
-        actions_dim,
-        is_continuous,
-        args.actor_init_std,
-        args.actor_min_std,
-        args.dense_units,
-        dense_act,
-        args.mlp_layers,
-    )
+    if "minedojo" in args.env_id:
+        actor = MinedojoActor(
+            stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
+        )
+    else:
+        actor = Actor(
+            stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
+        )
     critic = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     actor.apply(init_weights)
     critic.apply(init_weights)

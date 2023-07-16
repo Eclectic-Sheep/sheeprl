@@ -445,6 +445,7 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "--run_name=" + run_name,
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
+        "--recurrent_state_size=8",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
@@ -495,6 +496,7 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "--run_name=" + run_name,
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
+        "--recurrent_state_size=8",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
@@ -551,6 +553,10 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "--run_name=" + run_name,
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
+        "--recurrent_state_size=8",
+        "--hidden_size=8",
+        "--cnn_keys=rgb",
+        "--layer_norm=True",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
