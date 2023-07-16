@@ -9,6 +9,7 @@ if not _IS_TORCH_GREATER_EQUAL_2_0:
 
 from sheeprl.algos.dreamer_v1 import dreamer_v1
 from sheeprl.algos.dreamer_v2 import dreamer_v2
+from sheeprl.algos.dreamer_v3 import dreamer_v3
 from sheeprl.algos.droq import droq
 from sheeprl.algos.p2e_dv1 import p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2

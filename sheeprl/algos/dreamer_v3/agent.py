@@ -125,9 +125,9 @@ class MultiDecoder(nn.Module):
         if self.cnn_keys != []:
             self.cnn_decoder = nn.Sequential(
                 nn.Linear(latent_state_size, cnn_decoder_input_dim),
-                nn.Unflatten(1, (cnn_decoder_input_dim, 1, 1)),
+                nn.Unflatten(1, (-1, 4, 4)),
                 DeCNN(
-                    input_channels=cnn_decoder_input_dim,
+                    input_channels=8 * cnn_channels_multiplier,
                     hidden_channels=(torch.tensor([4, 2, 1]) * cnn_channels_multiplier).tolist()
                     + [cnn_decoder_output_dim[0]],
                     layer_args={"kernel_size": 4, "stride": 2, "padding": 1},
