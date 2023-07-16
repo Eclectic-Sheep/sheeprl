@@ -20,7 +20,7 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
@@ -48,6 +48,7 @@ def reconstruction_loss(
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
+        kl divergence (Tensor): the KL between posterior and prior state.
         reward_loss (Tensor): the value of the reward loss.
         state_loss (Tensor): the value of the state loss.
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
@@ -57,7 +58,7 @@ def reconstruction_loss(
     observation_loss = -sum([po[k].log_prob(observations[k]).mean() for k in po.keys()])
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
-    lhs = kl_divergence(
+    lhs = kl = kl_divergence(
         Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
         Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
@@ -77,4 +78,4 @@ def reconstruction_loss(
     if pc is not None and continue_targets is not None:
         continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
-    return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
+    return reconstruction_loss, kl, kl_loss, reward_loss, observation_loss, continue_loss

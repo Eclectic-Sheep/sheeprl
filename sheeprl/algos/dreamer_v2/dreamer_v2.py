@@ -171,7 +171,7 @@ def train(
 
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
-    rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
         po,
         batch_obs,
         pr,
@@ -188,15 +188,17 @@ def train(
     )
     fabric.backward(rec_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(
+        world_model_grads = fabric.clip_gradients(
             module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
         )
     world_optimizer.step()
+    aggregator.update("Grads/world_model", world_model_grads.mean().detach())
     aggregator.update("Loss/reconstruction_loss", rec_loss.detach())
     aggregator.update("Loss/observation_loss", observation_loss.detach())
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
+    aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/p_entropy",
         Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
@@ -314,8 +316,8 @@ def train(
     if is_continuous:
         objective = lambda_values[1:]
     else:
-        baseline = target_critic(imagined_trajectories)
-        advantage = (lambda_values[1:] - baseline[:-2]).detach()
+        baseline = target_critic(imagined_trajectories[:-2])
+        advantage = (lambda_values[1:] - baseline).detach()
         objective = (
             torch.stack(
                 [
@@ -333,25 +335,27 @@ def train(
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(
+        actor_grads = fabric.clip_gradients(
             module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
+    aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
-    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
+    qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
     # critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(
+        critic_grads = fabric.clip_gradients(
             module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
+    aggregator.update("Grads/critic", critic_grads.mean().detach())
     aggregator.update("Loss/value_loss", value_loss.detach())
 
     # Reset everything
@@ -491,6 +495,7 @@ def main():
         args.stochastic_size,
         args.recurrent_state_size,
         fabric.device,
+        discrete_size=args.discrete_size,
     )
 
     # Optimizers
@@ -521,7 +526,11 @@ def main():
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
                 "State/p_entropy": MeanMetric(sync_on_compute=False),
                 "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
+                "Grads/world_model": MeanMetric(sync_on_compute=False),
+                "Grads/actor": MeanMetric(sync_on_compute=False),
+                "Grads/critic": MeanMetric(sync_on_compute=False),
             }
         )
         aggregator.to(fabric.device)

@@ -180,7 +180,7 @@ def train(
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
     # compute the overall loss of the world model
-    rec_loss, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
         qo,
         batch_obs,
         qr,
@@ -195,13 +195,17 @@ def train(
     )
     fabric.backward(rec_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients)
+        world_model_grads = fabric.clip_gradients(
+            module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients
+        )
     world_optimizer.step()
+    aggregator.update("Grads/world_model", world_model_grads.mean().detach())
     aggregator.update("Loss/reconstruction_loss", rec_loss.detach())
     aggregator.update("Loss/observation_loss", observation_loss.detach())
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
+    aggregator.update("State/kl", kl.detach())
     aggregator.update("State/p_entropy", p.entropy().mean().detach())
     aggregator.update("State/q_entropy", q.entropy().mean().detach())
 
@@ -303,8 +307,9 @@ def train(
     policy_loss = actor_loss(discount * lambda_values)
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients)
+        actor_grads = fabric.clip_gradients(module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients)
     actor_optimizer.step()
+    aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
@@ -320,8 +325,9 @@ def train(
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
-        fabric.clip_gradients(module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients)
+        critic_grads = fabric.clip_gradients(module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients)
     critic_optimizer.step()
+    aggregator.update("Grads/critic", critic_grads.mean().detach())
     aggregator.update("Loss/value_loss", value_loss.detach())
 
     # Reset everything
@@ -457,9 +463,14 @@ def main():
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
                 "State/p_entropy": MeanMetric(sync_on_compute=False),
                 "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
+                "Grads/world_model": MeanMetric(sync_on_compute=False),
+                "Grads/actor": MeanMetric(sync_on_compute=False),
+                "Grads/critic": MeanMetric(sync_on_compute=False),
             }
         )
+        aggregator.to(fabric.device)
 
     # Local data
     buffer_size = (

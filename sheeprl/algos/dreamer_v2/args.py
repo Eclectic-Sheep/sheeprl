@@ -78,6 +78,9 @@ class DreamerV2Args(StandardArgs):
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=100, help="the frequency to update the target critic network")
+    layer_norm: bool = Arg(
+        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
+    )
 
     # Environment settings
     expl_amount: float = Arg(default=0.0, help="the exploration amout to add to the actions")
@@ -105,3 +108,8 @@ class DreamerV2Args(StandardArgs):
     mine_start_position: Optional[List[str]] = Arg(
         default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
     )
+    minerl_dense: bool = Arg(default=False, help="whether or not the task has dense reward")
+    minerl_extreme: bool = Arg(default=False, help="whether or not the task is extreme")
+    mine_break_speed: int = Arg(default=100, help="the break speed multiplier of Minecraft environments")
+    mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
+    mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")

@@ -617,6 +617,7 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "--hidden_size=8",
         "--cnn_keys=rgb",
         "--pretrain_steps=1",
+        "--layer_norm=True",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")

@@ -3,7 +3,7 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 """
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-from torch import nn
+from torch import Tensor, nn
 
 ModuleType = Optional[Type[nn.Module]]
 ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
@@ -154,3 +154,16 @@ def per_layer_ortho_init_weights(module: nn.Module, gain: float = 1.0, bias: flo
     elif isinstance(module, (nn.Sequential, nn.ModuleList)):
         for i in range(len(module)):
             per_layer_ortho_init_weights(module[i], gain=gain, bias=bias)
+
+
+class LayerNormChannelLast(nn.LayerNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
