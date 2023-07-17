@@ -205,9 +205,7 @@ def train(
         for i in range(args.horizon):
             actions = torch.cat(actor_exploration(imagined_latent_state.detach()), dim=-1)
             imagined_actions[i] = actions
-            imagined_prior, recurrent_state = world_model.rssm.imagination(
-                imagined_prior, recurrent_state, actions
-            )
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
             imagined_trajectories[i] = imagined_latent_state
         predicted_values = critic_exploration(imagined_trajectories)
@@ -292,9 +290,7 @@ def train(
     )
     for i in range(args.horizon):
         actions = torch.cat(actor_task(imagined_latent_state.detach()), dim=-1)
-        imagined_prior, recurrent_state = world_model.rssm.imagination(
-            imagined_prior, recurrent_state, actions
-        )
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
 
@@ -400,6 +396,9 @@ def main():
         fabric.logger.log_hyperparams(asdict(args))
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
+
+        # Save args as dict automatically
+        args.log_dir = log_dir
     else:
         data = [None]
         world_collective.broadcast_object_list(data, src=0)

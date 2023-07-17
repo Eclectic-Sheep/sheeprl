@@ -500,6 +500,9 @@ def main():
         fabric.logger.log_hyperparams(asdict(args))
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
+
+        # Save args as dict automatically
+        args.log_dir = log_dir
     else:
         data = [None]
         world_collective.broadcast_object_list(data, src=0)
@@ -594,6 +597,11 @@ def main():
                     output_dim=args.stochastic_size * args.discrete_size,
                     hidden_sizes=[args.dense_units] * args.mlp_layers,
                     activation=dense_act,
+                    flatten_dim=None,
+                    norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+                    norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)]
+                    if args.layer_norm
+                    else None,
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
