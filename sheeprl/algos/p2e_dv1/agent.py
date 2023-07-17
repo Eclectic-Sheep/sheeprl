@@ -7,7 +7,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.agent import RSSM, Actor, Encoder, RecurrentModel, WorldModel
-from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
+from sheeprl.algos.p2e_dv1.args import P2EDV1Args
 from sheeprl.models.models import MLP, DeCNN
 from sheeprl.utils.utils import init_weights
 
@@ -17,7 +17,7 @@ def build_models(
     actions_dim: Sequence[int],
     observation_shape: Tuple[int, ...],
     is_continuous: bool,
-    args: P2EArgs,
+    args: P2EDV1Args,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_task_state: Optional[Dict[str, Tensor]] = None,
     critic_task_state: Optional[Dict[str, Tensor]] = None,
@@ -31,7 +31,7 @@ def build_models(
         action_dim (int): the dimension of the actions.
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (P2EArgs): the hyper-parameters of Dreamer_v1.
+        args (P2EDV1Args): the hyper-parameters of Dreamer_v1.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_task_state (Dict[str, Tensor], optional): the state of the actor_task.
@@ -119,7 +119,7 @@ def build_models(
     reward_model = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.num_layers,
+        hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
     )
@@ -127,7 +127,7 @@ def build_models(
         continue_model = MLP(
             input_dims=args.stochastic_size + args.recurrent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units] * args.num_layers,
+            hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
             flatten_dim=None,
         )
@@ -147,12 +147,12 @@ def build_models(
         args.actor_min_std,
         args.dense_units,
         dense_act,
-        args.num_layers,
+        args.mlp_layers,
     )
     critic_task = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.num_layers,
+        hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
     )
@@ -168,12 +168,12 @@ def build_models(
         args.actor_min_std,
         args.dense_units,
         dense_act,
-        args.num_layers,
+        args.mlp_layers,
     )
     critic_exploration = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.num_layers,
+        hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
     )

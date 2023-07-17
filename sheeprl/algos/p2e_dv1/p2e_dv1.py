@@ -25,8 +25,8 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
-from sheeprl.algos.p2e.p2e_dv1.agent import build_models
-from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
+from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.args import P2EDV1Args
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
@@ -48,7 +48,7 @@ def train(
     critic_task_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: P2EArgs,
+    args: P2EDV1Args,
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -174,7 +174,7 @@ def train(
         loss = 0.0
         ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
-            out = ens(torch.cat((priors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
+            out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
             loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
         loss.backward()
@@ -190,9 +190,9 @@ def train(
         aggregator.update(f"Loss/ensemble_loss", loss.detach().cpu())
 
         # Behaviour Learning Exploration
-        imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
+        imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
         recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
-        imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories = torch.empty(
             args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
         )
@@ -203,21 +203,19 @@ def train(
 
         # imagine trajectories in the latent space
         for i in range(args.horizon):
-            actions = torch.cat(actor_exploration(imagined_latent_states.detach()), dim=-1)
+            actions = torch.cat(actor_exploration(imagined_latent_state.detach()), dim=-1)
             imagined_actions[i] = actions
-            imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
-                imagined_stochastic_state, recurrent_state, actions
-            )
-            imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
-            imagined_trajectories[i] = imagined_latent_states
-        predicted_values = Independent(Normal(critic_exploration(imagined_trajectories), 1), 1).mean
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+            imagined_trajectories[i] = imagined_latent_state
+        predicted_values = critic_exploration(imagined_trajectories)
 
         # Predict intrinsic reward
         next_obs_embedding = torch.zeros(
             len(ensembles),
             args.horizon,
             batch_size * sequence_length,
-            world_model.encoder.output_size,
+            embedded_obs.shape[-1],
             device=device,
         )
         for i, ens in enumerate(ensembles):
@@ -284,22 +282,20 @@ def train(
     world_optimizer.zero_grad(set_to_none=True)
 
     # Behaviour Learning Task
-    imagined_stochastic_state = posteriors.detach().reshape(1, -1, args.stochastic_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
-    imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
     imagined_trajectories = torch.empty(
         args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
     )
     for i in range(args.horizon):
-        actions = torch.cat(actor_task(imagined_latent_states.detach()), dim=-1)
-        imagined_stochastic_state, recurrent_state = world_model.rssm.imagination(
-            imagined_stochastic_state, recurrent_state, actions
-        )
-        imagined_latent_states = torch.cat((imagined_stochastic_state, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_states
+        actions = torch.cat(actor_task(imagined_latent_state.detach()), dim=-1)
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories[i] = imagined_latent_state
 
-    predicted_values = Independent(Normal(critic_task(imagined_trajectories), 1), 1).mean
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
+    predicted_values = critic_task(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
     if args.use_continues and world_model.continue_model:
         predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     else:
@@ -351,8 +347,8 @@ def train(
 
 @register_algorithm()
 def main():
-    parser = HfArgumentParser(P2EArgs)
-    args: P2EArgs = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser(P2EDV1Args)
+    args: P2EDV1Args = parser.parse_args_into_dataclasses()[0]
     args.num_envs = 1
     torch.set_num_threads(1)
 
@@ -368,7 +364,7 @@ def main():
     if args.checkpoint_path:
         state = fabric.load(args.checkpoint_path)
         state["args"]["checkpoint_path"] = args.checkpoint_path
-        args = P2EArgs(**state["args"])
+        args = P2EDV1Args(**state["args"])
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
@@ -384,7 +380,7 @@ def main():
         root_dir = (
             args.root_dir
             if args.root_dir is not None
-            else os.path.join("logs", "p2e", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+            else os.path.join("logs", "p2e_dv1", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
             args.run_name
@@ -447,7 +443,7 @@ def main():
                 MLP(
                     input_dims=int(np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size),
                     output_dim=world_model.encoder.output_size,
-                    hidden_sizes=[args.dense_units] * args.num_layers,
+                    hidden_sizes=[args.dense_units] * args.mlp_layers,
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
