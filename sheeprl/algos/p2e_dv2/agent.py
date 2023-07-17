@@ -2,7 +2,6 @@ import copy
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
-import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
@@ -17,7 +16,7 @@ from sheeprl.algos.dreamer_v2.agent import (
     WorldModel,
 )
 from sheeprl.algos.p2e_dv2.args import P2EDV2Args
-from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.models.models import MLP
 from sheeprl.utils.utils import init_weights
 
 
@@ -63,7 +62,6 @@ def build_models(
         The critic_exploration (_FabricModule).
         The target_critic_exploration (nn.Module).
     """
-    # minecraft environment does not support grayscale observations
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -94,16 +92,23 @@ def build_models(
         cnn_act,
         dense_act,
         fabric.device,
+        args.layer_norm,
     )
-    encoder_output_size = encoder.cnn_output_dim + encoder.mlp_output_dim
     stochastic_size = args.stochastic_size * args.discrete_size
-    recurrent_model = RecurrentModel(np.sum(actions_dim) + stochastic_size, args.recurrent_state_size, args.dense_units)
+    recurrent_model = RecurrentModel(
+        int(np.sum(actions_dim)) + stochastic_size,
+        args.recurrent_state_size,
+        args.dense_units,
+        layer_norm=args.layer_norm,
+    )
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=stochastic_size,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
@@ -111,6 +116,8 @@ def build_models(
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
     )
     rssm = RSSM(
         recurrent_model.apply(init_weights),
@@ -123,7 +130,6 @@ def build_models(
         cnn_keys,
         mlp_keys,
         args.cnn_channels_multiplier,
-        encoder.mlp_input_dim,
         args.stochastic_size * args.discrete_size + args.recurrent_state_size,
         encoder.cnn_output_dim,
         encoder.cnn_input_dim,
@@ -132,6 +138,7 @@ def build_models(
         cnn_act,
         dense_act,
         fabric.device,
+        args.layer_norm,
     )
     reward_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
@@ -139,6 +146,8 @@ def build_models(
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     if args.use_continues:
         continue_model = MLP(
@@ -147,6 +156,10 @@ def build_models(
             hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
             flatten_dim=None,
+            norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+            norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)]
+            if args.layer_norm
+            else None,
         )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -165,6 +178,8 @@ def build_models(
             args.dense_units,
             dense_act,
             args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
         )
     else:
         actor_task = Actor(
@@ -176,6 +191,8 @@ def build_models(
             args.dense_units,
             dense_act,
             args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
         )
     critic_task = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
@@ -183,6 +200,8 @@ def build_models(
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     actor_task.apply(init_weights)
     critic_task.apply(init_weights)
@@ -197,6 +216,8 @@ def build_models(
             args.dense_units,
             dense_act,
             args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
         )
     else:
         actor_exploration = Actor(
@@ -208,6 +229,8 @@ def build_models(
             args.dense_units,
             dense_act,
             args.mlp_layers,
+            distribution=args.actor_distribution,
+            layer_norm=args.layer_norm,
         )
     critic_exploration = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
@@ -215,6 +238,8 @@ def build_models(
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     actor_exploration.apply(init_weights)
     critic_exploration.apply(init_weights)
@@ -255,5 +280,4 @@ def build_models(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
-        encoder_output_size,
     )

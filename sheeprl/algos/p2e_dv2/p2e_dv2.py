@@ -565,7 +565,6 @@ def main():
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
-        encoder_output_size,
     ) = build_models(
         fabric,
         actions_dim,
