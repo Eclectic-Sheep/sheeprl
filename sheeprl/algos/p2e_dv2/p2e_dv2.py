@@ -207,7 +207,7 @@ def train(
             out = ens(
                 torch.cat(
                     (
-                        priors.view(*priors.shape[:-2], -1).detach(),
+                        posteriors.view(*posteriors.shape[:-2], -1).detach(),
                         recurrent_states.detach(),
                         data["actions"].detach(),
                     ),
