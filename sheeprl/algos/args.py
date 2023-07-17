@@ -26,6 +26,8 @@ class StandardArgs:
         help="whether to move the buffer to the shared memory. "
         "Useful for pixel-based off-policy methods with large buffer size (>=1e6).",
     )
+    checkpoint_every: int = Arg(default=100, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
+    checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
 
     def __setattr__(self, __name: str, __value: Any) -> None:
         super().__setattr__(__name, __value)
