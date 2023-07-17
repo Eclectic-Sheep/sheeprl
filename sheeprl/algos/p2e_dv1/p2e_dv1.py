@@ -174,7 +174,7 @@ def train(
         loss = 0.0
         ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
-            out = ens(torch.cat((priors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
+            out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
             loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
         loss.backward()
