@@ -24,13 +24,14 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, make_env, test
-from sheeprl.algos.p2e.p2e_dv1.agent import build_models
-from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
+from sheeprl.algos.dreamer_v1.utils import make_env, test
+from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.args import P2EArgs
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.model import cnn_forward
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay

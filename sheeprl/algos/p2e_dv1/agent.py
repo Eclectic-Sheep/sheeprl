@@ -7,7 +7,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.agent import RSSM, Actor, Encoder, RecurrentModel, WorldModel
-from sheeprl.algos.p2e.p2e_dv1.args import P2EArgs
+from sheeprl.algos.p2e_dv1.args import P2EArgs
 from sheeprl.models.models import MLP, DeCNN
 from sheeprl.utils.utils import init_weights
 
