@@ -19,9 +19,7 @@ class DreamerV1Args(StandardArgs):
     learning_starts: int = Arg(default=int(5e3), help="timestep to start learning")
     gradient_steps: int = Arg(default=100, help="the number of gradient steps per each environment interaction")
     train_every: int = Arg(default=1000, help="the number of steps between one training and another")
-    checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
-    checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
 
     # Agent settings
     world_lr: float = Arg(default=6e-4, help="the learning rate of the optimizer of the world model")

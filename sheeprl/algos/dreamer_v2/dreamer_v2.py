@@ -415,11 +415,17 @@ def main():
         fabric.logger.log_hyperparams(asdict(args))
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
+
+        # Save args as dict automatically
+        args.log_dir = log_dir
     else:
         data = [None]
         world_collective.broadcast_object_list(data, src=0)
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
+
+    # Save args as dict automatically
+    args.log_dir = log_dir
 
     env: gym.Env = make_env(
         args.env_id,
