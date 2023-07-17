@@ -30,4 +30,8 @@ class StandardArgs:
     def __setattr__(self, __name: str, __value: Any) -> None:
         super().__setattr__(__name, __value)
         if __name == "log_dir":
-            json.dump(asdict(self), open(os.path.join(__value, "args.json"), "x"))
+            file_name = os.path.join(__value, "args.json")
+            if not os.path.exists(file_name):
+                json.dump(asdict(self), open(file_name, "x"))
+            else:
+                json.dump(asdict(self), open(file_name, "w"))
