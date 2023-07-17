@@ -33,7 +33,5 @@ class StandardArgs:
         super().__setattr__(__name, __value)
         if __name == "log_dir":
             file_name = os.path.join(__value, "args.json")
-            if not os.path.exists(file_name):
-                json.dump(asdict(self), open(file_name, "x"))
-            else:
-                json.dump(asdict(self), open(file_name, "w"))
+            os.makedirs(__value, exist_ok=True)
+            json.dump(asdict(self), open(file_name, "w"))
