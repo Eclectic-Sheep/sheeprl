@@ -32,6 +32,5 @@ class PPOArgs(StandardArgs):
     anneal_ent_coef: bool = Arg(default=False, help="whether to linearly anneal the entropy coefficient to zero")
     vf_coef: float = Arg(default=1.0, help="coefficient of the value function")
     max_grad_norm: float = Arg(default=0.0, help="the maximum norm for the gradient clipping")
-    checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     actor_hidden_size: int = Arg(default=64, help="the dimension of the hidden sizes of the actor network")
     critic_hidden_size: int = Arg(default=64, help="the dimension of the hidden sizes of the critic network")

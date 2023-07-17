@@ -23,7 +23,6 @@ class SACArgs(StandardArgs):
     policy_lr: float = Arg(default=3e-4, help="the learning rate of the entropy coefficient optimizer")
     target_network_frequency: int = Arg(default=1, help="the frequency of updates for the target nerworks")
     gradient_steps: int = Arg(default=1, help="the number of gradient steps per each environment interaction")
-    checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
     sample_next_obs: bool = Arg(
         default=False, help="whether or not to sample the next observations from the gathered observations"
