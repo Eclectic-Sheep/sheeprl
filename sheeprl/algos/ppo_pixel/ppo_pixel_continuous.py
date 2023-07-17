@@ -100,6 +100,7 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
     )
 
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    logger.log_hyperparams(asdict(args))
 
     # Save args as dict automatically
     args.log_dir = logger.log_dir

@@ -42,6 +42,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    logger.log_hyperparams(asdict(args))
 
     # Save args as dict automatically
     args.log_dir = logger.log_dir
