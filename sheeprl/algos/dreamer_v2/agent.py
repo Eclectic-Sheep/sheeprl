@@ -81,8 +81,6 @@ class RSSM(nn.Module):
             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
         transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
-        min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
-            Default to 0.1.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
     """
@@ -92,14 +90,12 @@ class RSSM(nn.Module):
         recurrent_model: nn.Module,
         representation_model: nn.Module,
         transition_model: nn.Module,
-        min_std: Optional[float] = 0.1,
         discrete: Optional[int] = 32,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.transition_model = transition_model
-        self.min_std = min_std
         self.discrete = discrete
 
     def dynamic(
@@ -608,7 +604,6 @@ def build_models(
         recurrent_model.apply(init_weights),
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),
-        args.min_std,
         args.discrete_size,
     )
     observation_model = MultiDecoder(
