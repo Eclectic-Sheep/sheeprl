@@ -229,6 +229,21 @@ class RSSM(nn.Module):
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, posterior, prior, posterior_logits, prior_logits
 
+    def _uniform_mix(self, logits: Tensor) -> Tensor:
+        dim = logits.dim()
+        if dim == 3:
+            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
+        elif dim != 4:
+            raise RuntimeError(f"The logits expected shape is 3 or 4: received a {dim}D tensor")
+        if self.unimix > 0.0:
+            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
+            probs = logits.softmax(dim=-1)
+            uniform = torch.ones_like(probs) / self.discrete
+            probs = (1 - self.unimix) * probs + self.unimix * uniform
+            logits = torch.log(probs)
+        logits = logits.view(*logits.shape[:-2], -1)
+        return logits
+
     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Args:
@@ -241,13 +256,7 @@ class RSSM(nn.Module):
             posterior (Tensor): the sampled posterior stochastic state.
         """
         logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        if self.unimix > 0.0:
-            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
-            probs = logits.softmax(dim=-1)
-            uniform = torch.ones_like(probs) / self.discrete
-            probs = (1 - self.unimix) * probs + self.unimix * uniform
-            logits = torch.log(probs)
-            logits = logits.view(*logits.shape[:-2], -1)
+        logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
@@ -260,13 +269,7 @@ class RSSM(nn.Module):
             prior (Tensor): the sampled prior stochastic state.
         """
         logits: Tensor = self.transition_model(recurrent_out)
-        if self.unimix > 0.0:
-            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
-            probs = logits.softmax(dim=-1)
-            uniform = torch.ones_like(probs) / self.discrete
-            probs = (1 - self.unimix) * probs + self.unimix * uniform
-            logits = torch.log(probs)
-            logits = logits.view(*logits.shape[:-2], -1)
+        logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
