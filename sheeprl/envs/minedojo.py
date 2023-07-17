@@ -272,6 +272,7 @@ class MineDojoWrapper(core.Env):
                 "food": float(obs["life_stats"]["food"].item()),
             },
             "location_stats": copy.deepcopy(self._pos),
+            "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
 
     def close(self):
