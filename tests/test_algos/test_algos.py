@@ -55,6 +55,9 @@ def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool =
     # if checkpoint_buffer is false, then "rb" cannot be in the checkpoint keys
     assert checkpoint_buffer or "rb" not in ckpt_keys
 
+    # check args are saved
+    assert os.path.exists(os.path.join(os.path.dirname(ckpt_path), "args.json"))
+
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
