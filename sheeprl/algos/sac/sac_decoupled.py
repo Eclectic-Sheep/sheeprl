@@ -44,6 +44,9 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
 
+    # Save args as dict automatically
+    args.log_dir = logger.log_dir
+
     # Initialize Fabric
     fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
