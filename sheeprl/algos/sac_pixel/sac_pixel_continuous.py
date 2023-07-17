@@ -48,6 +48,7 @@ from sheeprl.utils.registry import register_algorithm
 def train(
     fabric: Fabric,
     agent: SACPixelAgent,
+    encoder: Union[Encoder, _FabricModule],
     decoder: Union[Decoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
@@ -101,7 +102,7 @@ def train(
 
     # Update the decoder
     if global_step % args.decoder_update_freq == 0:
-        hidden = agent.critic.encoder(normalized_obs)
+        hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = (
             F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)  # Reconstruction
@@ -359,6 +360,7 @@ def main():
                     train(
                         fabric,
                         agent,
+                        encoder,
                         decoder,
                         actor_optimizer,
                         qf_optimizer,
