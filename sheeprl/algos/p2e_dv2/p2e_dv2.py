@@ -599,7 +599,9 @@ def main():
                     activation=dense_act,
                     flatten_dim=None,
                     norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-                    norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+                    norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)]
+                    if args.layer_norm
+                    else None,
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
