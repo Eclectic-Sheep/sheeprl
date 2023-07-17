@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Dict, Sequence
 
 import gymnasium as gym
-import jsonlines
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -722,11 +721,6 @@ def main():
             max_decay_steps=max_step_expl_decay,
         )
 
-    # Stats file info
-    stats_dir = os.path.join(log_dir, "stats")
-    os.makedirs(stats_dir, exist_ok=True)
-    stats_filename = os.path.join(stats_dir, "stats.jsonl")
-
     # Get the first environment observation and start the optimization
     episode_steps = []
     o, infos = env.reset(seed=args.seed)
@@ -782,17 +776,6 @@ def main():
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
-
-        # Save stats
-        with jsonlines.open(stats_filename, mode="a") as writer:
-            writer.write(
-                {
-                    "life_stats": infos["life_stats"],
-                    "location_stats": infos["location_stats"],
-                    "action": real_actions.tolist(),
-                    "biomeid": infos["biomeid"],
-                }
-            )
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
         o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
