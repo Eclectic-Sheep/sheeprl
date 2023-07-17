@@ -1,5 +1,7 @@
-from dataclasses import dataclass
-from typing import Optional
+import json
+import os
+from dataclasses import asdict, dataclass
+from typing import Any, Optional
 
 from sheeprl.utils.parser import Arg
 
@@ -24,3 +26,8 @@ class StandardArgs:
         help="whether to move the buffer to the shared memory. "
         "Useful for pixel-based off-policy methods with large buffer size (>=1e6).",
     )
+
+    def __setattr__(self, __name: str, __value: Any) -> None:
+        super().__setattr__(__name, __value)
+        if __name == "log_dir":
+            json.dump(asdict(self), open(os.path.join(__value, "args.json"), "x"))

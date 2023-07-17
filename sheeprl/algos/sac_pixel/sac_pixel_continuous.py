@@ -177,6 +177,9 @@ def main():
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
 
+    # Save args as dict automatically
+    args.log_dir = log_dir
+
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(

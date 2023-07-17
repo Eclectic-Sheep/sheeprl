@@ -393,6 +393,9 @@ def main():
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
 
+    # Save args as dict automatically
+    args.log_dir = log_dir
+
     env: gym.Env = make_env(
         args.env_id,
         args.seed + rank * args.num_envs,
