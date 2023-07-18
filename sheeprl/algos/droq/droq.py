@@ -289,7 +289,7 @@ def main():
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = real_next_obs
+        obs = next_obs
 
         # Train the agent
         if global_step > args.learning_starts:
