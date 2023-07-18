@@ -25,13 +25,13 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import make_env, test
+from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, make_dict_env, polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -427,14 +427,14 @@ def main():
     # Save args as dict automatically
     args.log_dir = log_dir
 
-    env: gym.Env = make_env(
+    env: gym.Env = make_dict_env(
         args.env_id,
         args.seed + rank * args.num_envs,
         rank,
         args,
         logger.log_dir if rank == 0 else None,
         "train",
-    )
+    )()
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)

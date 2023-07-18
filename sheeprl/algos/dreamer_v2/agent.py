@@ -528,20 +528,29 @@ def build_models(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
+        args (DreamerV1Args): the hyper-parameters of DreamerV2.
+        obs_space (Dict[str, Any]): the observation space.
+        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
+        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
+        world_model_state (Dict[str, Tensor], optional): the state of the world model.
+            Default to None.
+        actor_state: (Dict[str, Tensor], optional): the state of the actor.
+            Default to None.
+        critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The target critic (nn.Module)
     """
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
@@ -611,7 +620,7 @@ def build_models(
         cnn_keys,
         mlp_keys,
         args.cnn_channels_multiplier,
-        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
+        stochastic_size + args.recurrent_state_size,
         encoder.cnn_output_dim,
         encoder.cnn_input_dim,
         args.mlp_layers,

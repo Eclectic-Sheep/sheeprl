@@ -26,7 +26,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import init_weights, make_env, test
+from sheeprl.algos.dreamer_v2.utils import init_weights, test
 from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.algos.p2e_dv2.args import P2EDV2Args
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
@@ -35,9 +35,9 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, make_dict_env, polynomial_decay
 
-# Decomment the following two lines if you are using MineDojo on an headless machine
+# Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
 
 
@@ -509,14 +509,14 @@ def main():
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
 
-    env: gym.Env = make_env(
+    env: gym.Env = make_dict_env(
         args.env_id,
         args.seed + rank * args.num_envs,
         rank,
         args,
         logger.log_dir if rank == 0 else None,
         "train",
-    )
+    )()
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)

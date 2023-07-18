@@ -36,7 +36,8 @@ from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
 
-os.environ["MINEDOJO_HEADLESS"] = "1"
+# Decomment the following line if you are using MineDojo on an headless machine
+# os.environ["MINEDOJO_HEADLESS"] = "1"
 
 
 def train(

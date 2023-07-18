@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
@@ -17,21 +18,20 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch import Tensor
 from torch.distributed.algorithms.join import Join
-from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.args import PPOArgs
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, make_dict_env, normalize_tensor, polynomial_decay
 
 
 # Simple wrapper to let torch.distributed.algorithms.join.Join
@@ -75,11 +75,11 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + i,
                 0,
-                args.capture_video,
+                args,
                 logger.log_dir,
                 "train",
                 mask_velocities=args.mask_vel,
@@ -88,34 +88,75 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
 
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(envs.single_observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.cnn_keys and (
+                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
+            ):
+                if len(v.shape) == 3:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.mlp_keys and (
+                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
+            ):
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(f"There must be at least one valid observation.")
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
+
+    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+    actions_dim = (
+        envs.single_action_space.shape
+        if is_continuous
+        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
+    )
     # Create the actor and critic models
-    actor = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
-        activation=torch.nn.ReLU,
-    ).to(device)
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=1,
-        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
-        activation=torch.nn.ReLU,
-    ).to(device)
+    agent_args = {
+        "actions_dim": actions_dim,
+        "obs_space": envs.single_observation_space,
+        "cnn_keys": cnn_keys,
+        "mlp_keys": mlp_keys,
+        "cnn_channels_multiplier": args.cnn_channels_multiplier,
+        "mlp_layers": args.mlp_layers,
+        "dense_units": args.dense_units,
+        "cnn_act": args.cnn_act,
+        "mlp_act": args.dense_act,
+        "layer_norm": args.layer_norm,
+        "is_continuous": is_continuous,
+    }
+    agent = PPOAgent(**agent_args).to(device)
+
+    # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
+    world_collective.broadcast_object_list([agent_args], src=0)
 
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(list(actor.parameters()) + list(critic.parameters())),
+        torch.nn.utils.convert_parameters.parameters_to_vector(list(agent.parameters())),
         device=device,
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    torch.nn.utils.convert_parameters.vector_to_parameters(
-        flattened_parameters, list(actor.parameters()) + list(critic.parameters())
-    )
+    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
     with device:
@@ -153,40 +194,57 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
-        next_done = torch.zeros(args.num_envs, 1).to(device)
+        o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+        next_obs = {}
+        for k in o.keys():
+            if k in mlp_keys + cnn_keys:
+                with fabric.device:
+                    torch_obs = torch.from_numpy(o[k])
+                    step_data[k] = torch_obs
+                next_obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+        next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
             global_step += args.num_envs
 
-            # Sample an action given the observation received by the environment
-            actions_logits = actor(next_obs)
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
-            action = dist.sample()
-            logprob = dist.log_prob(action)
-
-            # Compute the value of the current observation
-            value = critic(next_obs)
-
-            # Store the current step data
-            step_data["dones"] = next_done
-            step_data["values"] = value
-            step_data["actions"] = action
-            step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
+            with torch.no_grad():
+                # Sample an action given the observation received by the environment
+                actions, logprobs, _, value = agent(next_obs)
+                if is_continuous:
+                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                else:
+                    real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
+                actions = torch.cat(actions, -1)
 
             # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            o, reward, done, truncated, info = envs.step(real_actions)
 
             with device:
-                next_obs = torch.tensor(next_obs)
-                next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
-                )  # [N_envs, 1]
+                rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
+                done = done.view(args.num_envs, -1).float()
 
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
+            # Update the step data
+            step_data["dones"] = next_done
+            step_data["values"] = value
+            step_data["actions"] = actions
+            step_data["logprobs"] = logprobs
+            step_data["rewards"] = rewards
+
+            # Append data to buffer
+            rb.add(step_data.unsqueeze(0))
+
+            with device:
+                obs = {}  # [N_envs, N_obs]
+                for k in o.keys():
+                    if k in mlp_keys + cnn_keys:
+                        with fabric.device:
+                            torch_obs = torch.from_numpy(o[k])
+                            step_data[k] = torch_obs
+                        obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+            next_obs = obs
+            next_done = done
 
             if "final_info" in info:
                 for i, agent_final_info in enumerate(info["final_info"]):
@@ -197,11 +255,8 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
-            # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
-
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        next_values = critic(next_obs)
+        next_values = agent.get_value(next_obs)
         returns, advantages = gae(
             rb["rewards"],
             rb["values"],
@@ -234,9 +289,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
-        torch.nn.utils.convert_parameters.vector_to_parameters(
-            flattened_parameters, list(actor.parameters()) + list(critic.parameters())
-        )
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
@@ -267,17 +320,17 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
+        test_env = make_dict_env(
             args.env_id,
             None,
             0,
-            args.capture_video,
+            args,
             fabric.logger.log_dir,
             "test",
             mask_velocities=args.mask_vel,
             vector_env_idx=0,
         )()
-        test(actor, test_env, fabric, args)
+        test(agent, test_env, fabric, args, cnn_keys, mlp_keys)
 
 
 def trainer(
@@ -297,24 +350,11 @@ def trainer(
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
-    envs = vectorized_env([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    agent_args = [None]
+    world_collective.broadcast_object_list(agent_args, src=0)
 
     # Create the actor and critic models
-    actor = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
-        activation=torch.nn.ReLU,
-    )
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=1,
-        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
-        activation=torch.nn.ReLU,
-    )
-    agent = Agent(actor, critic)
+    agent = PPOAgent(**agent_args[0])
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
@@ -362,7 +402,7 @@ def trainer(
             # Last Checkpoint
             if global_rank == 1:
                 state = {
-                    "agent": actor.state_dict(),
+                    "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "args": asdict(args),
                     "update_step": update,
@@ -383,15 +423,18 @@ def trainer(
             for _ in range(args.update_epochs):
                 for batch_idxes in sampler:
                     batch = data[batch_idxes]
-                    actions_logits, new_values = agent(batch["observations"])
+                    batch_obs = {k: batch[k] / 255 - 0.5 for k in agent.feature_extractor.cnn_keys}
+                    batch_obs.update({k: batch[k].float() for k in agent.feature_extractor.mlp_keys})
+                    _, logprobs, entropy, new_values = agent(
+                        batch_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+                    )
 
-                    dist = Categorical(logits=actions_logits.unsqueeze(-2))
                     if args.normalize_advantages:
                         batch["advantages"] = normalize_tensor(batch["advantages"])
 
                     # Policy loss
                     pg_loss = policy_loss(
-                        dist.log_prob(batch["actions"]),
+                        logprobs,
                         batch["logprobs"],
                         batch["advantages"],
                         args.clip_coef,
@@ -409,7 +452,7 @@ def trainer(
                     )
 
                     # Entropy loss
-                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
+                    ent_loss = entropy_loss(entropy, args.loss_reduction)
 
                     # Equation (9) in the paper
                     loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -460,7 +503,7 @@ def trainer(
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == 1:
                 state = {
-                    "agent": actor.state_dict(),
+                    "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "args": asdict(args),
                     "update_step": update,

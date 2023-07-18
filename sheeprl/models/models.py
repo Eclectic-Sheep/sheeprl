@@ -421,10 +421,9 @@ class MultiEncoder(nn.Module):
             self.device = device
         self.cnn_keys = cnn_keys
         self.mlp_keys = mlp_keys
-        self.mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
-        cnn_input_channels = sum([obs_space[k].shape[0] for k in cnn_keys])
-        self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[1:])
         if self.cnn_keys != []:
+            cnn_input_channels = sum([obs_space[k].shape[0] for k in cnn_keys])
+            self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[1:])
             self.cnn_encoder = nn.Sequential(
                 CNN(
                     input_channels=cnn_input_channels,
@@ -444,6 +443,7 @@ class MultiEncoder(nn.Module):
             self.cnn_output_dim = 0
 
         if self.mlp_keys != []:
+            self.mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
             self.mlp_encoder = MLP(
                 self.mlp_input_dim,
                 None,
