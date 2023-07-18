@@ -45,7 +45,7 @@ class DreamerV1Args(StandardArgs):
     actor_min_std: float = Arg(default=1e-4, help="the minimum standard deviation for the actions")
     clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
-    num_layers: int = Arg(
+    mlp_layers: int = Arg(
         default=4,
         help="the number of MLP layers for every model: actor, critic, reward and possibly the continue model",
     )
