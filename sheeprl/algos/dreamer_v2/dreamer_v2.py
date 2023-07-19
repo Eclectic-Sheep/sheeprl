@@ -312,26 +312,29 @@ def train(
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
-    if is_continuous:
-        objective = lambda_values[1:]
-    else:
-        baseline = target_critic(imagined_trajectories[:-2])
-        advantage = (lambda_values[1:] - baseline).detach()
-        objective = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                ],
-                -1,
-            ).sum(-1)
-            * advantage
-        )
+
+    # Dynamics backpropagation
+    dynamics = lambda_values[1:]
+
+    # Reinforce
+    baseline = target_critic(imagined_trajectories[:-2])
+    advantage = (lambda_values[1:] - baseline).detach()
+    reinforce = (
+        torch.stack(
+            [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ],
+            -1,
+        ).sum(-1)
+        * advantage
+    )
+    objective = args.objective_mix * reinforce + (1 - args.objective_mix) * dynamics
     try:
         entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
     except NotImplementedError:
         entropy = torch.zeros_like(objective)
-    policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+    policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
@@ -422,6 +425,7 @@ def main():
         world_collective.broadcast_object_list(data, src=0)
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
+
     env: gym.Env = make_env(
         args.env_id,
         args.seed + rank * args.num_envs,
