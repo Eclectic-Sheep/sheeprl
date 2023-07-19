@@ -24,13 +24,13 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import make_env, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -257,21 +257,21 @@ def train(
     predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * args.gamma
-        done_mask = torch.cat((true_done, done_mask[1:]))
+        continues = torch.cat((true_done, continues[1:]))
     else:
-        done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
     # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
     lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_target_values,
-        done_mask,
-        last_values=predicted_target_values[-1],
-        horizon=args.horizon + 1,
+        predicted_rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-2:-1],
+        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 
@@ -282,32 +282,32 @@ def train(
         # the imagined trajectory would have ended.
         #
         # Suppose the case in which the continue model is not used and gamma = .99
-        # done_mask.shape = (15, 2500, 1)
-        # done_mask = [
+        # continues.shape = (15, 2500, 1)
+        # continues = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (15 rows)
-        # torch.ones_like(done_mask[:1]) = [
+        # torch.ones_like(continues[:1]) = [
         #   [ [1.], ..., [1.] ]
         # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # done_mask[:-2] = [
+        # continues[:-2] = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (13 rows)
-        # torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0) = [
+        # torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   ...,
         #   [ [.99], ..., [.99] ],
         # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0) = [
+        # torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   [ [.9801], ..., [.9801] ],
         #   ...,
         #   [ [.8775], ..., [.8775] ],
         # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)

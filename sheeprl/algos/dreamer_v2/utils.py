@@ -221,6 +221,26 @@ def init_weights(m: nn.Module):
         nn.init.constant_(m.bias.data, 0)
 
 
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    continues: Tensor,
+    bootstrap: Optional[Tensor] = None,
+    horizon: int = 15,
+    lmbda: float = 0.95,
+):
+    if bootstrap is None:
+        bootstrap = torch.zeros_like(values[-2:-1])
+    agg = bootstrap
+    next_val = torch.cat((values[1:], bootstrap), dim=0)
+    inputs = rewards + continues * next_val * (1 - lmbda)
+    lv = []
+    for i in reversed(range(horizon)):
+        agg = inputs[i] + continues[i] * lmbda * agg
+        lv.append(agg)
+    return torch.cat(list(reversed(lv)), dim=0)
+
+
 @torch.no_grad()
 def test(
     player: "Player", fabric: Fabric, args: DreamerV2Args, cnn_keys: List[str], mlp_keys: List[str], test_name: str = ""
