@@ -1,4 +1,3 @@
-import copy
 import os
 import pathlib
 import time
@@ -260,7 +259,7 @@ def train(
 
     if args.use_continues and world_model.continue_model:
         done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
+        true_done = (1 - data["dones"]).reshape(1, -1, 1) * args.gamma
         done_mask = torch.cat((true_done, done_mask[1:]))
     else:
         done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
@@ -424,10 +423,6 @@ def main():
         world_collective.broadcast_object_list(data, src=0)
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
-
-    # Save args as dict automatically
-    args.log_dir = log_dir
-
     env: gym.Env = make_env(
         args.env_id,
         args.seed + rank * args.num_envs,
@@ -593,7 +588,7 @@ def main():
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
-    step_data["is_first"] = copy.deepcopy(step_data["dones"])
+    step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":
         rb.add(step_data[None, ...])
     else:
@@ -631,7 +626,6 @@ def main():
                 else:
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
-        step_data["is_first"] = copy.deepcopy(step_data["dones"])
         o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
@@ -655,6 +649,7 @@ def main():
         obs = next_obs
 
         step_data["dones"] = dones
+        step_data["is_first"] = torch.zeros_like(step_data["dones"])
         step_data["actions"] = actions
         step_data["rewards"] = clip_rewards_fn(rewards)
         data_to_add = step_data[None, ...]
@@ -677,7 +672,7 @@ def main():
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
-            step_data["is_first"] = copy.deepcopy(step_data["dones"])
+            step_data["is_first"] = torch.ones_like(step_data["dones"])
             data_to_add = step_data[None, ...]
             if buffer_type == "sequential":
                 rb.add(data_to_add)
