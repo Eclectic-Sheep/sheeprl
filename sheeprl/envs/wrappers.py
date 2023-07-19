@@ -80,6 +80,7 @@ class FrameStack(gym.Wrapper):
         self._env = env
         self._num_stack = num_stack
         self._cnn_keys = []
+        self.observation_space = self._env.observation_space
         for k, v in self._env.observation_space.spaces.items():
             if (
                 cnn_keys
@@ -87,6 +88,12 @@ class FrameStack(gym.Wrapper):
                 and len(v.shape) == 3
             ):
                 self._cnn_keys.append(k)
+                self._observation_space[k] = gym.spaces.Box(
+                    np.repeat(self._env.observation_space[k].low[None, ...], 4, axis=0),
+                    np.repeat(self._env.observation_space[k].high[None, ...], 4, axis=0),
+                    (self._num_stack, *self._env.observation_space[k].shape),
+                    self._env.observation_space[k].dtype,
+                )
 
         if self._cnn_keys is None or len(self._cnn_keys) == 0:
             raise RuntimeError(f"Specify at least one valid cnn key")

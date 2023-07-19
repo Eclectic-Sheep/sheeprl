@@ -29,6 +29,10 @@ class StandardArgs:
     checkpoint_every: int = Arg(default=100, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
 
+    frame_size: int = Arg(default=64, help="The size of the pixel-from observations (if any)")
+    frame_stack: int = Arg(default=-1, help="How many frame to stack (only for pixel-form observations)")
+    frame_stack_keys: int = Arg(default=-1, help="The cnn keys to apply the frame stack wrapper")
+
     def __setattr__(self, __name: str, __value: Any) -> None:
         super().__setattr__(__name, __value)
         if __name == "log_dir":
