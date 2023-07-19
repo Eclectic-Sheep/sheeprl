@@ -11,7 +11,7 @@ import torch.distributed as dist
 from lightning import Fabric
 from lightning.fabric.fabric import _is_using_cli
 
-from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE, _IS_WINDOWS
+from sheeprl.utils.imports import _IS_WINDOWS
 
 
 @pytest.fixture(params=["1", "2", "3"])
@@ -233,6 +233,8 @@ def test_ppo(standard_args, start_time):
         "--per_rank_batch_size=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
+        "--cnn_keys=all",
+        "--mlp_keys=all",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -240,7 +242,7 @@ def test_ppo(standard_args, start_time):
                 task.__dict__[command]()
 
     with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
         shutil.rmtree("pytest_" + start_time)
 
 
@@ -258,6 +260,8 @@ def test_ppo_decoupled(standard_args, start_time):
         "--update_epochs=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
+        "--cnn_keys=all",
+        "--mlp_keys=all",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
@@ -285,78 +289,6 @@ def test_ppo_decoupled(standard_args, start_time):
         with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
             check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
             shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.skipif(
-    not (_IS_ATARI_AVAILABLE and _IS_ATARI_ROMS_AVAILABLE),
-    reason="requires Atari games to be installed. "
-    "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
-)
-def test_ppo_atari(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_atari", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_atari"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--env_id=BreakoutNoFrameskip-v4",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
-
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
-
-    if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
-def test_ppo_continuous(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_continuous", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_continuous"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        "--rollout_steps=1",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -384,49 +316,6 @@ def test_ppo_recurrent(standard_args, start_time):
 
 
 @pytest.mark.timeout(60)
-def test_ppo_pixel_continuous(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_pixel_continuous")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_pixel_continuous", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_pixel_continuous"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--update_epochs=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
-
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
-
-    if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
@@ -449,6 +338,8 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
         "--recurrent_state_size=8",
+        "--cnn_keys=all",
+        "--mlp_keys=all",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
@@ -500,6 +391,8 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
         "--recurrent_state_size=8",
+        "--cnn_keys=all",
+        "--mlp_keys=all",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")

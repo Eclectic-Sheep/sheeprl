@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from sheeprl.algos.args import StandardArgs
-from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper
+from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper
 
 
 @torch.no_grad()
@@ -322,6 +322,9 @@ def make_dict_env(
 
         env = gym.wrappers.TransformObservation(env, transform_obs)
         env.observation_space["rgb"] = gym.spaces.Box(0, 255, (1 if args.grayscale_obs else 3, 64, 64), np.uint8)
+
+        if args.frame_stack > 0:
+            env = FrameStack(env, args.frame_stack, args.frame_stack_keys)
 
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
