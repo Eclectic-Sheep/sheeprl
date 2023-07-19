@@ -334,7 +334,6 @@ def build_models(
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -370,7 +369,7 @@ def build_models(
 
     recurrent_model = RecurrentModel(np.sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.output_size,
+        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=args.stochastic_size * 2,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
@@ -389,7 +388,7 @@ def build_models(
         transition_model.apply(init_weights),
         args.min_std,
     )
-    observation_model = observation_model = MultiDecoder(
+    observation_model = MultiDecoder(
         obs_space,
         cnn_keys,
         mlp_keys,

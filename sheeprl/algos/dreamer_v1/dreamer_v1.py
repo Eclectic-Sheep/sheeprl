@@ -48,10 +48,8 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: DreamerV1Args,
-    is_continuous: bool,
     cnn_keys: Sequence[str],
     mlp_keys: Sequence[str],
-    actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -650,10 +648,8 @@ def main():
                     local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
                     aggregator,
                     args,
-                    is_continuous,
                     cnn_keys,
                     mlp_keys,
-                    actions_dim,
                 )
             step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
             if args.expl_decay:

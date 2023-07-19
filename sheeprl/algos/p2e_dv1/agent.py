@@ -1,23 +1,25 @@
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
-import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
-from sheeprl.algos.dreamer_v1.agent import RSSM, Actor, Encoder, RecurrentModel, WorldModel
+from sheeprl.algos.dreamer_v1.agent import RSSM, RecurrentModel, WorldModel
+from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor
 from sheeprl.algos.p2e_dv1.args import P2EDV1Args
-from sheeprl.models.models import MLP, DeCNN
+from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.utils import init_weights
 
 
 def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
-    observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: P2EDV1Args,
+    obs_space: Dict[str, Any],
+    cnn_keys: Sequence[str],
+    mlp_keys: Sequence[str],
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_task_state: Optional[Dict[str, Tensor]] = None,
     critic_task_state: Optional[Dict[str, Tensor]] = None,
@@ -28,10 +30,13 @@ def build_models(
 
     Args:
         fabric (Fabric): the fabric object.
-        action_dim (int): the dimension of the actions.
+        actions_dim (Sequence[int]): the dimension of the actions.
         observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (P2EDV1Args): the hyper-parameters of Dreamer_v1.
+        args (DreamerV1Args): the hyper-parameters of DreamerV1.
+        obs_space (Dict[str, Any]): the observation space.
+        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
+        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_task_state (Dict[str, Tensor], optional): the state of the actor_task.
@@ -51,7 +56,6 @@ def build_models(
         The critic_exploration (_FabricModule).
     """
     # minecraft environment does not support grayscale observations
-    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -72,17 +76,22 @@ def build_models(
         )
 
     # Define models
-    encoder = Encoder(
-        input_channels=n_obs_channels,
-        hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
-        layer_args={"kernel_size": 4, "stride": 2},
-        activation=cnn_act,
-        observation_shape=observation_shape,
+    encoder = MultiEncoder(
+        obs_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        False,
     )
 
     recurrent_model = RecurrentModel(np.sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.output_size,
+        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=args.stochastic_size * 2,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
@@ -101,20 +110,20 @@ def build_models(
         transition_model.apply(init_weights),
         args.min_std,
     )
-    observation_model = nn.Sequential(
-        nn.Linear(args.stochastic_size + args.recurrent_state_size, encoder.output_size),
-        nn.Unflatten(1, (encoder.output_size, 1, 1)),
-        DeCNN(
-            input_channels=encoder.output_size,
-            hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
-            layer_args=[
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-            ],
-            activation=[cnn_act, cnn_act, cnn_act, None],
-        ),
+    observation_model = MultiDecoder(
+        obs_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.stochastic_size + args.recurrent_state_size,
+        encoder.cnn_output_dim,
+        encoder.cnn_input_dim,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        False,
     )
     reward_model = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
@@ -138,17 +147,32 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if args.use_continues else None,
     )
-    actor_task = Actor(
-        args.stochastic_size + args.recurrent_state_size,
-        actions_dim,
-        is_continuous,
-        args.actor_mean_scale,
-        args.actor_init_std,
-        args.actor_min_std,
-        args.dense_units,
-        dense_act,
-        args.mlp_layers,
-    )
+    if "minedojo" in args.env_id:
+        actor_task = MinedojoActor(
+            args.stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
+    else:
+        actor_task = Actor(
+            args.stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
     critic_task = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
@@ -159,17 +183,32 @@ def build_models(
     actor_task.apply(init_weights)
     critic_task.apply(init_weights)
 
-    actor_exploration = Actor(
-        args.stochastic_size + args.recurrent_state_size,
-        actions_dim,
-        is_continuous,
-        args.actor_mean_scale,
-        args.actor_init_std,
-        args.actor_min_std,
-        args.dense_units,
-        dense_act,
-        args.mlp_layers,
-    )
+    if "minedojo" in args.env_id:
+        actor_exploration = MinedojoActor(
+            args.stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
+    else:
+        actor_exploration = Actor(
+            args.stochastic_size + args.recurrent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
     critic_exploration = MLP(
         input_dims=args.stochastic_size + args.recurrent_state_size,
         output_dim=1,
