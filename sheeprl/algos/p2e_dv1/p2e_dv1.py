@@ -25,7 +25,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import make_env, test
+from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_models
 from sheeprl.algos.p2e_dv1.args import P2EDV1Args
 from sheeprl.data.buffers import SequentialReplayBuffer
@@ -34,7 +34,7 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, init_weights, make_dict_env, polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -205,7 +205,7 @@ def train(
 
         # imagine trajectories in the latent space
         for i in range(args.horizon):
-            actions = torch.cat(actor_exploration(imagined_latent_state.detach()[0]), dim=-1)
+            actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
             imagined_actions[i] = actions
             imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
@@ -291,7 +291,7 @@ def train(
         args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
     )
     for i in range(args.horizon):
-        actions = torch.cat(actor_task(imagined_latent_state.detach()[0]), dim=-1)
+        actions = torch.cat(actor_task(imagined_latent_state.detach())[0], dim=-1)
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
@@ -407,7 +407,7 @@ def main():
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
 
-    env: gym.Env = make_env(
+    env: gym.Env = make_dict_env(
         args.env_id,
         args.seed + rank * args.num_envs,
         rank,
@@ -621,7 +621,7 @@ def main():
             player.actor = actor_task.module
             # task test zero-shot
             if fabric.is_global_zero:
-                test(player, fabric, args, "zero-shot")
+                test(player, fabric, args, cnn_keys, mlp_keys, "zero-shot")
 
         # Sample an action given the observation received by the environment
         if global_step <= learning_starts and args.checkpoint_path is None and "minedojo" not in args.env_id:
@@ -775,7 +775,7 @@ def main():
     # task test few-shot
     if fabric.is_global_zero:
         player.actor = actor_task.module
-        test(player, fabric, args, "few-shot")
+        test(player, fabric, args, cnn_keys, mlp_keys, "few-shot")
 
 
 if __name__ == "__main__":

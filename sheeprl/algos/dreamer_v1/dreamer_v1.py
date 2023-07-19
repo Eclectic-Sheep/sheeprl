@@ -24,7 +24,7 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import test
+from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
@@ -232,7 +232,7 @@ def train(
     # imagine trajectories in the latent space
     for i in range(args.horizon):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions = torch.cat(actor(imagined_latent_states.detach()[0]), dim=-1)
+        actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
 
         # imagination step
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
