@@ -1,4 +1,3 @@
-import copy
 import os
 import pathlib
 import time
@@ -25,13 +24,13 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import make_env, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, make_env, test
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -258,21 +257,21 @@ def train(
     predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
-        done_mask = torch.cat((true_done, done_mask[1:]))
+        continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        true_done = (1 - data["dones"]).reshape(1, -1, 1) * args.gamma
+        continues = torch.cat((true_done, continues[1:]))
     else:
-        done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
     # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
     lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_target_values,
-        done_mask,
-        last_values=predicted_target_values[-1],
-        horizon=args.horizon + 1,
+        predicted_rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-2:-1],
+        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 
@@ -283,56 +282,59 @@ def train(
         # the imagined trajectory would have ended.
         #
         # Suppose the case in which the continue model is not used and gamma = .99
-        # done_mask.shape = (15, 2500, 1)
-        # done_mask = [
+        # continues.shape = (15, 2500, 1)
+        # continues = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (15 rows)
-        # torch.ones_like(done_mask[:1]) = [
+        # torch.ones_like(continues[:1]) = [
         #   [ [1.], ..., [1.] ]
         # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # done_mask[:-2] = [
+        # continues[:-2] = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (13 rows)
-        # torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0) = [
+        # torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   ...,
         #   [ [.99], ..., [.99] ],
         # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0) = [
+        # torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   [ [.9801], ..., [.9801] ],
         #   ...,
         #   [ [.8775], ..., [.8775] ],
         # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
-    if is_continuous:
-        objective = lambda_values[1:]
-    else:
-        baseline = target_critic(imagined_trajectories[:-2])
-        advantage = (lambda_values[1:] - baseline).detach()
-        objective = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                ],
-                -1,
-            ).sum(-1)
-            * advantage
-        )
+
+    # Dynamics backpropagation
+    dynamics = lambda_values[1:]
+
+    # Reinforce
+    baseline = target_critic(imagined_trajectories[:-2])
+    advantage = (lambda_values[1:] - baseline).detach()
+    reinforce = (
+        torch.stack(
+            [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ],
+            -1,
+        ).sum(-1)
+        * advantage
+    )
+    objective = args.objective_mix * reinforce + (1 - args.objective_mix) * dynamics
     try:
         entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
     except NotImplementedError:
         entropy = torch.zeros_like(objective)
-    policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+    policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
@@ -423,9 +425,6 @@ def main():
         world_collective.broadcast_object_list(data, src=0)
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
-
-    # Save args as dict automatically
-    args.log_dir = log_dir
 
     env: gym.Env = make_env(
         args.env_id,
@@ -592,7 +591,7 @@ def main():
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
-    step_data["is_first"] = copy.deepcopy(step_data["dones"])
+    step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":
         rb.add(step_data[None, ...])
     else:
@@ -630,7 +629,6 @@ def main():
                 else:
                     real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
 
-        step_data["is_first"] = copy.deepcopy(step_data["dones"])
         o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
@@ -654,6 +652,7 @@ def main():
         obs = next_obs
 
         step_data["dones"] = dones
+        step_data["is_first"] = torch.zeros_like(step_data["dones"])
         step_data["actions"] = actions
         step_data["rewards"] = clip_rewards_fn(rewards)
         data_to_add = step_data[None, ...]
@@ -676,7 +675,7 @@ def main():
             step_data["dones"] = torch.zeros(args.num_envs, 1)
             step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
-            step_data["is_first"] = copy.deepcopy(step_data["dones"])
+            step_data["is_first"] = torch.ones_like(step_data["dones"])
             data_to_add = step_data[None, ...]
             if buffer_type == "sequential":
                 rb.add(data_to_add)

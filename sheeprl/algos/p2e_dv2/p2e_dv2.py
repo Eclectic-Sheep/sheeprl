@@ -26,7 +26,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import init_weights, make_env, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, make_env, test
 from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.algos.p2e_dv2.args import P2EDV2Args
 from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
@@ -35,7 +35,7 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -275,18 +275,18 @@ def train(
         aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
         if args.use_continues and world_model.continue_model:
-            done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+            continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
             true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
-            done_mask = torch.cat((true_done, done_mask[1:]))
+            continues = torch.cat((true_done, continues[1:]))
         else:
-            done_mask = torch.ones_like(intrinsic_reward.detach()) * args.gamma
+            continues = torch.ones_like(intrinsic_reward.detach()) * args.gamma
 
         lambda_values = compute_lambda_values(
-            intrinsic_reward,
-            predicted_target_values,
-            done_mask,
-            last_values=predicted_target_values[-1],
-            horizon=args.horizon + 1,
+            intrinsic_reward[:-1],
+            predicted_target_values[:-1],
+            continues[:-1],
+            bootstrap=predicted_target_values[-2:-1],
+            horizon=args.horizon,
             lmbda=args.lmbda,
         )
 
@@ -294,7 +294,7 @@ def train(
         aggregator.update("Values_exploration/lambda_values", lambda_values.detach().cpu().mean())
 
         with torch.no_grad():
-            discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
+            discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
         actor_exploration_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor_exploration(imagined_trajectories[:-2].detach())[1]
@@ -379,23 +379,23 @@ def train(
     predicted_target_values = target_critic_task(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
-        done_mask = torch.cat((true_done, done_mask[1:]))
+        continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        true_done = (1 - data["dones"]).reshape(1, -1, 1) * args.gamma
+        continues = torch.cat((true_done, continues[1:]))
     else:
-        done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
     lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_target_values,
-        done_mask,
-        last_values=predicted_target_values[-1],
-        horizon=args.horizon + 1,
+        predicted_rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-2:-1],
+        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 
     with torch.no_grad():
-        discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
     actor_task_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor_task(imagined_trajectories[:-2].detach())[1]
