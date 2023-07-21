@@ -152,7 +152,12 @@ def test_replay_buffer_sample_fail():
 def test_memmap_replay_buffer():
     buf_size = 1000000
     n_envs = 4
-    rb = ReplayBuffer(buf_size, n_envs, memmap=True)
+    with pytest.warns(
+        UserWarning,
+        match="The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+        " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+    ):
+        rb = ReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=None)
     td = TensorDict(
         {"observations": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8)}, batch_size=[10, n_envs]
     )

@@ -691,10 +691,20 @@ def main():
     )
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
-        rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
+        rb = SequentialReplayBuffer(
+            buffer_size,
+            args.num_envs,
+            device="cpu",
+            memmap=args.memmap_buffer,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        )
     elif buffer_type == "episode":
         rb = EpisodeBuffer(
-            buffer_size, sequence_length=args.per_rank_sequence_length, device="cpu", memmap=args.memmap_buffer
+            buffer_size,
+            sequence_length=args.per_rank_sequence_length,
+            device="cpu",
+            memmap=args.memmap_buffer,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         )
     else:
         raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")

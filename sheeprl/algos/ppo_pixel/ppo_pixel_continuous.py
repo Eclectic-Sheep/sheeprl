@@ -164,7 +164,13 @@ def player(args: PPOPixelContinuousArgs, world_collective: TorchCollective, play
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
+    rb = ReplayBuffer(
+        args.rollout_steps,
+        args.num_envs,
+        device=device,
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+    )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
