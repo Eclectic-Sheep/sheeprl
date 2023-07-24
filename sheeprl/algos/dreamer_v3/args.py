@@ -37,7 +37,7 @@ class DreamerV3Args(DreamerV2Args):
     actor_lr: float = Arg(default=8e-5, help="the learning rate of the optimizer of the actor")
     critic_lr: float = Arg(default=8e-5, help="the learning rate of the optimizer of the critic")
     horizon: int = Arg(default=15, help="the number of imagination step")
-    gamma: float = Arg(default=0.99, help="the discount factor gamma")
+    gamma: float = Arg(default=(1 - 1 / 333), help="the discount factor gamma")
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
     use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=32, help="the dimension of the stochastic state")
@@ -117,3 +117,10 @@ class DreamerV3Args(DreamerV2Args):
     mine_break_speed: int = Arg(default=100, help="the break speed multiplier of Minecraft environments")
     mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
     mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")
+
+    moments_decay: float = Arg(default=0.99, help="")
+    moment_max: float = Arg(default=1.0, help="")
+    moments_perclo: float = Arg(default=0.05, help="")
+    moments_perchi: float = Arg(default=0.95, help="")
+
+    bins: int = Arg(default=255, help="")
