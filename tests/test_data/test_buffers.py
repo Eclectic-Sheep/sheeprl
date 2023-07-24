@@ -1,5 +1,10 @@
+import os
+import shutil
+import time
+
 import pytest
 import torch
+from lightning import Fabric
 from tensordict import TensorDict
 
 from sheeprl.data.buffers import ReplayBuffer
@@ -163,3 +168,25 @@ def test_memmap_replay_buffer():
     )
     rb.add(td)
     assert rb.buffer.is_memmap()
+
+
+def test_memmap_to_file_replay_buffer():
+    buf_size = 1000000
+    n_envs = 4
+    root_dir = os.path.join("pytest_" + str(int(time.time())))
+    memmap_dir = os.path.join(root_dir, "memmap_buffer")
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=memmap_dir)
+    td = TensorDict(
+        {"observations": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8)}, batch_size=[10, n_envs]
+    )
+    rb.add(td)
+    assert rb.buffer.is_memmap()
+    assert os.path.exists(os.path.join(memmap_dir, "meta.pt"))
+    assert os.path.exists(os.path.join(memmap_dir, "observations.meta.pt"))
+    assert os.path.exists(os.path.join(memmap_dir, "observations.memmap"))
+    fabric = Fabric(devices=1, accelerator="cpu")
+    ckpt_file = os.path.join(root_dir, "checkpoint", "ckpt.ckpt")
+    fabric.save(ckpt_file, {"rb": rb})
+    ckpt = fabric.load(ckpt_file)
+    assert (ckpt["rb"]["observations"][:10] == rb["observations"][:10]).all()
+    shutil.rmtree(root_dir)

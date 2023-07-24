@@ -133,7 +133,7 @@ class ReplayBuffer:
                         (self._buffer_size, self._n_envs, *v.shape[2:]),
                         dtype=v.dtype,
                         device=v.device,
-                        filename=None if self._memmap_dir is None else self._memmap_dir / (k + ".memmap"),
+                        filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
                     )
                     for k, v in data_to_store.items()
                 },
@@ -457,10 +457,10 @@ class EpisodeBuffer:
             for k, v in episode.items():
                 episode[k] = MemmapTensor.from_tensor(
                     v,
-                    filename=None if self._memmap_dir is None else self._memmap_dir / (k + ".memmap"),
+                    filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
                     transfer_ownership=False,
                 )
-            episode.memmap_(prefix=self._memmap_dir, copy_existing=True)
+            episode.memmap_(prefix=self._memmap_dir)
         episode.to(self.device)
         self._buf.append(episode)
 

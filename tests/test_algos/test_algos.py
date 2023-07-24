@@ -38,7 +38,7 @@ def mock_env_and_destroy(devices):
         dist.destroy_process_group()
 
 
-def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool = True, memmap_buffer: bool = False):
+def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool = True):
     fabric = Fabric(accelerator="cpu")
 
     # check the presence of the checkpoint
@@ -54,15 +54,6 @@ def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool =
 
     # check args are saved
     assert os.path.exists(os.path.join(os.path.dirname(ckpt_path), "args.json"))
-
-    # check that memmap buffer are still there
-    if memmap_buffer:
-        rb = state["rb"]
-        if isinstance(rb, list):
-            for i in range(len(rb)):
-                rb[i].add(rb[i].buffer[:1])
-        else:
-            rb.add(rb.buffer[:1])
 
 
 @pytest.mark.timeout(60)
@@ -638,62 +629,4 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["discrete_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True])
-def test_dreamer_v2_memmap_buffer(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
-    root_dir = os.path.join("pytest_" + start_time, "dreamer_v2", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        "--per_rank_batch_size=1",
-        "--per_rank_sequence_length=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--horizon=2",
-        "--env_id=" + env_id,
-        "--root_dir=" + root_dir,
-        "--run_name=" + run_name,
-        "--dense_units=8",
-        "--cnn_channels_multiplier=2",
-        "--recurrent_state_size=8",
-        "--hidden_size=8",
-        "--cnn_keys=rgb",
-        "--pretrain_steps=1",
-        "--layer_norm=True",
-        "--memmap_buffer=True",
-    ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
-
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    for i in range(int(os.environ["LT_DEVICES"])):
-        assert os.path.exists(os.path.join(os.path.dirname(ckpt_path), "memmap_buffer", f"rank_{i}"))
-
-    keys = {
-        "world_model",
-        "actor",
-        "critic",
-        "world_optimizer",
-        "actor_optimizer",
-        "critic_optimizer",
-        "expl_decay_steps",
-        "args",
-        "global_step",
-        "batch_size",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer, memmap_buffer=False)
     shutil.rmtree("pytest_" + start_time)
