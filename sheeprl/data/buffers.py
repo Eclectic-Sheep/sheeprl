@@ -1,4 +1,7 @@
+import os
 import typing
+import warnings
+from pathlib import Path
 from typing import List, Optional, Union
 
 import numpy as np
@@ -15,6 +18,7 @@ class ReplayBuffer:
         n_envs: int = 1,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
     ):
         """A replay buffer which internally uses a TensorDict.
 
@@ -34,7 +38,17 @@ class ReplayBuffer:
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._memmap_dir = memmap_dir
         if self._memmap:
+            if memmap_dir is None:
+                warnings.warn(
+                    "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                    " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                    UserWarning,
+                )
+            else:
+                self._memmap_dir = Path(self._memmap_dir)
+                self._memmap_dir.mkdir(parents=True, exist_ok=True)
             self._buf = None
         else:
             self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
@@ -115,13 +129,18 @@ class ReplayBuffer:
         if self._memmap and self._buf is None:
             self._buf = TensorDict(
                 {
-                    k: MemmapTensor((self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype, device=v.device)
+                    k: MemmapTensor(
+                        (self._buffer_size, self._n_envs, *v.shape[2:]),
+                        dtype=v.dtype,
+                        device=v.device,
+                        filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
+                    )
                     for k, v in data_to_store.items()
                 },
                 batch_size=[self._buffer_size, self._n_envs],
                 device=self.device,
             )
-            self._buf.memmap_()
+            self._buf.memmap_(prefix=self._memmap_dir)
         self._buf[idxes, :] = data_to_store
         if self._pos + data_len >= self._buffer_size:
             self._full = True
@@ -207,8 +226,9 @@ class SequentialReplayBuffer(ReplayBuffer):
         n_envs: int = 1,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
     ):
-        super().__init__(buffer_size, n_envs, device, memmap)
+        super().__init__(buffer_size, n_envs, device, memmap, memmap_dir)
 
     def sample(
         self,
@@ -338,6 +358,7 @@ class EpisodeBuffer:
         sequence_length: int,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
     ) -> None:
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
@@ -355,6 +376,16 @@ class EpisodeBuffer:
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._memmap_dir = memmap_dir
+        if memmap_dir is None:
+            warnings.warn(
+                "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                UserWarning,
+            )
+        else:
+            self._memmap_dir = Path(self._memmap_dir)
+            self._memmap_dir.mkdir(parents=True, exist_ok=True)
         self._chunk_length = torch.arange(sequence_length, device=self.device).reshape(1, -1)
 
     @property
@@ -424,8 +455,12 @@ class EpisodeBuffer:
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
             for k, v in episode.items():
-                episode[k] = MemmapTensor.from_tensor(v)
-            episode.memmap_()
+                episode[k] = MemmapTensor.from_tensor(
+                    v,
+                    filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
+                    transfer_ownership=False,
+                )
+            episode.memmap_(prefix=self._memmap_dir)
         episode.to(self.device)
         self._buf.append(episode)
 

@@ -76,6 +76,12 @@ class DreamerV2Args(StandardArgs):
     layer_norm: bool = Arg(
         default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
     )
+    objective_mix: float = Arg(
+        default=1.0,
+        help="the mixing coefficient for the actor objective: '0' uses the dynamics backpropagation, "
+        "i.e. it tries to maximize the estimated lambda values; '1' uses the standard reinforce objective, "
+        "i.e. log(p) * Advantage. ",
+    )
 
     # Environment settings
     expl_amount: float = Arg(default=0.0, help="the exploration amout to add to the actions")

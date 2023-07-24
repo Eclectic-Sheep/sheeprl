@@ -480,7 +480,11 @@ def main():
         args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
     )
     rb = SequentialReplayBuffer(
-        buffer_size, args.num_envs, device=fabric.device if args.memmap_buffer else "cpu", memmap=args.memmap_buffer
+        buffer_size,
+        args.num_envs,
+        device=fabric.device if args.memmap_buffer else "cpu",
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
