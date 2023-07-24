@@ -606,7 +606,11 @@ class Player(nn.Module):
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
 
     def get_exploration_action(
-        self, obs: Dict[str, Tensor], is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
+        self,
+        obs: Dict[str, Tensor],
+        is_continuous: bool,
+        mask: Optional[Dict[str, np.ndarray]] = None,
+        dones: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
@@ -618,7 +622,7 @@ class Player(nn.Module):
         Returns:
             The actions the agent has to perform.
         """
-        actions = self.get_greedy_action(obs, mask=mask)
+        actions = self.get_greedy_action(obs, mask=mask, dones=dones)
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
@@ -635,7 +639,11 @@ class Player(nn.Module):
         return tuple(expl_actions)
 
     def get_greedy_action(
-        self, obs: Dict[str, Tensor], is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+        self,
+        obs: Dict[str, Tensor],
+        is_training: bool = True,
+        mask: Optional[Dict[str, np.ndarray]] = None,
+        dones: Optional[Tensor] = None,
     ) -> Sequence[Tensor]:
         """
         Return the greedy actions.
@@ -648,6 +656,10 @@ class Player(nn.Module):
         Returns:
             The actions the agent has to perform.
         """
+        if dones is not None:
+            self.actions = (1 - dones) * self.actions
+            self.recurrent_state = (1 - dones) * self.recurrent_state
+            self.stochastic_state = (1 - dones) * self.stochastic_state
         embedded_obs = self.encoder(obs)
         self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
