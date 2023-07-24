@@ -593,7 +593,6 @@ class Player(nn.Module):
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.init_states()
 
     def init_states(self) -> None:
         """
@@ -648,6 +647,8 @@ class Player(nn.Module):
         Returns:
             The actions the agent has to perform.
         """
+        if self.recurrent_state is None or self.stochastic_state is None or self.actions is None:
+            self.init_states()
         embedded_obs = self.encoder(obs)
         self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state

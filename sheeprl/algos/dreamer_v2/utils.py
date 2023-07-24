@@ -9,6 +9,7 @@ import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
+
 from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
@@ -214,7 +215,8 @@ def init_weights(m: nn.Module):
             nn.init.constant_(m.bias.data, 0)
     elif isinstance(m, nn.Linear):
         nn.init.xavier_normal_(m.weight.data)
-        nn.init.constant_(m.bias.data, 0)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
 
 
 def zero_init_weights(m: nn.Module):
@@ -279,3 +281,23 @@ def test(
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+
+
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    continues: Tensor,
+    bootstrap: Optional[Tensor] = None,
+    horizon: int = 15,
+    lmbda: float = 0.95,
+):
+    if bootstrap is None:
+        bootstrap = torch.zeros_like(values[-2:-1])
+    agg = bootstrap
+    next_val = torch.cat((values[1:], bootstrap), dim=0)
+    inputs = rewards + continues * next_val * (1 - lmbda)
+    lv = []
+    for i in reversed(range(horizon)):
+        agg = inputs[i] + continues[i] * lmbda * agg
+        lv.append(agg)
+    return torch.cat(list(reversed(lv)), dim=0)
