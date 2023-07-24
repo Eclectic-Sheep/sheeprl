@@ -650,7 +650,7 @@ def main():
                 if len(mask) == 0:
                     mask = None
                 real_actions = actions = player.get_exploration_action(
-                    preprocessed_obs, is_continuous, mask, step_data["dones"][None, ...]
+                    preprocessed_obs, is_continuous, mask, step_data["dones"][None, ...].to(device)
                 )
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
