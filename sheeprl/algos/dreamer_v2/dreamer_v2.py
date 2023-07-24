@@ -586,11 +586,17 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
-    learning_starts = args.learning_starts // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    step_before_training = (
+        args.train_every // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    )
+    num_updates = (
+        args.total_steps // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
+    )
+    learning_starts = (
+        args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    )
     if args.checkpoint_path and not args.checkpoint_buffer:
-        learning_starts = start_step + args.learning_starts // int((fabric.world_size * args.action_repeat))
+        learning_starts += start_step
     max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
     if args.checkpoint_path:
         player.expl_amount = polynomial_decay(
@@ -652,10 +658,9 @@ def main():
                 else:
                     real_actions = np.array([real_act.cpu().argmax(dim=-1) for real_act in real_actions])
 
-        step_data["is_first"] = step_data["dones"]
+        step_data["is_first"] = copy.deepcopy(step_data["dones"])
         o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
-        is_first = np.zeros_like(dones)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
 
@@ -682,7 +687,6 @@ def main():
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
         dones = torch.tensor([dones]).view(args.num_envs, -1).float()
-        is_first = torch.tensor([is_first]).view(args.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
