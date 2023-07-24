@@ -175,3 +175,12 @@ def get_dummy_env(env_id: str):
     else:
         raise ValueError(f"Unrecognized dummy environment: {env_id}")
     return env
+
+
+# From https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/jaxutils.py
+def symlog(x: Tensor) -> Tensor:
+    return torch.sign(x) * torch.log(1 + torch.abs(x))
+
+
+def symexp(x: Tensor) -> Tensor:
+    return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
