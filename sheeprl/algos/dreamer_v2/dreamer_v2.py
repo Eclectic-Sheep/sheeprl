@@ -634,7 +634,7 @@ def main():
                 actions = np.concatenate(
                     [
                         F.one_hot(torch.tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(actions.reshape(len(actions_dim)), actions_dim)
+                        for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
                     ],
                     axis=-1,
                 )
@@ -678,15 +678,16 @@ def main():
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = final_obs
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
 
         next_obs = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:]).float()
             step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:]).float()
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
-        dones = torch.tensor([dones]).view(args.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
