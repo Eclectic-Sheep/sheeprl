@@ -256,8 +256,8 @@ def train(
 
     # predict values and rewards
     with torch.no_grad():
-        predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mean
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
+        predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
+    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
     if args.use_continues and world_model.continue_model:
         continues = Independent(
             Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
@@ -321,7 +321,7 @@ def train(
     dynamics = lambda_values[1:]
 
     # Reinforce
-    advantage = (lambda_values[1:] - predicted_target_values).detach()
+    advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
     reinforce = (
         torch.stack(
             [
