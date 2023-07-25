@@ -549,7 +549,7 @@ def main():
                 "Grads/critic": MeanMetric(sync_on_compute=False),
             }
         )
-        aggregator.to(fabric.device)
+    aggregator.to(fabric.device)
 
     # Local data
     buffer_size = (
