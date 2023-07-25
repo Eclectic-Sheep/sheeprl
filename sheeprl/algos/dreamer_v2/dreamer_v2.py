@@ -748,7 +748,7 @@ def main():
                     actions_dim,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every // (args.num_envs * (fabric.world_size * args.action_repeat))
+            step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(

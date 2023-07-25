@@ -37,7 +37,7 @@ class DreamerV2Args(StandardArgs):
     horizon: int = Arg(default=15, help="the number of imagination step")
     gamma: float = Arg(default=0.99, help="the discount factor gamma")
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
-    use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
+    use_continues: bool = Arg(default=True, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=32, help="the dimension of the stochastic state")
     discrete_size: int = Arg(default=32, help="the dimension of the discrete state")
     hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
@@ -47,9 +47,6 @@ class DreamerV2Args(StandardArgs):
     kl_free_avg: bool = Arg(default=True, help="whether to apply free average")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
     continue_scale_factor: float = Arg(default=1.0, help="the scale factor for the continue loss")
-    min_std: float = Arg(
-        default=0.1, help="the minimum value of the standard deviation for the stochastic state distribution"
-    )
     actor_ent_coef: float = Arg(default=1e-4, help="the entropy coefficient for the actor loss")
     actor_init_std: float = Arg(
         default=0.0, help="the amout to sum to the input of the function of the standard deviation of the actions"
