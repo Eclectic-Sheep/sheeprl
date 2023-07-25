@@ -26,7 +26,7 @@ from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, make_env, test
-from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -255,8 +255,7 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # predict values and rewards
-    with torch.no_grad():
-        predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
+    predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
     predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
     if args.use_continues and world_model.continue_model:
         continues = Independent(
@@ -556,12 +555,13 @@ def main():
     )
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
-        rb = SequentialReplayBuffer(
+        rb = AsyncReplayBuffer(
             buffer_size,
             args.num_envs,
             device="cpu",
             memmap=args.memmap_buffer,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+            sequential=True,
         )
     elif buffer_type == "episode":
         rb = EpisodeBuffer(
@@ -576,7 +576,7 @@ def main():
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], (SequentialReplayBuffer, EpisodeBuffer)):
+        elif isinstance(state["rb"], (AsyncReplayBuffer, EpisodeBuffer)):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
@@ -649,9 +649,7 @@ def main():
                 mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                 if len(mask) == 0:
                     mask = None
-                real_actions = actions = player.get_exploration_action(
-                    preprocessed_obs, is_continuous, mask, step_data["dones"][None, ...].to(device)
-                )
+                real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
@@ -695,18 +693,35 @@ def main():
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["rewards"] = clip_rewards_fn(rewards)
-        data_to_add = step_data[None, ...]
         if buffer_type == "sequential":
-            rb.add(data_to_add)
+            rb.add(step_data[None, ...])
         else:
             for i, env_ep in enumerate(episode_steps):
                 env_ep.append(step_data[i : i + 1][None, ...])
 
-        if buffer_type == "episode":
-            for i, d in enumerate(dones):
-                if d and len(episode_steps[i]) >= args.per_rank_sequence_length:
-                    rb.add(torch.cat(episode_steps[i], dim=0))
-                    episode_steps[i] = []
+        # Reset and save the observation coming from the automatic reset
+        dones_idxes = dones.nonzero(as_tuple=True)[0].tolist()
+        reset_envs = len(dones_idxes)
+        if reset_envs > 0:
+            reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
+            for k in next_obs.keys():
+                reset_data[k] = next_obs[k][dones_idxes]
+            reset_data["dones"] = torch.zeros(reset_envs, 1)
+            reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim))
+            reset_data["rewards"] = torch.zeros(reset_envs, 1)
+            reset_data["is_first"] = torch.ones_like(reset_data["dones"])
+            if buffer_type == "episode":
+                for i, d in enumerate(dones_idxes):
+                    if len(episode_steps[d]) >= args.per_rank_sequence_length:
+                        rb.add(torch.cat(episode_steps[d], dim=0))
+                        episode_steps[d] = [reset_data[i : i + 1][None, ...]]
+            else:
+                rb.add(reset_data[None, ...], dones_idxes)
+            # Reset dones so that `is_first` is updated
+            for d in dones_idxes:
+                step_data["dones"][d : d + 1] = torch.zeros_like(step_data["dones"][d : d + 1])
+            # Reset internal agent states
+            player.init_states(dones_idxes)
 
         step_before_training -= 1
 
