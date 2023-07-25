@@ -407,9 +407,9 @@ class PlayerDV3(Player):
         """
         self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-        self.stochastic_state = compute_stochastic_state(self.transition_model(self.recurrent_state)).reshape(1, self.num_envs, -1)
-
-
+        self.stochastic_state = compute_stochastic_state(self.transition_model(self.recurrent_state)).reshape(
+            1, self.num_envs, -1
+        )
 
 
 class Actor(nn.Module):
