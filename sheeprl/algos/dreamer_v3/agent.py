@@ -88,7 +88,7 @@ class MultiEncoder(nn.Module):
         cnn_out = torch.tensor((), device=self.device)
         mlp_out = torch.tensor((), device=self.device)
         if self.cnn_keys != []:
-            cnn_input = torch.cat([obs[k] for k in self.cnn_keys], -3)  # channels dimension
+            cnn_input = torch.cat([obs[k] for k in self.cnn_keys], -3) - 0.5  # channels dimension
             cnn_out = cnn_forward(self.cnn_encoder, cnn_input, cnn_input.shape[-3:], (-1,))
         if self.mlp_keys != []:
             mlp_input = torch.cat([symlog(obs[k]) for k in self.mlp_keys], -1).type(torch.float32)
@@ -160,8 +160,9 @@ class MultiDecoder(nn.Module):
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
         if self.cnn_keys != []:
-            cnn_out = cnn_forward(
-                self.cnn_decoder, latent_states, (latent_states.shape[-1],), self.cnn_decoder_output_dim
+            cnn_out = (
+                cnn_forward(self.cnn_decoder, latent_states, (latent_states.shape[-1],), self.cnn_decoder_output_dim)
+                + 0.5
             )
             reconstructed_obs.update(
                 {k: rec_obs for k, rec_obs in zip(self.cnn_keys, torch.split(cnn_out, self.cnn_splits, -3))}

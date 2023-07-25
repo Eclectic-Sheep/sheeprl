@@ -109,7 +109,7 @@ def train(
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
     device = fabric.device
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
+    batch_obs = {k: data[k] / 255 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
     batch_actions = torch.cat((torch.zeros_like(data["actions"][0:1]), data["actions"][:-1]), dim=0)
@@ -439,7 +439,7 @@ def main():
         args,
         logger.log_dir if rank == 0 else None,
         "train",
-    )
+    )()
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
@@ -619,7 +619,7 @@ def main():
                 preprocessed_obs = {}
                 for k, v in obs.items():
                     if k in cnn_keys:
-                        preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
+                        preprocessed_obs[k] = v[None, ...].to(device) / 255
                     else:
                         preprocessed_obs[k] = v[None, ...].to(device)
                 mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
