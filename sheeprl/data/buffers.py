@@ -454,13 +454,17 @@ class EpisodeBuffer:
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
+            episode_dir = None
+            if self._memmap_dir is not None:
+                episode_dir = self._memmap_dir / f"episode_{len(self._buf)}"
+                episode_dir.mkdir(parents=True, exist_ok=True)
             for k, v in episode.items():
                 episode[k] = MemmapTensor.from_tensor(
                     v,
-                    filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
+                    filename=None if episode_dir is None else episode_dir / f"{k}.memmap",
                     transfer_ownership=False,
                 )
-            episode.memmap_(prefix=self._memmap_dir)
+            episode.memmap_(prefix=episode_dir)
         episode.to(self.device)
         self._buf.append(episode)
 
