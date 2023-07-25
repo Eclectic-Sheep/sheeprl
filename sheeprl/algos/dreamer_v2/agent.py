@@ -596,8 +596,12 @@ class Player(nn.Module):
         self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """
-        Initialize the states and the actions for the ended environments.
+        """Initialize the states and the actions for the ended environments.
+
+        Args:
+            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
+                If None, then all environments' states are reset.
+                Defaults to None.
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)

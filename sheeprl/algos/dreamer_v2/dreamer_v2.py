@@ -17,6 +17,7 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
+from torch import Tensor
 from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
@@ -485,6 +486,7 @@ def main():
         raise RuntimeError(f"There must be at least one valid observation.")
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
+    obs_keys = cnn_keys + mlp_keys
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
@@ -586,15 +588,10 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    step_before_training = (
-        args.train_every // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    )
-    num_updates = (
-        args.total_steps // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 1
-    )
-    learning_starts = (
-        args.learning_starts // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    )
+    single_global_step = int(args.num_envs * fabric.world_size * args.action_repeat)
+    step_before_training = args.train_every // single_global_step if not args.dry_run else 0
+    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
+    learning_starts = args.learning_starts // single_global_step if not args.dry_run else 0
     if args.checkpoint_path and not args.checkpoint_buffer:
         learning_starts += start_step
     max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
@@ -611,9 +608,13 @@ def main():
     o = envs.reset(seed=args.seed)[0]
     obs = {}
     for k in o.keys():
-        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:]).float()
-        step_data[k] = torch_obs
-        obs[k] = torch_obs
+        if k in obs_keys:
+            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+            if k in mlp_keys:
+                # Images stay uint8 to save space
+                torch_obs = torch_obs.float()
+            step_data[k] = torch_obs
+            obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
@@ -679,10 +680,14 @@ def main():
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs = {}
+        next_obs: Dict[str, Tensor] = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
-            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:]).float()
-            step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:]).float()
+            if k in obs_keys:
+                next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+                step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:])
+                if k in mlp_keys:
+                    next_obs[k] = next_obs[k].float()
+                    step_data[k] = step_data[k].float()
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
         dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
@@ -763,7 +768,7 @@ def main():
                     actions_dim,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
+            step_before_training = args.train_every // single_global_step
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
