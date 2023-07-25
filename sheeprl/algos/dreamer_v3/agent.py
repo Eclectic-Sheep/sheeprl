@@ -410,6 +410,8 @@ class PlayerDV3(Player):
         self.stochastic_state = compute_stochastic_state(self.transition_model(self.recurrent_state)).reshape(1, self.num_envs, -1)
 
 
+
+
 class Actor(nn.Module):
     """
     The wrapper class of the Dreamer_v2 Actor model.
