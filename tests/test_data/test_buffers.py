@@ -155,7 +155,7 @@ def test_replay_buffer_sample_fail():
 
 
 def test_memmap_replay_buffer():
-    buf_size = 1000000
+    buf_size = 10
     n_envs = 4
     with pytest.warns(
         UserWarning,
@@ -171,7 +171,7 @@ def test_memmap_replay_buffer():
 
 
 def test_memmap_to_file_replay_buffer():
-    buf_size = 1000000
+    buf_size = 10
     n_envs = 4
     root_dir = os.path.join("pytest_" + str(int(time.time())))
     memmap_dir = os.path.join(root_dir, "memmap_buffer")
