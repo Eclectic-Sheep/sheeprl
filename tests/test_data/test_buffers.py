@@ -189,4 +189,6 @@ def test_memmap_to_file_replay_buffer():
     fabric.save(ckpt_file, {"rb": rb})
     ckpt = fabric.load(ckpt_file)
     assert (ckpt["rb"]["observations"][:10] == rb["observations"][:10]).all()
+    del rb
+    del ckpt
     shutil.rmtree(root_dir)
