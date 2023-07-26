@@ -21,7 +21,7 @@ requires-python = ">=3.8,<3.11"
 classifiers = ["Programming Language :: Python"]
 dependencies = [
   "gymnasium[box2d]==0.28.*",
-  "moviepy==1.0.*",
+  "moviepy@git+https://github.com/Zulko/moviepy.git",
   "tensordict==0.1.*",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
