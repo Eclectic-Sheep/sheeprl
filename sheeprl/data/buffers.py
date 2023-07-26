@@ -602,7 +602,7 @@ class AsyncReplayBuffer:
     def device(self) -> Optional[Sequence[device]]:
         if self.buffer is None:
             return None
-        return tuple([b.device for b in self.buffer])
+        return self._device
 
     def __len__(self) -> int:
         return self.buffer_size
