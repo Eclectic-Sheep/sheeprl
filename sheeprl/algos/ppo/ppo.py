@@ -261,8 +261,8 @@ def main():
 
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
+    # Get the first environment observation and start the optimization
     with device:
-        # Get the first environment observation and start the optimization
         o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
         next_obs = {}
         for k in o.keys():
