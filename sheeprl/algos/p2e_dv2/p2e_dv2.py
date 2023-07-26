@@ -880,7 +880,7 @@ def main():
                 rb.add(reset_data[None, ...], dones_idxes)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
-                step_data["dones"][d : d + 1] = torch.zeros_like(step_data["dones"][d : d + 1])
+                step_data["dones"][d] = torch.zeros_like(step_data["dones"][d])
             # Reset internal agent states
             player.init_states(dones_idxes)
 
