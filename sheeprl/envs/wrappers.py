@@ -1,3 +1,4 @@
+import copy
 from collections import deque
 from typing import Sequence
 
@@ -80,7 +81,7 @@ class FrameStack(gym.Wrapper):
         self._env = env
         self._num_stack = num_stack
         self._cnn_keys = []
-        self.observation_space = self._env.observation_space
+        self.observation_space = copy.deepcopy(self._env.observation_space)
         for k, v in self._env.observation_space.spaces.items():
             if (
                 cnn_keys
@@ -88,9 +89,9 @@ class FrameStack(gym.Wrapper):
                 and len(v.shape) == 3
             ):
                 self._cnn_keys.append(k)
-                self._observation_space[k] = gym.spaces.Box(
-                    np.repeat(self._env.observation_space[k].low[None, ...], 4, axis=0),
-                    np.repeat(self._env.observation_space[k].high[None, ...], 4, axis=0),
+                self.observation_space[k] = gym.spaces.Box(
+                    np.repeat(self._env.observation_space[k].low[None, ...], num_stack, axis=0),
+                    np.repeat(self._env.observation_space[k].high[None, ...], num_stack, axis=0),
                     (self._num_stack, *self._env.observation_space[k].shape),
                     self._env.observation_space[k].dtype,
                 )
@@ -107,8 +108,8 @@ class FrameStack(gym.Wrapper):
             stacked_obs[k] = np.stack(list(self._frames[k]), axis=0)
         return stacked_obs, reward, done, truncated, info
 
-    def reset(self, seed=None):
-        obs, info = self._env.reset(seed=seed)
+    def reset(self, seed=None, **kwargs):
+        obs, info = self._env.reset(seed=seed, **kwargs)
 
         [self._frames[k].clear() for k in self._cnn_keys]
         for k in self._cnn_keys:

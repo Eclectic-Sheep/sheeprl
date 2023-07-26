@@ -203,8 +203,8 @@ def make_dict_env(
                 domain,
                 task,
                 from_pixels=True,
-                height=args.frame_size,
-                width=args.frame_size,
+                height=args.screen_size,
+                width=args.screen_size,
                 frame_skip=args.action_repeat,
                 seed=seed,
             )
@@ -225,8 +225,8 @@ def make_dict_env(
             )
             env = MineDojoWrapper(
                 task_id,
-                height=args.frame_size,
-                width=args.frame_size,
+                height=args.screen_size,
+                width=args.screen_size,
                 pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
                 seed=args.seed,
                 start_position=start_position,
@@ -238,8 +238,8 @@ def make_dict_env(
             task_id = "_".join(env_id.split("_")[1:])
             env = MineRLWrapper(
                 task_id,
-                height=args.frame_size,
-                width=args.frame_size,
+                height=args.screen_size,
+                width=args.screen_size,
                 pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
                 seed=args.seed,
                 break_speed_multiplier=args.mine_break_speed,
@@ -263,7 +263,7 @@ def make_dict_env(
                     env,
                     noop_max=args.atari_noop_max,
                     frame_skip=args.action_repeat,
-                    screen_size=args.frame_size,
+                    screen_size=args.screen_size,
                     grayscale_obs=args.grayscale_obs,
                     scale_obs=False,
                     terminal_on_life_loss=False,
@@ -300,9 +300,9 @@ def make_dict_env(
                 obs.update({"rgb": obs["rgb"].transpose(1, 2, 0)})
 
             # resize
-            if obs["rgb"].shape[:-1] != (args.frame_size, args.frame_size):
+            if obs["rgb"].shape[:-1] != (args.screen_size, args.screen_size):
                 obs.update(
-                    {"rgb": cv2.resize(obs["rgb"], (args.frame_size, args.frame_size), interpolation=cv2.INTER_AREA)}
+                    {"rgb": cv2.resize(obs["rgb"], (args.screen_size, args.screen_size), interpolation=cv2.INTER_AREA)}
                 )
 
             # to grayscale
@@ -321,7 +321,9 @@ def make_dict_env(
             return obs
 
         env = gym.wrappers.TransformObservation(env, transform_obs)
-        env.observation_space["rgb"] = gym.spaces.Box(0, 255, (1 if args.grayscale_obs else 3, 64, 64), np.uint8)
+        env.observation_space["rgb"] = gym.spaces.Box(
+            0, 255, (1 if args.grayscale_obs else 3, args.screen_size, args.screen_size), np.uint8
+        )
 
         if args.frame_stack > 0:
             env = FrameStack(env, args.frame_stack, args.frame_stack_keys)
