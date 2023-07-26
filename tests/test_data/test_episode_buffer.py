@@ -184,13 +184,17 @@ def test_memmap_episode_buffer():
 
 
 def test_memmap_to_file_episode_buffer():
-    buf_size = 5
+    buf_size = 10
     bs = 5
     sl = 4
     root_dir = os.path.join("pytest_" + str(int(time.time())))
     memmap_dir = os.path.join(root_dir, "memmap_buffer")
     rb = EpisodeBuffer(buf_size, sl, memmap=True, memmap_dir=memmap_dir)
     for i in range(4):
+        if i >= 2:
+            bs = 7
+        else:
+            bs = 5
         td = TensorDict(
             {"observations": torch.randint(0, 256, (bs, 3, 64, 64), dtype=torch.uint8), "dones": torch.zeros(bs)},
             batch_size=[bs],

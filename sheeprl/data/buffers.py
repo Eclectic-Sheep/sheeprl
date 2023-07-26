@@ -454,14 +454,16 @@ class EpisodeBuffer:
             last_to_remove = mask.argmax()
             # Remove all memmaped episodes
             if self._memmap and self._memmap_dir is not None:
-                for i in range(last_to_remove + 1):
-                    filename = self._buf[i][self._buf[i].sorted_keys[0]].filename
-                    for k in self._buf[i].sorted_keys:
-                        f = self._buf[i][k].file
+                for _ in range(last_to_remove + 1):
+                    filename = self._buf[0][self._buf[0].sorted_keys[0]].filename
+                    for k in self._buf[0].sorted_keys:
+                        f = self._buf[0][k].file
                         if f is not None:
                             f.close()
-                    del self._buf[i]
+                    del self._buf[0]
                     shutil.rmtree(os.path.dirname(filename))
+            else:
+                self._buf = self._buf[last_to_remove + 1 :]
             cum_lengths = cum_lengths[last_to_remove + 1 :] - cum_lengths[last_to_remove]
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
