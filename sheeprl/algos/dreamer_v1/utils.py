@@ -131,7 +131,7 @@ def test(player: "Player", fabric: Fabric, args: DreamerV1Args, test_name: str =
         # Act greedly through the environment
         action = player.get_greedy_action(next_obs / 255 - 0.5, False)
         if not player.actor.is_continuous:
-            action = np.array([act.cpu().argmax(dim=-1) for act in action])
+            action = np.array([act.cpu().argmax(dim=-1).numpy() for act in action])
         else:
             action = action[0].cpu().numpy()
 

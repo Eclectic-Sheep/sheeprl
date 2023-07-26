@@ -280,7 +280,7 @@ def test(
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()
         else:
-            real_actions = np.array([real_act.cpu().argmax(dim=-1) for real_act in real_actions])
+            real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         # Single environment step
         next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))

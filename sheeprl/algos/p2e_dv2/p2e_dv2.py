@@ -811,7 +811,7 @@ def main():
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
-                    real_actions = np.array([real_act.cpu().argmax(dim=-1) for real_act in real_actions])
+                    real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
         o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
