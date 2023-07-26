@@ -1,5 +1,6 @@
 import os
 import typing
+import uuid
 import warnings
 from pathlib import Path
 from typing import List, Optional, Union
@@ -9,6 +10,7 @@ import torch
 from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
+import shutil
 
 
 class ReplayBuffer:
@@ -449,18 +451,34 @@ class EpisodeBuffer:
         if self.full or len(self) + ep_len > self._buffer_size:
             cum_lengths = np.array(self._cum_lengths)
             mask = (len(self) - cum_lengths + ep_len) <= self._buffer_size
-            self._buf = self._buf[mask.argmax() + 1 :]
-            cum_lengths = cum_lengths[mask.argmax() + 1 :] - cum_lengths[mask.argmax()]
+            last_to_remove = mask.argmax()
+            # Remove all memmaped episodes
+            if self._memmap and self._memmap_dir is not None:
+                for _ in range(last_to_remove + 1):
+                    filename = self._buf[0][self._buf[0].sorted_keys[0]].filename
+                    for k in self._buf[0].sorted_keys:
+                        f = self._buf[0][k].file
+                        if f is not None:
+                            f.close()
+                    del self._buf[0]
+                    shutil.rmtree(os.path.dirname(filename))
+            else:
+                self._buf = self._buf[last_to_remove + 1 :]
+            cum_lengths = cum_lengths[last_to_remove + 1 :] - cum_lengths[last_to_remove]
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
+            episode_dir = None
+            if self._memmap_dir is not None:
+                episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
+                episode_dir.mkdir(parents=True, exist_ok=True)
             for k, v in episode.items():
                 episode[k] = MemmapTensor.from_tensor(
                     v,
-                    filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
+                    filename=None if episode_dir is None else episode_dir / f"{k}.memmap",
                     transfer_ownership=False,
                 )
-            episode.memmap_(prefix=self._memmap_dir)
+            episode.memmap_(prefix=episode_dir)
         episode.to(self.device)
         self._buf.append(episode)
 
