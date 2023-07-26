@@ -141,6 +141,10 @@ def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
         "--gradient_steps=1",
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,
+        "--cnn_keys=all",
+        "--mlp_keys=all",
+        "--frame_stack_keys=all",
+        "--screen_size=64",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
