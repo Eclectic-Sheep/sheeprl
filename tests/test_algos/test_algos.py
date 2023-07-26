@@ -9,7 +9,6 @@ from unittest import mock
 import pytest
 import torch.distributed as dist
 from lightning import Fabric
-from lightning.fabric.fabric import _is_using_cli
 
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE, _IS_WINDOWS
 
@@ -41,8 +40,6 @@ def mock_env_and_destroy(devices):
 
 def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool = True):
     fabric = Fabric(accelerator="cpu")
-    if not _is_using_cli():
-        fabric.launch()
 
     # check the presence of the checkpoint
     assert os.path.isdir(ckpt_path)
@@ -84,12 +81,11 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -117,12 +113,11 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -150,24 +145,23 @@ def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "agent",
-            "encoder",
-            "decoder",
-            "qf_optimizer",
-            "actor_optimizer",
-            "alpha_optimizer",
-            "encoder_optimizer",
-            "decoder_optimizer",
-            "args",
-            "global_step",
-            "batch_size",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {
+        "agent",
+        "encoder",
+        "decoder",
+        "qf_optimizer",
+        "actor_optimizer",
+        "alpha_optimizer",
+        "encoder_optimizer",
+        "decoder_optimizer",
+        "args",
+        "global_step",
+        "batch_size",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -212,12 +206,11 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-            if checkpoint_buffer:
-                keys.add("rb")
-            check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-            shutil.rmtree("pytest_" + start_time)
+        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+        if checkpoint_buffer:
+            keys.add("rb")
+        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -239,9 +232,8 @@ def test_ppo(standard_args, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
+    check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -282,9 +274,8 @@ def test_ppo_decoupled(standard_args, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
+        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -330,9 +321,8 @@ def test_ppo_atari(standard_args, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
+        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -354,9 +344,8 @@ def test_ppo_continuous(standard_args, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
+    check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -378,9 +367,8 @@ def test_ppo_recurrent(standard_args, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
+    check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -421,9 +409,8 @@ def test_ppo_pixel_continuous(standard_args, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
+        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
+        shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -458,23 +445,22 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "world_model",
-            "actor",
-            "critic",
-            "world_optimizer",
-            "actor_optimizer",
-            "critic_optimizer",
-            "expl_decay_steps",
-            "args",
-            "global_step",
-            "batch_size",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {
+        "world_model",
+        "actor",
+        "critic",
+        "world_optimizer",
+        "actor_optimizer",
+        "critic_optimizer",
+        "expl_decay_steps",
+        "args",
+        "global_step",
+        "batch_size",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -509,29 +495,28 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "world_model",
-            "actor_task",
-            "critic_task",
-            "ensembles",
-            "world_optimizer",
-            "actor_task_optimizer",
-            "critic_task_optimizer",
-            "ensemble_optimizer",
-            "expl_decay_steps",
-            "args",
-            "global_step",
-            "batch_size",
-            "actor_exploration",
-            "critic_exploration",
-            "actor_exploration_optimizer",
-            "critic_exploration_optimizer",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {
+        "world_model",
+        "actor_task",
+        "critic_task",
+        "ensembles",
+        "world_optimizer",
+        "actor_task_optimizer",
+        "critic_task_optimizer",
+        "ensemble_optimizer",
+        "expl_decay_steps",
+        "args",
+        "global_step",
+        "batch_size",
+        "actor_exploration",
+        "critic_exploration",
+        "actor_exploration_optimizer",
+        "critic_exploration_optimizer",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -570,23 +555,22 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "world_model",
-            "actor",
-            "critic",
-            "world_optimizer",
-            "actor_optimizer",
-            "critic_optimizer",
-            "expl_decay_steps",
-            "args",
-            "global_step",
-            "batch_size",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {
+        "world_model",
+        "actor",
+        "critic",
+        "world_optimizer",
+        "actor_optimizer",
+        "critic_optimizer",
+        "expl_decay_steps",
+        "args",
+        "global_step",
+        "batch_size",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
 
 
 @pytest.mark.timeout(60)
@@ -624,26 +608,25 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "world_model",
-            "actor_task",
-            "critic_task",
-            "ensembles",
-            "world_optimizer",
-            "actor_task_optimizer",
-            "critic_task_optimizer",
-            "ensemble_optimizer",
-            "expl_decay_steps",
-            "args",
-            "global_step",
-            "batch_size",
-            "actor_exploration",
-            "critic_exploration",
-            "actor_exploration_optimizer",
-            "critic_exploration_optimizer",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    keys = {
+        "world_model",
+        "actor_task",
+        "critic_task",
+        "ensembles",
+        "world_optimizer",
+        "actor_task_optimizer",
+        "critic_task_optimizer",
+        "ensemble_optimizer",
+        "expl_decay_steps",
+        "args",
+        "global_step",
+        "batch_size",
+        "actor_exploration",
+        "critic_exploration",
+        "actor_exploration_optimizer",
+        "critic_exploration_optimizer",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
+    shutil.rmtree("pytest_" + start_time)
