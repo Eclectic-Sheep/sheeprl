@@ -185,12 +185,16 @@ def test_memmap_episode_buffer():
 
 def test_memmap_to_file_episode_buffer():
     buf_size = 10
-    bs = 4
+    bs = 5
     sl = 4
     root_dir = os.path.join("pytest_" + str(int(time.time())))
     memmap_dir = os.path.join(root_dir, "memmap_buffer")
     rb = EpisodeBuffer(buf_size, sl, memmap=True, memmap_dir=memmap_dir)
-    for i in range(buf_size // bs):
+    for i in range(4):
+        if i >= 2:
+            bs = 7
+        else:
+            bs = 5
         td = TensorDict(
             {"observations": torch.randint(0, 256, (bs, 3, 64, 64), dtype=torch.uint8), "dones": torch.zeros(bs)},
             batch_size=[bs],
@@ -199,11 +203,12 @@ def test_memmap_to_file_episode_buffer():
         rb.add(td)
         del td
         assert rb[-1].is_memmap()
-        assert os.path.exists(os.path.join(memmap_dir, f"episode_{i}", "meta.pt"))
-        assert os.path.exists(os.path.join(memmap_dir, f"episode_{i}", "dones.meta.pt"))
-        assert os.path.exists(os.path.join(memmap_dir, f"episode_{i}", "dones.memmap"))
-        assert os.path.exists(os.path.join(memmap_dir, f"episode_{i}", "observations.meta.pt"))
-        assert os.path.exists(os.path.join(memmap_dir, f"episode_{i}", "observations.memmap"))
+        memmap_dir = os.path.dirname(rb.buffer[-1][rb.buffer[-1].sorted_keys[0]].filename)
+        assert os.path.exists(os.path.join(memmap_dir, "meta.pt"))
+        assert os.path.exists(os.path.join(memmap_dir, "dones.meta.pt"))
+        assert os.path.exists(os.path.join(memmap_dir, "dones.memmap"))
+        assert os.path.exists(os.path.join(memmap_dir, "observations.meta.pt"))
+        assert os.path.exists(os.path.join(memmap_dir, "observations.memmap"))
     assert rb.is_memmap
     for ep in rb.buffer:
         del ep
