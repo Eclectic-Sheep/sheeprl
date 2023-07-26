@@ -319,9 +319,9 @@ def train(
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
     baseline = predicted_target_values[:-1]
-    offset, invscalse = moments(lambda_values)
-    normed_lambda_values = (lambda_values - offset) / invscalse
-    normed_baseline = (baseline - offset) / invscalse
+    offset, invscale = moments(lambda_values)
+    normed_lambda_values = (lambda_values - offset) / invscale
+    normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
     if is_continuous:
         objective = advantage

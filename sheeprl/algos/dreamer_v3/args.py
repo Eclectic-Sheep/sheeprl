@@ -77,9 +77,7 @@ class DreamerV3Args(DreamerV2Args):
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=1, help="the frequency to update the target critic network")
-    layer_norm: bool = Arg(
-        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
-    )
+    layer_norm: bool = Arg(default=True, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D")
     critic_tau: float = Arg(
         default=0.02,
         help="tau value to be used for the EMA critic update: `critic_param * tau + (1 - tau) * target_critic_param`",
