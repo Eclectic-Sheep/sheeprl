@@ -1,5 +1,6 @@
 import os
 import typing
+import uuid
 import warnings
 from pathlib import Path
 from typing import List, Optional, Union
@@ -9,6 +10,7 @@ import torch
 from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
+import shutil
 
 
 class ReplayBuffer:
@@ -449,14 +451,24 @@ class EpisodeBuffer:
         if self.full or len(self) + ep_len > self._buffer_size:
             cum_lengths = np.array(self._cum_lengths)
             mask = (len(self) - cum_lengths + ep_len) <= self._buffer_size
-            self._buf = self._buf[mask.argmax() + 1 :]
-            cum_lengths = cum_lengths[mask.argmax() + 1 :] - cum_lengths[mask.argmax()]
+            last_to_remove = mask.argmax()
+            # Remove all memmaped episodes
+            if self._memmap and self._memmap_dir is not None:
+                for i in range(last_to_remove + 1):
+                    filename = self._buf[i][self._buf[i].sorted_keys[0]].filename
+                    for k in self._buf[i].sorted_keys:
+                        f = self._buf[i][k].file
+                        if f is not None:
+                            f.close()
+                    del self._buf[i]
+                    shutil.rmtree(os.path.dirname(filename))
+            cum_lengths = cum_lengths[last_to_remove + 1 :] - cum_lengths[last_to_remove]
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
             episode_dir = None
             if self._memmap_dir is not None:
-                episode_dir = self._memmap_dir / f"episode_{len(self._buf)}"
+                episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
                 episode_dir.mkdir(parents=True, exist_ok=True)
             for k, v in episode.items():
                 episode[k] = MemmapTensor.from_tensor(
