@@ -18,7 +18,7 @@ class DreamerV3Args(DreamerV2Args):
         default=False, help="whether to capture videos of the agent performances (check out `videos` folder)"
     )
     buffer_size: int = Arg(default=int(5e6), help="the size of the buffer")
-    learning_starts: int = Arg(default=int(1e3), help="timestep to start learning")
+    learning_starts: int = Arg(default=int(5e3), help="timestep to start learning")
     pretrain_steps: int = Arg(default=100, help="the number of pretrain steps")
     gradient_steps: int = Arg(default=1, help="the number of gradient steps per each environment interaction")
     train_every: int = Arg(default=5, help="the number of steps between one training and another")
@@ -33,23 +33,23 @@ class DreamerV3Args(DreamerV2Args):
     prioritize_ends: bool = Arg(default=False, help="whether to sample episodes prioritizing the end of them.")
 
     # Agent settings
-    world_lr: float = Arg(default=3e-4, help="the learning rate of the optimizer of the world model")
-    actor_lr: float = Arg(default=8e-5, help="the learning rate of the optimizer of the actor")
-    critic_lr: float = Arg(default=8e-5, help="the learning rate of the optimizer of the critic")
+    world_lr: float = Arg(default=1e-4, help="the learning rate of the optimizer of the world model")
+    actor_lr: float = Arg(default=3e-5, help="the learning rate of the optimizer of the actor")
+    critic_lr: float = Arg(default=3e-5, help="the learning rate of the optimizer of the critic")
     horizon: int = Arg(default=15, help="the number of imagination step")
     gamma: float = Arg(default=(1 - 1 / 333), help="the discount factor gamma")
     lmbda: float = Arg(default=0.95, help="the lambda for the TD lambda values")
-    use_continues: bool = Arg(default=False, help="wheter or not to use the continue predictor")
+    use_continues: bool = Arg(default=True, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=32, help="the dimension of the stochastic state")
     discrete_size: int = Arg(default=32, help="the dimension of the discrete state")
-    hidden_size: int = Arg(default=200, help="the hidden size for the transition and representation model")
-    recurrent_state_size: int = Arg(default=200, help="the dimension of the recurrent state")
+    hidden_size: int = Arg(default=768, help="the hidden size for the transition and representation model")
+    recurrent_state_size: int = Arg(default=2048, help="the dimension of the recurrent state")
     kl_dynamic: float = Arg(default=0.5, help="the regularizer for the KL dynamic loss")
     kl_representation: float = Arg(default=0.1, help="the regularizer for the KL representation loss")
     kl_free_nats: float = Arg(default=1.0, help="the minimum value for the kl divergence")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
     continue_scale_factor: float = Arg(default=1.0, help="the scale factor for the continue loss")
-    actor_ent_coef: float = Arg(default=1e-4, help="the entropy coefficient for the actor loss")
+    actor_ent_coef: float = Arg(default=3e-4, help="the entropy coefficient for the actor loss")
     actor_init_std: float = Arg(
         default=0.0, help="the amout to sum to the input of the function of the standard deviation of the actions"
     )
@@ -60,12 +60,14 @@ class DreamerV3Args(DreamerV2Args):
         "`normal`, `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be a one-hot categorical if "
         "the action space is discrete, otherwise it will be a truncated normal distribution.",
     )
-    clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
-    dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
+    world_clip_gradients: float = Arg(default=1000.0, help="how much to clip the gradient norms")
+    actor_clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
+    critic_clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
+    dense_units: int = Arg(default=768, help="the number of units in dense layers, must be greater than zero")
     mlp_layers: int = Arg(
         default=4, help="the number of MLP layers for every model: actor, critic, continue and reward"
     )
-    cnn_channels_multiplier: int = Arg(default=48, help="cnn width multiplication factor, must be greater than zero")
+    cnn_channels_multiplier: int = Arg(default=64, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="SiLU",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
@@ -75,9 +77,7 @@ class DreamerV3Args(DreamerV2Args):
         help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=1, help="the frequency to update the target critic network")
-    layer_norm: bool = Arg(
-        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
-    )
+    layer_norm: bool = Arg(default=True, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D")
     critic_tau: float = Arg(
         default=0.02,
         help="tau value to be used for the EMA critic update: `critic_param * tau + (1 - tau) * target_critic_param`",
@@ -93,10 +93,10 @@ class DreamerV3Args(DreamerV2Args):
     max_step_expl_decay: int = Arg(default=0, help="the maximum number of decay steps")
     action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
-        default=1000, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+        default=-1, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
     )
     atari_noop_max: int = Arg(
-        default=30,
+        default=0,
         help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")

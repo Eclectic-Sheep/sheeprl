@@ -38,6 +38,7 @@ from sheeprl.utils.utils import polynomial_decay
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
 # os.environ["MUJOCO_GL"] = "osmesa"
+torch.set_float32_matmul_precision("medium" or "high")
 
 
 def train(
@@ -162,7 +163,8 @@ def train(
     po.update({k: SymlogDist(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in mlp_keys})
 
     # compute the distribution over the rewards
-    pr = DiscDist(world_model.reward_model(latent_states), dims=1)
+    with fabric.device:
+        pr = DiscDist(world_model.reward_model(latent_states), dims=1)
 
     # compute the distribution over the terminal steps, if required
     pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
@@ -181,18 +183,18 @@ def train(
         data["rewards"],
         priors_logits,
         posteriors_logits,
-        args.kl_balancing_alpha,
+        args.kl_dynamic,
+        args.kl_representation,
         args.kl_free_nats,
-        args.kl_free_avg,
         args.kl_regularizer,
         pc,
         continue_targets,
         args.continue_scale_factor,
     )
     fabric.backward(rec_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
+    if args.world_clip_gradients is not None and args.world_clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
-            module=world_model, optimizer=world_optimizer, max_norm=1000, error_if_nonfinite=False
+            module=world_model, optimizer=world_optimizer, max_norm=args.world_clip_gradients, error_if_nonfinite=False
         )
     world_optimizer.step()
     aggregator.update("Grads/world_model", world_model_grads.mean().detach())
@@ -259,8 +261,9 @@ def train(
         imagined_actions[i] = actions
 
     # predict values and rewards
-    predicted_target_values = DiscDist(target_critic(imagined_trajectories), dims=1).mode
-    predicted_rewards = DiscDist(world_model.reward_model(imagined_trajectories), dims=1).mode
+    with fabric.device:
+        predicted_target_values = DiscDist(target_critic(imagined_trajectories), dims=1).mode
+        predicted_rewards = DiscDist(world_model.reward_model(imagined_trajectories), dims=1).mode
     continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:])) * args.gamma
@@ -316,9 +319,9 @@ def train(
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
     baseline = predicted_target_values[:-1]
-    offset, invscalse = moments(lambda_values)
-    normed_lambda_values = (lambda_values - offset) / invscalse
-    normed_baseline = (baseline - offset) / invscalse
+    offset, invscale = moments(lambda_values)
+    normed_lambda_values = (lambda_values - offset) / invscale
+    normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
     if is_continuous:
         objective = advantage
@@ -339,9 +342,9 @@ def train(
         entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
     fabric.backward(policy_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
+    if args.actor_clip_gradients is not None and args.actor_clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
-            module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
+            module=actor, optimizer=actor_optimizer, max_norm=args.actor_clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
     aggregator.update("Grads/actor", actor_grads.mean().detach())
@@ -349,7 +352,8 @@ def train(
 
     # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
-    qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), 1)
+    with fabric.device:
+        qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), 1)
 
     # critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
@@ -358,9 +362,9 @@ def train(
     value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
     fabric.backward(value_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
+    if args.critic_clip_gradients is not None and args.critic_clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients, error_if_nonfinite=False
+            module=critic, optimizer=critic_optimizer, max_norm=args.critic_clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
     aggregator.update("Grads/critic", critic_grads.mean().detach())
