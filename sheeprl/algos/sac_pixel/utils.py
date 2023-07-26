@@ -20,8 +20,8 @@ def test_sac_pixel(
     args: SACPixelContinuousArgs,
     normalize: bool = False,
 ):
-    cnn_keys = actor.encoder.model.cnn_keys
-    mlp_keys = actor.encoder.model.mlp_keys
+    cnn_keys = actor.encoder.cnn_encoder.keys if actor.encoder.cnn_encoder is not None else []
+    mlp_keys = actor.encoder.mlp_encoder.keys if actor.encoder.mlp_encoder is not None else []
     actor.eval()
     done = False
     cumulative_rew = 0

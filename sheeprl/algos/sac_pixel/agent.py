@@ -1,6 +1,8 @@
 import copy
-from typing import Dict, List, SupportsFloat, Tuple, Union
+from math import prod
+from typing import Dict, List, Sequence, SupportsFloat, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning.fabric.wrappers import _FabricModule
@@ -8,13 +10,13 @@ from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_pixel.utils import weight_init
-from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.models.models import CNN, MLP, DeCNN, MultiEncoder
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
-class SACMultiEncoder(nn.Module):
+class CNNEncoder(CNN):
     """Encoder network from https://arxiv.org/abs/1910.01741
 
     Args:
@@ -26,33 +28,161 @@ class SACMultiEncoder(nn.Module):
             Defaults to 64.
     """
 
-    def __init__(self, multi_encoder: MultiEncoder, features_dim: int):
-        super().__init__()
-
-        self.model = multi_encoder
+    def __init__(
+        self,
+        in_channels: int,
+        features_dim: int,
+        keys: Sequence[str],
+        screen_size: int = 64,
+        cnn_channels_multiplier: int = 1,
+    ):
+        super().__init__(
+            in_channels,
+            (np.array([32, 32, 32, 32]) * cnn_channels_multiplier).tolist(),
+            layer_args=[
+                {"kernel_size": 3, "stride": 2},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+            ],
+        )
+        self.keys = keys
+        with torch.no_grad():
+            x: Tensor = self.model(
+                torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device)
+            )
+            self._conv_output_shape = x.shape[1:]
+            flattened_conv_output_dim = x.flatten(1).shape[1]
         self.fc = MLP(
-            input_dims=multi_encoder.cnn_output_dim + multi_encoder.mlp_output_dim,
+            input_dims=flattened_conv_output_dim,
             hidden_sizes=(features_dim,),
             activation=nn.Tanh,
             norm_layer=nn.LayerNorm,
             norm_args={"normalized_shape": features_dim},
         )
         self._output_dim = features_dim
+        self.input_dim = in_channels
 
     @property
     def conv_output_shape(self) -> Size:
         return self._conv_output_shape
 
-    @property
-    def output_dim(self) -> int:
-        return self._output_dim
-
-    def forward(self, x: Dict[str, Tensor], detach_encoder_features: bool = False) -> Tensor:
-        x = self.model(x).flatten(1)
+    def forward(self, obs: Dict[str, Tensor], detach_encoder_features: bool = False, *args, **kwargs) -> Tensor:
+        cnn_input = torch.cat([obs[k] for k in self.keys], dim=-3)
+        x = self.model(cnn_input).flatten(1)
         if detach_encoder_features:
             x = x.detach()
         x = self.fc(x)
         return x
+
+
+class MLPEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        keys: Sequence[str],
+        dense_units: int = 1024,
+        mlp_layers: int = 3,
+        act: nn.Module = nn.ReLU,
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        self.keys = keys
+        self.model = MLP(
+            input_dims=input_dim,
+            hidden_sizes=[dense_units] * mlp_layers,
+            activation=act,
+            norm_layer=nn.LayerNorm if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units}] * mlp_layers if layer_norm else None,
+        )
+        self.output_dim = dense_units
+        self.input_dim = input_dim
+
+    def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
+        x = torch.cat([obs[k] for k in self.keys], dim=-1).type(torch.float32)
+        return self.model(x)
+
+
+class MLPDecoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dims: Sequence[int],
+        keys: Sequence[str],
+        dense_units: int = 1024,
+        mlp_layers: int = 3,
+        act: nn.Module = nn.ReLU,
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        self.keys = keys
+        self.input_dim = input_dim
+        self.output_dims = output_dims
+        self.model = MLP(
+            input_dims=input_dim,
+            hidden_sizes=[dense_units] * mlp_layers,
+            activation=act,
+            norm_layer=nn.LayerNorm if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units}] * mlp_layers if layer_norm else None,
+        )
+        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+
+    def forward(self, x: Dict[str, Tensor], *args, **kwargs) -> Tensor:
+        reconstructed_obs = {}
+        x = self.model(x)
+        reconstructed_obs.update({k: h(x) for k, h in zip(self.keys, self.heads)})
+        return reconstructed_obs
+
+
+class CNNDecoder(DeCNN):
+    """Decoder network from https://arxiv.org/abs/1910.01741
+
+    Args:
+        encoder_conv_output_shape (Size): the output shape of the encoder convolutional layer
+        features_dim (int): the features dimension in output from the last convolutional layer
+        out_channels (int, optional): the number of channels of the generated image.
+            Defaults to 3
+        screen_size (int, optional): the dimension of the input image as a single integer.
+            Needed to extract the features and compute the output dimension after all the
+            convolutional layers.
+            Defaults to 64
+    """
+
+    def __init__(
+        self,
+        encoder_conv_output_shape: Size,
+        features_dim: int,
+        keys: Sequence[str],
+        channels: Sequence[int],
+        screen_size: int = 64,
+        cnn_channels_multiplier: int = 1,
+    ):
+        super().__init__(
+            32 * cnn_channels_multiplier,
+            (np.array([32, 32, 32]) * cnn_channels_multiplier).tolist(),
+            layer_args=[
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+                {"kernel_size": 3, "stride": 1},
+            ],
+        )
+        self.cnn_splits = channels
+        out_channels = np.sum(channels)
+        self.keys = keys
+        self.fc = MLP(input_dims=features_dim, hidden_sizes=(prod(encoder_conv_output_shape),))
+        self.to_obs = nn.ConvTranspose2d(
+            super().output_dim, out_channels=out_channels, kernel_size=3, stride=2, output_padding=1
+        )
+        self._output_dim = Size([out_channels, screen_size, screen_size])
+        self._encoder_conv_output_shape = encoder_conv_output_shape
+
+    def forward(self, x: Tensor, *args, **kwargs) -> Dict[str, Tensor]:
+        reconstructed_obs = {}
+        x = self.fc(x).view(-1, *self._encoder_conv_output_shape)
+        x = self.model(x)
+        x = self.to_obs(x)
+        reconstructed_obs.update({k: rec_obs for k, rec_obs in zip(self.keys, torch.split(x, self.cnn_splits, dim=-3))})
+        return reconstructed_obs
 
 
 class SACPixelQFunction(nn.Module):
@@ -78,7 +208,7 @@ class SACPixelQFunction(nn.Module):
 
 
 class SACPixelCritic(nn.Module):
-    def __init__(self, encoder: Union[SACMultiEncoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
+    def __init__(self, encoder: Union["MultiEncoder", _FabricModule], qfs: List[SACPixelQFunction]) -> None:
         super().__init__()
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
@@ -94,7 +224,7 @@ class SACPixelCritic(nn.Module):
 class SACPixelContinuousActor(nn.Module):
     def __init__(
         self,
-        encoder: Union[SACMultiEncoder, _FabricModule],
+        encoder: Union[MultiEncoder, _FabricModule],
         action_dim: int,
         hidden_size: int = 1024,
         action_low: Union[SupportsFloat, NDArray] = -1.0,

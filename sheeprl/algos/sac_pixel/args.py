@@ -45,10 +45,6 @@ class SACPixelContinuousArgs(SACArgs):
         default="ReLU",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
     )
-    cnn_act: str = Arg(
-        default="ReLU",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
-    )
     layer_norm: bool = Arg(
         default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
     )

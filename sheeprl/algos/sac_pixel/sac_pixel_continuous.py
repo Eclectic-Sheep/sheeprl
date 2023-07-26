@@ -29,7 +29,10 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_pixel.agent import (
-    SACMultiEncoder,
+    CNNDecoder,
+    CNNEncoder,
+    MLPDecoder,
+    MLPEncoder,
     SACPixelAgent,
     SACPixelContinuousActor,
     SACPixelCritic,
@@ -49,7 +52,7 @@ from sheeprl.utils.utils import make_dict_env
 def train(
     fabric: Fabric,
     agent: SACPixelAgent,
-    encoder: Union[SACMultiEncoder, _FabricModule],
+    encoder: Union[MultiEncoder, _FabricModule],
     decoder: Union[MultiDecoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
@@ -62,8 +65,8 @@ def train(
     args: SACPixelContinuousArgs,
     group: Optional[CollectibleGroup] = None,
 ):
-    cnn_keys = encoder.model.cnn_keys
-    mlp_keys = encoder.model.mlp_keys
+    cnn_keys = encoder.cnn_encoder.keys if encoder.cnn_encoder is not None else []
+    mlp_keys = encoder.mlp_encoder.keys if encoder.mlp_encoder is not None else []
     data = data.to(fabric.device)
     normalized_obs = {}
     normalized_next_obs = {}
@@ -116,8 +119,9 @@ def train(
         reconstruction = decoder(hidden)
         reconstruction_loss = 0
         for k in cnn_keys + mlp_keys:
+            target = preprocess_obs(data[k], bits=5) if k in cnn_keys else data[k]
             reconstruction_loss += (
-                F.mse_loss(preprocess_obs(data[k], bits=5), reconstruction[k])  # Reconstruction
+                F.mse_loss(target, reconstruction[k])  # Reconstruction
                 + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
             )
         encoder_optimizer.zero_grad(set_to_none=True)
@@ -132,6 +136,9 @@ def train(
 def main():
     parser = HfArgumentParser(SACPixelContinuousArgs)
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
+    # These arguments cannot be changed
+    args.sample_next_obs = False
+    args.screen_size = 64
 
     # Initialize Fabric
     devices = os.environ.get("LT_DEVICES", None)
@@ -253,47 +260,67 @@ def main():
     if args.dense_units <= 0:
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
-        cnn_act = getattr(nn, args.cnn_act)
-    except:
-        raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
-
-    try:
         dense_act = getattr(nn, args.dense_act)
     except:
         raise ValueError(
             f"Invalid value for mlp_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
-    multi_encoder = MultiEncoder(
-        envs.single_observation_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
-    )
-    encoder = SACMultiEncoder(multi_encoder, args.features_dim)
 
-    decoder = MultiDecoder(
-        envs.single_observation_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.features_dim,
-        multi_encoder.cnn_output_dim,
-        multi_encoder.cnn_input_dim,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
+    mlp_splits = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
+    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
+
+    cnn_encoder = (
+        CNNEncoder(
+            in_channels=sum(cnn_channels),
+            features_dim=args.features_dim,
+            keys=cnn_keys,
+            screen_size=args.screen_size,
+            cnn_channels_multiplier=args.cnn_channels_multiplier,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_encoder = (
+        MLPEncoder(
+            sum(mlp_splits),
+            mlp_keys,
+            args.dense_units,
+            args.mlp_layers,
+            dense_act,
+            args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
+    cnn_decoder = (
+        CNNDecoder(
+            cnn_encoder.conv_output_shape,
+            features_dim=encoder.output_dim,
+            keys=cnn_keys,
+            channels=cnn_channels,
+            screen_size=args.screen_size,
+            cnn_channels_multiplier=args.cnn_channels_multiplier,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
+    )
+    mlp_decoder = (
+        MLPDecoder(
+            encoder.output_dim,
+            mlp_splits,
+            mlp_keys,
+            args.dense_units,
+            args.mlp_layers,
+            dense_act,
+            args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    decoder = MultiDecoder(cnn_decoder, mlp_decoder, fabric.device)
+
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
 
