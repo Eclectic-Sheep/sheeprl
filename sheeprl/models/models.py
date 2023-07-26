@@ -5,6 +5,7 @@ import warnings
 from math import prod
 from typing import Any, Dict, Optional, Sequence, Tuple, Union, no_type_check
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -422,8 +423,8 @@ class MultiEncoder(nn.Module):
         self.cnn_keys = cnn_keys
         self.mlp_keys = mlp_keys
         if self.cnn_keys != []:
-            cnn_input_channels = sum([obs_space[k].shape[0] for k in cnn_keys])
-            self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[1:])
+            cnn_input_channels = sum([np.prod(obs_space[k].shape[:-2]) for k in cnn_keys])
+            self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[-2:])
             self.cnn_encoder = nn.Sequential(
                 CNN(
                     input_channels=cnn_input_channels,
@@ -491,7 +492,7 @@ class MultiDecoder(nn.Module):
         else:
             self.device = device
         self.mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
-        self.cnn_splits = [obs_space[k].shape[0] for k in cnn_keys]
+        self.cnn_splits = [np.prod(obs_space[k].shape[:-2]) for k in cnn_keys]
         self.cnn_keys = cnn_keys
         self.mlp_keys = mlp_keys
         self.cnn_decoder_output_dim = cnn_decoder_output_dim
@@ -511,7 +512,10 @@ class MultiDecoder(nn.Module):
                     ],
                     activation=[cnn_act, cnn_act, cnn_act, None],
                     norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                    norm_args=[{"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier} for i in range(3)]
+                    norm_args=[
+                        {"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier}
+                        for i in range(self.cnn_decoder_output_dim[0])
+                    ]
                     + [None]
                     if layer_norm
                     else None,

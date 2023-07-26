@@ -21,16 +21,15 @@ from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
+from torch import nn
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.ppo_pixel.ppo_pixel_continuous import make_env
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_pixel.agent import (
-    Decoder,
-    Encoder,
+    SACMultiEncoder,
     SACPixelAgent,
     SACPixelContinuousActor,
     SACPixelCritic,
@@ -39,17 +38,19 @@ from sheeprl.algos.sac_pixel.agent import (
 from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
 from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import make_dict_env
 
 
 def train(
     fabric: Fabric,
     agent: SACPixelAgent,
-    encoder: Union[Encoder, _FabricModule],
-    decoder: Union[Decoder, _FabricModule],
+    encoder: Union[SACMultiEncoder, _FabricModule],
+    decoder: Union[MultiDecoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
@@ -61,9 +62,18 @@ def train(
     args: SACPixelContinuousArgs,
     group: Optional[CollectibleGroup] = None,
 ):
+    cnn_keys = encoder.model.cnn_keys
+    mlp_keys = encoder.model.mlp_keys
     data = data.to(fabric.device)
-    normalized_obs = data["observations"] / 255.0
-    normalized_next_obs = data["next_observations"] / 255.0
+    normalized_obs = {}
+    normalized_next_obs = {}
+    for k in cnn_keys + mlp_keys:
+        if k in cnn_keys:
+            normalized_obs[k] = data[k] / 255.0
+            normalized_next_obs[k] = data[k] / 255.0
+        else:
+            normalized_obs[k] = data[k]
+            normalized_next_obs[k] = data[f"next_{k}"]
 
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
@@ -104,10 +114,12 @@ def train(
     if global_step % args.decoder_update_freq == 0:
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
-        reconstruction_loss = (
-            F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)  # Reconstruction
-            + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
-        )
+        reconstruction_loss = 0
+        for k in cnn_keys + mlp_keys:
+            reconstruction_loss += (
+                F.mse_loss(preprocess_obs(data[k], bits=5), reconstruction[k])  # Reconstruction
+                + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
+            )
         encoder_optimizer.zero_grad(set_to_none=True)
         decoder_optimizer.zero_grad(set_to_none=True)
         fabric.backward(reconstruction_loss)
@@ -184,38 +196,103 @@ def main():
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + rank * args.num_envs + i,
                 rank,
-                args.capture_video,
+                args,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
-                action_repeat=args.action_repeat,
-                screen_size=args.screen_size,
-                frame_stack=args.frame_stack,
             )
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Box):
-        raise ValueError("Only continuous action space is supported")
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(envs.single_observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.cnn_keys and (
+                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
+            ):
+                if len(v.shape) in {3, 4}:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.mlp_keys and (
+                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
+            ):
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(f"There must be at least one valid observation.")
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
-    in_channels = prod(envs.single_observation_space.shape[:-2])
     target_entropy = -act_dim
 
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    encoder = Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
-    decoder = Decoder(
-        encoder.conv_output_shape,
-        features_dim=args.features_dim,
-        screen_size=args.screen_size,
-        out_channels=in_channels,
+    if args.cnn_channels_multiplier <= 0:
+        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
+    if args.dense_units <= 0:
+        raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
+    try:
+        cnn_act = getattr(nn, args.cnn_act)
+    except:
+        raise ValueError(
+            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+        )
+
+    try:
+        dense_act = getattr(nn, args.dense_act)
+    except:
+        raise ValueError(
+            f"Invalid value for mlp_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+        )
+    multi_encoder = MultiEncoder(
+        envs.single_observation_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        args.layer_norm,
+    )
+    encoder = SACMultiEncoder(multi_encoder, args.features_dim)
+
+    decoder = MultiDecoder(
+        envs.single_observation_space,
+        cnn_keys,
+        mlp_keys,
+        args.cnn_channels_multiplier,
+        args.features_dim,
+        multi_encoder.cnn_output_dim,
+        multi_encoder.cnn_input_dim,
+        args.mlp_layers,
+        args.dense_units,
+        cnn_act,
+        dense_act,
+        fabric.device,
+        args.layer_norm,
     )
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
@@ -286,18 +363,27 @@ def main():
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
     # Get the first environment observation and start the optimization
-    obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+    with device:
+        o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+        obs = {}
+        for k in o.keys():
+            if k in mlp_keys + cnn_keys:
+                with fabric.device:
+                    torch_obs = torch.from_numpy(o[k])
+                    if k in cnn_keys:
+                        torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
+                    step_data[k] = torch_obs
+                obs[k] = torch_obs
 
     for global_step in range(1, num_updates + 1):
-        obs = obs.flatten(start_dim=1, end_dim=-3)
         if global_step < args.learning_starts:
             actions = envs.action_space.sample()
         else:
             with torch.no_grad():
-                normalized_obs = obs / 255.0
-                actions, _ = actor.module(normalized_obs.to(device))
+                normalized_obs = {k: v / 255 if k in cnn_keys else torch_obs.float() for k, v in obs.items()}
+                actions, _ = actor.module(normalized_obs)
                 actions = actions.cpu().numpy()
-        next_obs, rewards, dones, truncated, infos = envs.step(actions)
+        o, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
         if "final_info" in infos:
@@ -310,28 +396,35 @@ def main():
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Save the real next observation
-        real_next_obs = next_obs.copy()
+        real_next_obs = copy.deepcopy(o)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = final_obs
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
 
-        real_next_obs = torch.tensor(real_next_obs)
-        real_next_obs = real_next_obs.flatten(start_dim=1, end_dim=-3)
-        actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
-        rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)
-        dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
+        next_obs = {}
+        for k in real_next_obs.keys():  # [N_envs, N_obs]
+            step_data[k] = obs[k]
+            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+            if not args.sample_next_obs:
+                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k])
+            if k in cnn_keys:
+                next_obs[k] = next_obs[k].view(args.num_envs, -1, *next_obs[k].shape[-2:])
+                step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
+                    args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                )
+        actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = obs
-        if not args.sample_next_obs:
-            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = real_next_obs
+        obs = next_obs
 
         # Train the agent
         if global_step >= args.learning_starts - 1:
@@ -405,18 +498,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
-            args.env_id,
-            args.seed,
-            0,
-            args.capture_video,
-            fabric.logger.log_dir,
-            "test",
-            vector_env_idx=0,
-            frame_stack=args.frame_stack,
-            action_repeat=args.action_repeat,
-            screen_size=args.screen_size,
-        )()
+        test_env = make_dict_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test", vector_env_idx=0)()
         test_sac_pixel(actor.module, test_env, fabric, args, normalize=True)
 
 

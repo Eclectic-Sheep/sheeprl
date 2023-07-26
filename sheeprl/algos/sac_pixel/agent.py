@@ -1,6 +1,5 @@
 import copy
-from math import prod
-from typing import List, SupportsFloat, Tuple, Union
+from typing import Dict, List, SupportsFloat, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -9,13 +8,13 @@ from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_pixel.utils import weight_init
-from sheeprl.models.models import CNN, MLP, DeCNN
+from sheeprl.models.models import MLP, MultiEncoder
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
-class Encoder(CNN):
+class SACMultiEncoder(nn.Module):
     """Encoder network from https://arxiv.org/abs/1910.01741
 
     Args:
@@ -27,26 +26,12 @@ class Encoder(CNN):
             Defaults to 64.
     """
 
-    def __init__(self, in_channels: int, features_dim: int, screen_size: int = 64):
-        super().__init__(
-            in_channels,
-            [32, 32, 32, 32],
-            layer_args=[
-                {"kernel_size": 3, "stride": 2},
-                {"kernel_size": 3, "stride": 1},
-                {"kernel_size": 3, "stride": 1},
-                {"kernel_size": 3, "stride": 1},
-            ],
-        )
+    def __init__(self, multi_encoder: MultiEncoder, features_dim: int):
+        super().__init__()
 
-        with torch.no_grad():
-            x: Tensor = self.model(
-                torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device)
-            )
-            self._conv_output_shape = x.shape[1:]
-            flattened_conv_output_dim = x.flatten(1).shape[1]
+        self.model = multi_encoder
         self.fc = MLP(
-            input_dims=flattened_conv_output_dim,
+            input_dims=multi_encoder.cnn_output_dim + multi_encoder.mlp_output_dim,
             hidden_sizes=(features_dim,),
             activation=nn.Tanh,
             norm_layer=nn.LayerNorm,
@@ -58,51 +43,15 @@ class Encoder(CNN):
     def conv_output_shape(self) -> Size:
         return self._conv_output_shape
 
-    def forward(self, x: Tensor, detach_encoder_features: bool = False) -> Tensor:
+    @property
+    def output_dim(self) -> int:
+        return self._output_dim
+
+    def forward(self, x: Dict[str, Tensor], detach_encoder_features: bool = False) -> Tensor:
         x = self.model(x).flatten(1)
         if detach_encoder_features:
             x = x.detach()
         x = self.fc(x)
-        return x
-
-
-class Decoder(DeCNN):
-    """Decoder network from https://arxiv.org/abs/1910.01741
-
-    Args:
-        encoder_conv_output_shape (Size): the output shape of the encoder convolutional layer
-        features_dim (int): the features dimension in output from the last convolutional layer
-        out_channels (int, optional): the number of channels of the generated image.
-            Defaults to 3
-        screen_size (int, optional): the dimension of the input image as a single integer.
-            Needed to extract the features and compute the output dimension after all the
-            convolutional layers.
-            Defaults to 64
-    """
-
-    def __init__(
-        self, encoder_conv_output_shape: Size, features_dim: int, out_channels: int = 3, screen_size: int = 64
-    ):
-        super().__init__(
-            32,
-            [32, 32, 32],
-            layer_args=[
-                {"kernel_size": 3, "stride": 1},
-                {"kernel_size": 3, "stride": 1},
-                {"kernel_size": 3, "stride": 1},
-            ],
-        )
-        self.fc = MLP(input_dims=features_dim, hidden_sizes=(prod(encoder_conv_output_shape),))
-        self.to_obs = nn.ConvTranspose2d(
-            super().output_dim, out_channels=out_channels, kernel_size=3, stride=2, output_padding=1
-        )
-        self._output_dim = Size([out_channels, screen_size, screen_size])
-        self._encoder_conv_output_shape = encoder_conv_output_shape
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.fc(x).view(-1, *self._encoder_conv_output_shape)
-        x = self.model(x)
-        x = self.to_obs(x)
         return x
 
 
@@ -129,7 +78,7 @@ class SACPixelQFunction(nn.Module):
 
 
 class SACPixelCritic(nn.Module):
-    def __init__(self, encoder: Union[Encoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
+    def __init__(self, encoder: Union[SACMultiEncoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
         super().__init__()
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
@@ -145,7 +94,7 @@ class SACPixelCritic(nn.Module):
 class SACPixelContinuousActor(nn.Module):
     def __init__(
         self,
-        encoder: Union[Encoder, _FabricModule],
+        encoder: Union[SACMultiEncoder, _FabricModule],
         action_dim: int,
         hidden_size: int = 1024,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
