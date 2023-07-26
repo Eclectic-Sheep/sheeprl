@@ -4,7 +4,7 @@ import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 
-from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
+from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer, ReplayBuffer
 
 
 class CheckpointCallback:
@@ -24,7 +24,7 @@ class CheckpointCallback:
         fabric: Fabric,
         ckpt_path: str,
         state: Dict[str, Any],
-        replay_buffer: Optional[Union["ReplayBuffer", "EpisodeBuffer"]] = None,
+        replay_buffer: Optional[Union["AsyncReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
             if isinstance(replay_buffer, ReplayBuffer):
@@ -32,6 +32,11 @@ class CheckpointCallback:
                 true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
                 # substitute the last done with all True values (all the environment are truncated)
                 replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            elif isinstance(replay_buffer, AsyncReplayBuffer):
+                true_dones = []
+                for b in replay_buffer.buffer:
+                    true_dones.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
+                    b["dones"][(b._pos - 1) % b.buffer_size, :] = True
             state["rb"] = replay_buffer
             if fabric.world_size > 1:
                 # We need to collect the buffers from all the ranks
@@ -53,6 +58,9 @@ class CheckpointCallback:
         if replay_buffer is not None and isinstance(replay_buffer, ReplayBuffer):
             # reinsert the true dones in the buffer
             replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
+        elif isinstance(replay_buffer, AsyncReplayBuffer):
+            for i, b in enumerate(replay_buffer.buffer):
+                b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
 
     def on_checkpoint_player(
         self,
