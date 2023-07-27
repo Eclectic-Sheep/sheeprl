@@ -68,8 +68,8 @@ class CNNEncoder(CNN):
         return self._conv_output_shape
 
     def forward(self, obs: Dict[str, Tensor], detach_encoder_features: bool = False, *args, **kwargs) -> Tensor:
-        cnn_input = torch.cat([obs[k] for k in self.keys], dim=-3)
-        x = self.model(cnn_input).flatten(1)
+        x = torch.cat([obs[k] for k in self.keys], dim=-3)
+        x = self.model(x).flatten(1)
         if detach_encoder_features:
             x = x.detach()
         x = self.fc(x)
@@ -167,7 +167,7 @@ class CNNDecoder(DeCNN):
             ],
         )
         self.cnn_splits = channels
-        out_channels = np.sum(channels)
+        out_channels = sum(channels)
         self.keys = keys
         self.fc = MLP(input_dims=features_dim, hidden_sizes=(prod(encoder_conv_output_shape),))
         self.to_obs = nn.ConvTranspose2d(

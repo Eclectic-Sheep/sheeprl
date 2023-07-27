@@ -65,8 +65,8 @@ def train(
     args: SACPixelContinuousArgs,
     group: Optional[CollectibleGroup] = None,
 ):
-    cnn_keys = encoder.cnn_encoder.keys if encoder.cnn_encoder is not None else []
-    mlp_keys = encoder.mlp_encoder.keys if encoder.mlp_encoder is not None else []
+    cnn_keys = encoder.cnn_keys
+    mlp_keys = encoder.mlp_keys
     data = data.to(fabric.device)
     normalized_obs = {}
     normalized_next_obs = {}
@@ -266,9 +266,8 @@ def main():
             f"Invalid value for mlp_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
-    mlp_splits = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
     cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
-
+    mlp_splits = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
