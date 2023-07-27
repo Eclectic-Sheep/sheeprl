@@ -624,9 +624,9 @@ def main():
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         obs[k] = torch_obs
-    step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["rewards"] = torch.zeros(args.num_envs, 1)
-    step_data["is_first"] = torch.ones_like(step_data["dones"])
+    step_data["dones"] = torch.zeros(args.num_envs, 1).float()
+    step_data["rewards"] = torch.zeros(args.num_envs, 1).float()
+    step_data["is_first"] = torch.ones_like(step_data["dones"]).float()
     player.init_states()
 
     gradient_steps = 0
@@ -660,7 +660,7 @@ def main():
                 else:
                     real_actions = np.array([real_act.cpu().argmax(dim=-1) for real_act in real_actions])
 
-        step_data["actions"] = torch.from_numpy(actions).view(args.num_envs, dim=-1).float()
+        step_data["actions"] = torch.from_numpy(actions).view(args.num_envs, -1).float()
         data_to_add = step_data[None, ...]
         if buffer_type == "sequential":
             rb.add(data_to_add)
@@ -693,7 +693,7 @@ def main():
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             if k in obs_keys:
                 next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
-                step_data[k] = torch.from_numpy(next_obs[k]).view(args.num_envs, *next_obs[k].shape[1:])
+                step_data[k] = next_obs[k]
                 if k in mlp_keys:
                     next_obs[k] = next_obs[k].float()
                     step_data[k] = step_data[k].float()
@@ -701,6 +701,8 @@ def main():
         # next_obs becomes the new obs
         obs = next_obs
 
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
         step_data["is_first"] = step_data["dones"]
         step_data["dones"] = dones
         step_data["rewards"] = clip_rewards_fn(rewards)
@@ -711,10 +713,10 @@ def main():
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
             for k in real_next_obs.keys():
                 reset_data[k] = real_next_obs[k][dones_idxes]
-            reset_data["dones"] = torch.ones(reset_envs, 1)
-            reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim))
-            reset_data["rewards"] = clip_rewards_fn(rewards)[dones_idxes]
-            reset_data["is_first"] = torch.zeros_like(reset_data["dones"])
+            reset_data["dones"] = torch.ones(reset_envs, 1).float()
+            reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
+            reset_data["rewards"] = clip_rewards_fn(rewards)[dones_idxes].float()
+            reset_data["is_first"] = torch.zeros_like(reset_data["dones"]).float()
             if buffer_type == "episode":
                 for i, d in enumerate(dones_idxes):
                     if len(episode_steps[d]) >= args.per_rank_sequence_length:
