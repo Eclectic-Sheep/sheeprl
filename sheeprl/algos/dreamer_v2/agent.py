@@ -37,10 +37,10 @@ class CNNEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.keys = keys
-        self.input_dim = (np.sum(input_channels), *image_size)
+        self.input_dim = (sum(input_channels), *image_size)
         self.model = nn.Sequential(
             CNN(
-                input_channels=np.sum(input_channels),
+                input_channels=sum(input_channels),
                 hidden_channels=(torch.tensor([1, 2, 4, 8]) * cnn_channels_multiplier).tolist(),
                 layer_args={"kernel_size": 4, "stride": 2},
                 activation=cnn_act,
@@ -104,7 +104,7 @@ class CNNDecoder(nn.Module):
         self.cnn_splits = cnn_splits
         self.cnn_input_dim = cnn_input_dim
         self.image_size = image_size
-        self.output_dim = (np.sum(cnn_splits), *image_size)
+        self.output_dim = (sum(cnn_splits), *image_size)
         self.model = nn.Sequential(
             nn.Linear(latent_state_size, cnn_input_dim),
             nn.Unflatten(1, (cnn_input_dim, 1, 1)),
@@ -383,7 +383,7 @@ class Actor(nn.Module):
             norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
         )
         if is_continuous:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
+            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, sum(actions_dim) * 2)])
         else:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
         self.actions_dim = actions_dim
@@ -598,7 +598,7 @@ class Player(nn.Module):
         """
         Initialize the states and the actions for the ended environments.
         """
-        self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
+        self.actions = torch.zeros(1, self.num_envs, sum(self.actions_dim), device=self.device)
         self.stochastic_state = torch.zeros(
             1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
         )
@@ -739,7 +739,7 @@ def build_models(
     encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
     stochastic_size = args.stochastic_size * args.discrete_size
     recurrent_model = RecurrentModel(
-        int(np.sum(actions_dim)) + stochastic_size,
+        int(sum(actions_dim) + stochastic_size),
         args.recurrent_state_size,
         args.dense_units,
         layer_norm=args.layer_norm,

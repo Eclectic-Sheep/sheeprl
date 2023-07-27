@@ -322,14 +322,14 @@ def train(
             torch.stack(
                 [
                     p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, dim=-1))
                 ],
                 -1,
-            ).sum(-1)
+            ).sum(dim=-1)
             * advantage
         )
     try:
-        entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
+        entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
     except NotImplementedError:
         entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
@@ -590,7 +590,7 @@ def main():
         step_data[k] = torch_obs
         obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
     if buffer_type == "sequential":
@@ -674,7 +674,7 @@ def main():
                 step_data[k] = torch_obs
                 obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+            step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
             data_to_add = step_data[None, ...]
