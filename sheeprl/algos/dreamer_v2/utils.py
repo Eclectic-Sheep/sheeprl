@@ -231,13 +231,10 @@ def zero_init_weights(m: nn.Module):
     Args:
         m (nn.Module): the module to be initialized.
     """
-    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
         nn.init.zeros_(m.weight.data)
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
-    elif isinstance(m, nn.Linear):
-        nn.init.zeros_(m.weight.data)
-        nn.init.constant_(m.bias.data, 0)
 
 
 def compute_lambda_values(

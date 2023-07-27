@@ -18,7 +18,7 @@ from torch.distributions import (
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, zero_init_weights
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
@@ -76,7 +76,7 @@ class MultiEncoder(nn.Module):
                 None,
                 [dense_units] * mlp_layers,
                 activation=mlp_act,
-                layer_arg={"bias": not layer_norm},
+                layer_args={"bias": not layer_norm},
                 norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
                 norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
             )
@@ -748,7 +748,7 @@ def build_models(
         encoder.apply(init_weights),
         rssm,
         observation_model.apply(init_weights),
-        reward_model.apply(init_weights),
+        reward_model.apply(zero_init_weights),
         continue_model.apply(init_weights),
     )
     if "minedojo" in args.env_id:
@@ -787,7 +787,7 @@ def build_models(
         norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
     actor.apply(init_weights)
-    critic.apply(init_weights)
+    critic.apply(zero_init_weights)
 
     # Load models from checkpoint
     if world_model_state:

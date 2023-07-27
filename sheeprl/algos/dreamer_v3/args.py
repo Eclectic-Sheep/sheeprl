@@ -91,7 +91,7 @@ class DreamerV3Args(DreamerV2Args):
     expl_decay: bool = Arg(default=False, help="whether or not to decrement the exploration amount")
     expl_min: float = Arg(default=0.0, help="the minimum value for the exploration amout")
     max_step_expl_decay: int = Arg(default=0, help="the maximum number of decay steps")
-    action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
+    action_repeat: int = Arg(default=1, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
         default=-1, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
     )

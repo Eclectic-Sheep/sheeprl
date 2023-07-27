@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import click
 from lightning.fabric.fabric import _is_using_cli
+from pyvirtualdisplay import Display
 
 from sheeprl.utils.registry import decoupled_tasks, tasks
 
@@ -38,6 +39,8 @@ def register_command(command, task, name: Optional[str] = None):
     @functools.wraps(command)
     def wrapper(cli_args):
         with patch("sys.argv", [task.__file__] + list(cli_args)) as sys_argv_mock:
+            disp = Display()
+            disp.start()
             devices = os.environ.get("LT_DEVICES", None)
             strategy = os.environ.get("LT_STRATEGY", None)
             if strategy == "fsdp":
@@ -73,6 +76,7 @@ def register_command(command, task, name: Optional[str] = None):
                 if not _is_using_cli() and devices is None:
                     os.environ["LT_DEVICES"] = "1"
                 command()
+            disp.stop()
 
 
 for module, algos in tasks.items():
