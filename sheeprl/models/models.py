@@ -421,6 +421,14 @@ class MultiEncoder(nn.Module):
         self.mlp_output_dim = self.mlp_encoder.output_dim if self.mlp_encoder is not None else 0
         self.output_dim = self.cnn_output_dim + self.mlp_output_dim
 
+    @property
+    def cnn_keys(self) -> Sequence[str]:
+        return self.cnn_encoder.keys if self.cnn_encoder is not None else []
+
+    @property
+    def mlp_keys(self) -> Sequence[str]:
+        return self.mlp_encoder.keys if self.mlp_encoder is not None else []
+
     def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
         cnn_out = torch.tensor((), device=self.device)
         mlp_out = torch.tensor((), device=self.device)
@@ -445,6 +453,14 @@ class MultiDecoder(nn.Module):
             self.device = device
         self.cnn_decoder = cnn_decoder
         self.mlp_decoder = mlp_decoder
+
+    @property
+    def cnn_keys(self) -> Sequence[str]:
+        return self.cnn_decoder.keys if self.cnn_decoder is not None else []
+
+    @property
+    def mlp_keys(self) -> Sequence[str]:
+        return self.mlp_decoder.keys if self.mlp_decoder is not None else []
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
