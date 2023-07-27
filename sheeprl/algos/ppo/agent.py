@@ -1,12 +1,60 @@
+from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
-from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+
+
+class CNNEncoder(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        features_dim: int,
+        screen_size: int,
+        keys: Sequence[str],
+    ) -> None:
+        super().__init__()
+        self.keys = keys
+        self.input_dim = (in_channels, screen_size, screen_size)
+        self.output_dim = features_dim
+        self.model = NatureCNN(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
+
+    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
+        x = torch.cat([obs[k] for k in self.keys], dim=-3)
+        return self.model(x)
+
+
+class MLPEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        features_dim: int,
+        keys: Sequence[str],
+        dense_units: int = 64,
+        mlp_layers: int = 2,
+        dense_act: nn.Module = nn.ReLU,
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        self.keys = keys
+        self.input_dim = input_dim
+        self.output_dim = features_dim
+        self.model = MLP(
+            input_dim,
+            features_dim,
+            [dense_units] * mlp_layers,
+            activation=dense_act,
+            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+        )
+
+    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
+        x = torch.cat([obs[k] for k in self.keys], dim=-1)
+        return self.model(x)
 
 
 class PPOAgent(nn.Module):
@@ -16,9 +64,12 @@ class PPOAgent(nn.Module):
         obs_space: Dict[str, Any],
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
-        cnn_channels_multiplier: int,
-        mlp_layers: int = 4,
-        dense_units: int = 512,
+        cnn_features_dim: int = 512,
+        mlp_features_dim: int = 64,
+        screen_size: int = 64,
+        cnn_channels_multiplier: int = 1,
+        mlp_layers: int = 2,
+        dense_units: int = 64,
         cnn_act: str = "ReLU",
         mlp_act: str = "ReLU",
         device: Union[str, torch.device] = "cpu",
@@ -29,37 +80,39 @@ class PPOAgent(nn.Module):
             raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {cnn_channels_multiplier}")
         if dense_units <= 0:
             raise ValueError(f"dense_units must be greater than zero, given {dense_units}")
-
         try:
-            conv_act = getattr(nn, cnn_act)
+            getattr(nn, cnn_act)
         except:
             raise ValueError(
                 f"Invalid value for cnn_act, given {cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
             )
-
         try:
             dense_act = getattr(nn, mlp_act)
         except:
             raise ValueError(
                 f"Invalid value for mlp_act, given {mlp_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
             )
-
         super().__init__()
         self.actions_dim = actions_dim
+        in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
+        mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
+        cnn_encoder = (
+            CNNEncoder(in_channels, cnn_features_dim, screen_size, cnn_keys)
+            if cnn_keys is not None and len(cnn_keys) > 0
+            else None
+        )
+        mlp_encoder = (
+            MLPEncoder(mlp_input_dim, mlp_features_dim, mlp_keys, dense_units, mlp_layers, dense_act, layer_norm)
+            if mlp_keys is not None and len(mlp_keys) > 0
+            else None
+        )
         self.feature_extractor = MultiEncoder(
-            obs_space=obs_space,
-            cnn_keys=cnn_keys,
-            mlp_keys=mlp_keys,
-            cnn_channels_multiplier=cnn_channels_multiplier,
-            mlp_layers=mlp_layers,
-            dense_units=dense_units,
-            cnn_act=conv_act,
-            mlp_act=dense_act,
-            device=device,
-            layer_norm=layer_norm,
+            cnn_encoder,
+            mlp_encoder,
+            device,
         )
         self.is_continuous = is_continuous
-        features_dim = self.feature_extractor.cnn_output_dim + self.feature_extractor.mlp_output_dim
+        features_dim = self.feature_extractor.output_dim
         self.critic = MLP(
             input_dims=features_dim, output_dim=1, hidden_sizes=[dense_units] * mlp_layers, activation=dense_act
         )
@@ -73,7 +126,7 @@ class PPOAgent(nn.Module):
             norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
         )
         if is_continuous:
-            self.actor_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
+            self.actor_heads = nn.ModuleList([nn.Linear(dense_units, sum(actions_dim) * 2)])
         else:
             self.actor_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
 
@@ -90,6 +143,10 @@ class PPOAgent(nn.Module):
             normal = Independent(Normal(mean, std), 1)
             if actions is None:
                 actions = normal.sample()
+            else:
+                # always composed by a tuple of one element containing all the
+                # continuous actions
+                actions = actions[0]
             log_prob = normal.log_prob(actions)
             return tuple([actions]), log_prob, normal.entropy(), values
         else:

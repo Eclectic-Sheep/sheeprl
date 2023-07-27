@@ -22,7 +22,10 @@ def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs, cnn_keys:
             obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
     while not done:
         # Act greedly through the environment
-        actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+        if agent.is_continuous:
+            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        else:
+            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))

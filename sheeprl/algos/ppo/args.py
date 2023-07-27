@@ -61,3 +61,5 @@ class PPOArgs(StandardArgs):
     )
     eps: float = Arg(default=1e-4)
     max_episode_steps: int = Arg(default=-1)
+    cnn_features_dim: int = Arg(default=512, help="the features dimension after the CNNEncoder")
+    mlp_features_dim: int = Arg(default=512, help="the features dimension after the MLPEncoder")
