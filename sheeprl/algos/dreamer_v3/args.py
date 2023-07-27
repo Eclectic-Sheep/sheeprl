@@ -19,7 +19,7 @@ class DreamerV3Args(DreamerV2Args):
     )
     buffer_size: int = Arg(default=int(5e6), help="the size of the buffer")
     learning_starts: int = Arg(default=int(5e3), help="timestep to start learning")
-    pretrain_steps: int = Arg(default=100, help="the number of pretrain steps")
+    pretrain_steps: int = Arg(default=1, help="the number of pretrain steps")
     gradient_steps: int = Arg(default=1, help="the number of gradient steps per each environment interaction")
     train_every: int = Arg(default=5, help="the number of steps between one training and another")
     checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")

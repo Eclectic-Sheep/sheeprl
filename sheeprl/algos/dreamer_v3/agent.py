@@ -401,15 +401,24 @@ class PlayerDV3(Player):
         self.init_states()
 
     @torch.no_grad()
-    def init_states(self) -> None:
+    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
+        """Initialize the states and the actions for the ended environments.
+
+        Args:
+            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
+                If None, then all environments' states are reset.
+                Defaults to None.
         """
-        Initialize the states and the actions for the ended environments.
-        """
-        self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-        self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-        self.stochastic_state = compute_stochastic_state(self.transition_model(self.recurrent_state)).reshape(
-            1, self.num_envs, -1
-        )
+        if reset_envs is None or len(reset_envs) == 0:
+            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
+            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
+            self.stochastic_state = torch.zeros(
+                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
+            )
+        else:
+            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
+            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
+            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
 
 class Actor(nn.Module):
