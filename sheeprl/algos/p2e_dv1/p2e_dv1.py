@@ -480,7 +480,7 @@ def main():
             fabric.seed_everything(args.seed + i)
             ens_list.append(
                 MLP(
-                    input_dims=int(np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size),
+                    input_dims=int(sum(actions_dim)) + args.recurrent_state_size + args.stochastic_size,
                     output_dim=world_model.encoder.cnn_output_dim + world_model.encoder.mlp_output_dim,
                     hidden_sizes=[args.dense_units] * args.mlp_layers,
                 ).apply(init_weights)
@@ -609,7 +609,7 @@ def main():
         step_data[k] = torch_obs
         obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     rb.add(step_data[None, ...])
     player.init_states()
@@ -685,7 +685,7 @@ def main():
                 step_data[k] = torch_obs
                 obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+            step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["observations"] = obs
             rb.add(step_data[None, ...])
