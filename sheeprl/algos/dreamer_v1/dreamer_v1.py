@@ -552,7 +552,7 @@ def main():
         step_data[k] = torch_obs
         obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     rb.add(step_data[None, ...])
     player.init_states()
@@ -620,7 +620,7 @@ def main():
                 step_data[k] = torch_obs
                 obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+            step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             rb.add(step_data[None, ...])
             player.init_states()

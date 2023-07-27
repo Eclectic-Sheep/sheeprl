@@ -240,7 +240,7 @@ class Player(nn.Module):
         """
         Initialize the states and the actions for the ended environments.
         """
-        self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
+        self.actions = torch.zeros(1, self.num_envs, sum(self.actions_dim), device=self.device)
         self.stochastic_state = torch.zeros(1, self.num_envs, self.stochastic_size, device=self.device)
         self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
 
@@ -376,7 +376,7 @@ def build_models(
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
 
-    recurrent_model = RecurrentModel(np.sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=args.stochastic_size * 2,
