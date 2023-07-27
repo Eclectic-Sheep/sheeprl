@@ -9,7 +9,11 @@ from torch import Tensor, nn
 from sheeprl.algos.dreamer_v2.agent import (
     RSSM,
     Actor,
+    CNNDecoder,
+    CNNEncoder,
     MinedojoActor,
+    MLPDecoder,
+    MLPEncoder,
     MultiDecoder,
     MultiEncoder,
     RecurrentModel,
@@ -82,21 +86,30 @@ def build_models(
         )
 
     # Define models
-    encoder = MultiEncoder(
-        obs_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
+    mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
+    cnn_channels = [np.prod(obs_space[k].shape[:-2]) for k in cnn_keys]
+    image_size = obs_space[cnn_keys[0]].shape[-2:]
+    cnn_encoder = (
+        CNNEncoder(
+            cnn_keys,
+            cnn_channels,
+            image_size,
+            args.cnn_channels_multiplier,
+            args.layer_norm,
+            cnn_act,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_encoder = (
+        MLPEncoder(mlp_keys, mlp_splits, args.mlp_layers, args.dense_units, dense_act, args.layer_norm)
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
     stochastic_size = args.stochastic_size * args.discrete_size
     recurrent_model = RecurrentModel(
-        int(np.sum(actions_dim)) + stochastic_size,
+        int(sum(actions_dim) + stochastic_size),
         args.recurrent_state_size,
         args.dense_units,
         layer_norm=args.layer_norm,
@@ -125,21 +138,34 @@ def build_models(
         transition_model.apply(init_weights),
         args.discrete_size,
     )
-    observation_model = MultiDecoder(
-        obs_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
-        encoder.cnn_output_dim,
-        encoder.cnn_input_dim,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
+    cnn_decoder = (
+        CNNDecoder(
+            cnn_keys,
+            cnn_channels,
+            args.cnn_channels_multiplier,
+            stochastic_size + args.recurrent_state_size,
+            cnn_encoder.output_dim,
+            image_size,
+            cnn_act,
+            args.layer_norm,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_decoder = (
+        MLPDecoder(
+            mlp_keys,
+            mlp_splits,
+            stochastic_size + args.recurrent_state_size,
+            args.mlp_layers,
+            args.dense_units,
+            dense_act,
+            args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    observation_model = MultiDecoder(cnn_decoder, mlp_decoder, fabric.device)
     reward_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,

@@ -592,7 +592,7 @@ def main():
             ens_list.append(
                 MLP(
                     input_dims=int(
-                        np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
+                        sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
                     ),
                     output_dim=args.stochastic_size * args.discrete_size,
                     hidden_sizes=[args.dense_units] * args.mlp_layers,
@@ -738,7 +738,7 @@ def main():
         step_data[k] = torch_obs
         obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = copy.deepcopy(step_data["dones"])
     if buffer_type == "sequential":
@@ -829,7 +829,7 @@ def main():
                 step_data[k] = torch_obs
                 obs[k] = torch_obs
             step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+            step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
             step_data["rewards"] = torch.zeros(args.num_envs, 1)
             step_data["is_first"] = copy.deepcopy(step_data["dones"])
             data_to_add = step_data[None, ...]
