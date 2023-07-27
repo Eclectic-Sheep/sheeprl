@@ -59,8 +59,9 @@ atari = [
   "gymnasium[accept-rom-license]==0.28.*",
   "gymnasium[other]==0.28.*",
 ]
-minedojo = ["minedojo==0.1"]
+minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
 minerl = ["minerl==0.4.4"]
+diambra = ["diambra", "diambra-arena"]
 
 [tool.ruff]
 line-length = 120
