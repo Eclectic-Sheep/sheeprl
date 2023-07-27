@@ -97,7 +97,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             if args.cnn_keys and (
                 k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
             ):
-                if len(v.shape) == 3:
+                if len(v.shape) in {3, 4}:
                     cnn_keys.append(k)
                 else:
                     fabric.print(

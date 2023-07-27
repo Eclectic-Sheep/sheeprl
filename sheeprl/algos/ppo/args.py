@@ -40,7 +40,7 @@ class PPOArgs(StandardArgs):
     mlp_layers: int = Arg(
         default=2, help="the number of MLP layers for every model: actor, critic, continue and reward"
     )
-    cnn_channels_multiplier: int = Arg(default=16, help="cnn width multiplication factor, must be greater than zero")
+    cnn_channels_multiplier: int = Arg(default=1, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="Tanh",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
@@ -60,6 +60,7 @@ class PPOArgs(StandardArgs):
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
     eps: float = Arg(default=1e-4)
-    max_episode_steps: int = Arg(default=-1)
+    max_episode_steps: int = Arg(default=-1, help="the maximum amount of steps in an episode")
     cnn_features_dim: int = Arg(default=512, help="the features dimension after the CNNEncoder")
-    mlp_features_dim: int = Arg(default=512, help="the features dimension after the MLPEncoder")
+    mlp_features_dim: int = Arg(default=64, help="the features dimension after the MLPEncoder")
+    atari_noop_max: int = Arg(default=30, help="the maximum number of noop in Atari envs on reset")

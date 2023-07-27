@@ -62,7 +62,7 @@ def train(
         for batch_idxes in sampler:
             batch = data[batch_idxes]
 
-            batch_obs = {k: batch[k] / 255 - 0.5 for k in cnn_keys}
+            batch_obs = {k: batch[k].flatten(start_dim=1, end_dim=-3) / 255 - 0.5 for k in cnn_keys}
             batch_obs.update({k: batch[k].float() for k in mlp_keys})
             _, logprobs, entropy, new_values = agent(
                 batch_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
@@ -180,7 +180,7 @@ def main():
             if args.cnn_keys and (
                 k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
             ):
-                if len(v.shape) == 3:
+                if len(v.shape) in {3, 4}:
                     cnn_keys.append(k)
                 else:
                     fabric.print(
@@ -273,7 +273,9 @@ def main():
                 with fabric.device:
                     torch_obs = torch.from_numpy(o[k])
                     step_data[k] = torch_obs
-                next_obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+                next_obs[k] = (
+                    torch_obs.flatten(start_dim=1, end_dim=-3) / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+                )
         next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
@@ -315,7 +317,11 @@ def main():
                         with fabric.device:
                             torch_obs = torch.from_numpy(o[k])
                             step_data[k] = torch_obs
-                        obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+                        obs[k] = (
+                            torch_obs.flatten(start_dim=1, end_dim=-3) / 255 - 0.5
+                            if k in cnn_keys
+                            else torch_obs.float()
+                        )
             next_obs = obs
             next_done = done
 
