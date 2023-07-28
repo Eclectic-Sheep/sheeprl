@@ -66,7 +66,7 @@ class ReplayBuffer:
         return self._buffer_size
 
     @property
-    def full(self) -> int:
+    def full(self) -> bool:
         return self._full
 
     @property
@@ -148,7 +148,7 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int, sample_next_obs: bool = False, clone: bool = False) -> TensorDictBase:
+    def sample(self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, **kwargs) -> TensorDictBase:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
