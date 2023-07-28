@@ -18,7 +18,7 @@ from sheeprl.algos.p2e_dv2 import p2e_dv2
 from sheeprl.algos.ppo import ppo, ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
 from sheeprl.algos.sac import sac, sac_decoupled
-from sheeprl.algos.sac_pixel import sac_pixel_continuous
+from sheeprl.algos.sac_ae import sac_ae
 
 np.float = np.float32
 np.int = np.int64

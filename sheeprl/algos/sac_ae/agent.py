@@ -9,7 +9,7 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
-from sheeprl.algos.sac_pixel.utils import weight_init
+from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiEncoder
 
 LOG_STD_MAX = 2

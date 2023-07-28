@@ -28,7 +28,7 @@ from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_pixel.agent import (
+from sheeprl.algos.sac_ae.agent import (
     CNNDecoder,
     CNNEncoder,
     MLPDecoder,
@@ -38,8 +38,8 @@ from sheeprl.algos.sac_pixel.agent import (
     SACPixelCritic,
     SACPixelQFunction,
 )
-from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
-from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
+from sheeprl.algos.sac_ae.args import SACPixelContinuousArgs
+from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.callback import CheckpointCallback

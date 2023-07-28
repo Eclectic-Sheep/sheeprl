@@ -6,10 +6,10 @@ import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
 
-from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
+from sheeprl.algos.sac_ae.args import SACPixelContinuousArgs
 
 if TYPE_CHECKING:
-    from sheeprl.algos.sac_pixel.agent import SACPixelContinuousActor
+    from sheeprl.algos.sac_ae.agent import SACPixelContinuousActor
 
 
 @torch.no_grad()
