@@ -148,7 +148,7 @@ class PPOAgent(nn.Module):
                 # continuous actions
                 actions = actions[0]
             log_prob = normal.log_prob(actions)
-            return tuple([actions]), log_prob, normal.entropy(), values
+            return tuple([actions]), log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1), values
         else:
             should_append = False
             actions_dist: List[Distribution] = []
