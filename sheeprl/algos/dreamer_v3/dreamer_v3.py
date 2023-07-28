@@ -598,8 +598,8 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    single_global_step = int(args.num_envs * fabric.world_size * args.action_repeat)
-    step_before_training = args.train_every
+    single_global_step = int(args.num_envs * fabric.world_size)
+    step_before_training = args.train_every // single_global_step
     num_updates = int(args.total_steps // single_global_step) if not args.dry_run else 1
     learning_starts = args.learning_starts // single_global_step if not args.dry_run else 0
     if args.checkpoint_path and not args.checkpoint_buffer:
@@ -617,7 +617,7 @@ def main():
     episode_steps = []
     o = envs.reset(seed=args.seed)[0]
     obs = {}
-    for k in o.keys():
+    for k in obs_keys:
         torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
         if k in mlp_keys:
             # Images stay uint8 to save space
@@ -713,9 +713,11 @@ def main():
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
             for k in real_next_obs.keys():
                 reset_data[k] = real_next_obs[k][dones_idxes]
+                if k in mlp_keys:
+                    reset_data[k] = reset_data[k].float()
             reset_data["dones"] = torch.ones(reset_envs, 1).float()
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
-            reset_data["rewards"] = clip_rewards_fn(rewards)[dones_idxes].float()
+            reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
             reset_data["is_first"] = torch.zeros_like(reset_data["dones"]).float()
             if buffer_type == "episode":
                 for i, d in enumerate(dones_idxes):
@@ -724,7 +726,7 @@ def main():
                         episode_steps[d] = [reset_data[i : i + 1][None, ...]]
             else:
                 rb.add(reset_data[None, ...], dones_idxes)
-            step_data["rewards"][dones_idxes] = torch.zeros_like(reset_data["rewards"][dones_idxes])
+            step_data["rewards"][dones_idxes] = torch.zeros_like(reset_data["rewards"]).float()
 
         step_before_training -= 1
 
@@ -768,7 +770,7 @@ def main():
                     moments,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every  # // (args.num_envs * (fabric.world_size * args.action_repeat))
+            step_before_training = args.train_every // single_global_step
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
