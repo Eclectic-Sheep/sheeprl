@@ -158,3 +158,25 @@ def test_memmap_replay_buffer():
     )
     rb.add(td)
     assert rb.buffer.is_memmap()
+
+
+def test_obs_keys_replay_buffer():
+    buf_size = 10
+    n_envs = 4
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, obs_keys=("rgb", "state", "tmp"))
+    td = TensorDict(
+        {
+            "rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+        },
+        batch_size=[10, n_envs],
+    )
+    rb.add(td)
+    sample = rb.sample(10, True)
+    assert "rgb" in sample
+    assert "state" in sample
+    assert "tmp" in sample
+    assert "next_rgb" in sample
+    assert "next_state" in sample
+    assert "next_tmp" in sample
