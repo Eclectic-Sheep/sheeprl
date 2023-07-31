@@ -408,6 +408,8 @@ class MultiEncoder(nn.Module):
         device: Union[str, torch.device] = "cpu",
     ) -> None:
         super().__init__()
+        if cnn_encoder is None and mlp_encoder is None:
+            raise ValueError("There must be an encoder, both cnn and mlp encoders are None")
         if isinstance(device, str):
             self.device = torch.device(device)
         else:
@@ -447,6 +449,8 @@ class MultiDecoder(nn.Module):
         device: Union[str, torch.device] = "cpu",
     ) -> None:
         super().__init__()
+        if cnn_decoder is None and mlp_decoder is None:
+            raise ValueError("There must be an decoder, both cnn and mlp decoders are None")
         if isinstance(device, str):
             self.device = torch.device(device)
         else:
@@ -462,10 +466,10 @@ class MultiDecoder(nn.Module):
     def mlp_keys(self) -> Sequence[str]:
         return self.mlp_decoder.keys if self.mlp_decoder is not None else []
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+    def forward(self, x: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
         if self.cnn_decoder is not None:
-            reconstructed_obs.update(self.cnn_decoder(latent_states))
+            reconstructed_obs.update(self.cnn_decoder(x))
         if self.mlp_decoder is not None:
-            reconstructed_obs.update(self.mlp_decoder(latent_states))
+            reconstructed_obs.update(self.mlp_decoder(x))
         return reconstructed_obs
