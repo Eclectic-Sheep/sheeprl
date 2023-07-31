@@ -1,4 +1,4 @@
-from typing import Any, Optional, SupportsFloat, Tuple, Union
+from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 
 import diambra
 import diambra.arena
@@ -20,6 +20,8 @@ class DiambraWrapper(core.Env):
         sticky_actions: int = 1,
         seed: Optional[int] = None,
         rank: int = 0,
+        diambra_settings: Dict[str, Any] = {},
+        diambra_wrappers: Dict[str, Any] = {},
     ) -> None:
         super().__init__()
 
@@ -29,12 +31,14 @@ class DiambraWrapper(core.Env):
         settings = {
             "action_space": action_space,
             "attack_but_combination": attack_but_combination,
+            **diambra_settings,
         }
         wrappers = {
             "no_op_max": noop_max,
             "hwc_obs_resize": (*screen_size, (1 if grayscale else 3)),
             "flatten": True,
             "sticky_actions": sticky_actions,
+            **diambra_wrappers,
         }
         self._env = diambra.arena.make(env_id, settings, wrappers, seed=seed, rank=rank)
 
@@ -61,13 +65,15 @@ class DiambraWrapper(core.Env):
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
         self.observation_space = gymnasium.spaces.Dict(obs)
 
-    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, infos = self._env.step(action)
         obs = {
             k: (np.array(v) if not isinstance(v, np.ndarray) else v).reshape(self.observation_space[k].shape)
             for k, v in obs.items()
         }
-        return obs, reward, done, done, infos
+        return obs, reward, done, False, infos
 
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[Any, dict[str, Any]]:
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
+    ) -> tuple[Any, Dict[str, Any]]:
         return self._env.reset(seed=seed, options=options), {}
