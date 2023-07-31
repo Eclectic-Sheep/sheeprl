@@ -382,6 +382,7 @@ def main():
         args.num_envs,
         device=fabric.device if args.memmap_buffer else "cpu",
         memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=cnn_keys + mlp_keys,
     )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=fabric.device if args.memmap_buffer else "cpu")

@@ -594,18 +594,30 @@ class Player(nn.Module):
         self.num_envs = num_envs
         self.init_states()
 
-    def init_states(self) -> None:
+    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
+        """Initialize the states and the actions for the ended environments.
+
+        Args:
+            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
+                If None, then all environments' states are reset.
+                Defaults to None.
         """
-        Initialize the states and the actions for the ended environments.
-        """
-        self.actions = torch.zeros(1, self.num_envs, sum(self.actions_dim), device=self.device)
-        self.stochastic_state = torch.zeros(
-            1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
-        )
-        self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
+        if reset_envs is None or len(reset_envs) == 0:
+            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
+            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
+            self.stochastic_state = torch.zeros(
+                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
+            )
+        else:
+            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
+            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
+            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
     def get_exploration_action(
-        self, obs: Dict[str, Tensor], is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
+        self,
+        obs: Dict[str, Tensor],
+        is_continuous: bool,
+        mask: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
@@ -634,7 +646,10 @@ class Player(nn.Module):
         return tuple(expl_actions)
 
     def get_greedy_action(
-        self, obs: Dict[str, Tensor], is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+        self,
+        obs: Dict[str, Tensor],
+        is_training: bool = True,
+        mask: Optional[Dict[str, np.ndarray]] = None,
     ) -> Sequence[Tensor]:
         """
         Return the greedy actions.

@@ -191,7 +191,13 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
+    rb = ReplayBuffer(
+        buffer_size,
+        args.num_envs,
+        device=device,
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+    )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables
@@ -245,7 +251,7 @@ def main():
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = real_next_obs
+        obs = next_obs
 
         # Train the agent
         if global_step >= args.learning_starts - 1:

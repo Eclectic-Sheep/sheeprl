@@ -17,6 +17,7 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
+from torch import Tensor
 from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
@@ -26,7 +27,7 @@ from sheeprl.algos.dreamer_v2.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.data.buffers import EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
@@ -255,24 +256,26 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # predict values and rewards
-    predicted_target_values = target_critic(imagined_trajectories)
-    predicted_rewards = world_model.reward_model(imagined_trajectories)
+    predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
+    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
     if args.use_continues and world_model.continue_model:
-        done_mask = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * args.gamma
-        done_mask = torch.cat((true_done, done_mask[1:]))
+        continues = Independent(
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+        ).mean
+        true_done = (1 - data["dones"]).reshape(1, -1, 1) * args.gamma
+        continues = torch.cat((true_done, continues[1:]))
     else:
-        done_mask = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
     # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
     lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_target_values,
-        done_mask,
-        last_values=predicted_target_values[-1],
-        horizon=args.horizon + 1,
+        predicted_rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-2:-1],
+        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 
@@ -283,56 +286,58 @@ def train(
         # the imagined trajectory would have ended.
         #
         # Suppose the case in which the continue model is not used and gamma = .99
-        # done_mask.shape = (15, 2500, 1)
-        # done_mask = [
+        # continues.shape = (15, 2500, 1)
+        # continues = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (15 rows)
-        # torch.ones_like(done_mask[:1]) = [
+        # torch.ones_like(continues[:1]) = [
         #   [ [1.], ..., [1.] ]
         # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # done_mask[:-2] = [
+        # continues[:-2] = [
         #   [ [.99], ..., [.99] ], (2500 columns)
         #   ...
         # ] (13 rows)
-        # torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0) = [
+        # torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   ...,
         #   [ [.99], ..., [.99] ],
         # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-2]), 0), 0) = [
+        # torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0), 0) = [
         #   [ [1.], ..., [1.] ], (2500 columns)
         #   [ [.99], ..., [.99] ],
         #   [ [.9801], ..., [.9801] ],
         #   ...,
         #   [ [.8775], ..., [.8775] ],
         # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(done_mask[:1]), done_mask[:-1]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
-    if is_continuous:
-        objective = lambda_values[1:]
-    else:
-        baseline = target_critic(imagined_trajectories[:-2])
-        advantage = (lambda_values[1:] - baseline).detach()
-        objective = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, dim=-1))
-                ],
-                -1,
-            ).sum(dim=-1)
-            * advantage
-        )
+
+    # Dynamics backpropagation
+    dynamics = lambda_values[1:]
+
+    # Reinforce
+    advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+    reinforce = (
+        torch.stack(
+            [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ],
+            -1,
+        ).sum(-1)
+        * advantage
+    )
+    objective = args.objective_mix * reinforce + (1 - args.objective_mix) * dynamics
     try:
         entropy = args.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
     except NotImplementedError:
         entropy = torch.zeros_like(objective)
-    policy_loss = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+    policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if args.clip_gradients is not None and args.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
@@ -368,7 +373,6 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV2Args)
     args: DreamerV2Args = parser.parse_args_into_dataclasses()[0]
-    args.num_envs = 1
     torch.set_num_threads(1)
 
     # Initialize Fabric
@@ -424,31 +428,36 @@ def main():
         log_dir = data[0]
         os.makedirs(log_dir, exist_ok=True)
 
-    # Save args as dict automatically
-    args.log_dir = log_dir
+    # Environment setup
+    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
+        [
+            make_dict_env(
+                args.env_id,
+                args.seed + rank * args.num_envs,
+                rank,
+                args,
+                logger.log_dir if rank == 0 else None,
+                "train",
+            )
+            for i in range(args.num_envs)
+        ]
+    )
 
-    env: gym.Env = make_dict_env(
-        args.env_id,
-        args.seed + rank * args.num_envs,
-        rank,
-        args,
-        logger.log_dir if rank == 0 else None,
-        "train",
-    )()
+    action_space = envs.single_action_space
+    observation_space = envs.single_observation_space
 
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    is_continuous = isinstance(action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
     actions_dim = (
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+        action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
     cnn_keys = []
     mlp_keys = []
-    if isinstance(env.observation_space, gym.spaces.Dict):
+    if isinstance(observation_space, gym.spaces.Dict):
         cnn_keys = []
-        for k, v in env.observation_space.spaces.items():
+        for k, v in observation_space.spaces.items():
             if args.cnn_keys and (
                 k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
             ):
@@ -460,7 +469,7 @@ def main():
                         "Try to transform the observation from the environment into a 3D image"
                     )
         mlp_keys = []
-        for k, v in env.observation_space.spaces.items():
+        for k, v in observation_space.spaces.items():
             if args.mlp_keys and (
                 k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
             ):
@@ -472,18 +481,19 @@ def main():
                         "Try to flatten the observation from the environment"
                     )
     else:
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {env.observation_space}")
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cnn_keys == [] and mlp_keys == []:
         raise RuntimeError(f"There must be at least one valid observation.")
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
+    obs_keys = cnn_keys + mlp_keys
 
     world_model, actor, critic, target_critic = build_models(
         fabric,
         actions_dim,
         is_continuous,
         args,
-        env.observation_space,
+        observation_space,
         cnn_keys,
         mlp_keys,
         state["world_model"] if args.checkpoint_path else None,
@@ -539,7 +549,7 @@ def main():
                 "Grads/critic": MeanMetric(sync_on_compute=False),
             }
         )
-        aggregator.to(fabric.device)
+    aggregator.to(fabric.device)
 
     # Local data
     buffer_size = (
@@ -547,17 +557,28 @@ def main():
     )
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
-        rb = SequentialReplayBuffer(buffer_size, args.num_envs, device="cpu", memmap=args.memmap_buffer)
+        rb = AsyncReplayBuffer(
+            buffer_size,
+            args.num_envs,
+            device="cpu",
+            memmap=args.memmap_buffer,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+            sequential=True,
+        )
     elif buffer_type == "episode":
         rb = EpisodeBuffer(
-            buffer_size, sequence_length=args.per_rank_sequence_length, device="cpu", memmap=args.memmap_buffer
+            buffer_size,
+            sequence_length=args.per_rank_sequence_length,
+            device="cpu",
+            memmap=args.memmap_buffer,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         )
     else:
         raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], (SequentialReplayBuffer, EpisodeBuffer)):
+        elif isinstance(state["rb"], (AsyncReplayBuffer, EpisodeBuffer)):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
@@ -567,11 +588,12 @@ def main():
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    step_before_training = args.train_every // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
-    num_updates = int(args.total_steps // (fabric.world_size * args.action_repeat)) if not args.dry_run else 1
-    learning_starts = args.learning_starts // (fabric.world_size * args.action_repeat) if not args.dry_run else 0
+    single_global_step = int(args.num_envs * fabric.world_size * args.action_repeat)
+    step_before_training = args.train_every // single_global_step if not args.dry_run else 0
+    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
+    learning_starts = args.learning_starts // single_global_step if not args.dry_run else 0
     if args.checkpoint_path and not args.checkpoint_buffer:
-        learning_starts = start_step + args.learning_starts // int((fabric.world_size * args.action_repeat))
+        learning_starts += start_step
     max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
     if args.checkpoint_path:
         player.expl_amount = polynomial_decay(
@@ -582,33 +604,38 @@ def main():
         )
 
     # Get the first environment observation and start the optimization
-    episode_steps = []
-    o = env.reset(seed=args.seed)[0]
+    episode_steps = [[] for _ in range(args.num_envs)]
+    o = envs.reset(seed=args.seed)[0]
     obs = {}
     for k in o.keys():
-        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
-        step_data[k] = torch_obs
-        obs[k] = torch_obs
+        if k in obs_keys:
+            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+            if k in mlp_keys:
+                # Images stay uint8 to save space
+                torch_obs = torch_obs.float()
+            step_data[k] = torch_obs
+            obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
     step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
-    step_data["is_first"] = copy.deepcopy(step_data["dones"])
+    step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":
         rb.add(step_data[None, ...])
     else:
-        episode_steps.append(step_data[None, ...])
+        for i, env_ep in enumerate(episode_steps):
+            env_ep.append(step_data[i : i + 1][None, ...])
     player.init_states()
 
     gradient_steps = 0
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
         if global_step <= learning_starts and args.checkpoint_path is None and "minedojo" not in args.env_id:
-            real_actions = actions = np.array(env.action_space.sample())
+            real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
                     [
                         F.one_hot(torch.tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(actions.reshape(len(actions_dim)), actions_dim)
+                        for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
                     ],
                     axis=-1,
                 )
@@ -628,27 +655,42 @@ def main():
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
-                    real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
+                    real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         step_data["is_first"] = copy.deepcopy(step_data["dones"])
-        o, rewards, dones, truncated, infos = env.step(real_actions.reshape(env.action_space.shape))
+        o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
 
-        if (dones or truncated) and "episode" in infos:
-            fabric.print(f"Rank-0: global_step={global_step}, reward_env_{0}={infos['episode']['r'][0]}")
-            aggregator.update("Rewards/rew_avg", infos["episode"]["r"][0])
-            aggregator.update("Game/ep_len_avg", infos["episode"]["l"][0])
+        if "final_info" in infos:
+            for i, agent_final_info in enumerate(infos["final_info"]):
+                if agent_final_info is not None and "episode" in agent_final_info:
+                    fabric.print(
+                        f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                    )
+                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
+                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
-        next_obs = {}
-        for k in o.keys():  # [N_envs, N_obs]
-            torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
-            step_data[k] = torch_obs
-            next_obs[k] = torch_obs
+        # Save the real next observation
+        real_next_obs = copy.deepcopy(o)
+        if "final_observation" in infos:
+            for idx, final_obs in enumerate(infos["final_observation"]):
+                if final_obs is not None:
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
+
+        next_obs: Dict[str, Tensor] = {}
+        for k in real_next_obs.keys():  # [N_envs, N_obs]
+            if k in obs_keys:
+                next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+                step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:])
+                if k in mlp_keys:
+                    next_obs[k] = next_obs[k].float()
+                    step_data[k] = step_data[k].float()
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
-        dones = torch.tensor([bool(dones)]).view(args.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
@@ -656,33 +698,35 @@ def main():
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["rewards"] = clip_rewards_fn(rewards)
-        data_to_add = step_data[None, ...]
         if buffer_type == "sequential":
-            rb.add(data_to_add)
+            rb.add(step_data[None, ...])
         else:
-            episode_steps.append(data_to_add)
+            for i, env_ep in enumerate(episode_steps):
+                env_ep.append(step_data[i : i + 1][None, ...])
 
-        if dones or truncated:
-            # Add entire episode if needed
-            if buffer_type == "episode" and len(episode_steps) >= args.per_rank_sequence_length:
-                rb.add(torch.cat(episode_steps, dim=0))
-            episode_steps = []
-            o = env.reset(seed=args.seed)[0]
-            obs = {}
-            for k in o.keys():
-                torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape).float()
-                step_data[k] = torch_obs
-                obs[k] = torch_obs
-            step_data["dones"] = torch.zeros(args.num_envs, 1)
-            step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
-            step_data["rewards"] = torch.zeros(args.num_envs, 1)
-            step_data["is_first"] = copy.deepcopy(step_data["dones"])
-            data_to_add = step_data[None, ...]
-            if buffer_type == "sequential":
-                rb.add(data_to_add)
+        # Reset and save the observation coming from the automatic reset
+        dones_idxes = dones.nonzero(as_tuple=True)[0].tolist()
+        reset_envs = len(dones_idxes)
+        if reset_envs > 0:
+            reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
+            for k in next_obs.keys():
+                reset_data[k] = next_obs[k][dones_idxes]
+            reset_data["dones"] = torch.zeros(reset_envs, 1)
+            reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim))
+            reset_data["rewards"] = torch.zeros(reset_envs, 1)
+            reset_data["is_first"] = torch.ones_like(reset_data["dones"])
+            if buffer_type == "episode":
+                for i, d in enumerate(dones_idxes):
+                    if len(episode_steps[d]) >= args.per_rank_sequence_length:
+                        rb.add(torch.cat(episode_steps[d], dim=0))
+                        episode_steps[d] = [reset_data[i : i + 1][None, ...]]
             else:
-                episode_steps.append(data_to_add)
-            player.init_states()
+                rb.add(reset_data[None, ...], dones_idxes)
+            # Reset dones so that `is_first` is updated
+            for d in dones_idxes:
+                step_data["dones"][d] = torch.zeros_like(step_data["dones"][d])
+            # Reset internal agent states
+            player.init_states(dones_idxes)
 
         step_before_training -= 1
 
@@ -724,7 +768,7 @@ def main():
                     actions_dim,
                 )
                 gradient_steps += 1
-            step_before_training = args.train_every // (args.num_envs * (fabric.world_size * args.action_repeat))
+            step_before_training = args.train_every // single_global_step
             if args.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
@@ -765,7 +809,7 @@ def main():
                 replay_buffer=rb if args.checkpoint_buffer else None,
             )
 
-    env.close()
+    envs.close()
     if fabric.is_global_zero:
         test(player, fabric, args, cnn_keys, mlp_keys)
 

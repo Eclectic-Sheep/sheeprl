@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -53,6 +53,26 @@ def init_weights(m: nn.Module):
         nn.init.constant_(m.bias.data, 0)
 
 
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    continues: Tensor,
+    bootstrap: Optional[Tensor] = None,
+    horizon: int = 15,
+    lmbda: float = 0.95,
+):
+    if bootstrap is None:
+        bootstrap = torch.zeros_like(values[-2:-1])
+    agg = bootstrap
+    next_val = torch.cat((values[1:], bootstrap), dim=0)
+    inputs = rewards + continues * next_val * (1 - lmbda)
+    lv = []
+    for i in reversed(range(horizon)):
+        agg = inputs[i] + continues[i] * lmbda * agg
+        lv.append(agg)
+    return torch.cat(list(reversed(lv)), dim=0)
+
+
 @torch.no_grad()
 def test(
     player: "Player", fabric: Fabric, args: DreamerV2Args, cnn_keys: List[str], mlp_keys: List[str], test_name: str = ""
@@ -71,7 +91,8 @@ def test(
     device = fabric.device
     next_obs = env.reset(seed=args.seed)[0]
     for k in next_obs.keys():
-        next_obs[k] = torch.from_numpy(next_obs[k]).view(args.num_envs, *next_obs[k].shape).float()
+        next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
+    player.num_envs = 1
     player.init_states()
     while not done:
         # Act greedly through the environment
@@ -87,12 +108,12 @@ def test(
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()
         else:
-            real_actions = np.array([real_act.cpu().argmax() for real_act in real_actions])
+            real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         # Single environment step
         next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
         for k in next_obs.keys():
-            next_obs[k] = torch.from_numpy(next_obs[k]).view(args.num_envs, *next_obs[k].shape).float()
+            next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
         done = done or truncated or args.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
