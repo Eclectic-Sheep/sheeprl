@@ -180,7 +180,6 @@ class ReplayBuffer:
         if sample_next_obs:
             for k in self.obs_keys:
                 buf[f"next_{k}"] = self._buf[k][(batch_idxes + 1) % self._buffer_size, env_idxes]
-        # TODO: add tests
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
