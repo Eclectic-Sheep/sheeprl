@@ -122,8 +122,8 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac_pixel.sac_pixel_continuous")
+def test_sac_ae(standard_args, checkpoint_buffer, start_time):
+    task = importlib.import_module("sheeprl.algos.sac_ae.sac_ae")
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)

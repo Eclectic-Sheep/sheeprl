@@ -302,7 +302,7 @@ def make_dict_env(
 
         def transform_obs(obs: Dict[str, Any]):
             for k in cnn_keys:
-                shape = env.observation_space[k].shape
+                shape = obs[k].shape
                 is_3d = len(shape) == 3
                 is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
                 channel_first = not is_3d or shape[0] in (1, 3)

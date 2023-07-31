@@ -622,7 +622,7 @@ def main():
     o = envs.reset(seed=args.seed)[0]
     obs = {}
     for k in o.keys():
-        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape)
+        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
         if k in mlp_keys:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs

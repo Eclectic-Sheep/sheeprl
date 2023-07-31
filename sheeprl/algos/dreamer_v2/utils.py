@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -13,6 +13,7 @@ from sheeprl.utils.utils import make_dict_env
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import Player
 
+from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 
 
@@ -75,7 +76,12 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: "Player", fabric: Fabric, args: DreamerV2Args, cnn_keys: List[str], mlp_keys: List[str], test_name: str = ""
+    player: "Player",
+    fabric: Fabric,
+    args: Union[DreamerV2Args, "DreamerV1Args"],
+    cnn_keys: List[str],
+    mlp_keys: List[str],
+    test_name: str = "",
 ):
     """Test the model on the environment with the frozen model.
 
