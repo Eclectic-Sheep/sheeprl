@@ -28,7 +28,7 @@ and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/
 
 
 The actions supported by sheeprl agents are:
-| Algorithm                 | Continues          | Discrete           | Multi-Discrete     |
+| Algorithm                 | Continuous         | Discrete           | Multi-Discrete     |
 | ------------------------- | -------------------| ------------------ | ------------------ |
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
