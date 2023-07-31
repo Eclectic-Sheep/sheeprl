@@ -1,4 +1,5 @@
 import os
+import warnings
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -278,52 +279,68 @@ def make_dict_env(
 
         # create dict
         if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 3:
-            env = gym.wrappers.PixelObservationWrapper(
-                env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=("rgb",)
-            )
+            if args.cnn_keys is not None and len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all":
+                env = gym.wrappers.PixelObservationWrapper(
+                    env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=("rgb",)
+                )
+            elif args.cnn_keys is not None and len(args.cnn_keys) > 1:
+                warnings.warn(
+                    f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, only the first one is kept"
+                )
+                env = gym.wrappers.PixelObservationWrapper(
+                    env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=(args.cnn_keys[0],)
+                )
         elif isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
             env = gym.wrappers.TransformObservation(env, lambda obs: {"rgb": obs})
             env.observation_space = gym.spaces.Dict({"rgb": env.observation_space})
 
-        shape = env.observation_space["rgb"].shape
-        is_3d = len(shape) == 3
-        is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
-        channel_first = not is_3d or shape[0] in (1, 3)
+        cnn_keys = set(
+            [k for k in env.observation_space.spaces.keys() if len(env.observation_space[k].shape) in {2, 3}]
+        )
+        if args.cnn_keys is not None and not (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all"):
+            cnn_keys = set(args.cnn_keys).intersection(cnn_keys)
 
         def transform_obs(obs: Dict[str, Any]):
-            # to 3D image
-            if not is_3d:
-                obs.update({"rgb": np.expand_dims(obs["rgb"], axis=0)})
+            for k in cnn_keys:
+                shape = env.observation_space[k].shape
+                is_3d = len(shape) == 3
+                is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
+                channel_first = not is_3d or shape[0] in (1, 3)
 
-            # channel last (opencv needs it)
-            if channel_first:
-                obs.update({"rgb": obs["rgb"].transpose(1, 2, 0)})
+                # to 3D image
+                if not is_3d:
+                    obs.update({k: np.expand_dims(obs[k], axis=0)})
 
-            # resize
-            if obs["rgb"].shape[:-1] != (args.screen_size, args.screen_size):
-                obs.update(
-                    {"rgb": cv2.resize(obs["rgb"], (args.screen_size, args.screen_size), interpolation=cv2.INTER_AREA)}
-                )
+                # channel last (opencv needs it)
+                if channel_first:
+                    obs.update({k: obs[k].transpose(1, 2, 0)})
 
-            # to grayscale
-            if args.grayscale_obs and not is_grayscale:
-                obs.update({"rgb": cv2.cvtColor(obs["rgb"], cv2.COLOR_RGB2GRAY)})
+                # resize
+                if obs[k].shape[:-1] != (args.screen_size, args.screen_size):
+                    obs.update(
+                        {k: cv2.resize(obs[k], (args.screen_size, args.screen_size), interpolation=cv2.INTER_AREA)}
+                    )
 
-            # back to 3D
-            if len(obs["rgb"].shape) == 2:
-                obs.update({"rgb": np.expand_dims(obs["rgb"], axis=-1)})
-                if not args.grayscale_obs:
-                    obs.update({"rgb": np.repeat(obs["rgb"], 3, axis=-1)})
+                # to grayscale
+                if args.grayscale_obs and not is_grayscale:
+                    obs.update({k: cv2.cvtColor(obs[k], cv2.COLOR_RGB2GRAY)})
 
-            # channel first (PyTorch default)
-            obs.update({"rgb": obs["rgb"].transpose(2, 0, 1)})
+                # back to 3D
+                if len(obs[k].shape) == 2:
+                    obs.update({k: np.expand_dims(obs[k], axis=-1)})
+                    if not args.grayscale_obs:
+                        obs.update({k: np.repeat(obs[k], 3, axis=-1)})
+
+                # channel first (PyTorch default)
+                obs.update({k: obs[k].transpose(2, 0, 1)})
 
             return obs
 
         env = gym.wrappers.TransformObservation(env, transform_obs)
-        env.observation_space["rgb"] = gym.spaces.Box(
-            0, 255, (1 if args.grayscale_obs else 3, args.screen_size, args.screen_size), np.uint8
-        )
+        for k in cnn_keys:
+            env.observation_space[k] = gym.spaces.Box(
+                0, 255, (1 if args.grayscale_obs else 3, args.screen_size, args.screen_size), np.uint8
+            )
 
         if args.frame_stack > 0:
             env = FrameStack(env, args.frame_stack, args.frame_stack_keys)
