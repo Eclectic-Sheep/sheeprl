@@ -73,7 +73,7 @@ def train(
     for k in cnn_keys + mlp_keys:
         if k in cnn_keys:
             normalized_obs[k] = data[k] / 255.0
-            normalized_next_obs[k] = data[k] / 255.0
+            normalized_next_obs[k] = data[f"next_{k}"] / 255.0
         else:
             normalized_obs[k] = data[k]
             normalized_next_obs[k] = data[f"next_{k}"]
@@ -137,7 +137,6 @@ def main():
     parser = HfArgumentParser(SACPixelContinuousArgs)
     args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
     # These arguments cannot be changed
-    args.sample_next_obs = False
     args.screen_size = 64
 
     # Initialize Fabric
@@ -379,7 +378,11 @@ def main():
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 1
     rb = ReplayBuffer(
-        buffer_size, args.num_envs, device=fabric.device if args.memmap_buffer else "cpu", memmap=args.memmap_buffer
+        buffer_size,
+        args.num_envs,
+        device=fabric.device if args.memmap_buffer else "cpu",
+        memmap=args.memmap_buffer,
+        obs_keys=cnn_keys + mlp_keys,
     )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=fabric.device if args.memmap_buffer else "cpu")
 
@@ -389,24 +392,24 @@ def main():
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
     # Get the first environment observation and start the optimization
-    with device:
-        o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
-        obs = {}
-        for k in o.keys():
-            if k in mlp_keys + cnn_keys:
-                with fabric.device:
-                    torch_obs = torch.from_numpy(o[k])
-                    if k in cnn_keys:
-                        torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
-                    step_data[k] = torch_obs
-                obs[k] = torch_obs
+    o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    obs = {}
+    for k in o.keys():
+        if k in mlp_keys + cnn_keys:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+            if k in cnn_keys:
+                torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            step_data[k] = torch_obs
+            obs[k] = torch_obs
 
     for global_step in range(1, num_updates + 1):
         if global_step < args.learning_starts:
             actions = envs.action_space.sample()
         else:
             with torch.no_grad():
-                normalized_obs = {k: v / 255 if k in cnn_keys else torch_obs.float() for k, v in obs.items()}
+                normalized_obs = {k: v / 255 if k in cnn_keys else v for k, v in obs.items()}
                 actions, _ = actor.module(normalized_obs)
                 actions = actions.cpu().numpy()
         o, rewards, dones, truncated, infos = envs.step(actions)
@@ -432,17 +435,17 @@ def main():
         next_obs = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             step_data[k] = obs[k]
-            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:]).to(fabric.device)
             if not args.sample_next_obs:
-                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k])
+                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
             if k in cnn_keys:
                 next_obs[k] = next_obs[k].view(args.num_envs, -1, *next_obs[k].shape[-2:])
-                step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
-                    args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                step_data[f"next_{k}"] = (
+                    step_data[f"next_{k}"].view(args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]).to(fabric.device)
                 )
-        actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
-        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
+        actions = torch.from_numpy(actions).view(args.num_envs, -1).float().to(fabric.device)
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float().to(fabric.device)
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float().to(fabric.device)
 
         step_data["dones"] = dones
         step_data["actions"] = actions

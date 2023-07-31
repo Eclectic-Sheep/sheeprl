@@ -67,7 +67,7 @@ class CNNEncoder(CNN):
     def conv_output_shape(self) -> Size:
         return self._conv_output_shape
 
-    def forward(self, obs: Dict[str, Tensor], detach_encoder_features: bool = False, *args, **kwargs) -> Tensor:
+    def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
         x = torch.cat([obs[k] for k in self.keys], dim=-3)
         x = self.model(x).flatten(1)
         if detach_encoder_features:
@@ -217,7 +217,7 @@ class SACPixelCritic(nn.Module):
         self.apply(weight_init)
 
     def forward(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
-        features = self.encoder(obs, detach_encoder_features)
+        features = self.encoder(obs, detach_encoder_features=detach_encoder_features)
         return torch.cat([self.qfs[i](features, action) for i in range(len(self.qfs))], dim=-1)
 
 
@@ -255,7 +255,7 @@ class SACPixelContinuousActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        features = self.encoder(obs, detach_encoder_features)
+        features = self.encoder(obs, detach_encoder_features=detach_encoder_features)
         x = self.model(features)
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
