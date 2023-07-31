@@ -195,17 +195,17 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
     world_collective.broadcast(update_t, src=0)
 
-    with device:
-        # Get the first environment observation and start the optimization
-        o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
-        next_obs = {}
-        for k in o.keys():
-            if k in mlp_keys + cnn_keys:
-                with fabric.device:
-                    torch_obs = torch.from_numpy(o[k])
-                    step_data[k] = torch_obs
-                next_obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
-        next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
+    # Get the first environment observation and start the optimization
+    o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    next_obs = {}
+    for k in o.keys():
+        if k in mlp_keys + cnn_keys:
+            torch_obs = torch.from_numpy(o[k])
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            step_data[k] = torch_obs
+            next_obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs
+    next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
@@ -224,9 +224,11 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             o, reward, done, truncated, info = envs.step(real_actions)
 
             with device:
-                rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
-                done = done.view(args.num_envs, -1).float()
+                rewards = torch.tensor(reward).view(args.num_envs, -1).float().to(fabric.device)  # [N_envs, 1]
+                done = (
+                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).float().to(fabric.device)
+                )  # [N_envs, 1]
+                done = done.view(args.num_envs, -1)
 
             # Update the step data
             step_data["dones"] = next_done
@@ -238,14 +240,14 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
 
-            with device:
-                obs = {}  # [N_envs, N_obs]
-                for k in o.keys():
-                    if k in mlp_keys + cnn_keys:
-                        with fabric.device:
-                            torch_obs = torch.from_numpy(o[k])
-                            step_data[k] = torch_obs
-                        obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+            obs = {}  # [N_envs, N_obs]
+            for k in o.keys():
+                if k in mlp_keys + cnn_keys:
+                    torch_obs = torch.from_numpy(o[k])
+                    if k in mlp_keys:
+                        torch_obs = torch_obs.float()
+                    step_data[k] = torch_obs
+                    obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs
             next_obs = obs
             next_done = done
 
