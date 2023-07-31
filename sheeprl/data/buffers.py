@@ -1,5 +1,5 @@
 import typing
-from typing import List, Optional, Union
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -15,6 +15,7 @@ class ReplayBuffer:
         n_envs: int = 1,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        obs_keys: Sequence[str] = ("observations",),
     ):
         """A replay buffer which internally uses a TensorDict.
 
@@ -40,6 +41,7 @@ class ReplayBuffer:
             self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
         self._pos = 0
         self._full = False
+        self.obs_keys = obs_keys
 
     @property
     def buffer(self) -> Optional[TensorDictBase]:
@@ -176,7 +178,9 @@ class ReplayBuffer:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         buf = self._buf[batch_idxes, env_idxes]
         if sample_next_obs:
-            buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
+            for k in self.obs_keys:
+                buf[f"next_{k}"] = self._buf[k][(batch_idxes + 1) % self._buffer_size, env_idxes]
+        # TODO: add tests
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
