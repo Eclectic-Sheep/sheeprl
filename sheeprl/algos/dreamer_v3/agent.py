@@ -11,13 +11,14 @@ from torch.distributions import (
     Distribution,
     Independent,
     Normal,
+    OneHotCategorical,
     OneHotCategoricalStraightThrough,
     TanhTransform,
     TransformedDistribution,
 )
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
-from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, zero_init_weights
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
@@ -348,7 +349,7 @@ class RSSM(nn.Module):
         return imagined_prior, recurrent_state
 
 
-class PlayerDV3(Player):
+class PlayerDV3(nn.Module):
     """
     The model of the Dreamer_v3 player.
 
@@ -372,33 +373,33 @@ class PlayerDV3(Player):
     def __init__(
         self,
         encoder: _FabricModule,
-        recurrent_model: _FabricModule,
-        representation_model: _FabricModule,
+        rssm: RSSM,
         actor: _FabricModule,
         actions_dim: Sequence[int],
         expl_amount: float,
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        transition_model: _FabricModule,
         device: device = "cpu",
         discrete_size: int = 32,
     ) -> None:
-        super().__init__(
-            encoder,
-            recurrent_model,
-            representation_model,
-            actor,
-            actions_dim,
-            expl_amount,
-            num_envs,
-            stochastic_size,
-            recurrent_state_size,
-            device,
-            discrete_size,
+        super().__init__()
+        self.encoder = encoder
+        self.rssm = RSSM(
+            recurrent_model=rssm.recurrent_model.module,
+            representation_model=rssm.representation_model.module,
+            transition_model=rssm.transition_model.module,
+            discrete=rssm.discrete,
+            unimix=rssm.unimix,
         )
-        self.transition_model = transition_model
-        self.init_states()
+        self.actor = actor
+        self.device = device
+        self.expl_amount = expl_amount
+        self.actions_dim = actions_dim
+        self.stochastic_size = stochastic_size
+        self.discrete_size = discrete_size
+        self.recurrent_state_size = recurrent_state_size
+        self.num_envs = num_envs
 
     @torch.no_grad()
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -412,13 +413,74 @@ class PlayerDV3(Player):
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
             self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(
-                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
-            )
+            self.stochastic_state = self.rssm._transition(self.recurrent_state)[1].reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+            self.stochastic_state[:, reset_envs] = self.rssm._transition(self.recurrent_state[:, reset_envs])[
+                1
+            ].reshape(1, self.num_envs, -1)
+
+    def get_exploration_action(
+        self,
+        obs: Dict[str, Tensor],
+        is_continuous: bool,
+        mask: Optional[Dict[str, np.ndarray]] = None,
+    ) -> Tensor:
+        """
+        Return the actions with a certain amount of noise for exploration.
+
+        Args:
+            obs (Dict[str, Tensor]): the current observations.
+            is_continuous (bool): whether or not the actions are continuous.
+
+        Returns:
+            The actions the agent has to perform.
+        """
+        actions = self.get_greedy_action(obs, mask=mask)
+        if is_continuous:
+            self.actions = torch.cat(actions, -1)
+            if self.expl_amount > 0.0:
+                self.actions = torch.clip(Normal(self.actions, self.expl_amount).sample(), -1, 1)
+            expl_actions = [self.actions]
+        else:
+            expl_actions = []
+            for act in actions:
+                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(self.device)
+                expl_actions.append(
+                    torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
+                )
+            self.actions = torch.cat(expl_actions, -1)
+        return tuple(expl_actions)
+
+    def get_greedy_action(
+        self,
+        obs: Dict[str, Tensor],
+        is_training: bool = True,
+        mask: Optional[Dict[str, np.ndarray]] = None,
+    ) -> Sequence[Tensor]:
+        """
+        Return the greedy actions.
+
+        Args:
+            obs (Dict[str, Tensor]): the current observations.
+            is_training (bool): whether it is training.
+                Default to True.
+
+        Returns:
+            The actions the agent has to perform.
+        """
+        embedded_obs = self.encoder(obs)
+        self.recurrent_state = self.rssm.recurrent_model(
+            torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
+        )
+        _, self.stochastic_state = self.rssm._representation(self.recurrent_state, embedded_obs)
+        self.stochastic_state = self.stochastic_state.view(
+            *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
+        )
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        self.actions = torch.cat(actions, -1)
+        return actions
 
 
 class Actor(nn.Module):

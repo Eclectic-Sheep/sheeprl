@@ -112,10 +112,10 @@ def train(
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
     device = fabric.device
-    batch_obs = {k: data[k] / 255 for k in cnn_keys}
+    batch_obs = {k: data[k] / 255.0 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
-    batch_actions = torch.cat((torch.zeros_like(data["actions"][0:1]), data["actions"][:-1]), dim=0)
+    batch_actions = torch.cat((torch.zeros_like(data["actions"][:1]), data["actions"][:-1]), dim=0)
 
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
@@ -125,8 +125,7 @@ def train(
 
     # initialize the posterior that must be of dimension (1, batch_size, stochastic_size, discrete_size), which
     # by default is set to (1, batch_size, 32, 32). The posterior state is named zt in the paper
-    with torch.no_grad():
-        posterior = world_model.rssm._transition(recurrent_state)[1]
+    _, posterior = world_model.rssm._transition(recurrent_state)
 
     # initialize the recurrent_states, which will contain all the recurrent states
     # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
@@ -264,20 +263,20 @@ def train(
 
     # predict values and rewards
     with fabric.device:
-        predicted_target_values = DiscDist(target_critic(imagined_trajectories), dims=1).mode
-        predicted_rewards = DiscDist(world_model.reward_model(imagined_trajectories), dims=1).mode
-    continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        predicted_values = DiscDist(critic(imagined_trajectories), dims=1).mean
+        predicted_rewards = DiscDist(world_model.reward_model(imagined_trajectories), dims=1).mean
+    continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
-    continues = torch.cat((true_done, continues[1:])) * args.gamma
+    continues = torch.cat((true_done, continues[1:]))
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
     # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
     lambda_values = compute_lambda_values(
         predicted_rewards[1:],
-        predicted_target_values[1:],
-        continues[1:],
-        bootstrap=predicted_target_values[-2:-1],
+        predicted_values[1:],
+        continues[1:] * args.gamma,
+        bootstrap=predicted_values[-1:],
         horizon=args.horizon,
         lmbda=args.lmbda,
     )
@@ -314,13 +313,13 @@ def train(
         #   ...,
         #   [ [.8775], ..., [.8775] ],
         # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
+        discount = torch.cumprod(continues * args.gamma, dim=0) / args.gamma
 
     # actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
-    baseline = predicted_target_values[:-1]
+    baseline = predicted_values[:-1]
     offset, invscale = moments(lambda_values)
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
@@ -356,11 +355,12 @@ def train(
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
     with fabric.device:
         qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), 1)
+        predicted_target_values = DiscDist(target_critic(imagined_trajectories[:-1])).mean
 
     # critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -qv.log_prob(lambda_values.detach())
-    value_loss = value_loss - qv.log_prob(predicted_target_values.detach()[:-1])
+    value_loss = value_loss - qv.log_prob(predicted_target_values.detach())
     value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
     fabric.backward(value_loss)
@@ -510,15 +510,13 @@ def main():
     )
     player = PlayerDV3(
         world_model.encoder.module,
-        world_model.rssm.recurrent_model.module,
-        world_model.rssm.representation_model.module,
+        world_model.rssm,
         actor.module,
         actions_dim,
         args.expl_amount,
         args.num_envs,
         args.stochastic_size,
         args.recurrent_state_size,
-        world_model.rssm.transition_model.module,
         fabric.device,
         discrete_size=args.discrete_size,
     )
@@ -647,7 +645,7 @@ def main():
                 preprocessed_obs = {}
                 for k, v in obs.items():
                     if k in cnn_keys:
-                        preprocessed_obs[k] = v[None, ...].to(device) / 255
+                        preprocessed_obs[k] = v[None, ...].to(device) / 255.0
                     else:
                         preprocessed_obs[k] = v[None, ...].to(device)
                 mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
@@ -703,7 +701,7 @@ def main():
 
         rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
         dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
-        step_data["is_first"] = step_data["dones"]
+        step_data["is_first"] = torch.zeros_like(step_data["dones"])
         step_data["dones"] = dones
         step_data["rewards"] = clip_rewards_fn(rewards)
 
@@ -712,9 +710,10 @@ def main():
         if reset_envs > 0:
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
             for k in real_next_obs.keys():
-                reset_data[k] = real_next_obs[k][dones_idxes]
-                if k in mlp_keys:
-                    reset_data[k] = reset_data[k].float()
+                if k in obs_keys:
+                    reset_data[k] = real_next_obs[k][dones_idxes]
+                    if k in mlp_keys:
+                        reset_data[k] = reset_data[k].float()
             reset_data["dones"] = torch.ones(reset_envs, 1).float()
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
             reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
@@ -722,11 +721,15 @@ def main():
             if buffer_type == "episode":
                 for i, d in enumerate(dones_idxes):
                     if len(episode_steps[d]) >= args.per_rank_sequence_length:
+                        episode_steps[d].append(reset_data[i : i + 1][None, ...])
                         rb.add(torch.cat(episode_steps[d], dim=0))
-                        episode_steps[d] = [reset_data[i : i + 1][None, ...]]
+                        episode_steps[d] = []
             else:
                 rb.add(reset_data[None, ...], dones_idxes)
             step_data["rewards"][dones_idxes] = torch.zeros_like(reset_data["rewards"]).float()
+            step_data["dones"][dones_idxes] = torch.zeros_like(step_data["dones"][dones_idxes]).float()
+            step_data["is_first"][dones_idxes] = torch.ones_like(step_data["is_first"][dones_idxes]).float()
+            player.init_states(dones_idxes)
 
         step_before_training -= 1
 
@@ -799,6 +802,7 @@ def main():
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "args": asdict(args),
+                "moments": moments.state_dict(),
                 "global_step": global_step * fabric.world_size,
                 "batch_size": args.per_rank_batch_size * fabric.world_size,
             }
