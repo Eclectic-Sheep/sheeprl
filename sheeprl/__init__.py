@@ -1,3 +1,7 @@
+import os
+
+ROOT_DIR = os.path.dirname(__file__)
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,6 +22,7 @@ from sheeprl.algos.ppo_pixel import ppo_pixel_continuous
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
 from sheeprl.algos.sac import sac, sac_decoupled
 from sheeprl.algos.sac_pixel import sac_pixel_continuous
+from sheeprl.algos.test import test
 
 try:
     from sheeprl.algos.ppo_pixel import ppo_atari

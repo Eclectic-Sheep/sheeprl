@@ -20,13 +20,14 @@ readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.8,<3.11"
 classifiers = ["Programming Language :: Python"]
 dependencies = [
-  "gymnasium[box2d]==0.28.*",
+  "gymnasium[box2d]==0.29.*",
   "moviepy==1.0.*",
   "tensordict==0.1.*",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
   "lightning==2.0.*",
   "lightning-utilities<0.9",
+  "hydra-core==1.3.0",
 ]
 dynamic = ["version"]
 
@@ -52,12 +53,12 @@ dev = [
   "isort==5.12.0",
   "autoflake==2.1.1",
 ]
-mujoco = ["mujoco==2.3.3", "gymnasium[mujoco]==0.28.*"]
-dmc = ["dm_control==1.0.11"]
+mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==0.29.*"]
+dmc = ["dm_control==1.0.12"]
 atari = [
-  "gymnasium[atari]==0.28.*",
-  "gymnasium[accept-rom-license]==0.28.*",
-  "gymnasium[other]==0.28.*",
+  "gymnasium[atari]==0.29.*",
+  "gymnasium[accept-rom-license]==0.29.*",
+  "gymnasium[other]==0.29.*",
 ]
 minedojo = ["minedojo==0.1"]
 minerl = ["minerl==0.4.4"]
