@@ -317,10 +317,12 @@ class RSSM(nn.Module):
         logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
-    def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
+    def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
         """
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
+            sampler_state (bool): whether or not to sample the stochastic state.
+                Default to True
 
         Returns:
             logits (Tensor): the logits of the distribution of the prior state.
@@ -328,7 +330,7 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.transition_model(recurrent_out)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete)
+        return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -412,14 +414,18 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = self.rssm._transition(self.recurrent_state)[1].reshape(1, self.num_envs, -1)
+            self.recurrent_state = torch.tanh(
+                torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
+            )
+            self.stochastic_state = self.rssm._transition(self.recurrent_state, sample_state=False)[1].reshape(
+                1, self.num_envs, -1
+            )
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = self.rssm._transition(self.recurrent_state[:, reset_envs])[
-                1
-            ].reshape(1, self.num_envs, -1)
+            self.recurrent_state[:, reset_envs] = torch.tanh(torch.zeros_like(self.recurrent_state[:, reset_envs]))
+            self.stochastic_state[:, reset_envs] = self.rssm._transition(
+                self.recurrent_state[:, reset_envs], sample_state=False
+            )[1].reshape(1, len(reset_envs), -1)
 
     def get_exploration_action(
         self,

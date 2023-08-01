@@ -188,7 +188,7 @@ def make_env(
     return thunk
 
 
-def compute_stochastic_state(logits: Tensor, discrete: int = 32) -> Tensor:
+def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) -> Tensor:
     """
     Compute the stochastic state from the logits computed by the transition or representaiton model.
 
@@ -196,13 +196,16 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32) -> Tensor:
         logits (Tensor): logits from either the representation model or the transition model.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
+        sample (bool): whether or not to sample the stochastic state.
+            Default to True.
 
     Returns:
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
     dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
-    return dist.rsample()
+    stochastic_state = dist.rsample() if sample else dist.mode
+    return stochastic_state
 
 
 def init_weights(m: nn.Module):
