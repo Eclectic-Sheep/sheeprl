@@ -1,0 +1,23 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+  - algo: default.yaml
+  - env: default.yaml
+  - exp: null
+  - hydra: default.yaml
+
+seed: 42
+num_threads: 1
+exp_name: "default"
+dry_run: False
+torch_deterministic: False
+root_dir: None
+run_name: None
+memmap_buffer: False
+checkpoint_every: 100
+checkpoint_path: None
+num_envs: 4
+sync_env: False
+clip_rewards: Identity
