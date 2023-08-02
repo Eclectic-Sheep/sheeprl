@@ -24,11 +24,11 @@ from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, make_env, test
+from sheeprl.algos.dreamer_v2.utils import make_env, test
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, build_models
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.distribution import DiscDist, MSEDist, SymlogDist
@@ -276,8 +276,6 @@ def train(
         predicted_rewards[1:],
         predicted_values[1:],
         continues[1:] * args.gamma,
-        bootstrap=predicted_values[-1:],
-        horizon=args.horizon,
         lmbda=args.lmbda,
     )
 

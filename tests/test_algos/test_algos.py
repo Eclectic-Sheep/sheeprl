@@ -708,7 +708,7 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         f"--buffer_size={int(os.environ['LT_DEVICES'])}",
         "--learning_starts=0",
         "--gradient_steps=1",
-        "--horizon=2",
+        "--horizon=8",
         "--env_id=" + env_id,
         "--root_dir=" + root_dir,
         "--run_name=" + run_name,
@@ -718,6 +718,7 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "--hidden_size=8",
         "--cnn_keys=rgb",
         "--layer_norm=True",
+        "--train_every=1",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")

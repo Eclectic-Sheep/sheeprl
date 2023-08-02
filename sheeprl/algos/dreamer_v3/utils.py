@@ -31,3 +31,17 @@ class Moments(torch.nn.Module):
         self.high = self._decay * self.high + (1 - self._decay) * high
         invscale = torch.max(1 / self._max, self.high - self.low)
         return self.low.detach(), invscale.detach()
+
+
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    continues: Tensor,
+    lmbda: float = 0.95,
+):
+    vals = [values[-1:]]
+    interm = rewards + continues * values * (1 - lmbda)
+    for t in reversed(range(len(continues))):
+        vals.append(interm[t] + continues[t] * lmbda * vals[-1])
+    ret = torch.cat(list(reversed(vals))[:-1])
+    return ret
