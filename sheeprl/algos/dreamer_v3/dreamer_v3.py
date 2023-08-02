@@ -129,7 +129,7 @@ def train(
 
     # initialize the recurrent_states, which will contain all the recurrent states
     # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
-    recurrent_states = torch.zeros(sequence_length, batch_size, args.recurrent_state_size, device=device)
+    recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
 
     # initialize all the tensor to collect priors and posteriors states with their associated logits
     priors_logits = torch.empty(sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device)

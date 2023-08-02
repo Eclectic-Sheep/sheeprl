@@ -12,13 +12,13 @@ class DreamerV3Args(DreamerV2Args):
     # Experiment settings
     share_data: bool = Arg(default=False, help="Toggle sharing data between processes")
     per_rank_batch_size: int = Arg(default=16, help="the batch size for each rank")
-    per_rank_sequence_length: int = Arg(default=50, help="the sequence length for each rank")
+    per_rank_sequence_length: int = Arg(default=64, help="the sequence length for each rank")
     total_steps: int = Arg(default=int(5e6), help="total timesteps of the experiments")
     capture_video: bool = Arg(
         default=False, help="whether to capture videos of the agent performances (check out `videos` folder)"
     )
-    buffer_size: int = Arg(default=int(5e6), help="the size of the buffer")
-    learning_starts: int = Arg(default=int(5e3), help="timestep to start learning")
+    buffer_size: int = Arg(default=int(1e6), help="the size of the buffer")
+    learning_starts: int = Arg(default=int(1024), help="timestep to start learning")
     pretrain_steps: int = Arg(default=1, help="the number of pretrain steps")
     gradient_steps: int = Arg(default=1, help="the number of gradient steps per each environment interaction")
     train_every: int = Arg(default=5, help="the number of steps between one training and another")
@@ -96,7 +96,7 @@ class DreamerV3Args(DreamerV2Args):
         default=-1, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
     )
     atari_noop_max: int = Arg(
-        default=0,
+        default=30,
         help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")

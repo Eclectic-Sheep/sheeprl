@@ -860,6 +860,7 @@ def build_models(
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
         flatten_dim=None,
+        layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
         norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
     )
