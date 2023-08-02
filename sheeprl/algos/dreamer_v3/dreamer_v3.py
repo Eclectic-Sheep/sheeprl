@@ -168,8 +168,8 @@ def train(
         pr = DiscDist(world_model.reward_model(latent_states), dims=1)
 
     # compute the distribution over the terminal steps, if required
-    pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
-    continue_targets = (1 - data["dones"]) * args.gamma
+    pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
+    continue_targets = 1 - data["dones"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
