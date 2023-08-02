@@ -333,8 +333,8 @@ def train(
                     p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
                     for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, dim=-1))
                 ],
-                -1,
-            ).sum(-1)
+                dim=-1,
+            ).sum(dim=-1)
             * advantage.detach()
         )
     try:
@@ -354,8 +354,8 @@ def train(
     # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
     with fabric.device:
-        qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), 1)
-        predicted_target_values = DiscDist(target_critic(imagined_trajectories[:-1])).mean
+        qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), dims=1)
+        predicted_target_values = DiscDist(target_critic(imagined_trajectories.detach()[:-1]), dims=1).mean
 
     # critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
