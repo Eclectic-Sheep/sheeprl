@@ -281,6 +281,7 @@ def main():
                     real_next_obs[idx] = final_obs
 
         with device:
+            next_obs = torch.tensor(next_obs, dtype=torch.float32)
             real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
             actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
             rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
