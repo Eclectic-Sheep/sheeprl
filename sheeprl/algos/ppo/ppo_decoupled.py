@@ -144,7 +144,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         "layer_norm": args.layer_norm,
         "is_continuous": is_continuous,
     }
-    agent = PPOAgent(**agent_args).to(device)
+    agent = PPOAgent(**agent_args, device=fabric.device).to(device)
 
     # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
     world_collective.broadcast_object_list([agent_args], src=0)
@@ -271,7 +271,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cnn_keys else next_obs[k] for k in mlp_keys + cnn_keys}
-        next_values = agent.get_value(next_obs)
+        next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
             rb["rewards"],
             rb["values"],
@@ -369,7 +369,7 @@ def trainer(
     world_collective.broadcast_object_list(agent_args, src=0)
 
     # Create the actor and critic models
-    agent = PPOAgent(**agent_args[0])
+    agent = PPOAgent(**agent_args[0], device=fabric.device)
     cnn_keys = agent.feature_extractor.cnn_keys
     mlp_keys = agent.feature_extractor.mlp_keys
 

@@ -224,6 +224,7 @@ def main():
         mlp_act=args.dense_act,
         layer_norm=args.layer_norm,
         is_continuous=is_continuous,
+        device=fabric.device,
     )
 
     # Define the agent and the optimizer and setup them with Fabric
