@@ -587,8 +587,10 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor_task"] if args.checkpoint_path else None,
         state["critic_task"] if args.checkpoint_path else None,
+        state["target_critic_task"] if args.checkpoint_path else None,
         state["actor_exploration"] if args.checkpoint_path else None,
         state["critic_exploration"] if args.checkpoint_path else None,
+        state["target_critic_exploration"] if args.checkpoint_path else None,
     )
 
     # initialize the ensembles with different seeds to be sure they have different weights

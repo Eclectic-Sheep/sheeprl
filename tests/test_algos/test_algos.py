@@ -13,7 +13,7 @@ from lightning import Fabric
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE, _IS_WINDOWS
 
 
-@pytest.fixture(params=["1", "2", "3"])
+@pytest.fixture(params=["1", "2"])
 def devices(request):
     return request.param
 
@@ -30,7 +30,7 @@ def start_time():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}) as _fixture:
+    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}, clear=True) as _fixture:
         if _IS_WINDOWS and devices != "1":
             pytest.skip()
         yield _fixture

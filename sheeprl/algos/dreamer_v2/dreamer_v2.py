@@ -499,6 +499,7 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
+        state["target_critic"] if args.checkpoint_path else None,
     )
     player = Player(
         world_model.encoder.module,
