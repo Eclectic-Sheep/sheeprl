@@ -94,9 +94,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     if isinstance(envs.single_observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in envs.single_observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) in {3, 4}:
                     cnn_keys.append(k)
                 else:
@@ -105,9 +103,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
                         "Try to transform the observation from the environment into a 3D image"
                     )
         for k, v in envs.single_observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -118,7 +114,9 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
 
@@ -206,11 +204,13 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     next_obs = {}
     for k in o.keys():
         if k in mlp_keys + cnn_keys:
-            torch_obs = torch.from_numpy(o[k])
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+            if k in cnn_keys:
+                torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
             if k in mlp_keys:
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
-            next_obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs
+            next_obs[k] = torch_obs
     next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
@@ -219,7 +219,10 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                actions, logprobs, _, value = agent(next_obs)
+                normalized_obs = {
+                    k: next_obs[k] / 255 - 0.5 if k in cnn_keys else next_obs[k] for k in mlp_keys + cnn_keys
+                }
+                actions, logprobs, _, value = agent(normalized_obs)
                 if is_continuous:
                     real_actions = torch.cat(actions, -1).cpu().numpy()
                 else:
@@ -228,13 +231,11 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
 
             # Single environment step
             o, reward, done, truncated, info = envs.step(real_actions)
+            done = np.logical_or(done, truncated)
 
             with device:
-                rewards = torch.tensor(reward).view(args.num_envs, -1).float().to(fabric.device)  # [N_envs, 1]
-                done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).float().to(fabric.device)
-                )  # [N_envs, 1]
-                done = done.view(args.num_envs, -1)
+                rewards = torch.tensor(reward, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
+                done = torch.tensor(done, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
 
             # Update the step data
             step_data["dones"] = next_done
@@ -249,11 +250,13 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
             obs = {}  # [N_envs, N_obs]
             for k in o.keys():
                 if k in mlp_keys + cnn_keys:
-                    torch_obs = torch.from_numpy(o[k])
+                    torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+                    if k in cnn_keys:
+                        torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
                     if k in mlp_keys:
                         torch_obs = torch_obs.float()
                     step_data[k] = torch_obs
-                    obs[k] = torch_obs / 255 - 0.5 if k in cnn_keys else torch_obs
+                    obs[k] = torch_obs
             next_obs = obs
             next_done = done
 
@@ -267,6 +270,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
+        normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cnn_keys else next_obs[k] for k in mlp_keys + cnn_keys}
         next_values = agent.get_value(next_obs)
         returns, advantages = gae(
             rb["rewards"],
@@ -366,6 +370,8 @@ def trainer(
 
     # Create the actor and critic models
     agent = PPOAgent(**agent_args[0])
+    cnn_keys = agent.feature_extractor.cnn_keys
+    mlp_keys = agent.feature_extractor.mlp_keys
 
     # Define the agent and the optimizer and setup them with Fabric
     optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
@@ -434,10 +440,12 @@ def trainer(
             for _ in range(args.update_epochs):
                 for batch_idxes in sampler:
                     batch = data[batch_idxes]
-                    batch_obs = {k: batch[k] / 255 - 0.5 for k in agent.feature_extractor.cnn_keys}
-                    batch_obs.update({k: batch[k].float() for k in agent.feature_extractor.mlp_keys})
+                    normalized_obs = {
+                        k: batch[k] / 255 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
+                        for k in mlp_keys + cnn_keys
+                    }
                     _, logprobs, entropy, new_values = agent(
-                        batch_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+                        normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
                     )
 
                     if args.normalize_advantages:
