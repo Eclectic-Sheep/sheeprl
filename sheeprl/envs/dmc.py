@@ -3,14 +3,15 @@
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-from dm_control import suite
-from dm_env import specs
 from gymnasium import core, spaces
 
 from sheeprl.utils.imports import _IS_DMC_AVAILABLE
 
 if not _IS_DMC_AVAILABLE:
     raise ModuleNotFoundError(_IS_DMC_AVAILABLE)
+
+from dm_control import suite
+from dm_env import specs
 
 
 def _spec_to_box(spec, dtype) -> spaces.Space:
