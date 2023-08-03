@@ -146,7 +146,7 @@ Now you can use one of the already available algorithms, or create your own.
 For example, to train a PPO agent on the CartPole environment with only vector-like observations, just run
 
 ```bash
-python sheeprl.py ppo --env_id CartPole-v1 --mlp_keys all
+python sheeprl.py ppo --env_id CartPole-v1
 ```
 
 You check all the available algorithms with
@@ -178,7 +178,7 @@ What you run is the PPO algorithm with the default configuration. But you can al
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 
 ```bash
-python sheeprl.py ppo --env_id CartPole-v1 --num_envs 8 --mlp_keys all
+python sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
 ```
 
 All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:
