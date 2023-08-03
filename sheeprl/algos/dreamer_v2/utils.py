@@ -63,7 +63,7 @@ def compute_lambda_values(
     lmbda: float = 0.95,
 ):
     if bootstrap is None:
-        bootstrap = torch.zeros_like(values[-2:-1])
+        bootstrap = torch.zeros_like(values[-1:])
     agg = bootstrap
     next_val = torch.cat((values[1:], bootstrap), dim=0)
     inputs = rewards + continues * next_val * (1 - lmbda)

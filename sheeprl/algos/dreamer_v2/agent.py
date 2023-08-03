@@ -687,29 +687,34 @@ def build_models(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
+    target_critic_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 
-    Args:
-        fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of DreamerV2.
-        obs_space (Dict[str, Any]): the observation space.
-        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
-        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
-            Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
+        Args:
+            fabric (Fabric): the fabric object.
+            actions_dim (Sequence[int]): the dimension of the actions.
+            is_continuous (bool): whether or not the actions are continuous.
+            args (DreamerV2Args): the hyper-parameters of DreamerV2.
+            obs_space (Dict[str, Any]): the observation space.
+            cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
+            mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
+            world_model_state (Dict[str, Tensor], optional): the state of the world model.
+                Default to None.
+            actor_state: (Dict[str, Tensor], optional): the state of the actor.
+                Default to None.
+            critic_state: (Dict[str, Tensor], optional): the state of the critic.
+                Default to None.
 
-    Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
-        The actor (_FabricModule).
-        The critic (_FabricModule).
-        The target critic (nn.Module)
+        Returns:
+            The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+            The actor (_FabricModule).
+            The critic (_FabricModule).
+    <<<<<<< HEAD
+            The target critic (nn.Module)
+    =======
+            The target critic (nn.Module).
+    >>>>>>> 4f7da895a5f480fa0288048a9ef6a8f7da852c9b
     """
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
@@ -898,5 +903,7 @@ def build_models(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     target_critic = copy.deepcopy(critic.module)
+    if target_critic_state:
+        target_critic.load_state_dict(target_critic_state)
 
     return world_model, actor, critic, target_critic

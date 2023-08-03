@@ -274,7 +274,7 @@ def train(
         predicted_rewards[:-1],
         predicted_target_values[:-1],
         continues[:-1],
-        bootstrap=predicted_target_values[-2:-1],
+        bootstrap=predicted_target_values[-1:],
         horizon=args.horizon,
         lmbda=args.lmbda,
     )
@@ -313,7 +313,7 @@ def train(
         # ] (14 rows)
         discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
-    # actor optimization step. Eq. 6 from the paper
+    # Actor optimization step. Eq. 6 from the paper
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
 
@@ -351,7 +351,7 @@ def train(
     # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
     qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
-    # critic optimization step. Eq. 5 from the paper.
+    # Critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
@@ -499,6 +499,7 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
+        state["target_critic"] if args.checkpoint_path else None,
     )
     player = Player(
         world_model.encoder.module,
@@ -792,6 +793,7 @@ def main():
                 "world_model": world_model.state_dict(),
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
+                "target_critic": target_critic.state_dict(),
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),

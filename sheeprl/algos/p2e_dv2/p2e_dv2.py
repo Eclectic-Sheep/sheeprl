@@ -285,7 +285,7 @@ def train(
             intrinsic_reward[:-1],
             predicted_target_values[:-1],
             continues[:-1],
-            bootstrap=predicted_target_values[-2:-1],
+            bootstrap=predicted_target_values[-1:],
             horizon=args.horizon,
             lmbda=args.lmbda,
         )
@@ -389,7 +389,7 @@ def train(
         predicted_rewards[:-1],
         predicted_target_values[:-1],
         continues[:-1],
-        bootstrap=predicted_target_values[-2:-1],
+        bootstrap=predicted_target_values[-1:],
         horizon=args.horizon,
         lmbda=args.lmbda,
     )
@@ -587,8 +587,10 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor_task"] if args.checkpoint_path else None,
         state["critic_task"] if args.checkpoint_path else None,
+        state["target_critic_task"] if args.checkpoint_path else None,
         state["actor_exploration"] if args.checkpoint_path else None,
         state["critic_exploration"] if args.checkpoint_path else None,
+        state["target_critic_exploration"] if args.checkpoint_path else None,
     )
 
     # initialize the ensembles with different seeds to be sure they have different weights
@@ -957,6 +959,7 @@ def main():
                 "world_model": world_model.state_dict(),
                 "actor_task": actor_task.state_dict(),
                 "critic_task": critic_task.state_dict(),
+                "target_critic_task": target_critic_task.state_dict(),
                 "ensembles": ensembles.state_dict(),
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_task_optimizer": actor_task_optimizer.state_dict(),
@@ -968,6 +971,7 @@ def main():
                 "batch_size": args.per_rank_batch_size * fabric.world_size,
                 "actor_exploration": actor_exploration.state_dict(),
                 "critic_exploration": critic_exploration.state_dict(),
+                "target_critic_exploration": target_critic_exploration.state_dict(),
                 "actor_exploration_optimizer": actor_exploration_optimizer.state_dict(),
                 "critic_exploration_optimizer": critic_exploration_optimizer.state_dict(),
             }
