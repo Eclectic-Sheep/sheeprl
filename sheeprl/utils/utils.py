@@ -277,28 +277,51 @@ def make_dict_env(
         if "atari" not in env_spec and "dmc" not in env_id:
             env = ActionRepeat(env, args.action_repeat)
 
-        # create dict
-        if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 3:
-            if args.cnn_keys is not None and len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all":
+        # Create observation dict
+        if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
+            if args.cnn_keys is not None and len(args.cnn_keys) > 0:
+                if len(args.cnn_keys) > 1:
+                    warnings.warn(
+                        f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, "
+                        f"only the first one is kept: {args.cnn_keys[0]}"
+                    )
                 env = gym.wrappers.PixelObservationWrapper(
-                    env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=("rgb",)
+                    env, pixels_only=len(args.mlp_keys) == 0, pixel_keys=(args.cnn_keys[0],)
                 )
-            elif args.cnn_keys is not None and len(args.cnn_keys) > 1:
+            else:
+                if args.mlp_keys is not None and len(args.mlp_keys) > 0:
+                    if len(args.mlp_keys) > 1:
+                        warnings.warn(
+                            f"Multiple mlp keys have been specified and only one pixel observation is permitted in {env_id}, "
+                            f"only the first one is kept: {args.mlp_keys[0]}"
+                        )
+                    mlp_key = args.mlp_keys[0]
+                else:
+                    mlp_key = "state"
+                    args.mlp_keys = [mlp_key]
+                env = gym.wrappers.TransformObservation(env, lambda obs: {mlp_key: obs})
+                env.observation_space = gym.spaces.Dict({mlp_key: env.observation_space})
+        elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
+            if args.cnn_keys is not None and len(args.cnn_keys) > 1:
                 warnings.warn(
-                    f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, only the first one is kept"
+                    f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, "
+                    f"only the first one is kept: {args.cnn_keys[0]}"
                 )
-                env = gym.wrappers.PixelObservationWrapper(
-                    env, pixels_only=len(env.observation_space.shape) == 2, pixel_keys=(args.cnn_keys[0],)
-                )
-        elif isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
-            env = gym.wrappers.TransformObservation(env, lambda obs: {"rgb": obs})
-            env.observation_space = gym.spaces.Dict({"rgb": env.observation_space})
+                cnn_key = args.cnn_keys[0]
+            else:
+                cnn_key = "rgb"
+                args.cnn_keys = [cnn_key]
+            env = gym.wrappers.TransformObservation(env, lambda obs: {cnn_key: obs})
+            env.observation_space = gym.spaces.Dict({cnn_key: env.observation_space})
 
-        cnn_keys = set(
+        env_cnn_keys = set(
             [k for k in env.observation_space.spaces.keys() if len(env.observation_space[k].shape) in {2, 3}]
         )
-        if args.cnn_keys is not None and not (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all"):
-            cnn_keys = set(args.cnn_keys).intersection(cnn_keys)
+        if args.cnn_keys is None:
+            user_cnn_keys = set()
+        else:
+            user_cnn_keys = set(args.cnn_keys)
+        cnn_keys = env_cnn_keys.intersection(user_cnn_keys)
 
         def transform_obs(obs: Dict[str, Any]):
             for k in cnn_keys:
