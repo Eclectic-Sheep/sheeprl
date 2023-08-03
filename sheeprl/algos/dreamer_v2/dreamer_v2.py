@@ -373,6 +373,7 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV2Args)
     args: DreamerV2Args = parser.parse_args_into_dataclasses()[0]
+    args.frame_stack = -1
     torch.set_num_threads(1)
 
     # Initialize Fabric
@@ -458,9 +459,7 @@ def main():
     if isinstance(observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -470,9 +469,7 @@ def main():
                     )
         mlp_keys = []
         for k, v in observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -483,7 +480,9 @@ def main():
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
     obs_keys = cnn_keys + mlp_keys
@@ -553,9 +552,7 @@ def main():
     aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = (
-        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
-    )
+    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
         rb = AsyncReplayBuffer(
