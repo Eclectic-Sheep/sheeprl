@@ -31,8 +31,10 @@ def build_models(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_task_state: Optional[Dict[str, Tensor]] = None,
     critic_task_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_task_state: Optional[Dict[str, Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_exploration_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module, int]:
     """Build the models and wrap them with Fabric.
 
@@ -271,6 +273,10 @@ def build_models(
     critic_exploration = fabric.setup_module(critic_exploration)
     target_critic_task = copy.deepcopy(critic_task.module)
     target_critic_exploration = copy.deepcopy(critic_exploration.module)
+    if target_critic_task_state:
+        target_critic_task.load_state_dict(target_critic_task_state)
+    if target_critic_exploration_state:
+        target_critic_exploration.load_state_dict(target_critic_exploration_state)
 
     return (
         world_model,

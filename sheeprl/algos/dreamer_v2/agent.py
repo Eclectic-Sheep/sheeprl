@@ -688,20 +688,21 @@ def build_models(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
+        args (DreamerV2Args): the hyper-parameters of Dreamer-V2.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The target critic (nn.Module).
     """
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
@@ -867,5 +868,7 @@ def build_models(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     target_critic = copy.deepcopy(critic.module)
+    if target_critic_state:
+        target_critic.load_state_dict(target_critic_state)
 
     return world_model, actor, critic, target_critic
