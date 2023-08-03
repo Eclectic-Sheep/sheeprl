@@ -38,7 +38,7 @@ from sheeprl.algos.sac_ae.agent import (
     SACPixelCritic,
     SACPixelQFunction,
 )
-from sheeprl.algos.sac_ae.args import SACPixelContinuousArgs
+from sheeprl.algos.sac_ae.args import SACAEArgs
 from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
@@ -62,7 +62,7 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     global_step: int,
-    args: SACPixelContinuousArgs,
+    args: SACAEArgs,
     group: Optional[CollectibleGroup] = None,
 ):
     cnn_keys = encoder.cnn_keys
@@ -134,8 +134,8 @@ def train(
 
 @register_algorithm()
 def main():
-    parser = HfArgumentParser(SACPixelContinuousArgs)
-    args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser(SACAEArgs)
+    args: SACAEArgs = parser.parse_args_into_dataclasses()[0]
     # These arguments cannot be changed
     args.screen_size = 64
 
@@ -219,9 +219,7 @@ def main():
     if isinstance(envs.single_observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in envs.single_observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) in {3, 4}:
                     cnn_keys.append(k)
                 else:
@@ -230,9 +228,7 @@ def main():
                         "Try to transform the observation from the environment into a 3D image"
                     )
         for k, v in envs.single_observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -243,7 +239,9 @@ def main():
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
 
@@ -402,7 +400,6 @@ def main():
                 torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
             if k in mlp_keys:
                 torch_obs = torch_obs.float()
-            step_data[k] = torch_obs
             obs[k] = torch_obs
 
     for global_step in range(1, num_updates + 1):
@@ -434,16 +431,22 @@ def main():
                         real_next_obs[k][idx] = v
 
         next_obs = {}
-        for k in real_next_obs.keys():  # [N_envs, N_obs]
-            step_data[k] = obs[k]
-            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:]).to(fabric.device)
-            if not args.sample_next_obs:
-                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
+        for k in real_next_obs.keys():
+            next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
             if k in cnn_keys:
                 next_obs[k] = next_obs[k].view(args.num_envs, -1, *next_obs[k].shape[-2:])
-                step_data[f"next_{k}"] = (
-                    step_data[f"next_{k}"].view(args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]).to(fabric.device)
-                )
+            if k in mlp_keys:
+                next_obs[k] = next_obs[k].float()
+
+            step_data[k] = obs[k]
+            if not args.sample_next_obs:
+                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
+                if k in cnn_keys:
+                    step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
+                        args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                    )
+                if k in mlp_keys:
+                    step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float().to(fabric.device)
         rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float().to(fabric.device)
         dones = torch.from_numpy(dones).view(args.num_envs, -1).float().to(fabric.device)
@@ -529,7 +532,7 @@ def main():
     envs.close()
     if fabric.is_global_zero:
         test_env = make_dict_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test", vector_env_idx=0)()
-        test_sac_pixel(actor.module, test_env, fabric, args, normalize=True)
+        test_sac_pixel(actor.module, test_env, fabric, args)
 
 
 if __name__ == "__main__":

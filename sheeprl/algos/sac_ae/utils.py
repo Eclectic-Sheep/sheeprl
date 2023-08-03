@@ -6,7 +6,7 @@ import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
 
-from sheeprl.algos.sac_ae.args import SACPixelContinuousArgs
+from sheeprl.algos.sac_ae.args import SACAEArgs
 
 if TYPE_CHECKING:
     from sheeprl.algos.sac_ae.agent import SACPixelContinuousActor
@@ -17,8 +17,7 @@ def test_sac_pixel(
     actor: "SACPixelContinuousActor",
     env: gym.Env,
     fabric: Fabric,
-    args: SACPixelContinuousArgs,
-    normalize: bool = False,
+    args: SACAEArgs,
 ):
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys
@@ -30,11 +29,11 @@ def test_sac_pixel(
         o = env.reset(seed=args.seed)[0]  # [N_envs, N_obs]
         for k in o.keys():
             if k in mlp_keys + cnn_keys:
-                with fabric.device:
-                    torch_obs = torch.from_numpy(o[k]).unsqueeze(0)
-                    if k in cnn_keys:
-                        torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
+                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+                if k in cnn_keys:
+                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
                 next_obs[k] = torch_obs
+
     while not done:
         # Act greedly through the environment
         action = actor.get_greedy_actions(next_obs)
@@ -45,14 +44,12 @@ def test_sac_pixel(
         cumulative_rew += reward
 
         next_obs = {}
-        with fabric.device:
-            for k in o.keys():
-                if k in mlp_keys + cnn_keys:
-                    with fabric.device:
-                        torch_obs = torch.from_numpy(o[k]).unsqueeze(0)
-                        if k in cnn_keys:
-                            torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
-                    next_obs[k] = torch_obs
+        for k in o.keys():
+            if k in mlp_keys + cnn_keys:
+                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+                if k in cnn_keys:
+                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
+                next_obs[k] = torch_obs
 
         if args.dry_run:
             done = True

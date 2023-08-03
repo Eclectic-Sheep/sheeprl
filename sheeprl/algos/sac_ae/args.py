@@ -6,7 +6,7 @@ from sheeprl.utils.parser import Arg
 
 
 @dataclass
-class SACPixelContinuousArgs(SACArgs):
+class SACAEArgs(SACArgs):
     env_id: str = Arg(default="CarRacing-v2", help="the id of the environment")
     num_envs: int = Arg(default=1, help="the number of parallel game environments")
     action_repeat: int = Arg(default=1, help="how many actions to repeat. Must be greater than 0.")
