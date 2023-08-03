@@ -581,8 +581,8 @@ def main():
 
         next_obs = torch.from_numpy(next_obs).view(args.num_envs, *observation_shape)
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        rewards = torch.tensor([rewards]).view(args.num_envs, -1).float()
-        dones = torch.tensor([bool(dones)]).view(args.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
