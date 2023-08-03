@@ -365,12 +365,11 @@ def build_models(
     # Define models
     mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
     cnn_channels = [obs_space[k].shape[0] for k in cnn_keys]
-    image_size = obs_space[cnn_keys[0]].shape[-2:]
     cnn_encoder = (
         CNNEncoder(
             cnn_keys,
             cnn_channels,
-            image_size,
+            obs_space[cnn_keys[0]].shape[-2:],
             args.cnn_channels_multiplier,
             False,
             cnn_act,
@@ -413,7 +412,7 @@ def build_models(
             args.cnn_channels_multiplier,
             args.stochastic_size + args.recurrent_state_size,
             cnn_encoder.output_dim,
-            image_size,
+            obs_space[cnn_keys[0]].shape[-2:],
             cnn_act,
             False,
         )

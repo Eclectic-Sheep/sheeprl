@@ -163,7 +163,7 @@ class MLPDecoder(nn.Module):
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
         reconstructed_obs = {}
         x = self.model(latent_states)
-        reconstructed_obs.update({k: h(x) for k, h in zip(self.key, self.heads)})
+        reconstructed_obs.update({k: h(x) for k, h in zip(self.keys, self.heads)})
         return reconstructed_obs
 
 
@@ -738,12 +738,11 @@ def build_models(
     # Define models
     mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
     cnn_channels = [np.prod(obs_space[k].shape[:-2]) for k in cnn_keys]
-    image_size = obs_space[cnn_keys[0]].shape[-2:]
     cnn_encoder = (
         CNNEncoder(
             cnn_keys,
             cnn_channels,
-            image_size,
+            obs_space[cnn_keys[0]].shape[-2:],
             args.cnn_channels_multiplier,
             args.layer_norm,
             cnn_act,
@@ -796,7 +795,7 @@ def build_models(
             args.cnn_channels_multiplier,
             stochastic_size + args.recurrent_state_size,
             cnn_encoder.output_dim,
-            image_size,
+            obs_space[cnn_keys[0]].shape[-2:],
             cnn_act,
             args.layer_norm,
         )
