@@ -732,6 +732,7 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "world_model",
         "actor",
         "critic",
+        "target_critic",
         "world_optimizer",
         "actor_optimizer",
         "critic_optimizer",

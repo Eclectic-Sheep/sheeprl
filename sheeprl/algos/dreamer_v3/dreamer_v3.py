@@ -505,6 +505,7 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
+        state["target_critic"] if args.checkpoint_path else None,
     )
     player = PlayerDV3(
         world_model.encoder.module,
@@ -795,6 +796,7 @@ def main():
                 "world_model": world_model.state_dict(),
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
+                "target_critic": target_critic.state_dict(),
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
