@@ -25,14 +25,15 @@ def test_sac_pixel(
     done = False
     cumulative_rew = 0
     next_obs = {}
-    with fabric.device:
-        o = env.reset(seed=args.seed)[0]  # [N_envs, N_obs]
-        for k in o.keys():
-            if k in mlp_keys + cnn_keys:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cnn_keys:
-                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
-                next_obs[k] = torch_obs
+    o = env.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    for k in o.keys():
+        if k in mlp_keys + cnn_keys:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+            if k in cnn_keys:
+                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            next_obs[k] = torch_obs
 
     while not done:
         # Act greedly through the environment
@@ -49,6 +50,8 @@ def test_sac_pixel(
                 torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
                 if k in cnn_keys:
                     torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
+                if k in mlp_keys:
+                    torch_obs = torch_obs.float()
                 next_obs[k] = torch_obs
 
         if args.dry_run:

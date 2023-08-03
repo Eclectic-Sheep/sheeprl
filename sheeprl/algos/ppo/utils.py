@@ -17,9 +17,13 @@ def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs, cnn_keys:
     obs = {}
     for k in o.keys():
         if k in mlp_keys + cnn_keys:
-            with fabric.device:
-                torch_obs = torch.from_numpy(o[k]).view(1, *o[k].shape)
-            obs[k] = torch_obs.flatten(start_dim=1, end_dim=-3) / 255 - 0.5 if k in cnn_keys else torch_obs.float()
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+            if k in cnn_keys:
+                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            obs[k] = torch_obs
+
     while not done:
         # Act greedly through the environment
         if agent.is_continuous:
@@ -34,9 +38,12 @@ def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs, cnn_keys:
         obs = {}
         for k in o.keys():
             if k in mlp_keys + cnn_keys:
-                with fabric.device:
-                    torch_obs = torch.from_numpy(o[k]).view(1, *o[k].shape).float()
-                obs[k] = torch_obs.flatten(start_dim=1, end_dim=-3) / 255 - 0.5 if k in cnn_keys else torch_obs
+                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+                if k in cnn_keys:
+                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
+                if k in mlp_keys:
+                    torch_obs = torch_obs.float()
+                obs[k] = torch_obs
 
         if args.dry_run:
             done = True
