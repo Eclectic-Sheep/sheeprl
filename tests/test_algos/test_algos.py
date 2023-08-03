@@ -136,9 +136,7 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "--gradient_steps=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
-        "--cnn_keys=all",
-        "--mlp_keys=all",
-        "--frame_stack_keys=all",
+        "--frame_stack_keys=rgb",
         "--screen_size=64",
     ]
     if checkpoint_buffer:
@@ -231,8 +229,6 @@ def test_ppo(standard_args, start_time, env_id):
         "--per_rank_batch_size=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
-        "--cnn_keys=all",
-        "--mlp_keys=all",
         f"--env_id={env_id}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -259,8 +255,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         "--update_epochs=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
-        "--cnn_keys=all",
-        "--mlp_keys=all",
         f"--env_id={env_id}",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
@@ -336,8 +330,6 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
         "--recurrent_state_size=8",
-        "--cnn_keys=all",
-        "--mlp_keys=all",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
@@ -388,8 +380,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "--dense_units=8",
         "--cnn_channels_multiplier=2",
         "--recurrent_state_size=8",
-        "--cnn_keys=all",
-        "--mlp_keys=all",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")
