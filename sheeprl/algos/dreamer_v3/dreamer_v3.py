@@ -559,9 +559,7 @@ def main():
         aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = (
-        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
-    )
+    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
     buffer_type = args.buffer_type.lower()
     if buffer_type == "sequential":
         rb = AsyncReplayBuffer(

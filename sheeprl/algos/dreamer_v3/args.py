@@ -10,7 +10,6 @@ class DreamerV3Args(DreamerV2Args):
     env_id: str = Arg(default="dmc_walker_walk", help="the id of the environment")
 
     # Experiment settings
-    share_data: bool = Arg(default=False, help="Toggle sharing data between processes")
     per_rank_batch_size: int = Arg(default=16, help="the batch size for each rank")
     per_rank_sequence_length: int = Arg(default=64, help="the sequence length for each rank")
     total_steps: int = Arg(default=int(5e6), help="total timesteps of the experiments")
