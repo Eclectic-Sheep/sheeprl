@@ -16,10 +16,11 @@ from torch.distributions import (
     TanhTransform,
     TransformedDistribution,
 )
+from torch.distributions.utils import probs_to_logits
 
 from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, zero_init_weights
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
@@ -60,7 +61,7 @@ class MultiEncoder(nn.Module):
                     layer_args={"kernel_size": 4, "stride": 2, "bias": not layer_norm},
                     activation=cnn_act,
                     norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                    norm_args=[{"normalized_shape": (2**i) * cnn_channels_multiplier} for i in range(4)]
+                    norm_args=[{"normalized_shape": (2**i) * cnn_channels_multiplier, "eps": 1e-3} for i in range(4)]
                     if layer_norm
                     else None,
                 ),
@@ -79,7 +80,9 @@ class MultiEncoder(nn.Module):
                 activation=mlp_act,
                 layer_args={"bias": not layer_norm},
                 norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+                if layer_norm
+                else None,
             )
             self.mlp_output_dim = dense_units
         else:
@@ -140,7 +143,10 @@ class MultiDecoder(nn.Module):
                     ],
                     activation=[cnn_act, cnn_act, cnn_act, None],
                     norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                    norm_args=[{"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier} for i in range(3)]
+                    norm_args=[
+                        {"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier, "eps": 1e-3}
+                        for i in range(3)
+                    ]
                     + [None]
                     if layer_norm
                     else None,
@@ -154,7 +160,9 @@ class MultiDecoder(nn.Module):
                 activation=mlp_act,
                 layer_args={"bias": not layer_norm},
                 norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+                if layer_norm
+                else None,
             )
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.mlp_splits])
 
@@ -204,7 +212,7 @@ class RecurrentModel(nn.Module):
             activation=activation_fn,
             layer_args={"bias": not layer_norm},
             norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3}] if layer_norm else None,
         )
         self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True)
 
@@ -298,7 +306,7 @@ class RSSM(nn.Module):
             probs = logits.softmax(dim=-1)
             uniform = torch.ones_like(probs) / self.discrete
             probs = (1 - self.unimix) * probs + self.unimix * uniform
-            logits = torch.log(probs)
+            logits = probs_to_logits(probs)
         logits = logits.view(*logits.shape[:-2], -1)
         return logits
 
@@ -548,7 +556,9 @@ class Actor(nn.Module):
             flatten_dim=None,
             layer_args={"bias": not layer_norm},
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+            if layer_norm
+            else None,
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
@@ -614,7 +624,7 @@ class Actor(nn.Module):
             probs = logits.softmax(dim=-1)
             uniform = torch.ones_like(probs) / probs.shape[-1]
             probs = (1 - self._unimix) * probs + self._unimix * uniform
-            logits = torch.log(probs)
+            logits = probs_to_logits(probs)
         return logits
 
 
@@ -706,6 +716,7 @@ def build_models(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
     """Build the models and wrap them with Fabric.
 
@@ -768,7 +779,7 @@ def build_models(
         flatten_dim=None,
         layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size, "eps": 1e-3}] if args.layer_norm else None,
     )
     transition_model = MLP(
         input_dims=args.recurrent_state_size,
@@ -778,7 +789,7 @@ def build_models(
         flatten_dim=None,
         layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.hidden_size, "eps": 1e-3}] if args.layer_norm else None,
     )
     rssm = RSSM(
         recurrent_model.apply(init_weights),
@@ -809,7 +820,9 @@ def build_models(
         flatten_dim=None,
         layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units, "eps": 1e-3} for _ in range(args.mlp_layers)]
+        if args.layer_norm
+        else None,
     )
     continue_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
@@ -819,13 +832,15 @@ def build_models(
         flatten_dim=None,
         layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units, "eps": 1e-3} for _ in range(args.mlp_layers)]
+        if args.layer_norm
+        else None,
     )
     world_model = WorldModel(
         encoder.apply(init_weights),
         rssm,
         observation_model.apply(init_weights),
-        reward_model.apply(zero_init_weights),
+        reward_model.apply(init_weights),
         continue_model.apply(init_weights),
     )
     if "minedojo" in args.env_id:
@@ -862,10 +877,12 @@ def build_models(
         flatten_dim=None,
         layer_args={"bias": not args.layer_norm},
         norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_args=[{"normalized_shape": args.dense_units, "eps": 1e-3} for _ in range(args.mlp_layers)]
+        if args.layer_norm
+        else None,
     )
     actor.apply(init_weights)
-    critic.apply(zero_init_weights)
+    critic.apply(init_weights)
 
     # Load models from checkpoint
     if world_model_state:
@@ -887,5 +904,7 @@ def build_models(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
     target_critic = copy.deepcopy(critic.module)
+    if target_critic_state:
+        target_critic.load_state_dict(target_critic_state)
 
     return world_model, actor, critic, target_critic
