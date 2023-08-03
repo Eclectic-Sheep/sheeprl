@@ -559,6 +559,7 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "world_model",
         "actor",
         "critic",
+        "target_critic",
         "world_optimizer",
         "actor_optimizer",
         "critic_optimizer",
@@ -612,6 +613,7 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "world_model",
         "actor_task",
         "critic_task",
+        "target_critic_task",
         "ensembles",
         "world_optimizer",
         "actor_task_optimizer",
@@ -623,6 +625,7 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "batch_size",
         "actor_exploration",
         "critic_exploration",
+        "target_critic_exploration",
         "actor_exploration_optimizer",
         "critic_exploration_optimizer",
     }
