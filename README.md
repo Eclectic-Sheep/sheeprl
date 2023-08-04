@@ -44,7 +44,6 @@ The actions supported by sheeprl agents are:
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 The environments supported by sheeprl are:
-
 | Algorithm          | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
 | Classic Control    | `pip install -e .`           |                                                 | :heavy_check_mark: |
