@@ -1,3 +1,10 @@
+from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
+
+if not _IS_DIAMBRA_AVAILABLE:
+    raise ModuleNotFoundError(_IS_DIAMBRA_AVAILABLE)
+if not _IS_DIAMBRA_ARENA_AVAILABLE:
+    raise ModuleNotFoundError(_IS_DIAMBRA_ARENA_AVAILABLE)
+
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 
 import diambra
