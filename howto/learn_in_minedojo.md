@@ -20,7 +20,7 @@ Now, you can install the MineDojo environment:
 pip install -e .[minedojo]
 ```
 
-## MineRL environments
+## MineDojo environments
 It is possible to train your agents on all the tasks provided by MineDojo, you need to prefix `"minedojo"` to the `task_id` of the task on which you want to train your agent, and pass it to the `env_id` argument.
 For instance, you have to set the `env_id` argument to `"minedojo_open-ended"` to select the MineDojo open-ended environment.
 
