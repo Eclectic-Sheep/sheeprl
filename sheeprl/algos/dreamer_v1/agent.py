@@ -21,13 +21,13 @@ class RecurrentModel(nn.Module):
     Args:
         input_size (int): the input size of the model.
         recurrent_state_size (int): the size of the recurrent state.
-        activation_fn (nn.Module): the activation function.
+        activation (nn.Module): the activation function.
             Default to ELU.
     """
 
-    def __init__(self, input_size: int, recurrent_state_size: int, activation_fn: nn.Module = nn.ELU) -> None:
+    def __init__(self, input_size: int, recurrent_state_size: int, activation: nn.Module = nn.ELU) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation_fn())
+        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation())
         self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
@@ -362,28 +362,39 @@ def build_models(
             f"Invalid value for dense_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
+    # Sizes
+    latent_state_size = args.stochastic_size + args.recurrent_state_size
+    mlp_dims = [obs_space[k].shape[0] for k in mlp_keys]
+
     # Define models
-    mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
-    cnn_channels = [obs_space[k].shape[0] for k in cnn_keys]
     cnn_encoder = (
         CNNEncoder(
-            cnn_keys,
-            cnn_channels,
-            obs_space[cnn_keys[0]].shape[-2:],
-            args.cnn_channels_multiplier,
-            False,
-            cnn_act,
+            keys=cnn_keys,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            channels_multiplier=args.cnn_channels_multiplier,
+            layer_norm=False,
+            activation=cnn_act,
         )
         if cnn_keys is not None and len(cnn_keys) > 0
         else None
     )
     mlp_encoder = (
-        MLPEncoder(mlp_keys, mlp_splits, args.mlp_layers, args.dense_units, dense_act, False)
+        MLPEncoder(
+            keys=mlp_keys,
+            input_dims=mlp_dims,
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=False,
+        )
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
-    recurrent_model = RecurrentModel(sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
+    recurrent_model = RecurrentModel(
+        input_size=sum(actions_dim) + args.stochastic_size, recurrent_state_size=args.recurrent_state_size
+    )
     representation_model = MLP(
         input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=args.stochastic_size * 2,
@@ -406,34 +417,34 @@ def build_models(
     )
     cnn_decoder = (
         CNNDecoder(
-            cnn_keys,
-            cnn_channels,
-            args.cnn_channels_multiplier,
-            args.stochastic_size + args.recurrent_state_size,
-            cnn_encoder.output_dim,
-            obs_space[cnn_keys[0]].shape[-2:],
-            cnn_act,
-            False,
+            keys=cnn_keys,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            channels_multiplier=args.cnn_channels_multiplier,
+            latent_state_size=latent_state_size,
+            cnn_encoder_output_dim=cnn_encoder.output_dim,
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            activation=cnn_act,
+            layer_norm=False,
         )
         if cnn_keys is not None and len(cnn_keys) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            mlp_keys,
-            mlp_splits,
-            args.stochastic_size + args.recurrent_state_size,
-            args.mlp_layers,
-            args.dense_units,
-            dense_act,
-            False,
+            keys=mlp_keys,
+            output_dims=mlp_dims,
+            latent_state_size=latent_state_size,
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=False,
         )
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
@@ -441,7 +452,7 @@ def build_models(
     )
     if args.use_continues:
         continue_model = MLP(
-            input_dims=args.stochastic_size + args.recurrent_state_size,
+            input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
@@ -456,7 +467,7 @@ def build_models(
     )
     if "minedojo" in args.env_id:
         actor = MinedojoActor(
-            args.stochastic_size + args.recurrent_state_size,
+            latent_state_size,
             actions_dim,
             is_continuous,
             args.actor_init_std,
@@ -469,7 +480,7 @@ def build_models(
         )
     else:
         actor = Actor(
-            args.stochastic_size + args.recurrent_state_size,
+            latent_state_size,
             actions_dim,
             is_continuous,
             args.actor_init_std,
@@ -481,7 +492,7 @@ def build_models(
             layer_norm=False,
         )
     critic = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
