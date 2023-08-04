@@ -98,9 +98,12 @@ class MLPEncoder(nn.Module):
         self.output_dim = dense_units
         self.input_dim = input_dim
 
-    def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
+    def forward(self, obs: Dict[str, Tensor], *args, detach_encoder_features: bool = False, **kwargs) -> Tensor:
         x = torch.cat([obs[k] for k in self.keys], dim=-1).type(torch.float32)
-        return self.model(x)
+        x = self.model(x)
+        if detach_encoder_features:
+            x = x.detach()
+        return x
 
 
 class MLPDecoder(nn.Module):
@@ -208,7 +211,7 @@ class SACPixelQFunction(nn.Module):
 
 
 class SACPixelCritic(nn.Module):
-    def __init__(self, encoder: Union["MultiEncoder", _FabricModule], qfs: List[SACPixelQFunction]) -> None:
+    def __init__(self, encoder: Union[MultiEncoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
         super().__init__()
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
@@ -327,10 +330,18 @@ class SACPixelAgent(nn.Module):
     ) -> None:
         super().__init__()
         # Tie encoder weights between actor and critic
-        for actor_layer, critic_layer in zip(actor.encoder.modules(), critic.encoder.modules()):
-            if isinstance(actor_layer, nn.Conv2d) and isinstance(critic_layer, nn.Conv2d):
-                actor_layer.weight = critic_layer.weight
-                actor_layer.bias = critic_layer.bias
+        if actor.encoder.cnn_encoder is not None:
+            for actor_layer, critic_layer in zip(
+                actor.encoder.cnn_encoder.modules(), critic.encoder.cnn_encoder.modules()
+            ):
+                if isinstance(actor_layer, nn.Conv2d) and isinstance(critic_layer, nn.Conv2d):
+                    actor_layer.weight = critic_layer.weight
+                    actor_layer.bias = critic_layer.bias
+        if actor.encoder.mlp_encoder is not None:
+            for actor_p, critic_p in zip(
+                actor.encoder.mlp_encoder.parameters(), critic.encoder.mlp_encoder.parameters()
+            ):
+                pass
 
         # Actor and critics
         self._num_critics = len(critic.qfs)
