@@ -208,7 +208,7 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) ->
     return stochastic_state
 
 
-def init_weights(m: nn.Module):
+def init_weights(m: nn.Module, mode: str = "normal"):
     """
     Initialize the parameters of the m module acording to the Xavier
     normal method.
@@ -216,12 +216,15 @@ def init_weights(m: nn.Module):
     Args:
         m (nn.Module): the module to be initialized.
     """
-    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-        nn.init.xavier_normal_(m.weight.data)
-        if m.bias is not None:
-            nn.init.constant_(m.bias.data, 0)
-    elif isinstance(m, nn.Linear):
-        nn.init.xavier_normal_(m.weight.data)
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+        if mode == "normal":
+            nn.init.xavier_normal_(m.weight.data)
+        elif mode == "uniform":
+            nn.init.xavier_uniform_(m.weight.data)
+        elif mode == "zero":
+            nn.init.constant_(m.weight.data, 0)
+        else:
+            raise RuntimeError(f"Unrecognized initialization: {mode}. Choose between: `normal`, `uniform` and `zero`")
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
 
