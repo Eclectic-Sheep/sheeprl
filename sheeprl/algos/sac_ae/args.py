@@ -50,7 +50,7 @@ class SACAEArgs(SACArgs):
     )
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
     cnn_keys: Optional[List[str]] = Arg(
-        default=("rgb",), help="a list of observation keys to be processed by the CNN encoder"
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
     )
     mlp_keys: Optional[List[str]] = Arg(
         default=None, help="a list of observation keys to be processed by the MLP encoder"

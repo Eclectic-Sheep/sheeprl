@@ -136,8 +136,12 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "--gradient_steps=1",
         f"--root_dir={root_dir}",
         f"--run_name={run_name}",
+        "--mlp_keys=state",
+        "--cnn_keys=rgb",
         "--frame_stack_keys=rgb",
         "--screen_size=64",
+        "--actor_network_frequency=1",
+        "--decoder_update_freq=1",
     ]
     if checkpoint_buffer:
         args.append("--checkpoint_buffer")

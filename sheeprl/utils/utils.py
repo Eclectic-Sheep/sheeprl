@@ -292,7 +292,7 @@ def make_dict_env(
                 if args.mlp_keys is not None and len(args.mlp_keys) > 0:
                     if len(args.mlp_keys) > 1:
                         warnings.warn(
-                            f"Multiple mlp keys have been specified and only one pixel observation is permitted in {env_id}, "
+                            f"Multiple mlp keys have been specified and only one pixel observation is allowed in {env_id}, "
                             f"only the first one is kept: {args.mlp_keys[0]}"
                         )
                     mlp_key = args.mlp_keys[0]
@@ -304,7 +304,7 @@ def make_dict_env(
         elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
             if args.cnn_keys is not None and len(args.cnn_keys) > 1:
                 warnings.warn(
-                    f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, "
+                    f"Multiple cnn keys have been specified and only one pixel observation is allowed in {env_id}, "
                     f"only the first one is kept: {args.cnn_keys[0]}"
                 )
                 cnn_key = args.cnn_keys[0]
