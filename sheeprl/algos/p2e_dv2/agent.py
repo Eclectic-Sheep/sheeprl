@@ -108,7 +108,7 @@ def build_models(
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
     stochastic_size = args.stochastic_size * args.discrete_size
     recurrent_model = RecurrentModel(
         int(sum(actions_dim) + stochastic_size),
@@ -167,7 +167,7 @@ def build_models(
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
-    observation_model = MultiDecoder(cnn_decoder, mlp_decoder, fabric.device)
+    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=1,

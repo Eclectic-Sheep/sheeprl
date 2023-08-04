@@ -106,11 +106,7 @@ class PPOAgent(nn.Module):
             if mlp_keys is not None and len(mlp_keys) > 0
             else None
         )
-        self.feature_extractor = MultiEncoder(
-            cnn_encoder,
-            mlp_encoder,
-            device,
-        )
+        self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
         self.is_continuous = is_continuous
         features_dim = self.feature_extractor.output_dim
         self.critic = MLP(

@@ -144,7 +144,7 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         "layer_norm": args.layer_norm,
         "is_continuous": is_continuous,
     }
-    agent = PPOAgent(**agent_args, device=fabric.device).to(device)
+    agent = PPOAgent(**agent_args).to(device)
 
     # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
     world_collective.broadcast_object_list([agent_args], src=0)
@@ -369,7 +369,7 @@ def trainer(
     world_collective.broadcast_object_list(agent_args, src=0)
 
     # Create the actor and critic models
-    agent = PPOAgent(**agent_args[0], device=fabric.device)
+    agent = PPOAgent(**agent_args[0])
     cnn_keys = agent.feature_extractor.cnn_keys
     mlp_keys = agent.feature_extractor.mlp_keys
 

@@ -145,7 +145,7 @@ def main():
     is_tpu_available = TPUAccelerator.is_available()
     if strategy is not None:
         warnings.warn(
-            "You are running the SAC-Pixel-Continuous algorithm through the Lightning CLI and you have specified a strategy: "
+            "You are running the SAC-AE algorithm through the Lightning CLI and you have specified a strategy: "
             f"`lightning run model --strategy={strategy}`. This algorithm is run with the "
             "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
         )
@@ -288,8 +288,7 @@ def main():
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
-
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder, fabric.device)
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
     cnn_decoder = (
         CNNDecoder(
             cnn_encoder.conv_output_shape,
@@ -315,8 +314,7 @@ def main():
         if mlp_keys is not None and len(mlp_keys) > 0
         else None
     )
-    decoder = MultiDecoder(cnn_decoder, mlp_decoder, fabric.device)
-
+    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
 

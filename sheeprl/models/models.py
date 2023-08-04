@@ -403,20 +403,14 @@ class LayerNormGRUCell(nn.Module):
 class MultiEncoder(nn.Module):
     def __init__(
         self,
-        cnn_encoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
-        mlp_encoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
-        device: Union[str, torch.device] = "cpu",
+        cnn_encoder: ModuleType,
+        mlp_encoder: ModuleType,
     ) -> None:
         super().__init__()
         if cnn_encoder is None and mlp_encoder is None:
             raise ValueError("There must be an encoder, both cnn and mlp encoders are None")
-        if isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
         self.cnn_encoder = cnn_encoder
         self.mlp_encoder = mlp_encoder
-
         self.cnn_input_dim = self.cnn_encoder.input_dim if self.cnn_encoder is not None else None
         self.mlp_input_dim = self.mlp_encoder.input_dim if self.mlp_encoder is not None else None
         self.cnn_output_dim = self.cnn_encoder.output_dim if self.cnn_encoder is not None else 0
@@ -432,8 +426,9 @@ class MultiEncoder(nn.Module):
         return self.mlp_encoder.keys if self.mlp_encoder is not None else []
 
     def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
-        cnn_out = torch.tensor((), device=self.device)
-        mlp_out = torch.tensor((), device=self.device)
+        device = obs[list(obs.keys())[0]].device
+        cnn_out = torch.tensor((), device=device)
+        mlp_out = torch.tensor((), device=device)
         if self.cnn_encoder is not None:
             cnn_out = self.cnn_encoder(obs, *args, **kwargs)
         if self.mlp_encoder is not None:
@@ -446,15 +441,10 @@ class MultiDecoder(nn.Module):
         self,
         cnn_decoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
         mlp_decoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
-        device: Union[str, torch.device] = "cpu",
     ) -> None:
         super().__init__()
         if cnn_decoder is None and mlp_decoder is None:
             raise ValueError("There must be an decoder, both cnn and mlp decoders are None")
-        if isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
         self.cnn_decoder = cnn_decoder
         self.mlp_decoder = mlp_decoder
 
