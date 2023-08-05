@@ -23,9 +23,8 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import make_env, test
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, build_models
+from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values

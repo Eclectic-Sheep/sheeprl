@@ -84,6 +84,12 @@ class DreamerV3Args(DreamerV2Args):
     unimix: float = Arg(
         default=0.01, help="whether to use a mix of uniform and categorical for the stochastic state distribution"
     )
+    hafner_initialization: bool = Arg(
+        default=True,
+        help="whether to initialize the models as in the original Hafner code, i.e. "
+        "every model is initialized with a standard Xavier Normal initialization; every last layer before a distribution is "
+        "initialized with a Xavier Uniform distribution; the last critic and reward model layer are initialized to zero.",
+    )
 
     # Environment settings
     expl_amount: float = Arg(default=0.0, help="the exploration amout to add to the actions")

@@ -229,20 +229,6 @@ def init_weights(m: nn.Module, mode: str = "normal"):
             nn.init.constant_(m.bias.data, 0)
 
 
-def zero_init_weights(m: nn.Module):
-    """
-    Initialize the parameters of the m module acording to the Xavier
-    normal method.
-
-    Args:
-        m (nn.Module): the module to be initialized.
-    """
-    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
-        nn.init.zeros_(m.weight.data)
-        if m.bias is not None:
-            nn.init.constant_(m.bias.data, 0)
-
-
 def compute_lambda_values(
     rewards: Tensor,
     values: Tensor,

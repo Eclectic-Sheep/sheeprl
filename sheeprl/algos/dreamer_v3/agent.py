@@ -798,8 +798,6 @@ def build_models(
         transition_model.apply(init_weights),
         args.discrete_size,
     )
-    rssm.transition_model.model[-1].apply(partial(init_weights, mode="uniform"))
-    rssm.representation_model.model[-1].apply(partial(init_weights, mode="uniform"))
     observation_model = MultiDecoder(
         obs_space,
         cnn_keys,
@@ -846,12 +844,6 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights),
     )
-    world_model.reward_model.model[-1].apply(partial(init_weights, mode="zero"))
-    world_model.continue_model.model[-1].apply(partial(init_weights, mode="uniform"))
-    if len(world_model.observation_model.mlp_keys) > 0:
-        world_model.observation_model.mlp_heads.apply(partial(init_weights, mode="uniform"))
-    if len(world_model.observation_model.cnn_keys) > 0:
-        world_model.observation_model.cnn_decoder[-1].model[-1].apply(partial(init_weights, mode="uniform"))
     if "minedojo" in args.env_id:
         actor = MinedojoActor(
             stochastic_size + args.recurrent_state_size,
@@ -891,9 +883,19 @@ def build_models(
         else None,
     )
     actor.apply(init_weights)
-    actor.mlp_heads.apply(partial(init_weights, mode="uniform"))
     critic.apply(init_weights)
-    critic.model[-1].apply(partial(init_weights, mode="zero"))
+    
+    if args.hafner_initialization:
+        actor.mlp_heads.apply(partial(init_weights, mode="uniform"))
+        critic.model[-1].apply(partial(init_weights, mode="zero"))
+        rssm.transition_model.model[-1].apply(partial(init_weights, mode="uniform"))
+        rssm.representation_model.model[-1].apply(partial(init_weights, mode="uniform"))
+        world_model.reward_model.model[-1].apply(partial(init_weights, mode="zero"))
+        world_model.continue_model.model[-1].apply(partial(init_weights, mode="uniform"))
+        if len(world_model.observation_model.mlp_keys) > 0:
+            world_model.observation_model.mlp_heads.apply(partial(init_weights, mode="uniform"))
+        if len(world_model.observation_model.cnn_keys) > 0:
+            world_model.observation_model.cnn_decoder[-1].model[-1].apply(partial(init_weights, mode="uniform"))
 
     # Load models from checkpoint
     if world_model_state:
