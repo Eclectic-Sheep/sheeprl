@@ -675,8 +675,11 @@ def main():
         if "restart_on_exception" in infos:
             for i, agent_roe in enumerate(infos["restart_on_exception"]):
                 if agent_roe and not dones[i]:
-                    rb.buffer[i]["dones"][-1] = torch.ones_like(rb.buffer[i]["dones"][-1])
-                    rb.buffer[i]["is_first"][-1] = torch.zeros_like(rb.buffer[i]["is_first"][-1])
+                    last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
+                    rb.buffer[i]["dones"][last_inserted_idx] = torch.ones_like(rb.buffer[i]["dones"][last_inserted_idx])
+                    rb.buffer[i]["is_first"][last_inserted_idx] = torch.zeros_like(
+                        rb.buffer[i]["is_first"][last_inserted_idx]
+                    )
                     step_data["is_first"][i] = torch.ones_like(step_data["is_first"][i])
 
         if "final_info" in infos:
