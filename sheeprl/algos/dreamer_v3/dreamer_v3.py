@@ -126,7 +126,7 @@ def train(
 
     # initialize the posterior that must be of dimension (1, batch_size, stochastic_size, discrete_size), which
     # by default is set to (1, batch_size, 32, 32). The posterior state is named zt in the paper
-    posterior = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
+    posterior = torch.zeros(1, batch_size, args.stochastic_size, args.discrete_size, device=device)
 
     # initialize the recurrent_states, which will contain all the recurrent states
     # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
