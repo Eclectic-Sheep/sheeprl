@@ -120,11 +120,11 @@ def train(
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
     # the recurrent state is the deterministic state (or ht)
-    recurrent_state = torch.tanh(torch.zeros(1, batch_size, args.recurrent_state_size, device=device))
+    recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
     # initialize the posterior that must be of dimension (1, batch_size, stochastic_size, discrete_size), which
     # by default is set to (1, batch_size, 32, 32). The posterior state is named zt in the paper
-    _, posterior = world_model.rssm._transition(recurrent_state, sample_state=False)
+    posterior = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
     # initialize the recurrent_states, which will contain all the recurrent states
     # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
@@ -666,6 +666,14 @@ def main():
         if args.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
 
+        step_data["is_first"] = torch.zeros_like(step_data["dones"])
+        if "restart_on_exception" in infos:
+            for i, agent_roe in enumerate(infos["restart_on_exception"]):
+                if agent_roe and not dones[i]:
+                    rb.buffer[i]["dones"][-1] = torch.ones_like(rb.buffer[i]["dones"][-1])
+                    rb.buffer[i]["is_first"][-1] = torch.zeros_like(rb.buffer[i]["is_first"][-1])
+                    step_data["is_first"][i] = torch.ones_like(step_data["is_first"][i])
+
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
                 if agent_final_info is not None and "episode" in agent_final_info:
@@ -697,7 +705,6 @@ def main():
 
         rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
         dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
-        step_data["is_first"] = torch.zeros_like(step_data["dones"])
         step_data["dones"] = dones
         step_data["rewards"] = clip_rewards_fn(rewards)
 
