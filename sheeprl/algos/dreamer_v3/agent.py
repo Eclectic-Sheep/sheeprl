@@ -290,8 +290,9 @@ class RSSM(nn.Module):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        posterior = (1 - is_first) * posterior.view(*posterior.shape[:-2], -1)
-        recurrent_state = (1 - is_first) * recurrent_state
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[1]
+        posterior = posterior.view(*posterior.shape[:-2], -1)
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
@@ -884,7 +885,7 @@ def build_models(
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
-    
+
     if args.hafner_initialization:
         actor.mlp_heads.apply(partial(init_weights, mode="uniform"))
         critic.model[-1].apply(partial(init_weights, mode="zero"))
