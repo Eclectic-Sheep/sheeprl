@@ -294,7 +294,7 @@ class RSSM(nn.Module):
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
             1
-        ].view(*posterior.shape[:-2], -1)
+        ].view_as(posterior)
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
