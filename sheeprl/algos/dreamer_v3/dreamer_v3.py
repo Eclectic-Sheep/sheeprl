@@ -4,6 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
+from functools import partial
 from typing import Dict, Sequence
 
 import gymnasium as gym
@@ -29,6 +30,7 @@ from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
+from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.distribution import DiscDist, MSEDist, SymlogDist
 from sheeprl.utils.metric import MetricAggregator
@@ -438,16 +440,19 @@ def main():
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
-                args.env_id,
-                args.seed + rank * args.num_envs,
-                rank,
-                args,
-                logger.log_dir if rank == 0 else None,
-                "train",
+            partial(
+                RestartOnException,
+                env_fn=make_env(
+                    args.env_id,
+                    args.seed + rank * args.num_envs,
+                    rank,
+                    args,
+                    logger.log_dir if rank == 0 else None,
+                    "train",
+                ),
             )
             for i in range(args.num_envs)
-        ]
+        ],
     )
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
