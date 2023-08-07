@@ -55,3 +55,12 @@ class SACAEArgs(SACArgs):
     mlp_keys: Optional[List[str]] = Arg(
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

@@ -114,3 +114,12 @@ class DreamerV2Args(StandardArgs):
     mine_break_speed: int = Arg(default=100, help="the break speed multiplier of Minecraft environments")
     mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
     mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

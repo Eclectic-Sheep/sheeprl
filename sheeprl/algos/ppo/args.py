@@ -64,3 +64,12 @@ class PPOArgs(StandardArgs):
     cnn_features_dim: int = Arg(default=512, help="the features dimension after the CNNEncoder")
     mlp_features_dim: int = Arg(default=64, help="the features dimension after the MLPEncoder")
     atari_noop_max: int = Arg(default=30, help="the maximum number of noop in Atari envs on reset")
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")
