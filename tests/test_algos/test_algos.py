@@ -124,7 +124,7 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac_ae(standard_args, checkpoint_buffer, start_time):
     task = importlib.import_module("sheeprl.algos.sac_ae.sac_ae")
-    root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
+    root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
@@ -138,7 +138,6 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         f"--run_name={run_name}",
         "--mlp_keys=state",
         "--cnn_keys=rgb",
-        "--frame_stack_keys=rgb",
         "--screen_size=64",
         "--actor_network_frequency=1",
         "--decoder_update_freq=1",

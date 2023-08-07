@@ -31,10 +31,10 @@ It is important to know the observations the environment provides, for instance,
 > `lightning run model sheeprl.py ppo --cnn_keys rgb`
 
 #### Frame Stack
-For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. If you want to stack more frames, then you must specify on which image observations you want to apply the `FrameStack` wrapper through `frame_stack_keys` argument.
+For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --frame_stack=3 --frame_stack_keys rgb
+lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --frame_stack=3
 ```
 
 #### How to choose the correct keys

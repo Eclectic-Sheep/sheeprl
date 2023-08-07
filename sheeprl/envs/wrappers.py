@@ -107,7 +107,7 @@ class FrameStack(gym.Wrapper):
         for k in self._cnn_keys:
             self._frames[k].append(obs[k])
             if (
-                (len(set("round_done", "stage_done", "game_done").intersection(info.keys())) == 3)
+                (len(set(["round_done", "stage_done", "game_done"]).intersection(info.keys())) == 3)
                 and (info["round_done"] or info["stage_done"] or info["game_done"])
                 and not (done or truncated)
             ):
