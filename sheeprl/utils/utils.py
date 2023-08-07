@@ -282,7 +282,7 @@ def make_dict_env(
             if args.cnn_keys is not None and len(args.cnn_keys) > 0:
                 if len(args.cnn_keys) > 1:
                     warnings.warn(
-                        f"Multiple cnn keys have been specified and only one pixel observation is permitted in {env_id}, "
+                        f"Multiple cnn keys have been specified and only one pixel observation is allowed in {env_id}, "
                         f"only the first one is kept: {args.cnn_keys[0]}"
                     )
                 env = gym.wrappers.PixelObservationWrapper(
