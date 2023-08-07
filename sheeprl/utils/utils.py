@@ -251,8 +251,10 @@ def make_dict_env(
             )
             args.action_repeat = 1
         elif "diambra" in _env_id:
-            from sheeprl.envs.diambra import DiambraWrapper
+            from sheeprl.envs.diambra_wrapper import DiambraWrapper
 
+            if not args.sync_env:
+                raise ValueError("You must use the SyncVectorEnv with DIAMBRA envs, set args.sync_env to True")
             if args.diambra_noop_max < 0:
                 raise ValueError(
                     f"Negative value of diambra_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
@@ -268,7 +270,7 @@ def make_dict_env(
                 noop_max=args.diambra_noop_max,
                 sticky_actions=args.action_repeat,
                 seed=args.seed,
-                rank=rank,
+                rank=rank + vector_env_idx,
                 diambra_settings={},
                 diambra_wrappers={},
             )
@@ -296,7 +298,7 @@ def make_dict_env(
             env = MaskVelocityWrapper(env)
 
         # action repeat
-        if "atari" not in env_spec and "dmc" not in env_id:
+        if "atari" not in env_spec and "dmc" not in _env_id and "diambra" not in _env_id:
             env = ActionRepeat(env, args.action_repeat)
 
         # Create observation dict
