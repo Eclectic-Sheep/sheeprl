@@ -11,12 +11,14 @@ def reward_loss_last_token(
     rejected_rewards: torch.Tensor,
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from last token"""
-    mask_chosen = chosen != pad_token_id  # (B, T)
-    mask_rejected = rejected != pad_token_id  # (B, T)
+    """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from last generated non-terminal token"""
+    mask_chosen = chosen != pad_token_id
+    mask_rejected = rejected != pad_token_id
 
-    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True)
-    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True)
+    # last non-padding token is the terminal one
+    # we want to retrieve reward that leads to that state(token)
+    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True) - 1
+    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True) - 1
     last_chosen_rewards = torch.gather(chosen_rewards, dim=-1, index=last_chosen_token_idx).squeeze(-1)
     last_rejected_rewards = torch.gather(rejected_rewards, dim=-1, index=last_rejected_token_idx).squeeze(-1)
 
@@ -37,13 +39,18 @@ def reward_loss_average(
 
     divergence = ((chosen - rejected) != 0).int().argmax(1)
 
-    # TODO: implement it in vectorized way
+    # TODO: Can we implement it in vectorized way?
     for i, d in enumerate(divergence):
         mask_chosen[i, :d] = 0
         mask_rejected[i, :d] = 0
 
-    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True)
-    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True)
+    # last non-padding token is the terminal one
+    # we want to retrieve reward that leads to that state(token)
+    # TODO: check if everytime this is true
+    last_chosen_token_idx = torch.argmax(torch.cumsum(mask_chosen, dim=1) * mask_chosen, dim=1, keepdim=True) - 1
+    last_rejected_token_idx = torch.argmax(torch.cumsum(mask_rejected, dim=1) * mask_rejected, dim=1, keepdim=True) - 1
+    mask_chosen[:, last_chosen_token_idx + 1] = 0
+    mask_rejected[:, last_rejected_token_idx + 1] = 0
     last_chosen_rewards = torch.gather(chosen_rewards, dim=-1, index=last_chosen_token_idx).squeeze(-1)
     last_rejected_rewards = torch.gather(rejected_rewards, dim=-1, index=last_rejected_token_idx).squeeze(-1)
 
@@ -64,10 +71,11 @@ def reward_loss_per_sample(
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """This loss computes the logsigmoid of the difference between the chosen and rejected rewards
-    from every token in the sequence masked by the pad token id.
+    from every token in the sequence masked by the pad token id. It is adapted from
+    https://github.com/microsoft/DeepSpeedExamples/blob/master/applications/DeepSpeed-Chat/training/utils/model/reward_model.py#L37
     for each example in the batch:
         - find the index where the chosen and rejected sequences diverge
-        - find the index of the last token in the sequence
+        - find the index of the last non terminal token in the sequence
         - compute the loss for the tokens between the divergence index and the last token index
 
     Returns:
@@ -99,8 +107,14 @@ def reward_loss_per_sample(
 
         # Find padding tokens
         pad_mask_chosen = (chosen_actions == pad_token_id).nonzero()
+        if chosen_actions[0] == pad_token_id:
+            # If the first token is a pad token, we want to exclude it from the mask
+            pad_mask_chosen = pad_mask_chosen[1:]
         chosen_last_index = pad_mask_chosen[0].item() if len(pad_mask_chosen) > 0 else chosen.shape[1]
         pad_mask_rejected = (rejected_actions == pad_token_id).nonzero()
+        if rejected_actions[0] == pad_token_id:
+            # If the first token is a pad token, we want to exclude it from the mask
+            pad_mask_rejected = pad_mask_rejected[1:]
         rejected_last_index = pad_mask_rejected[0].item() if len(pad_mask_rejected) > 0 else rejected.shape[1]
         end_ind = max(chosen_last_index, rejected_last_index)
 
@@ -117,14 +131,14 @@ def reward_loss_per_sample(
 
         # Compute the loss for the current example
         filtered_rewards = chosen_filtered_rewards - rejected_filtered_rewards
-        loss += -F.logsigmoid(filtered_rewards).mean()
+        loss.add_(-F.logsigmoid(filtered_rewards).mean())
 
-        # Get the last rewards for the current example
-        chosen_last_rewards.append(chosen_filtered_rewards[-1])
-        rejected_last_rewards.append(rejected_filtered_rewards[-1])
+        # Get the last non-padding token rewards for the current example
+        chosen_last_rewards.append(chosen_complete_rewards[chosen_last_index - 1])
+        rejected_last_rewards.append(rejected_complete_rewards[rejected_last_index - 1])
         total_num_samples += 1
 
-    loss /= total_num_samples
+    loss.div_(total_num_samples)
     chosen_last_rewards = torch.stack(chosen_last_rewards)
     rejected_last_rewards = torch.stack(rejected_last_rewards)
 
@@ -177,10 +191,9 @@ def value_loss(
     old_values: torch.Tensor,
     returns: torch.Tensor,
     clip_coeff: float,
-    vf_coeff: float,
     action_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    values_clipped = old_values + torch.clamp(values - old_values, -clip_coeff, +clip_coeff)
+    values_clipped = torch.clamp(values, old_values - clip_coeff, old_values + clip_coeff)
     value_loss1 = F.mse_loss(values, returns, reduction="none")
     value_loss2 = F.mse_loss(values_clipped, returns, reduction="none")
     value_loss = torch.max(value_loss1, value_loss2)
@@ -188,4 +201,4 @@ def value_loss(
         value_loss = torch.sum(value_loss * action_mask) / action_mask.sum()
     else:
         value_loss = value_loss.mean()
-    return vf_coeff * value_loss
+    return value_loss
