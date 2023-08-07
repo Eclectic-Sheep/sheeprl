@@ -26,9 +26,9 @@ To install an environment you have to execute the following steps:
 > For instance, the output of the valid ROM file of *Dead or Alive* is: `Correct ROM file for Dead Or Alive ++, sha256 = d95855c7d8596a90f0b8ca15725686567d767a9a3f93a8896b489a160e705c4e`
 
 ## Observation and Action Spaces
-The observations space is composed by a python dictionary containing the RGB/grayscale frame and other vectors with additional information.
+The observations space is composed by a python dictionary containing the RGB/grayscale frame and other vectors with additional information. For more information about the observation space, check [here](https://docs.diambra.ai/envs/#observation-space).
 
-The action space can be either *discrete* or *multi-discrete*, in both cases you can select whether or not to enable the *attack buttons combination* which increments the number of actions the agent can execute.
+The action space can be either *discrete* or *multi-discrete*, in both cases you can select whether or not to enable the *attack buttons combination* which increments the number of actions the agent can execute. For more information about the action space, check [here](https://docs.diambra.ai/envs/#action-spaces).
 
 Each environment has its own observation and action space, so it is reccomended to check them [here](https://docs.diambra.ai/envs/games/).
 
