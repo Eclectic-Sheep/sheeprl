@@ -33,10 +33,10 @@ from sheeprl.algos.sac_ae.agent import (
     CNNEncoder,
     MLPDecoder,
     MLPEncoder,
-    SACPixelAgent,
-    SACPixelContinuousActor,
-    SACPixelCritic,
-    SACPixelQFunction,
+    SACAEAgent,
+    SACAEContinuousActor,
+    SACAECritic,
+    SACAEQFunction,
 )
 from sheeprl.algos.sac_ae.args import SACAEArgs
 from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
@@ -51,7 +51,7 @@ from sheeprl.utils.utils import make_dict_env
 
 def train(
     fabric: Fabric,
-    agent: SACPixelAgent,
+    agent: SACAEAgent,
     encoder: Union[MultiEncoder, _FabricModule],
     decoder: Union[MultiDecoder, _FabricModule],
     actor_optimizer: Optimizer,
@@ -320,7 +320,7 @@ def main():
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
-    actor = SACPixelContinuousActor(
+    actor = SACAEContinuousActor(
         encoder=copy.deepcopy(encoder.module),
         action_dim=act_dim,
         hidden_size=args.actor_hidden_size,
@@ -328,17 +328,17 @@ def main():
         action_high=envs.single_action_space.high,
     )
     qfs = [
-        SACPixelQFunction(
+        SACAEQFunction(
             input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=args.critic_hidden_size, output_dim=1
         )
         for _ in range(args.num_critics)
     ]
-    critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)
+    critic = SACAECritic(encoder=encoder.module, qfs=qfs)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
     # The agent will tied convolutional weights between the encoder actor and critic
-    agent = SACPixelAgent(
+    agent = SACAEAgent(
         actor,
         critic,
         target_entropy,

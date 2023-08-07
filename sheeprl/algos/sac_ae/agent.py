@@ -188,7 +188,7 @@ class CNNDecoder(DeCNN):
         return reconstructed_obs
 
 
-class SACPixelQFunction(nn.Module):
+class SACAEQFunction(nn.Module):
     def __init__(
         self,
         input_dim: int,
@@ -210,8 +210,8 @@ class SACPixelQFunction(nn.Module):
         return self.model(x)
 
 
-class SACPixelCritic(nn.Module):
-    def __init__(self, encoder: Union[MultiEncoder, _FabricModule], qfs: List[SACPixelQFunction]) -> None:
+class SACAECritic(nn.Module):
+    def __init__(self, encoder: Union[MultiEncoder, _FabricModule], qfs: List[SACAEQFunction]) -> None:
         super().__init__()
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
@@ -224,7 +224,7 @@ class SACPixelCritic(nn.Module):
         return torch.cat([self.qfs[i](features, action) for i in range(len(self.qfs))], dim=-1)
 
 
-class SACPixelContinuousActor(nn.Module):
+class SACAEContinuousActor(nn.Module):
     def __init__(
         self,
         encoder: Union[MultiEncoder, _FabricModule],
@@ -317,11 +317,11 @@ class SACPixelContinuousActor(nn.Module):
         return mean
 
 
-class SACPixelAgent(nn.Module):
+class SACAEAgent(nn.Module):
     def __init__(
         self,
-        actor: Union[SACPixelContinuousActor, _FabricModule],
-        critic: Union[SACPixelCritic, _FabricModule],
+        actor: Union[SACAEContinuousActor, _FabricModule],
+        critic: Union[SACAECritic, _FabricModule],
         target_entropy: float,
         alpha: float = 1.0,
         tau: float = 0.01,
@@ -331,17 +331,9 @@ class SACPixelAgent(nn.Module):
         super().__init__()
         # Tie encoder weights between actor and critic
         if actor.encoder.cnn_encoder is not None:
-            for actor_layer, critic_layer in zip(
-                actor.encoder.cnn_encoder.modules(), critic.encoder.cnn_encoder.modules()
-            ):
-                if isinstance(actor_layer, nn.Conv2d) and isinstance(critic_layer, nn.Conv2d):
-                    actor_layer.weight = critic_layer.weight
-                    actor_layer.bias = critic_layer.bias
+            actor.encoder.cnn_encoder.model = critic.encoder.cnn_encoder.model
         if actor.encoder.mlp_encoder is not None:
-            for actor_p, critic_p in zip(
-                actor.encoder.mlp_encoder.parameters(), critic.encoder.mlp_encoder.parameters()
-            ):
-                pass
+            actor.encoder.mlp_encoder.model = critic.encoder.mlp_encoder.model
 
         # Actor and critics
         self._num_critics = len(critic.qfs)
@@ -351,7 +343,7 @@ class SACPixelAgent(nn.Module):
         # Create target critic unwrapping the DDP module from the critics to prevent
         # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
         # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SACPixel for example
+        # This happens when we're using the decoupled version of SACAE for example
         if hasattr(critic, "module"):
             critic_module = critic.module
         else:
@@ -374,19 +366,19 @@ class SACPixelAgent(nn.Module):
         return self._num_critics
 
     @property
-    def critic(self) -> Union[SACPixelCritic, _FabricModule]:
+    def critic(self) -> Union[SACAECritic, _FabricModule]:
         return self._critic
 
     @property
-    def critic_unwrapped(self) -> SACPixelCritic:
+    def critic_unwrapped(self) -> SACAECritic:
         return self._critic_unwrapped
 
     @property
-    def actor(self) -> Union[SACPixelContinuousActor, _FabricModule]:
+    def actor(self) -> Union[SACAEContinuousActor, _FabricModule]:
         return self._actor
 
     @property
-    def critic_target(self) -> SACPixelCritic:
+    def critic_target(self) -> SACAECritic:
         return self._critic_target
 
     @property
