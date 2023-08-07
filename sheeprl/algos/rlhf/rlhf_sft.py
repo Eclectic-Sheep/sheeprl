@@ -1,9 +1,7 @@
 import os
-from pathlib import Path
-import sys
 import time
-from dataclasses import asdict
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict, Union
 
 import lightning as L
 import torch
@@ -11,15 +9,17 @@ from dotenv import load_dotenv
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
-from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
+from transformers import GenerationConfig, PreTrainedTokenizer
 
-from sheeprl.algos.rlhf.args import OPT, GenerationArgs, ModelArgs, SFTArgs, TextDataArgs
+from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, SFTArgs, TextDataArgs
 from sheeprl.algos.rlhf.data import SFTCollate
 from sheeprl.algos.rlhf.loss import finetune_loss
+from sheeprl.algos.rlhf.metrics import SFTMetricManager
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
@@ -32,10 +32,8 @@ from sheeprl.algos.rlhf.utils import (
     setup_finetuning,
     trainable_parameter_summary,
 )
-
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-
 
 __all__ = ["main"]
 
@@ -45,13 +43,13 @@ def evaluate(
     model: CasualModel,
     train_args: SFTArgs,
     data_args: TextDataArgs,
-    test_dataloader: DataLoader,
-):
+    val_dataloader: DataLoader,
+) -> float:
     model.eval()
     eval_counter = 0
     total_loss = 0.0
     eval_iters = train_args.eval_iters
-    for batch in test_dataloader:
+    for batch in val_dataloader:
         outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
         targets = batch["targets"] if train_args.use_targets else batch["input_ids"].detach().clone()
         loss = finetune_loss(
@@ -60,7 +58,7 @@ def evaluate(
             ignore_index=data_args.ignore_index,
             label_smoothing=train_args.label_smoothing,
         )
-        total_loss += loss.item()
+        total_loss += loss
         eval_counter += 1
 
         if eval_iters is not None and eval_counter >= eval_iters:
@@ -92,16 +90,11 @@ def generate(
 @register_algorithm()
 def main():
     # Retrieve arguments
-    if len(sys.argv) > 1:
-        parser = HfArgumentParser([SFTArgs, ModelArgs, GenerationArgs])
-        dataclasses = parser.parse_args_into_dataclasses()
-        train_args: SFTArgs = dataclasses[0]
-        model_args: ModelArgs = dataclasses[1]
-        gen_args: GenerationArgs = dataclasses[2]
-    else:
-        train_args = SFTArgs(data_dir="data/Dahoas/static-hh")
-        model_args = OPT()
-        gen_args = GenerationArgs()
+    parser = HfArgumentParser([SFTArgs, ModelArgs, GenerationArgs])
+    dataclasses = parser.parse_args_into_dataclasses()
+    train_args: SFTArgs = dataclasses[0]
+    model_args: ModelArgs = dataclasses[1]
+    gen_args: GenerationArgs = dataclasses[2]
 
     data_args_path = Path(train_args.data_dir) / "args.json"
     data_args = TextDataArgs.from_json(str(data_args_path))
@@ -111,6 +104,15 @@ def main():
     fabric.launch()
     fabric.seed_everything(train_args.seed + fabric.global_rank)
     fabric.print(f"Fabric Rank: {fabric.global_rank}")
+
+    # Argument Validation
+    if not model_args.casual:
+        fabric.print("Model must be casual for supervised-finetuning. Setting it automatically.")
+        model_args.casual = True
+
+    # Setup Metrics
+    metrics = SFTMetricManager(log_interval=train_args.log_interval).to(fabric.device)
+
     # Setup for rank 0
     if fabric.is_global_zero:
         # Setup Logger
@@ -156,21 +158,27 @@ def main():
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
 
-    test_data = torch.load(Path(train_args.data_dir) / f"finetune_test.pt")
-    test_dataloader = DataLoader(
-        test_data,
+    val_data = torch.load(Path(train_args.data_dir) / f"finetune_validation.pt")
+    val_dataloader = DataLoader(
+        val_data,
         shuffle=False,
         batch_size=train_args.micro_batch_size,
         collate_fn=collator,
         num_workers=train_args.num_workers,
     )
-    test_dataloader = fabric.setup_dataloaders(test_dataloader)
+    val_dataloader = fabric.setup_dataloaders(val_dataloader)
 
     example_prompt = torch.load(Path(train_args.data_dir) / f"example_prompt.pt")
 
     # Setup Optimizer Scheduler
     trainable_params, _, _ = prepare_optimizer_parameters(model, train_args.weight_decay)
-    optimizer = torch.optim.AdamW(trainable_params, lr=train_args.learning_rate)
+    optimizer_cls: Union[torch.optim.Adam, torch.optim.AdamW] = getattr(torch.optim, train_args.optimizer)
+    optimizer = optimizer_cls(
+        trainable_params,
+        lr=train_args.learning_rate,
+        eps=train_args.optimizer_eps,
+        betas=(train_args.optimizer_beta1, train_args.optimizer_beta2),
+    )
     num_training_steps = train_args.epochs * len(train_dataloader)
     lr_scheduler = CosineSchedulerWithWarmup(
         learning_rate=train_args.learning_rate,
@@ -186,14 +194,13 @@ def main():
         example_prompt=example_prompt,
         device=fabric.device,
     )
-    log_text(fabric, gen_text, "test/example", step=0)
-    iterator = tqdm(range(num_training_steps)) if fabric.is_global_zero else range(num_training_steps)
-    test_loss = None
-    data_iterator = None
-    grad_norm = None
+    log_text(fabric, gen_text, "info/example_sample", step=0)
+    iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
+
+    data_iterator = iter(train_dataloader)
     for k in iterator:
         # Setup counters and data
-        if k % len(train_dataloader) == 0 or data_iterator is None:
+        if k % len(train_dataloader) == 0:
             data_iterator = iter(train_dataloader)
         is_accumulating = (k) % train_args.gradient_accumulation_steps != 0
         last_step = k == num_training_steps - 1
@@ -202,12 +209,16 @@ def main():
         lr = lr_scheduler.get_lr(it=k)
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
+        metrics.info_lr.update(lr)
 
         # Setup batch data
         batch = next(data_iterator)
         input_ids = batch["input_ids"]  # type: ignore[index]
         attention_mask = batch["attention_mask"]  # type: ignore[index]
         targets = batch["targets"] if train_args.use_targets else input_ids.detach().clone()  # type: ignore[index]
+
+        num_tokens = input_ids.numel()
+        padding_pct = 100 * (attention_mask == 0).sum().item() / num_tokens
 
         # Forward and Backward Pass
         t0 = time.time()
@@ -223,38 +234,49 @@ def main():
 
         dt = time.time() - t0
         if not is_accumulating:
-            grad_norm = compute_grad_norm(model)
+            metrics.info_grad_norm.update(compute_grad_norm(model))
             fabric.clip_gradients(model, optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            metrics.info_time.update(dt)
+            metrics.train_loss.update(loss.item())
+            metrics.info_tokens_per_seconds.update(num_tokens / dt)
+            metrics.info_padding_percentage.update(padding_pct)
+
         if k > 0 and (k % train_args.eval_interval == 0 or last_step):
-            test_loss = evaluate(
+            val_loss = evaluate(
                 model=model,
                 train_args=train_args,
                 data_args=data_args,
-                test_dataloader=test_dataloader,
+                val_dataloader=val_dataloader,
             )
-            gen_text = generate(
-                model=model,
-                tokenizer=tokenizer,
-                generation_config=generation_config,
-                example_prompt=example_prompt,
-                device=fabric.device,
-            )
-            log_text(fabric, gen_text, "test/example", step=k)
-            fabric.log("test/loss", test_loss, step=k)
-        if k % train_args.log_interval == 0 or last_step:
-            fabric.log("train/time", dt, step=k)
-            fabric.log("train/lr", lr, step=k)
-            fabric.log("train/loss", loss.item(), step=k)
-            if grad_norm is not None:
-                fabric.log("train/grad_norm", grad_norm, step=k)
-            if isinstance(iterator, tqdm):
-                description = f"iter {k}, train/loss {loss.item():.4f}, time: {dt*1000:.2f}ms"
-                if grad_norm is not None:
-                    description += f", grad_norm {grad_norm:.2f}"
-                if test_loss is not None:
-                    description += f", test/loss {test_loss:.2f}"
+            # we don't want to take average of different val losses
+            # we already computed average inside evaluate function
+            with torch.no_grad():
+                metrics.val_loss.reset()
+                metrics.val_loss.update(val_loss)
+
+            if fabric.is_global_zero:
+                gen_text = generate(
+                    model=model.module,
+                    tokenizer=tokenizer,
+                    generation_config=generation_config,
+                    example_prompt=example_prompt,
+                    device=fabric.device,
+                )
+                log_text(fabric, gen_text, "info/example_sample", step=k)
+        fabric.barrier()
+        if k > 0 and (k % train_args.log_interval == 0 or last_step):
+            computed_metrics = metrics.compute_all()
+            metrics.log_all(fabric=fabric, step=k, metrics_dict=computed_metrics)
+
+            if not iterator.disable:
+                description = f"iter {k}, time: {dt*1000:.2f}ms"
+                for metric_name, metric_value in computed_metrics.items():
+                    if metric_name.startswith("info/"):
+                        continue
+                    description += f", {metric_name}: {metric_value:.3f}"
                 iterator.set_description(description)
         if k > 0 and (k % train_args.save_interval == 0 or last_step):
             checkpoint_model: ActorModel = model.module
@@ -264,7 +286,7 @@ def main():
                 model_args=model_args,
                 step=k,
             )
-    fabric.print("Experiment is saved in", train_args.experiment_dir)
+    fabric.print("Experiment output folder: ", train_args.experiment_dir)
 
 
 if __name__ == "__main__":
