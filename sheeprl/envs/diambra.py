@@ -1,3 +1,5 @@
+import warnings
+
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
 
 if not _IS_DIAMBRA_AVAILABLE:
@@ -23,6 +25,7 @@ class DiambraWrapper(core.Env):
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
         attack_but_combination: str = True,
+        actions_stack: int = 1,
         noop_max: int = 0,
         sticky_actions: int = 1,
         seed: Optional[int] = None,
@@ -36,16 +39,27 @@ class DiambraWrapper(core.Env):
             screen_size = (screen_size,) * 2
 
         settings = {
+            **diambra_settings,
             "action_space": action_space,
             "attack_but_combination": attack_but_combination,
-            **diambra_settings,
+            "frame_shape": (*screen_size, int(1 * grayscale)),
         }
+        if sticky_actions > 1:
+            if settings["step_ratio"] is not None and settings["step_ratio"] > 1:
+                warnings.warn(
+                    f"step_ratio parameter modified to 1 because the sticky action is active ({sticky_actions})"
+                )
+            settings["step_ratio"] = 1
+        if diambra_wrappers.pop("frame_stack", None) is not None:
+            warnings.warn(f"the DIAMBRA frame_stack wrapper is disabled")
+        if diambra_wrappers.pop("dilation", None) is not None:
+            warnings.warn(f"the DIAMBRA dilation wrapper is disabled")
         wrappers = {
-            "no_op_max": noop_max,
-            "hwc_obs_resize": (*screen_size, (1 if grayscale else 3)),
-            "flatten": True,
-            "sticky_actions": sticky_actions,
             **diambra_wrappers,
+            "no_op_max": noop_max,
+            "flatten": True,
+            "actions_stack": actions_stack,
+            "sticky_actions": sticky_actions,
         }
         self._env = diambra.arena.make(env_id, settings, wrappers, seed=seed, rank=rank)
 
