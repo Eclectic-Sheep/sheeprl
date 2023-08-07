@@ -218,8 +218,8 @@ def main():
             example_prompt=example_prompt,
             device=fabric.device,
         )
-        log_text(fabric, gen_text, "test/example", step=0)
-        fabric.log("test/example_last_reward", score, step=0)
+        log_text(fabric, gen_text, "info/example_sample", step=0)
+        fabric.log("info/example_last_reward", score, step=0)
 
     num_training_steps = train_args.epochs * len(train_dataloader)
 
@@ -321,7 +321,7 @@ def main():
                 )
                 log_text(fabric, sample_output, "info/rollout_sample", step=k)
                 log_text(fabric, gen_text, "info/example_sample", step=k)
-                fabric.log("test/example_last_reward", score, step=k)
+                fabric.log("info/example_last_reward", score, step=k)
 
         fabric.barrier()
         if k % train_args.log_interval == 0 or last_step:
