@@ -514,11 +514,12 @@ def main():
         [
             make_dict_env(
                 args.env_id,
-                args.seed + rank * args.num_envs,
+                args.seed + rank * args.num_envs + i,
                 rank,
                 args,
                 logger.log_dir if rank == 0 else None,
                 "train",
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
