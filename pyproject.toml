@@ -21,6 +21,7 @@ dependencies = [
   "moviepy==1.0.*",
   "tensordict==0.1.*",
   "tensorboard>=2.10",
+  "torchmetrics==1.0.*",
   "python-dotenv>=1.0.0",
   "lightning==2.0.*",
   "lightning-utilities<0.9",
@@ -64,7 +65,7 @@ rlhf = [
   "nltk==3.8.1",
   "rouge-score==0.1.2",
   "evaluate==0.4.0",
-  "einops==0.6.1"
+  "einops==0.6.1",
 ]
 minedojo = ["minedojo==0.1"]
 
