@@ -408,7 +408,25 @@ class MultiEncoder(nn.Module):
     ) -> None:
         super().__init__()
         if cnn_encoder is None and mlp_encoder is None:
-            raise ValueError("There must be an encoder, both cnn and mlp encoders are None")
+            raise ValueError("There must be at least one encoder, both cnn and mlp encoders are None")
+        if cnn_encoder is not None:
+            if getattr(cnn_encoder, "input_dim", None) is None:
+                raise AttributeError(
+                    "`cnn_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                )
+            if getattr(cnn_encoder, "output_dim", None) is None:
+                raise AttributeError(
+                    "`cnn_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                )
+        if mlp_encoder is not None:
+            if getattr(mlp_encoder, "input_dim", None) is None:
+                raise AttributeError(
+                    "`mlp_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                )
+            if getattr(mlp_encoder, "output_dim", None) is None:
+                raise AttributeError(
+                    "`mlp_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                )
         self.cnn_encoder = cnn_encoder
         self.mlp_encoder = mlp_encoder
         self.cnn_input_dim = self.cnn_encoder.input_dim if self.cnn_encoder is not None else None
@@ -439,8 +457,8 @@ class MultiEncoder(nn.Module):
 class MultiDecoder(nn.Module):
     def __init__(
         self,
-        cnn_decoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
-        mlp_decoder: Optional[Union[ModuleType, Sequence[ModuleType]]],
+        cnn_decoder: ModuleType,
+        mlp_decoder: ModuleType,
     ) -> None:
         super().__init__()
         if cnn_decoder is None and mlp_decoder is None:
