@@ -1,17 +1,20 @@
-from dataclasses import asdict
-import os
-from typing import Any, Dict, List, Optional
-import lightning
-import warnings
 import json
+import os
+import warnings
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional
+
+import lightning
 from lightning.fabric.fabric import torch
+from lightning_utilities.core.rank_zero import rank_zero_only
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs, TrainArgs
 from sheeprl.algos.rlhf.lora_utils import add_lora
-from sheeprl.algos.rlhf.models import CasualModel, CriticModel
+from sheeprl.algos.rlhf.models import CasualModel, CriticModel, RewardModel
 
 
+@rank_zero_only
 def log_text(fabric: lightning.Fabric, text: str, name: str, step: int):
     if fabric.logger is not None:
         if isinstance(fabric.logger, lightning.fabric.loggers.tensorboard.TensorBoardLogger):
@@ -110,7 +113,7 @@ def get_last_checkpoint_path(experiment_dir: str):
 def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_args: ModelArgs):
     finetune_mode = model_args.finetune_mode
     if finetune_mode == "all":
-        fabric.print("Using all layer arameters for finetuning")
+        fabric.print("Using all layers parameters for finetuning")
         for param in model.parameters():
             param.requires_grad = True
 
@@ -130,10 +133,12 @@ def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_arg
                 model.model.get_input_embeddings().weight.requires_grad = True
             else:
                 raise ValueError("No input embeddings found in model for finetuning. Cannot use head mode.")
-
         elif isinstance(model, CriticModel):
             for param in model.head.parameters():
                 param.requires_grad = True
+            if isinstance(model, RewardModel):
+                model.bias.requires_grad = True
+                model.gain.requires_grad = True
         else:
             raise ValueError(f"Unknown model type {type(model)}")
 
@@ -145,7 +150,7 @@ def compute_grad_norm(model: torch.nn.Module) -> float:
     total_norm = 0
     parameters = [p for p in model.parameters() if p.grad is not None and p.requires_grad]
     for p in parameters:
-        param_norm = p.grad.detach().data.norm(2)
+        param_norm = p.grad.detach().cpu().data.norm(2)
         total_norm += param_norm.item() ** 2
     total_norm = total_norm**0.5
     return total_norm
