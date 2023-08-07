@@ -250,6 +250,28 @@ def make_dict_env(
                 extreme=args.minerl_extreme,
             )
             args.action_repeat = 1
+        elif "diambra" in _env_id:
+            from sheeprl.envs.diambra import DiambraWrapper
+
+            if args.diambra_noop_max < 0:
+                raise ValueError(
+                    f"Negative value of diambra_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
+                )
+            task_id = "_".join(env_id.split("_")[1:])
+            env = DiambraWrapper(
+                env_id=task_id,
+                action_space=args.diambra_action_space,
+                screen_size=args.screen_size,
+                grayscale=args.grayscale_obs,
+                attack_but_combination=args.diambra_attack_but_combination,
+                actions_stack=args.diambra_actions_stack,
+                noop_max=args.diambra_noop_max,
+                sticky_actions=args.action_repeat,
+                seed=args.seed,
+                rank=rank,
+                diambra_settings={},
+                diambra_wrappers={},
+            )
         else:
             env_spec = gym.spec(env_id).entry_point
             env = gym.make(env_id, render_mode="rgb_array")
@@ -258,7 +280,7 @@ def make_dict_env(
             elif "atari" in env_spec:
                 if args.atari_noop_max < 0:
                     raise ValueError(
-                        f"Negative value of atart_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
+                        f"Negative value of atari_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
                     )
                 env = gym.wrappers.AtariPreprocessing(
                     env,
@@ -365,8 +387,12 @@ def make_dict_env(
                 0, 255, (1 if args.grayscale_obs else 3, args.screen_size, args.screen_size), np.uint8
             )
 
-        if args.frame_stack > 0:
-            env = FrameStack(env, args.frame_stack, args.frame_stack_keys)
+        if cnn_keys is not None and len(cnn_keys) > 0 and args.frame_stack > 0:
+            if args.frame_stack_dilation <= 0:
+                raise ValueError(
+                    f"The frame stack dilation argument must be greater than zero, got: {args.frame_stack_dilation}"
+                )
+            env = FrameStack(env, args.frame_stack, cnn_keys, args.frame_stack_dilation)
 
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
