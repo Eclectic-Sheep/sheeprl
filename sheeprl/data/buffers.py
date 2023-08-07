@@ -1,4 +1,5 @@
 import os
+import shutil
 import typing
 import uuid
 import warnings
@@ -10,7 +11,6 @@ import torch
 from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
-import shutil
 
 
 class ReplayBuffer:
@@ -21,6 +21,7 @@ class ReplayBuffer:
         device: Union[device, str] = "cpu",
         memmap: bool = False,
         memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        obs_keys: Sequence[str] = ("observations",),
     ):
         """A replay buffer which internally uses a TensorDict.
 
@@ -56,6 +57,7 @@ class ReplayBuffer:
             self._buf = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
         self._pos = 0
         self._full = False
+        self.obs_keys = obs_keys
 
     @property
     def buffer(self) -> Optional[TensorDictBase]:
@@ -197,7 +199,8 @@ class ReplayBuffer:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         buf = self._buf[batch_idxes, env_idxes]
         if sample_next_obs:
-            buf["next_observations"] = self._buf["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
+            for k in self.obs_keys:
+                buf[f"next_{k}"] = self._buf[k][(batch_idxes + 1) % self._buffer_size, env_idxes]
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -36,7 +36,7 @@ def actor_loss(lambda_values: Tensor) -> Tensor:
 
 def reconstruction_loss(
     qo: Distribution,
-    observations: Tensor,
+    observations: Dict[str, Tensor],
     qr: Distribution,
     rewards: Tensor,
     p: Distribution,
@@ -52,7 +52,7 @@ def reconstruction_loss(
 
     Args:
         qo (Distribution): the distribution returned by the observation_model (decoder).
-        observations (Tensor): the observations provided by the environment.
+        observations (Dict[str, Tensor]): the observations provided by the environment.
         qr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         p (torch.distributios.distribution.Distribution): the distribution of the stochastic state.
@@ -76,8 +76,8 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    device = observations.device
-    observation_loss = -qo.log_prob(observations).mean()
+    device = rewards.device
+    observation_loss = -sum([qo[k].log_prob(observations[k]).mean() for k in qo.keys()])
     reward_loss = -qr.log_prob(rewards).mean()
     kl = kl_divergence(p, q).mean()
     state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl)

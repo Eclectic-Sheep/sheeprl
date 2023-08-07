@@ -4,6 +4,7 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
+from typing import Dict, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -24,14 +25,13 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, test
-from sheeprl.algos.dreamer_v2.utils import make_env
+from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, make_dict_env, polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -49,6 +49,8 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: DreamerV1Args,
+    cnn_keys: Sequence[str],
+    mlp_keys: Sequence[str],
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -97,9 +99,9 @@ def train(
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
-    observation_shape = data["observations"].shape[-3:]
     device = fabric.device
-    batch_obs = data["observations"] / 255 - 0.5
+    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
+    batch_obs.update({k: data[k] for k in mlp_keys})
 
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
@@ -129,7 +131,7 @@ def train(
     priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    embedded_obs = cnn_forward(world_model.encoder, batch_obs, observation_shape, (-1,))
+    embedded_obs = world_model.encoder(batch_obs)
 
     for i in range(0, sequence_length):
         # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
@@ -150,14 +152,12 @@ def train(
     latent_states = torch.cat((posteriors, recurrent_states), -1)
 
     # compute predictions for the observations
-    decoded_information = cnn_forward(
-        world_model.observation_model, latent_states, (latent_states.shape[-1],), observation_shape
-    )
+    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
     # compute the distribution of the reconstructed observations
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size observations.shape
-    qo = Independent(Normal(decoded_information, 1), len(observation_shape))
+    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
 
     # compute predictions for the rewards
     # it is necessary an Independent distribution because
@@ -233,7 +233,7 @@ def train(
     # imagine trajectories in the latent space
     for i in range(args.horizon):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions = torch.cat(actor(imagined_latent_states.detach()), dim=-1)
+        actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
 
         # imagination step
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
@@ -342,6 +342,7 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV1Args)
     args: DreamerV1Args = parser.parse_args_into_dataclasses()[0]
+    args.frame_stack = -1
     torch.set_num_threads(1)
 
     # Initialize Fabric
@@ -401,7 +402,7 @@ def main():
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + rank * args.num_envs,
                 rank,
@@ -421,15 +422,48 @@ def main():
     actions_dim = (
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
-    observation_shape = observation_space["rgb"].shape
+    # observation_shape = observation_space["rgb"].shape
     clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in observation_space.spaces.items():
+            if args.cnn_keys and k in args.cnn_keys:
+                if len(v.shape) == 3:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        mlp_keys = []
+        for k, v in observation_space.spaces.items():
+            if args.mlp_keys and k in args.mlp_keys:
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {type(observation_space)}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
 
     world_model, actor, critic = build_models(
         fabric,
         actions_dim,
-        observation_shape,
         is_continuous,
         args,
+        observation_space,
+        cnn_keys,
+        mlp_keys,
         state["world_model"] if args.checkpoint_path else None,
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
@@ -485,9 +519,7 @@ def main():
     aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = (
-        args.buffer_size // int(args.num_envs * fabric.world_size * args.action_repeat) if not args.dry_run else 2
-    )
+    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
     rb = AsyncReplayBuffer(
         buffer_size,
         args.num_envs,
@@ -525,13 +557,17 @@ def main():
         )
 
     # Get the first environment observation and start the optimization
-    obs = torch.from_numpy(envs.reset(seed=args.seed)[0]["rgb"]).view(
-        args.num_envs, *observation_shape
-    )  # [N_envs, N_obs]
+    o = envs.reset(seed=args.seed)[0]
+    obs = {}
+    for k in o.keys():
+        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+        if k in mlp_keys:
+            torch_obs = torch_obs.float()
+        step_data[k] = torch_obs
+        obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
-    step_data["observations"] = obs
     rb.add(step_data[None, ...])
     player.init_states()
 
@@ -549,16 +585,22 @@ def main():
                 )
         else:
             with torch.no_grad():
-                real_actions = actions = player.get_exploration_action(
-                    obs[None, ...].to(device) / 255 - 0.5, is_continuous
-                )
-                actions = torch.cat(actions, dim=-1).cpu().numpy()
+                preprocessed_obs = {}
+                for k, v in obs.items():
+                    if k in cnn_keys:
+                        preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
+                    else:
+                        preprocessed_obs[k] = v[None, ...].to(device)
+                mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+                if len(mask) == 0:
+                    mask = None
+                real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
+                actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
                     real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
-        next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-        next_obs = next_obs["rgb"]
+        o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
 
         if "final_info" in infos:
@@ -571,15 +613,20 @@ def main():
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Save the real next observation
-        real_next_obs = next_obs.copy()
+        real_next_obs = copy.deepcopy(o)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
-                        if k == "rgb":
-                            real_next_obs[idx] = v
+                        real_next_obs[k][idx] = v
 
-        next_obs = torch.from_numpy(next_obs).view(args.num_envs, *observation_shape)
+        next_obs = {}
+        for k in real_next_obs.keys():  # [N_envs, N_obs]
+            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
+            step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:])
+            if k in mlp_keys:
+                next_obs[k] = next_obs[k].float()
+                step_data[k] = step_data[k].float()
         actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
         rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
         dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
@@ -589,7 +636,6 @@ def main():
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = real_next_obs
         step_data["rewards"] = clip_rewards_fn(rewards)
         rb.add(step_data[None, ...])
 
@@ -598,7 +644,8 @@ def main():
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
-            reset_data["observations"] = next_obs[dones_idxes]
+            for k in next_obs.keys():
+                reset_data[k] = next_obs[k][dones_idxes]
             reset_data["dones"] = torch.zeros(reset_envs, 1)
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim))
             reset_data["rewards"] = torch.zeros(reset_envs, 1)
@@ -632,6 +679,8 @@ def main():
                     local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
                     aggregator,
                     args,
+                    cnn_keys,
+                    mlp_keys,
                 )
             step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
             if args.expl_decay:
@@ -676,7 +725,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(player, fabric, args)
+        test(player, fabric, args, cnn_keys, mlp_keys)
 
 
 if __name__ == "__main__":

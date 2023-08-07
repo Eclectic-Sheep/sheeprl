@@ -10,6 +10,7 @@ from math import prod
 from typing import List
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
@@ -235,8 +236,8 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
-        next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
+        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+        next_done = torch.zeros(1, args.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
     for update in range(1, num_updates + 1):
@@ -252,12 +253,12 @@ def main():
 
             # Single environment step
             obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            done = np.logical_or(done, truncated)
 
             with device:
-                obs = torch.tensor(obs).unsqueeze(0)  # [1, N_envs, N_obs]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))
-                done = done.view(1, args.num_envs, 1).float()  # [1, N_envs, 1]
-                reward = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, 1]
+                obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+                done = torch.tensor(done, dtype=torch.float32).view(1, args.num_envs, -1)  # [1, N_envs, 1]
+                reward = torch.tensor(reward, dtype=torch.float32).view(1, args.num_envs, -1)  # [1, N_envs, 1]
 
             step_data["dones"] = next_done
             step_data["values"] = values

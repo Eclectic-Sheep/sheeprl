@@ -82,3 +82,9 @@ class DreamerV1Args(StandardArgs):
     mine_start_position: Optional[List[float]] = Arg(
         default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
     )
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )

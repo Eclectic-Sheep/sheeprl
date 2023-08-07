@@ -3,40 +3,44 @@ import os
 import time
 from dataclasses import asdict
 from datetime import datetime
+from typing import Union
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
+from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
-from torch.distributions import Categorical
+from torch import nn
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric
 
+from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.args import PPOArgs
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, make_dict_env, normalize_tensor, polynomial_decay
 
 
 def train(
     fabric: Fabric,
-    actor: torch.nn.Module,
-    critic: torch.nn.Module,
+    agent: Union[nn.Module, _FabricModule],
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: PPOArgs,
+    cnn_keys,
+    mlp_keys,
 ):
     """Train the agent on the data collected from the environment."""
     indexes = list(range(data.shape[0]))
@@ -57,16 +61,17 @@ def train(
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
             batch = data[batch_idxes]
-            actions_logits = actor(batch["observations"])
-            new_values = critic(batch["observations"])
+            normalized_obs = {k: batch[k] / 255 - 0.5 if k in cnn_keys else batch[k] for k in mlp_keys + cnn_keys}
+            _, logprobs, entropy, new_values = agent(
+                normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+            )
 
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
             if args.normalize_advantages:
                 batch["advantages"] = normalize_tensor(batch["advantages"])
 
             # Policy loss
             pg_loss = policy_loss(
-                dist.log_prob(batch["actions"]),
+                logprobs,
                 batch["logprobs"],
                 batch["advantages"],
                 args.clip_coef,
@@ -79,7 +84,7 @@ def train(
             )
 
             # Entropy loss
-            ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
+            ent_loss = entropy_loss(entropy, args.loss_reduction)
 
             # Equation (9) in the paper
             loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
@@ -87,8 +92,7 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             fabric.backward(loss)
             if args.max_grad_norm > 0.0:
-                fabric.clip_gradients(actor, optimizer, max_norm=args.max_grad_norm)
-                fabric.clip_gradients(critic, optimizer, max_norm=args.max_grad_norm)
+                fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
             optimizer.step()
 
             # Update metrics
@@ -152,11 +156,11 @@ def main():
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + rank * args.num_envs + i,
                 rank,
-                args.capture_video,
+                args,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 mask_velocities=args.mask_vel,
@@ -165,27 +169,67 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
 
-    # Create the actor and critic models
-    actor = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
-        activation=torch.nn.ReLU,
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(envs.single_observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.cnn_keys and k in args.cnn_keys:
+                if len(v.shape) in {3, 4}:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.mlp_keys and k in args.mlp_keys:
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
+
+    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+    actions_dim = (
+        envs.single_action_space.shape
+        if is_continuous
+        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=1,
-        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
-        activation=torch.nn.ReLU,
+    # Create the actor and critic models
+    agent = PPOAgent(
+        actions_dim=actions_dim,
+        obs_space=envs.single_observation_space,
+        cnn_keys=cnn_keys,
+        mlp_keys=mlp_keys,
+        cnn_features_dim=args.cnn_features_dim,
+        mlp_features_dim=args.mlp_features_dim,
+        screen_size=args.screen_size,
+        cnn_channels_multiplier=args.cnn_channels_multiplier,
+        mlp_layers=args.mlp_layers,
+        dense_units=args.dense_units,
+        cnn_act=args.cnn_act,
+        mlp_act=args.dense_act,
+        layer_norm=args.layer_norm,
+        is_continuous=is_continuous,
+        device=fabric.device,
     )
 
     # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(list(actor.parameters()) + list(critic.parameters()), lr=args.lr, eps=1e-4)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+    optimizer = Adam(list(agent.parameters()), lr=args.lr, eps=args.eps)
+    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Create a metric aggregator to log the metrics
@@ -208,6 +252,7 @@ def main():
         device=device,
         memmap=args.memmap_buffer,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=cnn_keys + mlp_keys,
     )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
@@ -223,10 +268,19 @@ def main():
 
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
-    with device:
-        # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
-        next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
+    # Get the first environment observation and start the optimization
+    o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    next_obs = {}
+    for k in o.keys():
+        if k in mlp_keys + cnn_keys:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+            if k in cnn_keys:
+                torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            step_data[k] = torch_obs
+            next_obs[k] = torch_obs
+    next_done = torch.zeros(args.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, args.rollout_steps):
@@ -234,35 +288,45 @@ def main():
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                action_logits = actor.module(next_obs)
-                dist = Categorical(logits=action_logits.unsqueeze(-2))
-                action = dist.sample()
-                logprob = dist.log_prob(action)
-
-                # Estimate critic value
-                value = critic.module(next_obs)
+                normalized_obs = {
+                    k: next_obs[k] / 255 - 0.5 if k in cnn_keys else next_obs[k] for k in mlp_keys + cnn_keys
+                }
+                actions, logprobs, _, value = agent(normalized_obs)
+                if is_continuous:
+                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                else:
+                    real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
+                actions = torch.cat(actions, -1)
 
             # Single environment step
-            obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            o, reward, done, truncated, info = envs.step(real_actions)
+            done = np.logical_or(done, truncated)
 
             with device:
-                obs = torch.tensor(obs)  # [N_envs, N_obs]
-                rewards = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
-                done = done.view(args.num_envs, -1).float()
+                rewards = torch.tensor(reward, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
+                done = torch.tensor(done, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
 
             # Update the step data
             step_data["dones"] = next_done
             step_data["values"] = value
-            step_data["actions"] = action
-            step_data["logprobs"] = logprob
+            step_data["actions"] = actions
+            step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
-            step_data["observations"] = next_obs
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
 
             # Update the observation and done
+            obs = {}
+            for k in o.keys():
+                if k in mlp_keys + cnn_keys:
+                    torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+                    if k in cnn_keys:
+                        torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
+                    if k in mlp_keys:
+                        torch_obs = torch_obs.float()
+                    step_data[k] = torch_obs
+                    obs[k] = torch_obs
             next_obs = obs
             next_done = done
 
@@ -277,7 +341,8 @@ def main():
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            next_values = critic(next_obs)
+            normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cnn_keys else next_obs[k] for k in mlp_keys + cnn_keys}
+            next_values = agent.get_value(normalized_obs)
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
@@ -303,7 +368,7 @@ def main():
         else:
             gathered_data = local_data
 
-        train(fabric, actor, critic, optimizer, gathered_data, aggregator, args)
+        train(fabric, agent, optimizer, gathered_data, aggregator, args, cnn_keys, mlp_keys)
 
         if args.anneal_lr:
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
@@ -332,8 +397,7 @@ def main():
         # Checkpoint model
         if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run or update == num_updates:
             state = {
-                "actor": actor.state_dict(),
-                "critic": critic.state_dict(),
+                "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "args": asdict(args),
                 "update_step": update,
@@ -344,17 +408,17 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
+        test_env = make_dict_env(
             args.env_id,
             None,
             0,
-            args.capture_video,
+            args,
             fabric.logger.log_dir,
             "test",
             mask_velocities=args.mask_vel,
             vector_env_idx=0,
         )()
-        test(actor.module, test_env, fabric, args)
+        test(agent.module, test_env, fabric, args, cnn_keys, mlp_keys)
 
 
 if __name__ == "__main__":

@@ -207,7 +207,7 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=args.seed)[0]).float()  # [N_envs, N_obs]
+        obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
         if global_step < args.learning_starts:

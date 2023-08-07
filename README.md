@@ -9,24 +9,41 @@
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm                 | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
-| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
-| A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
-| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ                      | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
-| Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
-| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Algorithm                 | Coupled            | Decoupled          | Recurrent          | Vector obs         | Pixel obs          | Status             |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
 
-The environments supported by sheeprl are:
+The actions supported by sheeprl agents are:
+| Algorithm                 | Continuous         | Discrete           | Multi-Discrete     |
+| ------------------------- | -------------------| ------------------ | ------------------ |
+| A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :x:                | :heavy_check_mark: | :x:                |
+| SAC                       | :heavy_check_mark: | :x:                | :x:                |
+| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                |
+| DroQ                      | :heavy_check_mark: | :x:                | :x:                |
+| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
+The environments supported by sheeprl are:
 | Algorithm          | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
 | Classic Control    | `pip install -e .`           |                                                 | :heavy_check_mark: |
@@ -125,7 +142,7 @@ pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sh
 
 Now you can use one of the already available algorithms, or create your own.
 
-For example, to train a PPO agent on the CartPole environment, just run
+For example, to train a PPO agent on the CartPole environment with only vector-like observations, just run
 
 ```bash
 python sheeprl.py ppo --env_id CartPole-v1
@@ -138,6 +155,10 @@ python sheeprl.py --sheeprl_help
 ```
 
 That's all it takes to train an agent with SheepRL! 🎉
+
+> **Note**
+>
+> you can find more information about the observation space by following this [link](./howto/select_observations.md).
 
 ### :chart_with_upwards_trend: Check your results
 

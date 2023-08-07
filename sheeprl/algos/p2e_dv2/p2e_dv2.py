@@ -26,7 +26,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, make_env, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, test
 from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.algos.p2e_dv2.args import P2EDV2Args
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
@@ -35,9 +35,9 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import make_dict_env, polynomial_decay
 
-# Decomment the following two lines if you are using MineDojo on an headless machine
+# Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
 
 
@@ -512,7 +512,7 @@ def main():
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + rank * args.num_envs,
                 rank,
@@ -538,9 +538,7 @@ def main():
     if isinstance(observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -550,9 +548,7 @@ def main():
                     )
         mlp_keys = []
         for k, v in observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -563,7 +559,9 @@ def main():
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
     obs_keys = cnn_keys + mlp_keys
@@ -602,7 +600,7 @@ def main():
             ens_list.append(
                 MLP(
                     input_dims=int(
-                        np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
+                        sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
                     ),
                     output_dim=args.stochastic_size * args.discrete_size,
                     hidden_sizes=[args.dense_units] * args.mlp_layers,
@@ -766,7 +764,7 @@ def main():
             step_data[k] = torch_obs
             obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":

@@ -1,5 +1,10 @@
+import copy
+from collections import deque
+from typing import Sequence
+
 import gymnasium as gym
 import numpy as np
+from gymnasium.core import Env
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -62,3 +67,52 @@ class ActionRepeat(gym.Wrapper):
             total_reward += reward
             current_step += 1
         return obs, total_reward, done, truncated, info
+
+
+class FrameStack(gym.Wrapper):
+    def __init__(self, env: Env, num_stack: int, cnn_keys: Sequence[str]):
+        super().__init__(env)
+        if num_stack <= 0:
+            raise ValueError(f"Invalid value for num_stack, expected a value greater than zero, got {num_stack}")
+        if not isinstance(env.observation_space, gym.spaces.Dict):
+            raise RuntimeError(
+                f"Expected an observation space of type gym.spaces.Dict, got: {type(env.observation_space)}"
+            )
+        self._env = env
+        self._num_stack = num_stack
+        self._cnn_keys = []
+        self.observation_space = copy.deepcopy(self._env.observation_space)
+        for k, v in self._env.observation_space.spaces.items():
+            if (
+                cnn_keys
+                and (k in cnn_keys or (len(cnn_keys) == 1 and cnn_keys[0].lower() == "all"))
+                and len(v.shape) == 3
+            ):
+                self._cnn_keys.append(k)
+                self.observation_space[k] = gym.spaces.Box(
+                    np.repeat(self._env.observation_space[k].low[None, ...], num_stack, axis=0),
+                    np.repeat(self._env.observation_space[k].high[None, ...], num_stack, axis=0),
+                    (self._num_stack, *self._env.observation_space[k].shape),
+                    self._env.observation_space[k].dtype,
+                )
+
+        if self._cnn_keys is None or len(self._cnn_keys) == 0:
+            raise RuntimeError(f"Specify at least one valid cnn key to be stacked")
+        self._frames = {k: deque(maxlen=num_stack) for k in self._cnn_keys}
+
+    def step(self, action):
+        obs, reward, done, truncated, info = self._env.step(action)
+        stacked_obs = obs
+        for k in self._cnn_keys:
+            self._frames[k].append(obs[k])
+            stacked_obs[k] = np.stack(list(self._frames[k]), axis=0)
+        return stacked_obs, reward, done, truncated, info
+
+    def reset(self, seed=None, **kwargs):
+        obs, info = self._env.reset(seed=seed, **kwargs)
+
+        [self._frames[k].clear() for k in self._cnn_keys]
+        for k in self._cnn_keys:
+            [self._frames[k].append(obs[k]) for _ in range(self._num_stack)]
+            obs[k] = np.stack(list(self._frames[k]), axis=0)
+        return obs, info

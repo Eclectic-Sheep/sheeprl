@@ -21,7 +21,7 @@ requires-python = ">=3.8,<3.11"
 classifiers = ["Programming Language :: Python"]
 dependencies = [
   "gymnasium[box2d]==0.29.*",
-  "moviepy==1.0.*",
+  "moviepy@git+https://github.com/Zulko/moviepy.git",
   "tensordict==0.1.*",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
@@ -60,8 +60,9 @@ atari = [
   "gymnasium[accept-rom-license]==0.29.*",
   "gymnasium[other]==0.29.*",
 ]
-minedojo = ["minedojo==0.1"]
+minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
 minerl = ["minerl==0.4.4"]
+diambra = ["diambra", "diambra-arena"]
 
 [tool.ruff]
 line-length = 120
