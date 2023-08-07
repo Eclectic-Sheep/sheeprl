@@ -1,19 +1,18 @@
-from dataclasses import asdict
+import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from tqdm import tqdm
-from transformers import AutoTokenizer, PreTrainedTokenizer
-from sheeprl.algos.rlhf.args import GPT2, OPT, TextDataArgs
-from sheeprl.algos.rlhf.utils import prepare_tokenizer
-
-from sheeprl.utils.parser import HfArgumentParser
-import json
-
 import torch
 from datasets import load_dataset
+from tqdm import tqdm
+from transformers import PreTrainedTokenizer
+
+from sheeprl.algos.rlhf.args import TextDataArgs
+from sheeprl.algos.rlhf.utils import prepare_tokenizer
+from sheeprl.utils.parser import HfArgumentParser
 
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
@@ -32,17 +31,21 @@ def prepare(
     remove_same_responses: bool = True,
     remove_same_inputs: bool = True,
     minimum_response_length: int = 2,
+    save_skipped_examples: bool = False,
+    validation_percentage: float = 0.1,
+    shuffle: bool = True,
     seed: int = 42,
 ) -> None:
     destination_dir = Path(destination_dir)
     tokenizer = prepare_tokenizer(tokenizer_name)
     os.makedirs(destination_dir, exist_ok=True)
-    cache_dir = destination_dir / "cache"
+    cache_dir = destination_dir.parent / "cache"
     for split in ["train", "test"]:
         print(f"Processing {split} split ...")
         dataset = load_dataset("Dahoas/full-hh-rlhf", split=split, cache_dir=cache_dir)
         # shuffle the dataset
-        dataset = dataset.shuffle(seed=seed)
+        if shuffle:
+            dataset = dataset.shuffle(seed=seed)
         if stage == "finetune":
             # first half of the dataset
             dataset = dataset.select(range(len(dataset) // 2))
@@ -140,8 +143,17 @@ def prepare(
             samples.append(output)
             hashes.append(input_hash)
         print(f"Processed {len(samples)} samples, skipped {len(skipped_samples)} samples")
-        torch.save(samples, destination_dir / f"{stage}_{split}.pt")
-        json.dump(skipped_samples, open(destination_dir / f"{stage}_{split}_skipped.json", "w"), indent=4)
+        if split == "train":
+            print(f"Using {validation_percentage * 100}% of the training data for validation")
+            num_validation_samples = int(len(samples) * validation_percentage)
+            validation_samples = samples[:num_validation_samples]
+            train_samples = samples[num_validation_samples:]
+            torch.save(train_samples, destination_dir / f"{stage}_train.pt")
+            torch.save(validation_samples, destination_dir / f"{stage}_validation.pt")
+        else:
+            torch.save(samples, destination_dir / f"{stage}_{split}.pt")
+        if save_skipped_examples:
+            json.dump(skipped_samples, open(destination_dir / f"{stage}_{split}_skipped.json", "w"), indent=4)
 
     example_prompt_path = destination_dir / "example_prompt.pt"
     example_prompt = create_example_prompt(tokenizer, max_length=max_length)
@@ -167,18 +179,9 @@ def create_example_prompt(tokenizer: PreTrainedTokenizer, max_length: int) -> Di
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        parser = HfArgumentParser([TextDataArgs])
-        dataclasses = parser.parse_args_into_dataclasses()
-        data_args: TextDataArgs = dataclasses[0]
-    else:
-        data_args = TextDataArgs(
-            destination_dir="data/Dahoas/full-hh-rlhf-gpt2",
-            tokenizer_name=GPT2().model_name,
-            stage="finetune",
-            max_length=512,
-            max_prompt_length=512,
-        )
+    parser = HfArgumentParser([TextDataArgs])
+    dataclasses = parser.parse_args_into_dataclasses()
+    data_args: TextDataArgs = dataclasses[0]
     prepare(**asdict(data_args))
     with open(Path(data_args.destination_dir) / "args.json", "w") as f:
         json.dump(asdict(data_args), f, indent=4)
