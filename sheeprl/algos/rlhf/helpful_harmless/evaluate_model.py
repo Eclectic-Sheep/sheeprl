@@ -1,18 +1,19 @@
 import os
 import sys
-from _pytest.cacheprovider import Path
+
 import lightning
 import torch
+from _pytest.cacheprovider import Path
+from dotenv import load_dotenv
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from tqdm.auto import tqdm
+
 from sheeprl.algos.rlhf.args import EvaluateArgs, EvaluatePerplexityArgs, ModelArgs, TextDataArgs
 from sheeprl.algos.rlhf.data import SFTCollate
 from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.models import CasualModel
-from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json
+from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json, prepare_tokenizer
 from sheeprl.utils.parser import HfArgumentParser
-from tqdm.auto import tqdm
-from dotenv import load_dotenv
 
 
 @torch.inference_mode()
@@ -63,10 +64,7 @@ def main():
     fabric.print(f"Evaluation Experiment: {eval_args.experiment_dir}")
 
     # Setup Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = prepare_tokenizer(model_args.model_name)
 
     if eval_args.use_pretrained:
         fabric.print("\nLoading Pretrained model")
@@ -88,7 +86,7 @@ def main():
     # Setup Dataloaders
     collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
 
-    test_data = torch.load(Path(data_args.destination_dir) / f"sft_test.pt")
+    test_data = torch.load(Path(data_args.destination_dir) / f"finetune_test.pt")
     test_dataloader = DataLoader(
         test_data,
         shuffle=False,
