@@ -45,7 +45,7 @@ class DiambraWrapper(core.Env):
             "frame_shape": (*screen_size, int(1 * grayscale)),
         }
         if sticky_actions > 1:
-            if settings["step_ratio"] is not None and settings["step_ratio"] > 1:
+            if "step_ratio" not in settings or settings["step_ratio"] > 1:
                 warnings.warn(
                     f"step_ratio parameter modified to 1 because the sticky action is active ({sticky_actions})"
                 )
@@ -76,7 +76,7 @@ class DiambraWrapper(core.Env):
                 high = self._env.observation_space[k].high
                 shape = self._env.observation_space[k].shape
                 dtype = self._env.observation_space[k].dtype
-            if isinstance(self._env.observation_space[k], gym.spaces.Discrete):
+            elif isinstance(self._env.observation_space[k], gym.spaces.Discrete):
                 low = 0
                 high = self._env.observation_space[k].n - 1
                 shape = (1,)
@@ -86,15 +86,17 @@ class DiambraWrapper(core.Env):
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
         self.observation_space = gymnasium.spaces.Dict(obs)
 
-    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, infos = self._env.step(action)
-        obs = {
+    def _convert_obs(self, obs):
+        return {
             k: (np.array(v) if not isinstance(v, np.ndarray) else v).reshape(self.observation_space[k].shape)
             for k, v in obs.items()
         }
-        return obs, reward, done, False, infos
+
+    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        obs, reward, done, infos = self._env.step(action)
+        return self._convert_obs(obs), reward, done, False, infos
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> tuple[Any, Dict[str, Any]]:
-        return self._env.reset(seed=seed, options=options), {}
+        return self._convert_obs(self._env.reset()), {}
