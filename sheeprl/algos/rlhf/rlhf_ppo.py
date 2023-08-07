@@ -1,9 +1,7 @@
 import os
-from pathlib import Path
-import sys
 import time
-from dataclasses import asdict
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Union
 
 import lightning as L
 import torch
@@ -11,16 +9,18 @@ from dotenv import load_dotenv
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
 from sheeprl.algos.rlhf.data import LeftPadCollate
+from sheeprl.algos.rlhf.metrics import PPOMetricManager
 from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, ppo_step
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
-from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
+from transformers import GenerationConfig, PreTrainedTokenizer
 
-from sheeprl.algos.rlhf.args import OPT, ExploreArgs, GenerationArgs, ModelArgs, PPOArgs, TextDataArgs
-from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel
+from sheeprl.algos.rlhf.args import ExploreArgs, GenerationArgs, ModelArgs, PPOArgs, TextDataArgs
+from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel, RewardModel
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
     get_last_checkpoint_path,
@@ -28,14 +28,13 @@ from sheeprl.algos.rlhf.utils import (
     log_text,
     prepare_generation_config,
     prepare_optimizer_parameters,
+    prepare_tokenizer,
     save_args_to_json,
     setup_finetuning,
     trainable_parameter_summary,
 )
-
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-
 
 __all__ = ["main"]
 
@@ -70,18 +69,11 @@ def generate(
 @register_algorithm()
 def main():
     # Retrieve arguments
-    if len(sys.argv) > 1:
-        parser = HfArgumentParser([PPOArgs, ModelArgs, ExploreArgs])
-        dataclasses = parser.parse_args_into_dataclasses()
-        train_args: PPOArgs = dataclasses[0]
-        model_args: ModelArgs = dataclasses[1]
-        gen_args: ExploreArgs = dataclasses[2]
-    else:
-        train_args = PPOArgs(data_dir="data/Dahoas/static-hh")
-        model_args = OPT()
-        gen_args = ExploreArgs()
-        train_args.sft_experiment_dir = os.environ.get("SFT_DIR")
-        train_args.rm_experiment_dir = os.environ.get("RM_DIR")
+    parser = HfArgumentParser([PPOArgs, ModelArgs, ExploreArgs])
+    dataclasses = parser.parse_args_into_dataclasses()
+    train_args: PPOArgs = dataclasses[0]
+    model_args: ModelArgs = dataclasses[1]
+    gen_args: ExploreArgs = dataclasses[2]
 
     if train_args.sft_experiment_dir is None or train_args.rm_experiment_dir is None:
         raise ValueError("For PPO, checkpoints coming from SFT and RM training are required.")
@@ -97,6 +89,10 @@ def main():
     fabric.launch()
     fabric.seed_everything(train_args.seed + fabric.global_rank)
     fabric.print(f"Fabric Rank: {fabric.global_rank}")
+
+    # Setup Metrics
+    metrics = PPOMetricManager(log_interval=train_args.log_interval).to(fabric.device)
+
     # Setup for rank 0
     if fabric.is_global_zero:
         # Setup Logger
@@ -114,10 +110,7 @@ def main():
         fabric.logger.log_hyperparams(all_args)
 
     # Setup Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = prepare_tokenizer(model_args.model_name)
 
     sft_exp_args = load_args_from_json(experiment_dir=train_args.sft_experiment_dir)
     sft_model_args = ModelArgs(**sft_exp_args["model_args"])
@@ -156,7 +149,7 @@ def main():
 
     # Reward model
     fabric.print("\nLoading reward model")
-    reward_model = CriticModel.from_checkpoint(
+    reward_model = RewardModel.from_checkpoint(
         device=fabric.device,
         model_args=rm_model_args,
         path=rm_checkpoint_path,
@@ -193,31 +186,42 @@ def main():
     example_prompt = torch.load(Path(train_args.data_dir) / f"example_prompt.pt")
 
     # Setup Optimizer Scheduler fabric models
+    optimizer_cls: Union[torch.optim.Adam, torch.optim.AdamW] = getattr(torch.optim, train_args.optimizer)
+
     actor_trainable_params, _, _ = prepare_optimizer_parameters(actor_model, weight_decay=train_args.weight_decay)
-    actor_optimizer = torch.optim.Adam(actor_trainable_params, lr=train_args.actor_learning_rate, betas=(0.9, 0.95))
+    actor_optimizer = optimizer_cls(
+        actor_trainable_params,
+        lr=train_args.actor_learning_rate,
+        eps=train_args.optimizer_eps,
+        betas=(train_args.optimizer_beta1, train_args.optimizer_beta2),
+    )
     actor_model, actor_optimizer = fabric.setup(actor_model, actor_optimizer)
 
     critic_trainable_params, _, _ = prepare_optimizer_parameters(critic_model, weight_decay=train_args.weight_decay)
-    critic_optimizer = torch.optim.Adam(critic_trainable_params, lr=train_args.critic_learning_rate, betas=(0.9, 0.95))
+    critic_optimizer = optimizer_cls(
+        critic_trainable_params,
+        lr=train_args.critic_learning_rate,
+        eps=train_args.optimizer_eps,
+        betas=(train_args.optimizer_beta1, train_args.optimizer_beta2),
+    )
     critic_model, critic_optimizer = fabric.setup(critic_model, critic_optimizer)
 
     reward_model = fabric.setup_module(reward_model)
     ref_model = fabric.setup_module(ref_model)
 
-    gen_text, score = generate(
-        actor_model=actor_model,
-        reward_model=reward_model,
-        tokenizer=tokenizer,
-        generation_config=eval_generation_config,
-        example_prompt=example_prompt,
-        device=fabric.device,
-    )
-    log_text(fabric, gen_text, "test/example", step=0)
-    fabric.log("test/example_last_reward", score, step=0)
+    if fabric.is_global_zero:
+        gen_text, score = generate(
+            actor_model=actor_model,
+            reward_model=reward_model,
+            tokenizer=tokenizer,
+            generation_config=eval_generation_config,
+            example_prompt=example_prompt,
+            device=fabric.device,
+        )
+        log_text(fabric, gen_text, "test/example", step=0)
+        fabric.log("test/example_last_reward", score, step=0)
 
     num_training_steps = train_args.epochs * len(train_dataloader)
-
-    iterator = tqdm(range(num_training_steps)) if fabric.is_global_zero else range(num_training_steps)
 
     # KL Controller
     if train_args.adaptive_kl_coeff:
@@ -229,9 +233,9 @@ def main():
 
     actor_model.train()
     critic_model.train()
-    data_iterator = None
-    actor_grads = None
-    critic_grads = None
+    iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
+    data_iterator = iter(train_dataloader)
+
     for k in iterator:
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
@@ -241,10 +245,10 @@ def main():
 
         # Setup batch data
         batch = next(data_iterator)
-
+        max_prompt_length = batch["prompt_input_ids"].shape[1]
         t0 = time.time()
 
-        rollout, metrics = collect_rollout(
+        rollout, sample_output = collect_rollout(
             batch=batch,
             actor_model=actor_model,
             critic_model=critic_model,
@@ -254,16 +258,19 @@ def main():
             kl_controller=kl_controller,
             train_args=train_args,
             tokenizer=tokenizer,
+            fabric=fabric,
+            metrics=metrics,
         )
         time_rollout = time.time() - t0
         rollout_dataloader = DataLoader(
-            rollout, batch_size=train_args.micro_batch_size, shuffle=False, collate_fn=lambda x: x
+            rollout, batch_size=train_args.micro_batch_size, shuffle=True, collate_fn=lambda x: x
         )
-        fabric.setup_dataloaders(rollout_dataloader)
+        rollout_dataloader = fabric.setup_dataloaders(rollout_dataloader, use_distributed_sampler=False)
         for _ in range(train_args.ppo_epochs):
             accumulator_counter = 0
-            for micro_batch in rollout_dataloader:  # micro_batch_size
+            for micro_batch in rollout_dataloader:
                 is_accumulating = (accumulator_counter) % train_args.gradient_accumulation_steps != 0
+
                 with fabric.no_backward_sync(actor_model, enabled=is_accumulating), fabric.no_backward_sync(
                     critic_model, enabled=is_accumulating
                 ):
@@ -272,10 +279,10 @@ def main():
                         actor_model=actor_model,
                         critic_model=critic_model,
                         ppo_args=train_args,
-                        num_new_tokens=gen_args.max_new_tokens,
+                        max_prompt_length=max_prompt_length,
                     )
                     fabric.backward(policy_loss / train_args.gradient_accumulation_steps)
-                    fabric.backward(value_loss / train_args.gradient_accumulation_steps)
+                    fabric.backward((value_loss * train_args.vf_coeff) / train_args.gradient_accumulation_steps)
                 if not is_accumulating:
                     actor_grads = compute_grad_norm(model=actor_model)
                     fabric.clip_gradients(
@@ -293,36 +300,40 @@ def main():
                 accumulator_counter += 1
 
         time_ppo = time.time() - t0 - time_rollout
+        with torch.no_grad():
+            metrics.info_rollout_time.update(time_rollout)
+            metrics.info_ppo_time.update(time_ppo)
+            metrics.train_actor_loss.update(policy_loss.item())
+            metrics.train_critic_loss.update(value_loss.item())
+            metrics.info_actor_grad_norm.update(actor_grads)
+            metrics.info_critic_grad_norm.update(critic_grads)
+            metrics.info_kl_coeff.update(kl_controller.value)
+
         if k > 0 and (k % train_args.eval_interval == 0 or last_step):
-            gen_text, score = generate(
-                actor_model=actor_model,
-                reward_model=reward_model,
-                tokenizer=tokenizer,
-                generation_config=eval_generation_config,
-                example_prompt=example_prompt,
-                device=fabric.device,
-            )
-            log_text(fabric, gen_text, "test/example", step=k)
-            fabric.log("test/example_last_reward", score, step=k)
+            if fabric.is_global_zero:
+                gen_text, score = generate(
+                    actor_model=actor_model,
+                    reward_model=reward_model,
+                    tokenizer=tokenizer,
+                    generation_config=eval_generation_config,
+                    example_prompt=example_prompt,
+                    device=fabric.device,
+                )
+                log_text(fabric, sample_output, "info/rollout_sample", step=k)
+                log_text(fabric, gen_text, "info/example_sample", step=k)
+                fabric.log("test/example_last_reward", score, step=k)
+
+        fabric.barrier()
         if k % train_args.log_interval == 0 or last_step:
-            metrics["train/policy_loss"] = policy_loss.item()
-            metrics["train/value_loss"] = value_loss.item()
-            metrics["train/rollout_time"] = time_rollout
-            metrics["train/ppo_time"] = time_ppo
-            metrics["ino/kl_div"] = kl_controller.value
-            if actor_grads is not None:
-                metrics["info/actor_grad_norm"] = actor_grads
-            if critic_grads is not None:
-                metrics["info/critic_grad_norm"] = critic_grads
-            if isinstance(iterator, tqdm):
-                description = f"iter {k}"
-                for key, value in metrics.items():
-                    if isinstance(value, float):
-                        fabric.log(key, value, step=k)
-                        if "train/" in key:
-                            description += f", {key.replace('train/','')} {value:.2f}"
-                    if isinstance(value, str):
-                        log_text(fabric, value, key, step=k)
+            computed_metrics = metrics.compute_all()
+            metrics.log_all(fabric=fabric, step=k, metrics_dict=computed_metrics)
+
+            if not iterator.disable:
+                description = f"iter {k}, rollout-time: {time_rollout*1000:.2f}ms, ppo-time: {time_ppo*1000:.2f}ms"
+                for metric_name, metric_value in computed_metrics.items():
+                    if metric_name.startswith("info/") or metric_name.startswith("debug/"):
+                        continue
+                    description += f", {metric_name}: {metric_value:.3f}"
                 iterator.set_description(description)
 
         if k > 0 and (k % train_args.save_interval == 0 or last_step):
@@ -333,7 +344,7 @@ def main():
                 model_args=model_args,
                 step=k,
             )
-    fabric.print("Experiment is saved in", train_args.experiment_dir)
+    fabric.print("Experiment output folder: ", train_args.experiment_dir)
 
 
 if __name__ == "__main__":
