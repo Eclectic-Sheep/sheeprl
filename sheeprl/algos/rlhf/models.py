@@ -2,15 +2,10 @@ import os
 from typing import Optional
 
 import lightning as L
-from lightning_utilities.core.rank_zero import rank_zero_only
 import torch
 import torch.nn.functional as F
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    PreTrainedModel,
-)
+from lightning_utilities.core.rank_zero import rank_zero_only
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, PreTrainedModel
 
 from sheeprl.algos.rlhf.args import ModelArgs, TrainArgs
 from sheeprl.algos.rlhf.lora_utils import add_lora, get_lora_state_dict, merge_lora
@@ -55,7 +50,6 @@ class CasualModel(torch.nn.Module):
         path: Optional[str] = None,
         freeze: bool = False,
     ):
-        model_args.casual = True
         model = load_hf_transformer(model_args)
         model = cls(model=model)
         if path is not None:
@@ -92,13 +86,13 @@ class CasualModel(torch.nn.Module):
 class ActorModel(CasualModel):
     def __init__(self, model):
         super().__init__(model=model)
-        self.model = model
 
     def forward(self, **kwargs):
         input_ids = kwargs["input_ids"]
         out = self.model(**kwargs)
-        actor_log_probs = F.log_softmax(out.logits[:, :-1, :], dim=-1)  # (B, T, vocab_size)
-        selected_actor_log_probs = actor_log_probs.gather(dim=-1, index=input_ids[:, 1:].unsqueeze(-1))  # (B, T, 1)
+        # Model predicts next token log probability here.
+        actor_log_probs = F.log_softmax(out.logits[:, :-1, :], dim=-1)
+        selected_actor_log_probs = actor_log_probs.gather(dim=-1, index=input_ids[:, 1:].unsqueeze(-1))
         return selected_actor_log_probs.squeeze(-1)
 
 
@@ -106,18 +100,16 @@ class CriticModel(torch.nn.Module):
     def __init__(self, model, embedding_dim, transformer_name):
         super().__init__()
         if transformer_name is None:
-            if isinstance(model, AutoModelForCausalLM):
-                # lets try to find the transformer
-                if hasattr(model, "transformer"):
-                    self.transformer = model.transformer
-                elif hasattr(model, "model"):
-                    self.transformer = model.model
-                else:
-                    raise ValueError(
-                        f"{model} Could not find transformer, seached for 'transformer' and 'model' attributes"
-                    )
+            # If any transformer name is provided, we search for common attribute names usually
+            # avaliable inside huggingface library.
+            if hasattr(model, "transformer"):
+                self.transformer = model.transformer
+            elif hasattr(model, "model"):
+                self.transformer = model.model
             else:
-                self.transformer = model
+                raise ValueError(
+                    f"{model} Could not find transformer, searched for 'transformer' and 'model' attributes, if your model has a different attribute name, please specify it in `transformer_name`"
+                )
         else:
             self.transformer = getattr(model, transformer_name)
         self.head = torch.nn.Linear(embedding_dim, 1, bias=False)
@@ -147,7 +139,6 @@ class CriticModel(torch.nn.Module):
         path: Optional[str] = None,
         freeze: bool = False,
     ):
-        model_args.casual = False
         model = load_hf_transformer(model_args)
         transformer_config = model.base_model.config
         if model_args.embedding_dim_name is None:
@@ -161,18 +152,19 @@ class CriticModel(torch.nn.Module):
                 raise ValueError(
                     f"`embedding_dim_name={model_args.embedding_dim_name}` not found in transformer_config"
                 )
-        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=None)
+        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_args.transformer_name)
         if path is not None:
             sd = torch.load(path, map_location=device)
             new_sd = {}
             for k, v in sd.items():
                 new_k = k.replace("model.model", "transformer")
+                new_k = new_k.replace("model.", "")
                 new_sd[new_k] = v
             if model_args.finetune_mode == "lora":
                 add_lora(model, model_args)
                 model.load_state_dict(new_sd, strict=False)
                 merge_lora(model)
-            elif model_args.finetune_mode == "last_layer":
+            elif model_args.finetune_mode == "last_layer" or model_args.casual:
                 model.load_state_dict(new_sd, strict=False)
             else:
                 model.load_state_dict(new_sd)
@@ -194,3 +186,19 @@ class CriticModel(torch.nn.Module):
         else:
             sd = self.state_dict()
         fabric.save(output_file, sd)
+
+
+class RewardModel(CriticModel):
+    def __init__(self, model, embedding_dim, transformer_name):
+        super().__init__(model, embedding_dim, transformer_name)
+        self.gain = torch.nn.Parameter(torch.tensor(1.0), requires_grad=True)
+        self.bias = torch.nn.Parameter(torch.tensor(0.0), requires_grad=True)
+
+    def forward(self, **kwargs):
+        value_out = super().forward(**kwargs)
+        return value_out * self.gain + self.bias
+
+    def get_head_state_dict(self):
+        head_state_dict = super().get_head_state_dict()
+        head_state_dict.update({"gain": self.gain, "bias": self.bias})
+        return head_state_dict
