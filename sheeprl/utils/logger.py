@@ -1,7 +1,6 @@
 import os
 import pathlib
 import time
-from dataclasses import asdict
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -40,7 +39,6 @@ def create_tensorboard_logger(
             run_name = "resume_from_checkpoint"
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         log_dir = logger.log_dir
-        fabric.logger.log_hyperparams(asdict(args))
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
 

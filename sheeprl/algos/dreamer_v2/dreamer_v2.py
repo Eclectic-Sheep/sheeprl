@@ -356,6 +356,7 @@ def main():
     logger, log_dir = create_tensorboard_logger(fabric, args, "dreamer_v2")
     if fabric.is_global_zero:
         fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(asdict(args))
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
