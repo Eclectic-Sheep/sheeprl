@@ -90,6 +90,7 @@ def train(
         world_model (WorldModel): the world model wrapped with Fabric.
         actor_task (_FabricModule): the actor for solving the task.
         critic_task (_FabricModule): the critic for solving the task.
+        target_critic_task (nn.Module): the target critic for solving the task.
         world_optimizer (_FabricOptimizer): the world optimizer.
         actor_task_optimizer (_FabricOptimizer): the actor optimizer for solving the task.
         critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
@@ -100,8 +101,11 @@ def train(
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
         actor_exploration (_FabricModule): the actor for exploration.
         critic_exploration (_FabricModule): the critic for exploration.
+        target_critic_exploration (nn.Module): the target critic for exploration.
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
         critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
+        is_continuous (bool): whether or not are continuous actions.
+        actions_dim (Sequence[int]): the actions dimension.
         is_exploring (bool): whether the agent is exploring.
         cnn_keys: (Sequence[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder.
             Default to ["rgb"].
