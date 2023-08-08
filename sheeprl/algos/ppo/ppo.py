@@ -105,6 +105,15 @@ def train(
 def main():
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+
+    if "minedojo" in args.env_id:
+        raise ValueError(
+            "MineDojo is not currently supported by PPO agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
     initial_ent_coef = copy.deepcopy(args.ent_coef)
     initial_clip_coef = copy.deepcopy(args.clip_coef)
 
