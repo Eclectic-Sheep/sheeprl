@@ -51,7 +51,6 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     args: DreamerV2Args,
-    is_continuous: bool,
     cnn_keys: Sequence[str],
     mlp_keys: Sequence[str],
     actions_dim: Sequence[int],
@@ -96,13 +95,16 @@ def train(
         world_model (_FabricModule): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
+        target_critic (nn.Module): the target critic model.
         world_optimizer (Optimizer): the world optimizer.
         actor_optimizer (Optimizer): the actor optimizer.
         critic_optimizer (Optimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV2Args): the configs.
-        is_continuous (bool): whether the action space is a continuous or discrete space
+        cnn_keys (Sequence[str]): the cnn keys to encode/decode.
+        mlp_keys (Sequence[str]): the mlp keys to encode/decode.
+        actions_dim (Sequence[int]): the actions dimension.
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -166,7 +168,7 @@ def train(
     else:
         pc = continue_targets = None
 
-    # Reshape posterior and prior logits to shape [B, T, 32, 32]
+    # Reshape posterior and prior logits to shape [T, B, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
     posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
 

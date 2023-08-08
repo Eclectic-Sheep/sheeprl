@@ -173,11 +173,11 @@ class RecurrentModel(nn.Module):
 
     Args:
         input_size (int): the input size of the model.
-        dense_units (int): the number of dense units.
         recurrent_state_size (int): the size of the recurrent state.
+        dense_units (int): the number of dense units.
         activation (nn.Module): the activation function.
             Default to ELU.
-        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
+        layer_norm (bool): whether to use the LayerNorm inside the GRU.
             Defaults to True.
     """
 
@@ -220,10 +220,10 @@ class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
     Args:
-        recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
+        recurrent_model (_FabricModule): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (_FabricModule): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        transition_model (_FabricModule): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
@@ -231,9 +231,9 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        transition_model: nn.Module,
+        recurrent_model: _FabricModule,
+        representation_model: _FabricModule,
+        transition_model: _FabricModule,
         discrete: Optional[int] = 32,
     ) -> None:
         super().__init__()
@@ -340,10 +340,14 @@ class Actor(nn.Module):
             Default to 400.
         activation (int): the activation function to apply after the dense layers.
             Default to nn.ELU.
+        mlp_layers (int): the number of linear layers.
+            Default to 4.
         distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
             `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
             space is a discrete one, `trunc_normal` otherwise.
             Defaults to `auto`.
+        layer_norm (bool): whether or not to use the layer norm.
+            Default to False.
     """
 
     def __init__(
@@ -392,7 +396,7 @@ class Actor(nn.Module):
         self.min_std = min_std
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -400,6 +404,10 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            is_training (bool): whether it is in the training phase.
+                Default to True.
+            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -469,7 +477,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -477,6 +485,10 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            is_training (bool): whether it is in the training phase.
+                Default to True.
+            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -551,12 +563,12 @@ class Player(nn.Module):
     The model of the Dreamer_v1 player.
 
     Args:
-        encoder (_FabricModule): the encoder.
-        recurrent_model (_FabricModule): the recurrent model.
-        representation_model (_FabricModule): the representation model.
-        actor (_FabricModule): the actor.
+        encoder (nn.Module): the encoder.
+        recurrent_model (nn.Module): the recurrent model.
+        representation_model (nn.Module): the representation model.
+        actor (nn.Module): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        expl_amout (float): the exploration amout to use during training.
+        expl_amount (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
@@ -568,10 +580,10 @@ class Player(nn.Module):
 
     def __init__(
         self,
-        encoder: _FabricModule,
-        recurrent_model: _FabricModule,
-        representation_model: _FabricModule,
-        actor: _FabricModule,
+        encoder: nn.Module,
+        recurrent_model: nn.Module,
+        representation_model: nn.Module,
+        actor: nn.Module,
         actions_dim: Sequence[int],
         expl_amount: float,
         num_envs: int,
@@ -617,7 +629,7 @@ class Player(nn.Module):
         self,
         obs: Dict[str, Tensor],
         is_continuous: bool,
-        mask: Optional[Dict[str, np.ndarray]] = None,
+        mask: Optional[Dict[str, Tensor]] = None,
     ) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
@@ -625,6 +637,8 @@ class Player(nn.Module):
         Args:
             obs (Dict[str, Tensor]): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
+            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
+                Default to None.
 
         Returns:
             The actions the agent has to perform.
@@ -649,7 +663,7 @@ class Player(nn.Module):
         self,
         obs: Dict[str, Tensor],
         is_training: bool = True,
-        mask: Optional[Dict[str, np.ndarray]] = None,
+        mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
         Return the greedy actions.
@@ -658,6 +672,8 @@ class Player(nn.Module):
             obs (Dict[str, Tensor]): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
+            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
+                Default to None.
 
         Returns:
             The actions the agent has to perform.
@@ -688,7 +704,7 @@ def build_models(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -704,6 +720,8 @@ def build_models(
         actor_state: (Dict[str, Tensor], optional): the state of the actor.
             Default to None.
         critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
+        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
             Default to None.
 
     Returns:

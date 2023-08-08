@@ -196,10 +196,10 @@ class Player(nn.Module):
     The model of the DreamerV1 player.
 
     Args:
-        encoder (_FabricModule): the encoder.
-        recurrent_model (_FabricModule): the recurrent model.
-        representation_model (_FabricModule): the representation model.
-        actor (_FabricModule): the actor.
+        encoder (nn.Module): the encoder.
+        recurrent_model (nn.Module): the recurrent model.
+        representation_model (nn.Module): the representation model.
+        actor (nn.Module): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
         expl_amout (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
@@ -210,10 +210,10 @@ class Player(nn.Module):
 
     def __init__(
         self,
-        encoder: _FabricModule,
-        recurrent_model: _FabricModule,
-        representation_model: _FabricModule,
-        actor: _FabricModule,
+        encoder: nn.Module,
+        recurrent_model: nn.Module,
+        representation_model: nn.Module,
+        actor: nn.Module,
         actions_dim: Sequence[int],
         expl_amount: float,
         num_envs: int,
@@ -252,7 +252,7 @@ class Player(nn.Module):
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
     def get_exploration_action(
-        self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
+        self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """
         Return the actions with a certain amount of noise for exploration.
@@ -260,7 +260,7 @@ class Player(nn.Module):
         Args:
             obs (Tensor): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
-            mask (Dict[str, np.ndarray], optional): the action mask (whether or not each action can be executed).
+            mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
         Returns:
@@ -283,7 +283,7 @@ class Player(nn.Module):
         return tuple(expl_actions)
 
     def get_greedy_action(
-        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, np.ndarray]] = None
+        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """
         Return the greedy actions.
@@ -292,7 +292,7 @@ class Player(nn.Module):
             obs (Tensor): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
-            mask (Dict[str, np.ndarray], optional): the action mask (whether or not each action can be executed).
+            mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
         Returns:

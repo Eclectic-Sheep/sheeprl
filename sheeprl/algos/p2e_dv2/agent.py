@@ -27,7 +27,7 @@ def build_models(
     actor_exploration_state: Optional[Dict[str, Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, Tensor]] = None,
     target_critic_exploration_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module, int]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:

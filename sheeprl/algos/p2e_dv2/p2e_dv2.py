@@ -87,7 +87,7 @@ def train(
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
+        world_model (WorldModel): the world model wrapped with Fabric.
         actor_task (_FabricModule): the actor for solving the task.
         critic_task (_FabricModule): the critic for solving the task.
         world_optimizer (_FabricOptimizer): the world optimizer.
@@ -103,8 +103,10 @@ def train(
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
         critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
         is_exploring (bool): whether the agent is exploring.
-        cnn_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder
-        mlp_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the MLP encoder
+        cnn_keys: (Sequence[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder.
+            Default to ["rgb"].
+        mlp_keys: (Sequence[str]): a list containing the keys of the observations to be encoded/decoded by the MLP encoder.
+            Default to [].
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length

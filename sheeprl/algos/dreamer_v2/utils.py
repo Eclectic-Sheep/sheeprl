@@ -61,7 +61,7 @@ def compute_lambda_values(
     bootstrap: Optional[Tensor] = None,
     horizon: int = 15,
     lmbda: float = 0.95,
-):
+) -> Tensor:
     if bootstrap is None:
         bootstrap = torch.zeros_like(values[-1:])
     agg = bootstrap
@@ -88,6 +88,11 @@ def test(
     Args:
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
+        args (Union[DreamerV2Args, DreamerV1Args]): the hyper-parameters.
+        cnn_keys (Sequence[str]): the keys encoded by the cnn encoder.
+        mlp_keys (Sequence[str]): the keys encoded by the mlp encoder.
+        test_name (str): the name of the test.
+            Default to "".
     """
     env: gym.Env = make_dict_env(
         args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
@@ -106,7 +111,7 @@ def test(
         for k, v in next_obs.items():
             if k in cnn_keys:
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
-            else:
+            elif k in mlp_keys:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
             preprocessed_obs, False, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}

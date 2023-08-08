@@ -31,12 +31,11 @@ def build_models(
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of DreamerV1.
+        args (P2EDV1Args): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
-        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
-        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
+        cnn_keys (Sequence[str]): the keys of the observation space to encoded by the cnn encoder.
+        mlp_keys (Sequence[str]): the keys of the observation space to encoded by the mlp encoder.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_task_state (Dict[str, Tensor], optional): the state of the actor_task.

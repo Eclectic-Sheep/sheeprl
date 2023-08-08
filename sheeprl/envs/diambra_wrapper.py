@@ -24,7 +24,7 @@ class DiambraWrapper(core.Env):
         action_space: str = "discrete",
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
-        attack_but_combination: str = True,
+        attack_but_combination: bool = True,
         actions_stack: int = 1,
         noop_max: int = 0,
         sticky_actions: int = 1,
@@ -86,7 +86,7 @@ class DiambraWrapper(core.Env):
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
         self.observation_space = gymnasium.spaces.Dict(obs)
 
-    def _convert_obs(self, obs):
+    def _convert_obs(self, obs: Dict[str, Union[int, np.ndarray]]) -> Dict[str, np.ndarray]:
         return {
             k: (np.array(v) if not isinstance(v, np.ndarray) else v).reshape(self.observation_space[k].shape)
             for k, v in obs.items()
@@ -94,9 +94,10 @@ class DiambraWrapper(core.Env):
 
     def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, infos = self._env.step(action)
+        infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done, False, infos
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
-    ) -> tuple[Any, Dict[str, Any]]:
-        return self._convert_obs(self._env.reset()), {}
+    ) -> Tuple[Any, Dict[str, Any]]:
+        return self._convert_obs(self._env.reset()), {"env_domain": "DIAMBRA"}

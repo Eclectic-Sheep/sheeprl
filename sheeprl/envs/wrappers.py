@@ -1,6 +1,6 @@
 import copy
 from collections import deque
-from typing import Sequence
+from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -70,7 +70,7 @@ class ActionRepeat(gym.Wrapper):
 
 
 class FrameStack(gym.Wrapper):
-    def __init__(self, env: Env, num_stack: int, cnn_keys: Sequence[str], dilation: int = 1):
+    def __init__(self, env: Env, num_stack: int, cnn_keys: Sequence[str], dilation: int = 1) -> None:
         super().__init__(env)
         if num_stack <= 0:
             raise ValueError(f"Invalid value for num_stack, expected a value greater than zero, got {num_stack}")
@@ -102,24 +102,28 @@ class FrameStack(gym.Wrapper):
         assert len(frames_subset) == self._num_stack
         return np.stack(list(frames_subset), axis=0)
 
-    def step(self, action):
-        obs, reward, done, truncated, info = self._env.step(action)
+    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        obs, reward, done, truncated, infos = self._env.step(action)
         for k in self._cnn_keys:
             self._frames[k].append(obs[k])
             if (
-                (len(set(["round_done", "stage_done", "game_done"]).intersection(info.keys())) == 3)
-                and (info["round_done"] or info["stage_done"] or info["game_done"])
+                "env_domain" in infos
+                and infos["env_domain"] == "DIAMBRA"
+                and len(set(["round_done", "stage_done", "game_done"]).intersection(infos.keys())) == 3
+                and (infos["round_done"] or infos["stage_done"] or infos["game_done"])
                 and not (done or truncated)
             ):
                 for _ in range(self._num_stack * self._dilation - 1):
                     self._frames[k].append(obs[k])
             obs[k] = self._get_obs(k)
-        return obs, reward, done, truncated, info
+        return obs, reward, done, truncated, infos
 
-    def reset(self, seed=None, **kwargs):
-        obs, info = self._env.reset(seed=seed, **kwargs)
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None, **kwargs
+    ) -> Tuple[Any, Dict[str, Any]]:
+        obs, infos = self._env.reset(seed=seed, **kwargs)
         [self._frames[k].clear() for k in self._cnn_keys]
         for k in self._cnn_keys:
             [self._frames[k].append(obs[k]) for _ in range(self._num_stack * self._dilation)]
             obs[k] = self._get_obs(k)
-        return obs, info
+        return obs, infos
