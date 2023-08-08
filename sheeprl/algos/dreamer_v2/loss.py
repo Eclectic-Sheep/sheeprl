@@ -37,14 +37,14 @@ def reconstruction_loss(
             Default to 0.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
-        pc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
+        pc (Distribution, optional): the predicted Bernoulli distribution of the terminal steps.
             0s for the entries that are relative to a terminal step, 1s otherwise.
             Default to None.
         continue_targets (Tensor, optional): the targets for the discount predictor. Those are normally computed
             as `(1 - data["dones"]) * args.gamma`.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
-            Default to 10.
+            Default to 1.0.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.

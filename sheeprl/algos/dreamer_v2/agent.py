@@ -252,7 +252,8 @@ class RSSM(nn.Module):
             Transition model: predict the prior from the recurrent output.
             Representation model: compute the posterior from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+        and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
         Args:
             posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected

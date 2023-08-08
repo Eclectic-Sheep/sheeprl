@@ -51,12 +51,16 @@ class RSSM(nn.Module):
     """RSSM model for the model-base DreamerV1 agent.
 
     Args:
-        recurrent_model (_FabricModule): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (_FabricModule): the representation model composed by a multi-layer perceptron to compute the posterior state.
+        recurrent_model (_FabricModule): the recurrent model of the RSSM model
+            described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (_FabricModule): the representation model composed
+            by a multi-layer perceptron to compute the posterior state.
             For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        transition_model (_FabricModule): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        transition_model (_FabricModule): the transition model described
+            in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
             The model is composed by a multi-layer perceptron to predict the prior state.
-        min_std (float): the minimum value of the standard deviation computed by the representation and transition models.
+        min_std (float): the minimum value of the standard deviation computed
+            by the representation and transition models.
             Default to 0.1.
     """
 
@@ -87,7 +91,8 @@ class RSSM(nn.Module):
             Transition model: predict the prior state from the recurrent output.
             Representation model: compute the posterior state from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+        and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
         Args:
             posterior (Tensor): the posterior state.
@@ -127,8 +132,7 @@ class RSSM(nn.Module):
         return posterior_mean_std, posterior
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
-        """
-        Predict the prior state (Transition Model).
+        """Predict the prior state (Transition Model).
 
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
@@ -141,8 +145,7 @@ class RSSM(nn.Module):
         return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        One-step imagination of the next latent state.
+        """One-step imagination of the next latent state.
         It can be used several times to imagine trajectories in the latent space (Transition Model).
 
         Args:
@@ -164,8 +167,7 @@ class RSSM(nn.Module):
 
 
 class WorldModel(nn.Module):
-    """
-    Wrapper class for the World model.
+    """Wrapper class for the World model.
 
     Args:
         encoder (_FabricModule): the encoder.
@@ -192,15 +194,14 @@ class WorldModel(nn.Module):
 
 
 class Player(nn.Module):
-    """
-    The model of the DreamerV1 player.
+    """The model of the DreamerV1 player.
 
     Args:
         encoder (nn.Module): the encoder.
         recurrent_model (nn.Module): the recurrent model.
         representation_model (nn.Module): the representation model.
         actor (nn.Module): the actor.
-        actions_dim (Sequence[int]): the dimension of the actions.
+        actions_dim (Sequence[int]): the dimension of each action.
         expl_amout (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
@@ -254,8 +255,7 @@ class Player(nn.Module):
     def get_exploration_action(
         self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
-        """
-        Return the actions with a certain amount of noise for exploration.
+        """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
@@ -285,8 +285,7 @@ class Player(nn.Module):
     def get_greedy_action(
         self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
-        """
-        Return the greedy actions.
+        """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
@@ -332,11 +331,11 @@ def build_models(
         obs_space (Dict[str, Any]): the observation space.
         cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
         mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
+        world_model_state (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the world model.
             Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
+        actor_state: (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the actor.
             Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
+        critic_state: (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the critic.
             Default to None.
 
     Returns:
@@ -353,14 +352,16 @@ def build_models(
         cnn_act = getattr(nn, args.cnn_act)
     except:
         raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for cnn_act, given {args.cnn_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     try:
         dense_act = getattr(nn, args.dense_act)
     except:
         raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for dense_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     # Sizes
