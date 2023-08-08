@@ -29,11 +29,12 @@ from sheeprl.algos.p2e_dv1.args import P2EDV1Args
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, init_weights, make_dict_env, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"

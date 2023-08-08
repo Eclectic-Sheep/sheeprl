@@ -40,11 +40,11 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_dict_env
 
 
 def train(

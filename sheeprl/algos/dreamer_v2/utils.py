@@ -8,7 +8,7 @@ from lightning import Fabric
 from torch import Tensor, nn
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
-from sheeprl.utils.utils import make_dict_env
+from sheeprl.utils.env import make_dict_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import Player
