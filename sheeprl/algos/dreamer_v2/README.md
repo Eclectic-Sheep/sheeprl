@@ -77,12 +77,13 @@ def reconstruction_loss(
 ```
 Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `continue_scale_factor`, the parameter to scale the *continue loss*.
 
-Another difference between Dreamer-V1 and Dreamer-V2 is in the *actor loss*, which mixes standard on-policy Reinforce with Dynamic backprop, while adding the policy entropy to favor the exploration of the environment.
+Another difference between Dreamer-V1 and Dreamer-V2 is in the *actor loss*, which mixes standard on-policy Reinforce with Dynamic backprop, while adding the policy entropy to favor the exploration of the environment:
 
-$$
-    \mathcal{L}(\psi) = \text{E}_{p_{\phi},p_{\psi}}\left[\sum^{H-1}_{t=1}(-\rho\ln p_{\psi}(\hat{a}_t|\hat{z}_t)\text{sg}(V^{\lambda}_t - v_{\xi}))-(1-\rho)V^{\lambda}_t-\eta\text{H}[a_t|\hat{z}_t]\right]
-$$
-here the `lambda_values` are the discounted lambda targets computed in the latent dynamics by a **target critic** which is updated every 100 gradient steps.
+```math
+\mathcal{L}(\psi) = \text{E}{p_{\phi},p_{\psi}}\left[\sum^{H-1}_{t=1}(-\rho\ln p_{\psi}(\hat{a}_t|\hat{z}_t) \cdot \text{sg}(V^{\lambda}_t - v_{\xi}))-(1-\rho)V^{\lambda}_t-\eta\text{H}[a_t|\hat{z}_t]\right]
+```
+
+here the `lambda_values` $`V^{\lambda}_t`$ are the discounted lambda targets computed in the latent dynamics by a **target critic** which is updated every 100 gradient steps.
 
 Finally, the critic loss is computed as follows:
 ```python
@@ -154,9 +155,9 @@ PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa lightning run model --devices=1 sheeprl.py
 --capture_video \
 --action_repeat=2 \
 --clip_rewards=False \
---total_steps=200000000 \
---learning_starts=2000 \
---pretrain_steps=200 \
+--total_steps=5000000 \
+--learning_starts=1000 \
+--pretrain_steps=100 \
 --train_every=5 \
 --gamma=0.99 \
 --kl_regularizer=1.0 \
@@ -167,14 +168,14 @@ PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa lightning run model --devices=1 sheeprl.py
 --use_continues=False \
 --hidden_size=200 \
 --recurrent_state_size=200 \
---buffer_size=2000000 \
+--buffer_size=5000000 \
 --memmap_buffer \
 --kl_free_nats=1.0 \
---max_episode_steps=27000 \
+--max_episode_steps=1000 \
 --per_rank_batch_size=50 \
 --checkpoint_every=100000 \
 --buffer_type=episode \
---prioritize_ends=True 
+--prioritize_ends=False 
 ```
 
 ## Recommendations

@@ -8,7 +8,7 @@ from torch.distributions.kl import kl_divergence
 
 def reconstruction_loss(
     po: Dict[str, Distribution],
-    observations: Tensor,
+    observations: Dict[str, Tensor],
     pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
@@ -26,7 +26,7 @@ def reconstruction_loss(
 
     Args:
         po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
-        observations (Tensor): the observations provided by the environment.
+        observations (Dict[str, Tensor]): the observations provided by the environment.
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
@@ -37,14 +37,14 @@ def reconstruction_loss(
             Default to 0.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
-        pc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
+        pc (Distribution, optional): the predicted Bernoulli distribution of the terminal steps.
             0s for the entries that are relative to a terminal step, 1s otherwise.
             Default to None.
         continue_targets (Tensor, optional): the targets for the discount predictor. Those are normally computed
             as `(1 - data["dones"]) * args.gamma`.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
-            Default to 10.
+            Default to 1.0.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
