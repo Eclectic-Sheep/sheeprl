@@ -1,5 +1,10 @@
 # adapted from https://github.com/minerllabs/minerl
 
+from sheeprl.utils.imports import _IS_MINERL_0_4_4_AVAILABLE
+
+if not _IS_MINERL_0_4_4_AVAILABLE:
+    raise ModuleNotFoundError(_IS_MINERL_0_4_4_AVAILABLE)
+
 from typing import List
 
 import minerl.herobraine.hero.handlers as handlers
