@@ -1,4 +1,7 @@
-"""Adapted from https://github.com/denisyarats/dmc2gym/blob/master/dmc2gym/wrappers.py"""
+from sheeprl.utils.imports import _IS_MINEDOJO_AVAILABLE
+
+if not _IS_MINEDOJO_AVAILABLE:
+    raise ModuleNotFoundError(_IS_MINEDOJO_AVAILABLE)
 
 import copy
 from typing import Any, Dict, Optional, SupportsFloat, Tuple

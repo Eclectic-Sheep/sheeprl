@@ -1,3 +1,8 @@
+from sheeprl.utils.imports import _IS_MINERL_0_4_4_AVAILABLE
+
+if not _IS_MINERL_0_4_4_AVAILABLE:
+    raise ModuleNotFoundError(_IS_MINERL_0_4_4_AVAILABLE)
+
 import copy
 from typing import Any, Dict, Optional, SupportsFloat, Tuple
 

@@ -192,3 +192,52 @@ def test_memmap_to_file_replay_buffer():
     del rb
     del ckpt
     shutil.rmtree(root_dir)
+
+
+def test_obs_keys_replay_buffer():
+    buf_size = 10
+    n_envs = 4
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, obs_keys=("rgb", "state", "tmp"))
+    td = TensorDict(
+        {
+            "rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+        },
+        batch_size=[10, n_envs],
+    )
+    rb.add(td)
+    sample = rb.sample(10, True)
+    sample_keys = sample.keys()
+    assert "rgb" in sample_keys
+    assert "state" in sample_keys
+    assert "tmp" in sample_keys
+    assert "next_rgb" in sample_keys
+    assert "next_state" in sample_keys
+    assert "next_tmp" in sample_keys
+
+
+def test_obs_keys_replay_no_sample_next_obs_buffer():
+    buf_size = 10
+    n_envs = 4
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, obs_keys=("rgb", "state", "tmp"))
+    td = TensorDict(
+        {
+            "rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+            "next_rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "next_state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "next_tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+        },
+        batch_size=[10, n_envs],
+    )
+    rb.add(td)
+    sample = rb.sample(10, False)
+    sample_keys = sample.keys()
+    assert "rgb" in sample_keys
+    assert "state" in sample_keys
+    assert "tmp" in sample_keys
+    assert "next_rgb" in sample_keys
+    assert "next_state" in sample_keys
+    assert "next_tmp" in sample_keys
