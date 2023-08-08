@@ -182,7 +182,11 @@ def main():
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
-        raise ValueError("only continuous action space is supported")
+        raise ValueError("Only continuous action space is supported for the DroQ agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            f"Only environments with vector-only observations are supported by the DroQ agent. Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)

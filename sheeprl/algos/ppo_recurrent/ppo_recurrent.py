@@ -181,7 +181,12 @@ def main():
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+        raise ValueError("Only discrete action space is supported by the PPO recurrent agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            "Only environments with vector-only observations are supported by the PPO recurrent agent. "
+            f"Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)

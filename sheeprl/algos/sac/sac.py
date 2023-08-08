@@ -146,7 +146,12 @@ def main():
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("Only continuous action space is supported for the SAC agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            f"Only environments with vector-only observations are supported by the SAC agent. Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
