@@ -458,7 +458,10 @@ def train(
 def main():
     parser = HfArgumentParser(P2EDV2Args)
     args: P2EDV2Args = parser.parse_args_into_dataclasses()[0]
-    torch.set_num_threads(1)
+
+    # These arguments cannot be changed
+    args.screen_size = 64
+    args.frame_stack = -1
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])

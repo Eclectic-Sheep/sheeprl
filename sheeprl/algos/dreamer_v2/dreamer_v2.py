@@ -334,6 +334,9 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV2Args)
     args: DreamerV2Args = parser.parse_args_into_dataclasses()[0]
+
+    # These arguments cannot be changed
+    args.screen_size = 64
     args.frame_stack = -1
 
     # Initialize Fabric

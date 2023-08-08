@@ -344,8 +344,10 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV1Args)
     args: DreamerV1Args = parser.parse_args_into_dataclasses()[0]
+
+    # These arguments cannot be changed
+    args.screen_size = 64
     args.frame_stack = -1
-    torch.set_num_threads(1)
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
