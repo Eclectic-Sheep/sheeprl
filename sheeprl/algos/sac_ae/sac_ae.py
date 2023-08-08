@@ -269,11 +269,12 @@ def main():
         dense_act = getattr(nn, args.dense_act)
     except:
         raise ValueError(
-            f"Invalid value for mlp_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for mlp_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
-    mlp_splits = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
+    mlp_dims = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
@@ -287,7 +288,7 @@ def main():
     )
     mlp_encoder = (
         MLPEncoder(
-            sum(mlp_splits),
+            sum(mlp_dims),
             mlp_keys,
             args.dense_units,
             args.mlp_layers,
@@ -313,7 +314,7 @@ def main():
     mlp_decoder = (
         MLPDecoder(
             encoder.output_dim,
-            mlp_splits,
+            mlp_dims,
             mlp_keys,
             args.dense_units,
             args.mlp_layers,
@@ -346,7 +347,7 @@ def main():
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    # The agent will tied convolutional weights between the encoder actor and critic
+    # The agent will tied convolutional and linear weights between the encoder actor and critic
     agent = SACAEAgent(
         actor,
         critic,
