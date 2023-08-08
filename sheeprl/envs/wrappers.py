@@ -102,7 +102,7 @@ class FrameStack(gym.Wrapper):
         assert len(frames_subset) == self._num_stack
         return np.stack(list(frames_subset), axis=0)
 
-    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, truncated, infos = self._env.step(action)
         for k in self._cnn_keys:
             self._frames[k].append(obs[k])
