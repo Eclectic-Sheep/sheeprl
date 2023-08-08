@@ -3,7 +3,6 @@ import os
 import time
 import warnings
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 from typing import Optional, Union
 
@@ -14,32 +13,35 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
+from torch import nn
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.ppo_pixel.ppo_pixel_continuous import make_env
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_pixel.agent import (
-    Decoder,
-    Encoder,
-    SACPixelAgent,
-    SACPixelContinuousActor,
-    SACPixelCritic,
-    SACPixelQFunction,
+from sheeprl.algos.sac_ae.agent import (
+    CNNDecoder,
+    CNNEncoder,
+    MLPDecoder,
+    MLPEncoder,
+    SACAEAgent,
+    SACAEContinuousActor,
+    SACAECritic,
+    SACAEQFunction,
 )
-from sheeprl.algos.sac_pixel.args import SACPixelContinuousArgs
-from sheeprl.algos.sac_pixel.utils import preprocess_obs, test_sac_pixel
+from sheeprl.algos.sac_ae.args import SACAEArgs
+from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -47,9 +49,9 @@ from sheeprl.utils.registry import register_algorithm
 
 def train(
     fabric: Fabric,
-    agent: SACPixelAgent,
-    encoder: Union[Encoder, _FabricModule],
-    decoder: Union[Decoder, _FabricModule],
+    agent: SACAEAgent,
+    encoder: Union[MultiEncoder, _FabricModule],
+    decoder: Union[MultiDecoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
@@ -58,12 +60,21 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     global_step: int,
-    args: SACPixelContinuousArgs,
+    args: SACAEArgs,
     group: Optional[CollectibleGroup] = None,
 ):
+    cnn_keys = encoder.cnn_keys
+    mlp_keys = encoder.mlp_keys
     data = data.to(fabric.device)
-    normalized_obs = data["observations"] / 255.0
-    normalized_next_obs = data["next_observations"] / 255.0
+    normalized_obs = {}
+    normalized_next_obs = {}
+    for k in cnn_keys + mlp_keys:
+        if k in cnn_keys:
+            normalized_obs[k] = data[k] / 255.0
+            normalized_next_obs[k] = data[f"next_{k}"] / 255.0
+        else:
+            normalized_obs[k] = data[k]
+            normalized_next_obs[k] = data[f"next_{k}"]
 
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
@@ -104,10 +115,13 @@ def train(
     if global_step % args.decoder_update_freq == 0:
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
-        reconstruction_loss = (
-            F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)  # Reconstruction
-            + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
-        )
+        reconstruction_loss = 0
+        for k in cnn_keys + mlp_keys:
+            target = preprocess_obs(data[k], bits=5) if k in cnn_keys else data[k]
+            reconstruction_loss += (
+                F.mse_loss(target, reconstruction[k])  # Reconstruction
+                + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
+            )
         encoder_optimizer.zero_grad(set_to_none=True)
         decoder_optimizer.zero_grad(set_to_none=True)
         fabric.backward(reconstruction_loss)
@@ -118,8 +132,19 @@ def train(
 
 @register_algorithm()
 def main():
-    parser = HfArgumentParser(SACPixelContinuousArgs)
-    args: SACPixelContinuousArgs = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser(SACAEArgs)
+    args: SACAEArgs = parser.parse_args_into_dataclasses()[0]
+
+    if "minedojo" in args.env_id:
+        raise ValueError(
+            "MineDojo is not currently supported by SAC-AE agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
+    # These arguments cannot be changed
+    args.screen_size = 64
 
     # Initialize Fabric
     devices = os.environ.get("LT_DEVICES", None)
@@ -127,7 +152,7 @@ def main():
     is_tpu_available = TPUAccelerator.is_available()
     if strategy is not None:
         warnings.warn(
-            "You are running the SAC-Pixel-Continuous algorithm through the Lightning CLI and you have specified a strategy: "
+            "You are running the SAC-AE algorithm through the Lightning CLI and you have specified a strategy: "
             f"`lightning run model --strategy={strategy}`. This algorithm is run with the "
             "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
         )
@@ -146,83 +171,137 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "sac_pixel_continuous", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "sac_ae")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
                 args.seed + rank * args.num_envs + i,
                 rank,
-                args.capture_video,
+                args,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
-                action_repeat=args.action_repeat,
-                screen_size=args.screen_size,
-                frame_stack=args.frame_stack,
             )
             for i in range(args.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Box):
-        raise ValueError("Only continuous action space is supported")
+    cnn_keys = []
+    mlp_keys = []
+    if isinstance(envs.single_observation_space, gym.spaces.Dict):
+        cnn_keys = []
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.cnn_keys and k in args.cnn_keys:
+                if len(v.shape) in {3, 4}:
+                    cnn_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
+                        "Try to transform the observation from the environment into a 3D image"
+                    )
+        for k, v in envs.single_observation_space.spaces.items():
+            if args.mlp_keys and k in args.mlp_keys:
+                if len(v.shape) == 1:
+                    mlp_keys.append(k)
+                else:
+                    fabric.print(
+                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
+                        "Try to flatten the observation from the environment"
+                    )
+    else:
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {envs.single_observation_space}")
+    if cnn_keys == [] and mlp_keys == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
+    fabric.print("CNN keys:", cnn_keys)
+    fabric.print("MLP keys:", mlp_keys)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
-    in_channels = prod(envs.single_observation_space.shape[:-2])
     target_entropy = -act_dim
 
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    encoder = Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
-    decoder = Decoder(
-        encoder.conv_output_shape,
-        features_dim=args.features_dim,
-        screen_size=args.screen_size,
-        out_channels=in_channels,
+    if args.cnn_channels_multiplier <= 0:
+        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
+    if args.dense_units <= 0:
+        raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
+    try:
+        dense_act = getattr(nn, args.dense_act)
+    except:
+        raise ValueError(
+            f"Invalid value for mlp_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+        )
+
+    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
+    mlp_dims = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
+    cnn_encoder = (
+        CNNEncoder(
+            in_channels=sum(cnn_channels),
+            features_dim=args.features_dim,
+            keys=cnn_keys,
+            screen_size=args.screen_size,
+            cnn_channels_multiplier=args.cnn_channels_multiplier,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_encoder = (
+        MLPEncoder(
+            sum(mlp_dims),
+            mlp_keys,
+            args.dense_units,
+            args.mlp_layers,
+            dense_act,
+            args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    cnn_decoder = (
+        CNNDecoder(
+            cnn_encoder.conv_output_shape,
+            features_dim=encoder.output_dim,
+            keys=cnn_keys,
+            channels=cnn_channels,
+            screen_size=args.screen_size,
+            cnn_channels_multiplier=args.cnn_channels_multiplier,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
+    )
+    mlp_decoder = (
+        MLPDecoder(
+            encoder.output_dim,
+            mlp_dims,
+            mlp_keys,
+            args.dense_units,
+            args.mlp_layers,
+            dense_act,
+            args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
-    actor = SACPixelContinuousActor(
+    actor = SACAEContinuousActor(
         encoder=copy.deepcopy(encoder.module),
         action_dim=act_dim,
         hidden_size=args.actor_hidden_size,
@@ -230,17 +309,17 @@ def main():
         action_high=envs.single_action_space.high,
     )
     qfs = [
-        SACPixelQFunction(
+        SACAEQFunction(
             input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=args.critic_hidden_size, output_dim=1
         )
         for _ in range(args.num_critics)
     ]
-    critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)
+    critic = SACAECritic(encoder=encoder.module, qfs=qfs)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    # The agent will tied convolutional weights between the encoder actor and critic
-    agent = SACPixelAgent(
+    # The agent will tied convolutional and linear weights between the encoder actor and critic
+    agent = SACAEAgent(
         actor,
         critic,
         target_entropy,
@@ -281,6 +360,7 @@ def main():
         device=fabric.device if args.memmap_buffer else "cpu",
         memmap=args.memmap_buffer,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=cnn_keys + mlp_keys,
     )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=fabric.device if args.memmap_buffer else "cpu")
 
@@ -290,18 +370,26 @@ def main():
     args.learning_starts = args.learning_starts // int(args.num_envs * fabric.world_size) if not args.dry_run else 0
 
     # Get the first environment observation and start the optimization
-    obs = torch.tensor(envs.reset(seed=args.seed)[0])  # [N_envs, N_obs]
+    o = envs.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    obs = {}
+    for k in o.keys():
+        if k in mlp_keys + cnn_keys:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
+            if k in cnn_keys:
+                torch_obs = torch_obs.view(args.num_envs, -1, *torch_obs.shape[-2:])
+            if k in mlp_keys:
+                torch_obs = torch_obs.float()
+            obs[k] = torch_obs
 
     for global_step in range(1, num_updates + 1):
-        obs = obs.flatten(start_dim=1, end_dim=-3)
         if global_step < args.learning_starts:
             actions = envs.action_space.sample()
         else:
             with torch.no_grad():
-                normalized_obs = obs / 255.0
-                actions, _ = actor.module(normalized_obs.to(device))
+                normalized_obs = {k: v / 255 if k in cnn_keys else v for k, v in obs.items()}
+                actions, _ = actor.module(normalized_obs)
                 actions = actions.cpu().numpy()
-        next_obs, rewards, dones, truncated, infos = envs.step(actions)
+        o, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
         if "final_info" in infos:
@@ -314,23 +402,36 @@ def main():
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
 
         # Save the real next observation
-        real_next_obs = next_obs.copy()
+        real_next_obs = copy.deepcopy(o)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = final_obs
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
 
-        real_next_obs = torch.tensor(real_next_obs)
-        real_next_obs = real_next_obs.flatten(start_dim=1, end_dim=-3)
-        actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
-        rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)
-        dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
+        next_obs = {}
+        for k in real_next_obs.keys():
+            next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
+            if k in cnn_keys:
+                next_obs[k] = next_obs[k].view(args.num_envs, -1, *next_obs[k].shape[-2:])
+            if k in mlp_keys:
+                next_obs[k] = next_obs[k].float()
+
+            step_data[k] = obs[k]
+            if not args.sample_next_obs:
+                step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
+                if k in cnn_keys:
+                    step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
+                        args.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                    )
+                if k in mlp_keys:
+                    step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
+        actions = torch.from_numpy(actions).view(args.num_envs, -1).float().to(fabric.device)
+        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float().to(fabric.device)
+        dones = torch.from_numpy(dones).view(args.num_envs, -1).float().to(fabric.device)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = obs
-        if not args.sample_next_obs:
-            step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
 
@@ -409,19 +510,8 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
-            args.env_id,
-            args.seed,
-            0,
-            args.capture_video,
-            fabric.logger.log_dir,
-            "test",
-            vector_env_idx=0,
-            frame_stack=args.frame_stack,
-            action_repeat=args.action_repeat,
-            screen_size=args.screen_size,
-        )()
-        test_sac_pixel(actor.module, test_env, fabric, args, normalize=True)
+        test_env = make_dict_env(args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test", vector_env_idx=0)()
+        test_sac_pixel(actor.module, test_env, fabric, args)
 
 
 if __name__ == "__main__":

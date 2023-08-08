@@ -20,12 +20,12 @@ class DROQCritic(nn.Module):
 
         Args:
             observation_dim (int): the input dimension.
+            hidden_size (int): the hidden size for both of the two-layer MLP.
+                Defaults to 256.
             num_critics (int, optional): the number of critic values to output.
                 This is useful if one wants to have a single shared backbone that outputs
                 `num_critics` critic values.
                 Defaults to 1.
-            hidden_size (int): the hidden size for both of the two-layer MLP.
-                Defaults to 256.
             dropout (float, optional): the dropout probability for every layer.
                 Defaults to 0.0.
         """
