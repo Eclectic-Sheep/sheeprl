@@ -722,7 +722,6 @@ def main():
                     local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
                     aggregator,
                     args,
-                    is_continuous,
                     cnn_keys,
                     mlp_keys,
                     actions_dim,
