@@ -3,7 +3,6 @@ import os
 import pathlib
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, Sequence
 
 import gymnasium as gym
@@ -13,8 +12,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from lightning.pytorch.utilities.seed import isolate_rng
 from tensordict import TensorDict
@@ -27,18 +24,21 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, make_env, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, test
 from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.algos.p2e_dv2.args import P2EDV2Args
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import polynomial_decay
 
-os.environ["MINEDOJO_HEADLESS"] = "1"
+# Decomment the following line if you are using MineDojo on an headless machine
+# os.environ["MINEDOJO_HEADLESS"] = "1"
 
 
 def train(
@@ -87,9 +87,10 @@ def train(
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
+        world_model (WorldModel): the world model wrapped with Fabric.
         actor_task (_FabricModule): the actor for solving the task.
         critic_task (_FabricModule): the critic for solving the task.
+        target_critic_task (nn.Module): the target critic for solving the task.
         world_optimizer (_FabricOptimizer): the world optimizer.
         actor_task_optimizer (_FabricOptimizer): the actor optimizer for solving the task.
         critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
@@ -100,11 +101,16 @@ def train(
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
         actor_exploration (_FabricModule): the actor for exploration.
         critic_exploration (_FabricModule): the critic for exploration.
+        target_critic_exploration (nn.Module): the target critic for exploration.
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
         critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
+        is_continuous (bool): whether or not are continuous actions.
+        actions_dim (Sequence[int]): the actions dimension.
         is_exploring (bool): whether the agent is exploring.
-        cnn_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder
-        mlp_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the MLP encoder
+        cnn_keys: (Sequence[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder.
+            Default to ["rgb"].
+        mlp_keys: (Sequence[str]): a list containing the keys of the observations to be encoded/decoded by the MLP encoder.
+            Default to [].
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -285,7 +291,7 @@ def train(
             intrinsic_reward[:-1],
             predicted_target_values[:-1],
             continues[:-1],
-            bootstrap=predicted_target_values[-2:-1],
+            bootstrap=predicted_target_values[-1:],
             horizon=args.horizon,
             lmbda=args.lmbda,
         )
@@ -389,7 +395,7 @@ def train(
         predicted_rewards[:-1],
         predicted_target_values[:-1],
         continues[:-1],
-        bootstrap=predicted_target_values[-2:-1],
+        bootstrap=predicted_target_values[-1:],
         horizon=args.horizon,
         lmbda=args.lmbda,
     )
@@ -453,7 +459,10 @@ def train(
 def main():
     parser = HfArgumentParser(P2EDV2Args)
     args: P2EDV2Args = parser.parse_args_into_dataclasses()[0]
-    torch.set_num_threads(1)
+
+    # These arguments cannot be changed
+    args.screen_size = 64
+    args.frame_stack = -1
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -471,54 +480,25 @@ def main():
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "p2e_dv2", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        if args.checkpoint_path:
-            root_dir = ckpt_path.parent.parent
-            run_name = "resume_from_checkpoint"
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "p2e_dv2")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_env(
+            make_dict_env(
                 args.env_id,
-                args.seed + rank * args.num_envs,
+                args.seed + rank * args.num_envs + i,
                 rank,
                 args,
                 logger.log_dir if rank == 0 else None,
                 "train",
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
@@ -538,9 +518,7 @@ def main():
     if isinstance(observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -550,9 +528,7 @@ def main():
                     )
         mlp_keys = []
         for k, v in observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -563,7 +539,9 @@ def main():
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
     obs_keys = cnn_keys + mlp_keys
@@ -587,8 +565,10 @@ def main():
         state["world_model"] if args.checkpoint_path else None,
         state["actor_task"] if args.checkpoint_path else None,
         state["critic_task"] if args.checkpoint_path else None,
+        state["target_critic_task"] if args.checkpoint_path else None,
         state["actor_exploration"] if args.checkpoint_path else None,
         state["critic_exploration"] if args.checkpoint_path else None,
+        state["target_critic_exploration"] if args.checkpoint_path else None,
     )
 
     # initialize the ensembles with different seeds to be sure they have different weights
@@ -600,7 +580,7 @@ def main():
             ens_list.append(
                 MLP(
                     input_dims=int(
-                        np.sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
+                        sum(actions_dim) + args.recurrent_state_size + args.stochastic_size * args.discrete_size
                     ),
                     output_dim=args.stochastic_size * args.discrete_size,
                     hidden_sizes=[args.dense_units] * args.mlp_layers,
@@ -769,7 +749,7 @@ def main():
             step_data[k] = torch_obs
             obs[k] = torch_obs
     step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, np.sum(actions_dim))
+    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(args.num_envs, 1)
     step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":
@@ -974,6 +954,7 @@ def main():
                 "world_model": world_model.state_dict(),
                 "actor_task": actor_task.state_dict(),
                 "critic_task": critic_task.state_dict(),
+                "target_critic_task": target_critic_task.state_dict(),
                 "ensembles": ensembles.state_dict(),
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_task_optimizer": actor_task_optimizer.state_dict(),
@@ -985,6 +966,7 @@ def main():
                 "batch_size": args.per_rank_batch_size * fabric.world_size,
                 "actor_exploration": actor_exploration.state_dict(),
                 "critic_exploration": critic_exploration.state_dict(),
+                "target_critic_exploration": target_critic_exploration.state_dict(),
                 "actor_exploration_optimizer": actor_exploration_optimizer.state_dict(),
                 "critic_exploration_optimizer": critic_exploration_optimizer.state_dict(),
             }

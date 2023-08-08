@@ -25,10 +25,10 @@ from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
 
 
 @torch.no_grad()
@@ -73,7 +73,12 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("Only continuous action space is supported for the SAC agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            f"Only environments with vector-only observations are supported by the SAC agent. Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)

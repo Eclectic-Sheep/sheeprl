@@ -1,69 +1,17 @@
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import (
-    Distribution,
-    Independent,
-    Normal,
-    OneHotCategorical,
-    OneHotCategoricalStraightThrough,
-    TanhTransform,
-    TransformedDistribution,
-)
+from torch.distributions import Normal, OneHotCategorical
 
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
-from sheeprl.algos.dreamer_v1.utils import cnn_forward, compute_stochastic_state
-from sheeprl.models.models import CNN, MLP, DeCNN
-from sheeprl.utils.model import ArgsType, ModuleType
+from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
+from sheeprl.algos.dreamer_v2.agent import Actor, CNNDecoder, CNNEncoder, MinedojoActor, MLPDecoder, MLPEncoder
+from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.utils import init_weights
-
-
-class Encoder(nn.Module):
-    """The wrapper class for the encoder.
-
-    Args:
-        input_channels (int): the number of channels in input.
-        hidden_channels (Sequence[int]): the hidden channels of the CNN.
-        layer_args (ArgsType): the args of the layers of the CNN.
-        activation (Optional[Union[ModuleType, Sequence[ModuleType]]]): the activation function to use in the CNN.
-            Default nn.ReLU.
-        observation_shape (Tuple[int, int, int]): the dimension of the observations, channels first.
-            Default to (3, 64, 64).
-    """
-
-    def __init__(
-        self,
-        input_channels: int,
-        hidden_channels: Sequence[int],
-        layer_args: ArgsType,
-        activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
-        observation_shape: Tuple[int, int, int] = (3, 64, 64),
-    ) -> None:
-        super().__init__()
-        self._module = nn.Sequential(
-            CNN(
-                input_channels=input_channels,
-                hidden_channels=hidden_channels,
-                layer_args=layer_args,
-                activation=activation,
-            ),
-            nn.Flatten(-3, -1),
-        )
-        self._observation_shape = observation_shape
-        with torch.no_grad():
-            self._output_size = self._module(torch.zeros(*observation_shape)).shape[-1]
-
-    @property
-    def output_size(self) -> None:
-        return self._output_size
-
-    def forward(self, x) -> Tensor:
-        return self._module(x)
 
 
 class RecurrentModel(nn.Module):
@@ -73,13 +21,13 @@ class RecurrentModel(nn.Module):
     Args:
         input_size (int): the input size of the model.
         recurrent_state_size (int): the size of the recurrent state.
-        activation_fn (nn.Module): the activation function.
+        activation (nn.Module): the activation function.
             Default to ELU.
     """
 
-    def __init__(self, input_size: int, recurrent_state_size: int, activation_fn: nn.Module = nn.ELU) -> None:
+    def __init__(self, input_size: int, recurrent_state_size: int, activation: nn.Module = nn.ELU) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation_fn())
+        self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation())
         self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
@@ -100,24 +48,28 @@ class RecurrentModel(nn.Module):
 
 
 class RSSM(nn.Module):
-    """RSSM model for the model-base Dreamer agent.
+    """RSSM model for the model-base DreamerV1 agent.
 
     Args:
-        recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the posterior state.
+        recurrent_model (_FabricModule): the recurrent model of the RSSM model
+            described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (_FabricModule): the representation model composed
+            by a multi-layer perceptron to compute the posterior state.
             For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-            The model is composed by a multu-layer perceptron to predict the prior state.
-        min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
+        transition_model (_FabricModule): the transition model described
+            in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+            The model is composed by a multi-layer perceptron to predict the prior state.
+        min_std (float): the minimum value of the standard deviation computed
+            by the representation and transition models.
             Default to 0.1.
     """
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        transition_model: nn.Module,
-        min_std: Optional[float] = 0.1,
+        recurrent_model: _FabricModule,
+        representation_model: _FabricModule,
+        transition_model: _FabricModule,
+        min_std: float = 0.1,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
@@ -139,7 +91,8 @@ class RSSM(nn.Module):
             Transition model: predict the prior state from the recurrent output.
             Representation model: compute the posterior state from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+        and [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
         Args:
             posterior (Tensor): the posterior state.
@@ -148,7 +101,7 @@ class RSSM(nn.Module):
             embedded_obs (Tensor): the embedded observations provided by the environment.
 
         Returns:
-            The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
+            The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
             The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
             The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
@@ -179,8 +132,7 @@ class RSSM(nn.Module):
         return posterior_mean_std, posterior
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
-        """
-        Predict the prior state (Transition Model).
+        """Predict the prior state (Transition Model).
 
         Args:
             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
@@ -193,16 +145,15 @@ class RSSM(nn.Module):
         return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        One-step imagination of the next latent state.
+        """One-step imagination of the next latent state.
         It can be used several times to imagine trajectories in the latent space (Transition Model).
 
         Args:
             stochastic_state (Tensor): the stochastic space (can be either the posterior or the prior).
-                Shape (batch_size, 1, stochastic_size).
+                Shape (1, batch_size, stochastic_size).
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             actions (Tensor): the actions taken by the agent.
-                Shape (batch_size, 1, stochastic_size).
+                Shape (1, batch_size, stochastic_size).
 
         Returns:
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
@@ -215,98 +166,8 @@ class RSSM(nn.Module):
         return imagined_prior, recurrent_state
 
 
-class Actor(nn.Module):
-    """
-    The wrapper class of the Dreamer_v1 Actor model.
-
-    Args:
-        latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        actions_dim (Sequence[int]): the dimension in output of the actor.
-            The number of actions if continuous, the dimension of the action if discrete.
-        is_continuous (bool): whether or not the actions are continuous.
-        mean_scale (float): how much to scale the mean.
-            Default to 1.
-        init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
-            Default to 5.
-        min_std (float): the minimum standard deviation for the actions.
-            Default to 0.1.
-        dense_units (int): the dimension of the hidden dense layers.
-            Default to 400.
-        dense_act (int): the activation function to apply after the dense layers.
-            Default to nn.ELU.
-        mlp_layers (int): the number of MLP layers.
-            Default to 4.
-    """
-
-    def __init__(
-        self,
-        latent_state_size: int,
-        actions_dim: Sequence[int],
-        is_continuous: bool,
-        mean_scale: float = 5.0,
-        init_std: float = 5.0,
-        min_std: float = 1e-4,
-        dense_units: int = 400,
-        dense_act: nn.Module = nn.ELU,
-        mlp_layers: int = 4,
-    ) -> None:
-        super().__init__()
-        self.model = MLP(
-            input_dims=latent_state_size,
-            output_dim=np.sum(actions_dim) * 2 if is_continuous else np.sum(actions_dim),
-            hidden_sizes=[dense_units] * mlp_layers,
-            activation=dense_act,
-            flatten_dim=None,
-        )
-        self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.mean_scale = torch.tensor(mean_scale)
-        self.init_std = torch.tensor(init_std)
-        self.raw_init_std = torch.log(torch.exp(self.init_std) - 1)
-        self.min_std = min_std
-
-    def forward(self, state: Tensor, is_training: bool = True) -> Sequence[Tensor]:
-        """
-        Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
-        where * means any number of dimensions including None.
-
-        Args:
-            state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-
-        Returns:
-            The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
-        """
-        out: Tensor = self.model(state)
-        if self.is_continuous:
-            mean, std = torch.chunk(out, 2, -1)
-            mean = self.mean_scale * torch.tanh(mean / self.mean_scale)
-            std = F.softplus(std + self.raw_init_std) + self.min_std
-            actions_dist = Normal(mean, std)
-            actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
-            if is_training:
-                actions = actions_dist.rsample()
-            else:
-                sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
-            actions = (actions,)
-        else:
-            actions_logits = torch.split(out, self.actions_dim, -1)
-            actions_dist: List[Distribution] = []
-            actions: List[Tensor] = []
-            for logits in actions_logits:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
-                if is_training:
-                    actions.append(actions_dist[-1].rsample())
-                else:
-                    actions.append(actions_dist[-1].mode)
-            actions = tuple(actions)
-        return actions
-
-
 class WorldModel(nn.Module):
-    """
-    Wrapper class for the World model.
+    """Wrapper class for the World model.
 
     Args:
         encoder (_FabricModule): the encoder.
@@ -333,15 +194,14 @@ class WorldModel(nn.Module):
 
 
 class Player(nn.Module):
-    """
-    The model of the Dreamer_v1 player.
+    """The model of the DreamerV1 player.
 
     Args:
-        encoder (_FabricModule): the encoder.
-        recurrent_model (_FabricModule): the recurrent model.
-        representation_model (_FabricModule): the representation model.
-        actor (_FabricModule): the actor.
-        actions_dim (Sequence[int]): the dimension of the actions.
+        encoder (nn.Module): the encoder.
+        recurrent_model (nn.Module): the recurrent model.
+        representation_model (nn.Module): the representation model.
+        actor (nn.Module): the actor.
+        actions_dim (Sequence[int]): the dimension of each action.
         expl_amout (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
@@ -351,10 +211,10 @@ class Player(nn.Module):
 
     def __init__(
         self,
-        encoder: _FabricModule,
-        recurrent_model: _FabricModule,
-        representation_model: _FabricModule,
-        actor: _FabricModule,
+        encoder: nn.Module,
+        recurrent_model: nn.Module,
+        representation_model: nn.Module,
+        actor: nn.Module,
         actions_dim: Sequence[int],
         expl_amount: float,
         num_envs: int,
@@ -368,13 +228,11 @@ class Player(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-
         self.expl_amount = expl_amount
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-
         self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -388,26 +246,27 @@ class Player(nn.Module):
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
             self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(
-                1, self.num_envs, self.stochastic_size, device=self.device
-            )
+            self.stochastic_state = torch.zeros(1, self.num_envs, self.stochastic_size, device=self.device)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Tensor, is_continuous: bool) -> Tensor:
-        """
-        Return the actions with a certain amount of noise for exploration.
+    def get_exploration_action(
+        self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, Tensor]] = None
+    ) -> Sequence[Tensor]:
+        """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
+            mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
+                Defaults to None.
 
         Returns:
-            The actions the agent has to perform.
+            The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_greedy_action(obs)
+        actions = self.get_greedy_action(obs, mask=mask)
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
@@ -423,26 +282,29 @@ class Player(nn.Module):
             self.actions = torch.cat(expl_actions, -1)
         return tuple(expl_actions)
 
-    def get_greedy_action(self, obs: Tensor, is_training: bool = True) -> Sequence[Tensor]:
-        """
-        Return the greedy actions.
+    def get_greedy_action(
+        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+    ) -> Sequence[Tensor]:
+        """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
+            mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
+                Defaults to None.
 
         Returns:
-            The actions the agent has to perform.
+            The actions the agent has to perform (Sequence[Tensor]).
         """
-        embedded_obs: Tensor = cnn_forward(self.encoder, obs.clone(), obs.shape[-3:], (-1,))
+        embedded_obs = self.encoder(obs)
         _, self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         _, self.stochastic_state = compute_stochastic_state(
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
         )
-        actions = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -450,26 +312,30 @@ class Player(nn.Module):
 def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
-    observation_shape: Tuple[int, ...],
     is_continuous: bool,
     args: DreamerV1Args,
-    world_model_state: Dict[str, Tensor] = None,
-    actor_state: Dict[str, Tensor] = None,
-    critic_state: Dict[str, Tensor] = None,
+    obs_space: Dict[str, Any],
+    cnn_keys: Sequence[str],
+    mlp_keys: Sequence[str],
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
-        world_model_state (Dict[str, Tensor]): the state of the world model.
+        args (DreamerV1Args): the hyper-parameters of DreamerV1.
+        obs_space (Dict[str, Any]): the observation space.
+        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
+        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
+        world_model_state (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the world model.
             Default to None.
-        actor_state (Dict[str, Tensor]): the state of the actor.
+        actor_state: (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the actor.
             Default to None.
-        critic_state (Dict[str, Tensor]): the state of the critic.
+        critic_state: (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the critic.
             Default to None.
 
     Returns:
@@ -477,7 +343,6 @@ def build_models(
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    n_obs_channels = 1 if args.grayscale_obs and "minedojo" not in args.env_id.lower() else 3
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
@@ -487,28 +352,53 @@ def build_models(
         cnn_act = getattr(nn, args.cnn_act)
     except:
         raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for cnn_act, given {args.cnn_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     try:
         dense_act = getattr(nn, args.dense_act)
     except:
         raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for dense_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
-    # Define models
-    encoder = Encoder(
-        input_channels=n_obs_channels,
-        hidden_channels=(torch.tensor([1, 2, 4, 8]) * args.cnn_channels_multiplier).tolist(),
-        layer_args={"kernel_size": 4, "stride": 2},
-        activation=cnn_act,
-        observation_shape=observation_shape,
-    )
+    # Sizes
+    latent_state_size = args.stochastic_size + args.recurrent_state_size
+    mlp_dims = [obs_space[k].shape[0] for k in mlp_keys]
 
-    recurrent_model = RecurrentModel(np.sum(actions_dim) + args.stochastic_size, args.recurrent_state_size)
+    # Define models
+    cnn_encoder = (
+        CNNEncoder(
+            keys=cnn_keys,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            channels_multiplier=args.cnn_channels_multiplier,
+            layer_norm=False,
+            activation=cnn_act,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
+    )
+    mlp_encoder = (
+        MLPEncoder(
+            keys=mlp_keys,
+            input_dims=mlp_dims,
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=False,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    recurrent_model = RecurrentModel(
+        input_size=sum(actions_dim) + args.stochastic_size, recurrent_state_size=args.recurrent_state_size
+    )
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.output_size,
+        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
         output_dim=args.stochastic_size * 2,
         hidden_sizes=[args.hidden_size],
         activation=dense_act,
@@ -527,23 +417,36 @@ def build_models(
         transition_model.apply(init_weights),
         args.min_std,
     )
-    observation_model = nn.Sequential(
-        nn.Linear(args.stochastic_size + args.recurrent_state_size, encoder.output_size),
-        nn.Unflatten(1, (encoder.output_size, 1, 1)),
-        DeCNN(
-            input_channels=encoder.output_size,
-            hidden_channels=(torch.tensor([4, 2, 1]) * args.cnn_channels_multiplier).tolist() + [n_obs_channels],
-            layer_args=[
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 5, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-                {"kernel_size": 6, "stride": 2},
-            ],
-            activation=[cnn_act, cnn_act, cnn_act, None],
-        ),
+    cnn_decoder = (
+        CNNDecoder(
+            keys=cnn_keys,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            channels_multiplier=args.cnn_channels_multiplier,
+            latent_state_size=latent_state_size,
+            cnn_encoder_output_dim=cnn_encoder.output_dim,
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            activation=cnn_act,
+            layer_norm=False,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_decoder = (
+        MLPDecoder(
+            keys=mlp_keys,
+            output_dims=mlp_dims,
+            latent_state_size=latent_state_size,
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=False,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,
@@ -551,7 +454,7 @@ def build_models(
     )
     if args.use_continues:
         continue_model = MLP(
-            input_dims=args.stochastic_size + args.recurrent_state_size,
+            input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[args.dense_units] * args.mlp_layers,
             activation=dense_act,
@@ -564,19 +467,34 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if args.use_continues else None,
     )
-    actor = Actor(
-        args.stochastic_size + args.recurrent_state_size,
-        actions_dim,
-        is_continuous,
-        args.actor_mean_scale,
-        args.actor_init_std,
-        args.actor_min_std,
-        args.dense_units,
-        dense_act,
-        args.mlp_layers,
-    )
+    if "minedojo" in args.env_id:
+        actor = MinedojoActor(
+            latent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
+    else:
+        actor = Actor(
+            latent_state_size,
+            actions_dim,
+            is_continuous,
+            args.actor_init_std,
+            args.actor_min_std,
+            args.dense_units,
+            dense_act,
+            args.mlp_layers,
+            distribution="tanh_normal",
+            layer_norm=False,
+        )
     critic = MLP(
-        input_dims=args.stochastic_size + args.recurrent_state_size,
+        input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[args.dense_units] * args.mlp_layers,
         activation=dense_act,

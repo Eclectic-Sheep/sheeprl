@@ -14,22 +14,67 @@ Since learning directly from images can be cumbersome, as the authors have found
 Since we are learning in a distributed environment we also need to be careful regarding the weights reduction during the backward pass. For all those reasons the models are initialized as follows:
 
 ```python
-# Define the encoder and decoder and setup them with fabric.
+# Define a multi-encoder/decoder and setup them with fabric.
 # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
 # we do not need it wrapped with the strategy inside actor and critic
-encoder = Encoder(in_channels=in_channels, features_dim=args.features_dim, screen_size=args.screen_size)
-decoder = Decoder(
-    encoder.conv_output_shape,
-    features_dim=args.features_dim,
-    screen_size=args.screen_size,
-    out_channels=in_channels,
+cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
+mlp_dims = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
+cnn_encoder = (
+    CNNEncoder(
+        in_channels=sum(cnn_channels),
+        features_dim=args.features_dim,
+        keys=cnn_keys,
+        screen_size=args.screen_size,
+        cnn_channels_multiplier=args.cnn_channels_multiplier,
+    )
+    if cnn_keys is not None and len(cnn_keys) > 0
+    else None
 )
+mlp_encoder = (
+    MLPEncoder(
+        sum(mlp_dims),
+        mlp_keys,
+        args.dense_units,
+        args.mlp_layers,
+        dense_act,
+        args.layer_norm,
+    )
+    if mlp_keys is not None and len(mlp_keys) > 0
+    else None
+)
+encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+cnn_decoder = (
+    CNNDecoder(
+        cnn_encoder.conv_output_shape,
+        features_dim=encoder.output_dim,
+        keys=cnn_keys,
+        channels=cnn_channels,
+        screen_size=args.screen_size,
+        cnn_channels_multiplier=args.cnn_channels_multiplier,
+    )
+    if cnn_keys is not None and len(cnn_keys) > 0
+    else None
+)
+mlp_decoder = (
+    MLPDecoder(
+        encoder.output_dim,
+        mlp_dims,
+        mlp_keys,
+        args.dense_units,
+        args.mlp_layers,
+        dense_act,
+        args.layer_norm,
+    )
+    if mlp_keys is not None and len(mlp_keys) > 0
+    else None
+)
+decoder = MultiDecoder(cnn_decoder, mlp_decoder)
 encoder = fabric.setup_module(encoder)
 decoder = fabric.setup_module(decoder)
 
 # Setup actor and critic. Those will initialize with orthogonal weights
 # both the actor and critic
-actor = SACPixelContinuousActor(
+actor = SACAEContinuousActor(
     encoder=copy.deepcopy(encoder.module),  # Unwrapping the strategy and deepcopy the encoder module  
     action_dim=act_dim,
     hidden_size=args.actor_hidden_size,
@@ -37,16 +82,17 @@ actor = SACPixelContinuousActor(
     action_high=envs.single_action_space.high,
 )
 qfs = [
-    SACPixelQFunction(
+    SACAEQFunction(
         input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=args.critic_hidden_size, output_dim=1
     )
     for _ in range(args.num_critics)
 ]
-critic = SACPixelCritic(encoder=encoder.module, qfs=qfs)  # Unwrapping the encoder module. This is already tied to the wrapped encoder
+# Unwrapping the encoder module. This is already tied to the wrapped encoder
+critic = SACAEAgent(encoder=encoder.module, qfs=qfs)
 actor = fabric.setup_module(actor)
 critic = fabric.setup_module(critic)
 
-# The agent will tied convolutional weights between the encoder actor and critic
+# The agent will tied convolutional and linear weights between the encoder actor and critic
 agent = SACPixelAgent(
     actor,
     critic,
@@ -73,8 +119,15 @@ To account for the points 2. and 3. above, the training function is the followin
 ```python
 # Prevent OOM for both CPU and GPU memory. Data is memory mapped if args.memmap_buffer=True (which is recommended)
 data = data.to(fabric.device)
-normalized_obs = data["observations"] / 255.0
-normalized_next_obs = data["next_observations"] / 255.0
+normalized_obs = {}
+normalized_next_obs = {}
+for k in cnn_keys + mlp_keys:
+    if k in cnn_keys:
+        normalized_obs[k] = data[k] / 255.0
+        normalized_next_obs[k] = data[f"next_{k}"] / 255.0
+    else:
+        normalized_obs[k] = data[k]
+        normalized_next_obs[k] = data[f"next_{k}"]
 
 # Update the soft-critic
 next_target_qf_value = agent.get_next_target_q_values(
