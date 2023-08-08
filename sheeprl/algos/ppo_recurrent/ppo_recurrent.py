@@ -5,7 +5,6 @@ import time
 import warnings
 from contextlib import nullcontext
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 from typing import List
 
@@ -14,8 +13,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, pad_sequence
 from torch.distributed.algorithms.join import Join

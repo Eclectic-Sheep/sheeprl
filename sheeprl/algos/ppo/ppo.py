@@ -2,7 +2,6 @@ import copy
 import os
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Union
 
 import gymnasium as gym
@@ -10,8 +9,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase

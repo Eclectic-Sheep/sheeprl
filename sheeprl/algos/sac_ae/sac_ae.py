@@ -3,7 +3,6 @@ import os
 import time
 import warnings
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 from typing import Optional, Union
 
@@ -14,8 +13,6 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule

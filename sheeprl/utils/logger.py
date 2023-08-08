@@ -3,35 +3,13 @@ import pathlib
 import time
 from dataclasses import asdict
 from datetime import datetime
-from math import prod
 from typing import Optional, Tuple
 
-import gymnasium as gym
-import numpy as np
-import torch
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
-from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
-from torch.optim import Adam, Optimizer
-from torch.utils.data.distributed import DistributedSampler
-from torch.utils.data.sampler import BatchSampler
-from torchmetrics import MeanMetric
-from sheeprl.algos.args import StandardArgs
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
-from sheeprl.algos.sac.args import SACArgs
-from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac.utils import test
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
-from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.parser import HfArgumentParser
-from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
+from sheeprl.algos.args import StandardArgs
 
 
 def create_tensorboard_logger(

@@ -1,7 +1,6 @@
 import os
 import time
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 
 import gymnasium as gym
@@ -10,8 +9,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Adam, Optimizer
 from torch.utils.data.distributed import DistributedSampler

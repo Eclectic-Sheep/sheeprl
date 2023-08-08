@@ -7,7 +7,6 @@ import os
 import pathlib
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, Sequence
 
 import gymnasium as gym
@@ -16,8 +15,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
