@@ -87,7 +87,7 @@ def train(
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
+        world_model (WorldModel): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
         world_optimizer (_FabricOptimizer): the world optimizer.
@@ -96,6 +96,8 @@ def train(
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV1Args): the configs.
+        cnn_keys: Sequence[str]: the sequence of cnn keys to encode/decode.
+        mlp_keys: Sequence[str]: the sequence of mlp keys to encode/decode.
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -109,7 +111,7 @@ def train(
     # the recurrent state is the deterministic state (or ht) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
-    # initialize the posterior that must be of dimension (batch_size, 1, stochastic_size)
+    # initialize the posterior that must be of dimension (1, batch_size, stochastic_size)
     # the stochastic state is the stochastic state (or st) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
 
@@ -222,6 +224,7 @@ def train(
     # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
 
+    # starting states for the imagination phase.
     # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
     imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
 
@@ -322,7 +325,7 @@ def train(
     critic_optimizer.zero_grad(set_to_none=True)
     # compute the value loss
     # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
-    # it is necessary to remove the last dimension properly match the shapes
+    # it is necessary to remove the last dimension to properly match the shapes
     # for the log prob
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)

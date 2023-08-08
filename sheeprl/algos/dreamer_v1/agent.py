@@ -48,24 +48,24 @@ class RecurrentModel(nn.Module):
 
 
 class RSSM(nn.Module):
-    """RSSM model for the model-base Dreamer agent.
+    """RSSM model for the model-base DreamerV1 agent.
 
     Args:
-        recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the posterior state.
+        recurrent_model (_FabricModule): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (_FabricModule): the representation model composed by a multi-layer perceptron to compute the posterior state.
             For more information see [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-            The model is composed by a multu-layer perceptron to predict the prior state.
-        min_std (float, optional): the minimum value of the standard deviation computed by the transition model.
+        transition_model (_FabricModule): the transition model described in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+            The model is composed by a multi-layer perceptron to predict the prior state.
+        min_std (float): the minimum value of the standard deviation computed by the representation and transition models.
             Default to 0.1.
     """
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        transition_model: nn.Module,
-        min_std: Optional[float] = 0.1,
+        recurrent_model: _FabricModule,
+        representation_model: _FabricModule,
+        transition_model: _FabricModule,
+        min_std: float = 0.1,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
@@ -96,7 +96,7 @@ class RSSM(nn.Module):
             embedded_obs (Tensor): the embedded observations provided by the environment.
 
         Returns:
-            The recurrent state (Tuple[Tensor, ...]): the recurrent state of the recurrent model.
+            The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
             The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
             The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
@@ -147,10 +147,10 @@ class RSSM(nn.Module):
 
         Args:
             stochastic_state (Tensor): the stochastic space (can be either the posterior or the prior).
-                Shape (batch_size, 1, stochastic_size).
+                Shape (1, batch_size, stochastic_size).
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             actions (Tensor): the actions taken by the agent.
-                Shape (batch_size, 1, stochastic_size).
+                Shape (1, batch_size, stochastic_size).
 
         Returns:
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
@@ -193,7 +193,7 @@ class WorldModel(nn.Module):
 
 class Player(nn.Module):
     """
-    The model of the Dreamer_v1 player.
+    The model of the DreamerV1 player.
 
     Args:
         encoder (_FabricModule): the encoder.
@@ -227,13 +227,11 @@ class Player(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-
         self.expl_amount = expl_amount
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-
         self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -255,16 +253,18 @@ class Player(nn.Module):
 
     def get_exploration_action(
         self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, np.ndarray]] = None
-    ) -> Tensor:
+    ) -> Sequence[Tensor]:
         """
         Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
             is_continuous (bool): whether or not the actions are continuous.
+            mask (Dict[str, np.ndarray], optional): the action mask (whether or not each action can be executed).
+                Defaults to None.
 
         Returns:
-            The actions the agent has to perform.
+            The actions the agent has to perform (Sequence[Tensor]).
         """
         actions = self.get_greedy_action(obs, mask=mask)
         if is_continuous:
@@ -292,9 +292,11 @@ class Player(nn.Module):
             obs (Tensor): the current observations.
             is_training (bool): whether it is training.
                 Default to True.
+            mask (Dict[str, np.ndarray], optional): the action mask (whether or not each action can be executed).
+                Defaults to None.
 
         Returns:
-            The actions the agent has to perform.
+            The actions the agent has to perform (Sequence[Tensor]).
         """
         embedded_obs = self.encoder(obs)
         _, self.recurrent_state = self.recurrent_model(
@@ -325,7 +327,6 @@ def build_models(
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
         args (DreamerV1Args): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
