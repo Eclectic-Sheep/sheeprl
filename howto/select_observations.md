@@ -15,6 +15,10 @@ The algorithms that can work with both image and vector observations are specifi
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover you can select all/some/none of the image observations.
 You just need to pass the `mlp_keys` and `cnn_keys` to the script to select the vector observations and the image observations, respectively.
 
+> **Recommended**
+>
+> We recommend to read [this](./work_with_multi-encoder_multi-decoder.md) to know how the encoder and decoder work with more observations.
+
 For instance, to train the ppo algorithm on the *walker walk* task provided by *DMC* using image observations and only the `orientations` and `velocity` as vector observation, you have to run the following command:
 ```bash
 lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --mlp_keys orientations velocity

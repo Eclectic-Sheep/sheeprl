@@ -1,12 +1,12 @@
 ## Install Gymnasium MuJoCo/DMC environments
 First you should install the proper environments:
 
-- MuJoCo (Gymnasium): you do not need to install extra pakages, the `pip install -e .` command is enough to have available all the MuJoCo environments provided by Gym 
-- DMC: you have to install extra packages with the following command: `pip install -e .[dmc]`.
+- MuJoCo (Gymnasium): you do not need to install extra pakages, the `pip install -e .` command is enough to have available all the MuJoCo environments provided by Gymnasium (https://gymnasium.farama.org/environments/mujoco/)
+- DMC: you have to install extra packages with the following command: `pip install -e .[dmc]`. (https://github.com/deepmind/dm_control).
 
 ## Install OpenGL rendering backands packages
 
-MuJoCo supports three different OpenGL rendering backends: EGL (headless), GLFW (windowed), OSMesa (headless).
+MuJoCo/DMC supports three different OpenGL rendering backends: EGL (headless), GLFW (windowed), OSMesa (headless).
 For each of them, you need to install some pakages:
 - GLFW: `sudo apt-get install libglfw3 libglew2.0`
 - EGL: `sudo apt-get install libglew2.0`
