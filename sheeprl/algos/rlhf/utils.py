@@ -162,7 +162,7 @@ def prepare_tokenizer(tokenizer_name: str) -> PreTrainedTokenizer:
     if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    if "bos_token" not in special_tokens.keys() or special_tokens["bos_token"] == special_tokens["eos_token"]:
+    if "bos_token" not in special_tokens.keys():
         # we don't resize the tokenizer here because we want to keep the original vocab size
         # However, we need something to represent the start of the text
         # we use <|startoftext|> from gptj

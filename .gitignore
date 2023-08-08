@@ -164,3 +164,4 @@ logs
 poetry.lock
 notebooks
 pytest_*
+data/

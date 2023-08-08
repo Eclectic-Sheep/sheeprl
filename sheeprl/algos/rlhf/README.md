@@ -81,15 +81,11 @@ The user can implement their own dataset processing script by following the stru
 SFT is a supervised learning approach to train a language model to learn generating similar responses given prompts in the dataset. The model is trained with cross entropy loss. The user can decide using only response part or all input to compute the loss. The loss function is :
 
 $$
-\begin{equation}
 \mathcal{L}(\text{outputs}, \text{targets}) = \text{CrossEntropy}\left( \text{outputs}_{...,:-1,:}, \text{targets}_{...,1:} \right)
-\end{equation}
 $$
 
 $$
-\begin{equation}
 \text{CrossEntropy}(y, t) = - \sum_{i} t_i \log(y_i)
-\end{equation}
 $$
 
 Example Script for running SFT:
@@ -191,6 +187,7 @@ This work and the code developed for the task is a long educational and experime
 - [Lit-Llama](https://github.com/Lightning-AI/lit-llama)
 - [Lit-GPT](https://github.com/Lightning-AI/lit-gpt)
 - [MinLora](https://github.com/cccntu/minlora)
+- [MOSS-RLHF](https://github.com/OpenLMLab/MOSS-RLHF)
 
 ### Blog Posts
 
