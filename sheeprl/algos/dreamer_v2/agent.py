@@ -750,7 +750,6 @@ def build_models(
     # Sizes
     stochastic_size = args.stochastic_size * args.discrete_size
     latent_state_size = stochastic_size + args.recurrent_state_size
-    mlp_dims = [obs_space[k].shape[0] for k in mlp_keys]
 
     # Define models
     cnn_encoder = (
@@ -768,7 +767,7 @@ def build_models(
     mlp_encoder = (
         MLPEncoder(
             keys=mlp_keys,
-            input_dims=mlp_dims,
+            input_dims=[obs_space[k].shape[0] for k in mlp_keys],
             mlp_layers=args.mlp_layers,
             dense_units=args.dense_units,
             activation=dense_act,
@@ -825,7 +824,7 @@ def build_models(
     mlp_decoder = (
         MLPDecoder(
             keys=mlp_keys,
-            output_dims=mlp_dims,
+            output_dims=[obs_space[k].shape[0] for k in mlp_keys],
             latent_state_size=latent_state_size,
             mlp_layers=args.mlp_layers,
             dense_units=args.dense_units,
