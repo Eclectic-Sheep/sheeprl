@@ -192,7 +192,7 @@ class RecurrentModel(nn.Module):
         dense_units (int): the number of dense units.
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
-            Default to ELU.
+            Default to SiLU.
         layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
             Defaults to True.
     """
@@ -202,7 +202,7 @@ class RecurrentModel(nn.Module):
         input_size: int,
         recurrent_state_size: int,
         dense_units: int,
-        activation_fn: nn.Module = nn.ELU,
+        activation_fn: nn.Module = nn.SiLU,
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
@@ -517,7 +517,7 @@ class Actor(nn.Module):
         dense_units (int): the dimension of the hidden dense layers.
             Default to 400.
         dense_act (int): the activation function to apply after the dense layers.
-            Default to nn.ELU.
+            Default to nn.SiLU.
         distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
             `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
             space is a discrete one, `trunc_normal` otherwise.
@@ -532,7 +532,7 @@ class Actor(nn.Module):
         init_std: float = 0.0,
         min_std: float = 0.1,
         dense_units: int = 400,
-        dense_act: nn.Module = nn.ELU,
+        dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
         layer_norm: bool = False,
@@ -641,7 +641,7 @@ class MinedojoActor(Actor):
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 400,
-        dense_act: nn.Module = nn.ELU,
+        dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
         layer_norm: bool = False,
