@@ -158,11 +158,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
-        "State/p_entropy",
+        "State/post_entropy",
         Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
-        "State/q_entropy",
+        "State/prior_entropy",
         Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
@@ -423,8 +423,8 @@ def main():
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
                 "State/kl": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/post_entropy": MeanMetric(sync_on_compute=False),
+                "State/prior_entropy": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/world_model": MeanMetric(sync_on_compute=False),
                 "Grads/actor": MeanMetric(sync_on_compute=False),

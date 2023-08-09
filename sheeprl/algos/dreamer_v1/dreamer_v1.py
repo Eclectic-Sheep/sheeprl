@@ -209,8 +209,8 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/p_entropy", p.entropy().mean().detach())
-    aggregator.update("State/q_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", p.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
@@ -482,8 +482,8 @@ def main():
                 "Loss/reward_loss": MeanMetric(sync_on_compute=False),
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/post_entropy": MeanMetric(sync_on_compute=False),
+                "State/prior_entropy": MeanMetric(sync_on_compute=False),
                 "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/world_model": MeanMetric(sync_on_compute=False),
