@@ -79,12 +79,25 @@ def train(
         mlp_keys (Sequence[str]): the mlp keys to encode/decode.
         actions_dim (Sequence[int]): the actions dimension.
     """
+    # The environment interaction goes like this:
+    # Actions:           a0       a1       a2      a4
+    #                    ^ \      ^ \      ^ \     ^
+    #                   /   \    /   \    /   \   /
+    #                  /     \  /     \  /     \ /
+    # Observations:  o0       o1       o2       o3
+    # Rewards:       0        r1       r2       r3
+    # Dones:         0        d1       d2       d3
+    # Is-first       1        i1       i2       i3
+
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
     device = fabric.device
     batch_obs = {k: data[k] / 255.0 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
+
+    # Given how the environment interaction works, we remove the last actions
+    # and add the first one as the zero action
     batch_actions = torch.cat((torch.zeros_like(data["actions"][:1]), data["actions"][:-1]), dim=0)
 
     # Dynamic Learning
@@ -186,7 +199,19 @@ def train(
     actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
     imagined_actions[0] = actions
 
-    # imagine trajectories in the latent space
+    # The imagination goes like this, with H=3:
+    # Actions:           a'0      a'1      a'2     a'4
+    #                    ^ \      ^ \      ^ \     ^
+    #                   /   \    /   \    /   \   /
+    #                  /     \  /     \  /     \ /
+    # States:        z0 ---> z'1 ---> z'2 ---> z'3
+    # Rewards:       r'0     r'1      r'2      r'3
+    # Values:        v'0     v'1      v'2      v'3
+    # Lambda-values:         l'1      l'2      l'3
+    # Continues:     c'0     c'1      c'2      c'3
+    # where z0 comes from the posterior, while z'i is the imagined states (prior)
+
+    # Imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
