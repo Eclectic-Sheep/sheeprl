@@ -24,7 +24,7 @@ from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weight
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.model import Conv2dSame, LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
@@ -57,8 +57,8 @@ class MultiEncoder(nn.Module):
                 CNN(
                     input_channels=cnn_input_channels,
                     hidden_channels=(torch.tensor([1, 2, 4, 8]) * cnn_channels_multiplier).tolist(),
-                    cnn_layer=Conv2dSame,
-                    layer_args={"kernel_size": 4, "stride": 2, "bias": not layer_norm},
+                    cnn_layer=nn.Conv2d,
+                    layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
                     activation=cnn_act,
                     norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
                     norm_args=[{"normalized_shape": (2**i) * cnn_channels_multiplier, "eps": 1e-3} for i in range(4)]
@@ -135,6 +135,7 @@ class MultiDecoder(nn.Module):
                     input_channels=8 * cnn_channels_multiplier,
                     hidden_channels=(torch.tensor([4, 2, 1]) * cnn_channels_multiplier).tolist()
                     + [cnn_decoder_output_dim[0]],
+                    cnn_layer=nn.ConvTranspose2d,
                     layer_args=[
                         {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
                         {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
