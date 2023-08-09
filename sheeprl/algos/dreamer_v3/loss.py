@@ -62,13 +62,13 @@ def reconstruction_loss(
     # KL balancing
     kl_free_nats = torch.tensor([kl_free_nats], device=device)
     dyn_loss = kl = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach(), validate_args=False), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits, validate_args=False), 1),
     )
     dyn_loss = kl_dynamic * torch.maximum(dyn_loss, kl_free_nats)
     repr_loss = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits, validate_args=False), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach(), validate_args=False), 1),
     )
     repr_loss = kl_representation * torch.maximum(repr_loss, kl_free_nats)
     kl_loss = dyn_loss + repr_loss

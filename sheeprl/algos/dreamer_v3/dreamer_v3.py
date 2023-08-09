@@ -3,7 +3,6 @@ import os
 import pathlib
 import time
 from dataclasses import asdict
-from datetime import datetime
 from functools import partial
 from typing import Dict, Sequence
 
@@ -13,8 +12,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -29,11 +26,12 @@ from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
-from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
+from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.callback import CheckpointCallback
-from sheeprl.utils.distribution import DiscDist, MSEDist, SymlogDist
+from sheeprl.utils.distribution import MSEDistribution, SymlogDistribution, TwoHotEncodingDistribution
 from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -120,32 +118,18 @@ def train(
     batch_actions = torch.cat((torch.zeros_like(data["actions"][:1]), data["actions"][:-1]), dim=0)
 
     # Dynamic Learning
-    # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
-    # the dimension of each vector must be (1, batch_size, recurrent_state_size)
-    # the recurrent state is the deterministic state (or ht)
+    stoch_state_size = args.stochastic_size * args.discrete_size
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
-
-    # initialize the posterior that must be of dimension (1, batch_size, stochastic_size, discrete_size), which
-    # by default is set to (1, batch_size, 32, 32). The posterior state is named zt in the paper
     posterior = torch.zeros(1, batch_size, args.stochastic_size, args.discrete_size, device=device)
-
-    # initialize the recurrent_states, which will contain all the recurrent states
-    # computed during the dynamic learning phase. Its dimension is (sequence_length, batch_size, recurrent_state_size)
     recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
-
-    # initialize all the tensor to collect priors and posteriors states with their associated logits
-    priors_logits = torch.empty(sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device)
+    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
-    posteriors_logits = torch.empty(
-        sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device
-    )
+    posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
-    # embedded observations from the environment
+    # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
     for i in range(0, sequence_length):
-        # one step of dynamic learning, which take the posterior state, the recurrent state, the action
-        # and the observation and compute the next recurrent, prior and posterior states
         recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
             posterior, recurrent_state, batch_actions[i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
@@ -153,24 +137,21 @@ def train(
         priors_logits[i] = prior_logits
         posteriors[i] = posterior
         posteriors_logits[i] = posterior_logits
-
-    # concatenate the posteriors with the recurrent states on the last dimension
-    # latent_states has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # compute the distribution over the reconstructed observations
-    po = {k: MSEDist(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cnn_keys}
-    po.update({k: SymlogDist(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in mlp_keys})
+    po = {k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cnn_keys}
+    po.update({k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in mlp_keys})
 
     # compute the distribution over the rewards
     with fabric.device:
-        pr = DiscDist(world_model.reward_model(latent_states), dims=1)
+        pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
     # compute the distribution over the terminal steps, if required
-    pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
+    pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
     continue_targets = 1 - data["dones"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
@@ -217,29 +198,16 @@ def train(
     )
 
     # Behaviour Learning
-    # unflatten first 2 dimensions of recurrent and stochastic states in order to have all the states on the first dimension.
-    # The 1 in the second dimension is needed for the recurrent model in the imagination step,
-    # 1 because the agent imagines one state at a time.
-    # (1, batch_size * sequence_length, stochastic_size)
-    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size * args.discrete_size)
-
-    # initialize the recurrent state of the recurrent model with the recurrent states computed
-    # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
+    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
-
-    # (1, batch_size * sequence_length, determinisitic_size + stochastic_size * discrete_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-
-    # initialize the tensor of the imagined trajectories
     imagined_trajectories = torch.empty(
         args.horizon + 1,
         batch_size * sequence_length,
-        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
+        stoch_state_size + args.recurrent_state_size,
         device=device,
     )
     imagined_trajectories[0] = imagined_latent_state
-
-    # initialize the tensor of the imagined actions
     imagined_actions = torch.empty(
         args.horizon + 1,
         batch_size * sequence_length,
@@ -251,29 +219,22 @@ def train(
 
     # imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
-        # imagination step
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-
-        # update current state
-        imagined_prior = imagined_prior.view(1, -1, args.stochastic_size * args.discrete_size)
+        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
-
-        # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
         actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
         imagined_actions[i] = actions
 
     # predict values and rewards
     with fabric.device:
-        predicted_values = DiscDist(critic(imagined_trajectories), dims=1).mean
-        predicted_rewards = DiscDist(world_model.reward_model(imagined_trajectories), dims=1).mean
+        predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
+        predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 
-    # compute the lambda_values, by passing as last values the values of the last imagined state
-    # the dimensions of the lambda_values tensor are
-    # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
+    # estimate values
     lambda_values = compute_lambda_values(
         predicted_rewards[1:],
         predicted_values[1:],
@@ -283,36 +244,6 @@ def train(
 
     # compute the discounts to multiply to the lambda values
     with torch.no_grad():
-        # the losses in Eq. 5 and Eq. 6 of the paper are weighted by the cumulative product of the predicted
-        # discount factors, estimated by the continue model, so terms are wighted down based on how likely
-        # the imagined trajectory would have ended.
-        #
-        # Suppose the case in which the continue model is not used and gamma = .99
-        # continues.shape = (15, 2500, 1)
-        # continues = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (15 rows)
-        # torch.ones_like(continues[:1]) = [
-        #   [ [1.], ..., [1.] ]
-        # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # continues[:-2] = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (13 rows)
-        # torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   ...,
-        #   [ [.99], ..., [.99] ],
-        # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-2]), 0), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   [ [.9801], ..., [.9801] ],
-        #   ...,
-        #   [ [.8775], ..., [.8775] ],
-        # ] (14 rows)
         discount = torch.cumprod(continues * args.gamma, dim=0) / args.gamma
 
     # actor optimization step. Eq. 6 from the paper
@@ -351,13 +282,14 @@ def train(
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
+    # predict the values
     with fabric.device:
-        qv = DiscDist(critic(imagined_trajectories.detach()[:-1]), dims=1)
-        predicted_target_values = DiscDist(target_critic(imagined_trajectories.detach()[:-1]), dims=1).mean
+        qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
+        predicted_target_values = TwoHotEncodingDistribution(
+            target_critic(imagined_trajectories.detach()[:-1]), dims=1
+        ).mean
 
-    # critic optimization step. Eq. 5 from the paper.
+    # critic optimization
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -qv.log_prob(lambda_values.detach())
     value_loss = value_loss - qv.log_prob(predicted_target_values.detach())
@@ -403,42 +335,12 @@ def main():
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "dreamer_v3", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        if args.checkpoint_path:
-            root_dir = ckpt_path.parent.parent
-            run_name = "resume_from_checkpoint"
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "dreamer_v3")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -472,9 +374,7 @@ def main():
     if isinstance(observation_space, gym.spaces.Dict):
         cnn_keys = []
         for k, v in observation_space.spaces.items():
-            if args.cnn_keys and (
-                k in args.cnn_keys or (len(args.cnn_keys) == 1 and args.cnn_keys[0].lower() == "all")
-            ):
+            if args.cnn_keys and k in args.cnn_keys:
                 if len(v.shape) == 3:
                     cnn_keys.append(k)
                 else:
@@ -484,9 +384,7 @@ def main():
                     )
         mlp_keys = []
         for k, v in observation_space.spaces.items():
-            if args.mlp_keys and (
-                k in args.mlp_keys or (len(args.mlp_keys) == 1 and args.mlp_keys[0].lower() == "all")
-            ):
+            if args.mlp_keys and k in args.mlp_keys:
                 if len(v.shape) == 1:
                     mlp_keys.append(k)
                 else:
@@ -497,7 +395,9 @@ def main():
     else:
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cnn_keys == [] and mlp_keys == []:
-        raise RuntimeError(f"There must be at least one valid observation.")
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+        )
     fabric.print("CNN keys:", cnn_keys)
     fabric.print("MLP keys:", mlp_keys)
     obs_keys = cnn_keys + mlp_keys
@@ -568,30 +468,18 @@ def main():
 
     # Local data
     buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
-    buffer_type = args.buffer_type.lower()
-    if buffer_type == "sequential":
-        rb = AsyncReplayBuffer(
-            buffer_size,
-            args.num_envs,
-            device="cpu",
-            memmap=args.memmap_buffer,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            sequential=True,
-        )
-    elif buffer_type == "episode":
-        rb = EpisodeBuffer(
-            buffer_size,
-            sequence_length=args.per_rank_sequence_length,
-            device="cpu",
-            memmap=args.memmap_buffer,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        )
-    else:
-        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+    rb = AsyncReplayBuffer(
+        buffer_size,
+        args.num_envs,
+        device="cpu",
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        sequential=True,
+    )
     if args.checkpoint_path and args.checkpoint_buffer:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], (AsyncReplayBuffer, EpisodeBuffer)):
+        elif isinstance(state["rb"], AsyncReplayBuffer):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
@@ -617,7 +505,6 @@ def main():
         )
 
     # Get the first environment observation and start the optimization
-    episode_steps = []
     o = envs.reset(seed=args.seed)[0]
     obs = {}
     for k in obs_keys:
@@ -664,16 +551,10 @@ def main():
                     real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         step_data["actions"] = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        data_to_add = step_data[None, ...]
-        if buffer_type == "sequential":
-            rb.add(data_to_add)
-        else:
-            episode_steps.append(data_to_add)
+        rb.add(step_data[None, ...])
 
         o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
-        if args.dry_run and buffer_type == "episode":
-            dones = np.ones_like(dones)
 
         step_data["is_first"] = torch.zeros_like(step_data["dones"])
         if "restart_on_exception" in infos:
@@ -733,14 +614,9 @@ def main():
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
             reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
             reset_data["is_first"] = torch.zeros_like(reset_data["dones"]).float()
-            if buffer_type == "episode":
-                for i, d in enumerate(dones_idxes):
-                    if len(episode_steps[d]) >= args.per_rank_sequence_length:
-                        episode_steps[d].append(reset_data[i : i + 1][None, ...])
-                        rb.add(torch.cat(episode_steps[d], dim=0))
-                        episode_steps[d] = []
-            else:
-                rb.add(reset_data[None, ...], dones_idxes)
+            rb.add(reset_data[None, ...], dones_idxes)
+
+            # Reset already inserted step data
             step_data["rewards"][dones_idxes] = torch.zeros_like(reset_data["rewards"]).float()
             step_data["dones"][dones_idxes] = torch.zeros_like(step_data["dones"][dones_idxes]).float()
             step_data["is_first"][dones_idxes] = torch.ones_like(step_data["is_first"][dones_idxes]).float()
@@ -751,18 +627,11 @@ def main():
         # Train the agent
         if global_step >= learning_starts and step_before_training <= 0:
             fabric.barrier()
-            if buffer_type == "sequential":
-                local_data = rb.sample(
-                    args.per_rank_batch_size,
-                    sequence_length=args.per_rank_sequence_length,
-                    n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
-                ).to(device)
-            else:
-                local_data = rb.sample(
-                    args.per_rank_batch_size,
-                    n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
-                    prioritize_ends=args.prioritize_ends,
-                ).to(device)
+            local_data = rb.sample(
+                args.per_rank_batch_size,
+                sequence_length=args.per_rank_sequence_length,
+                n_samples=args.pretrain_steps if global_step == learning_starts else args.gradient_steps,
+            ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
                 if gradient_steps % args.critic_target_network_update_freq == 0:
@@ -833,7 +702,7 @@ def main():
 
     envs.close()
     if fabric.is_global_zero:
-        test(player, fabric, args, cnn_keys, mlp_keys)
+        test(player, fabric, args, cnn_keys, mlp_keys, sample_actions=True)
 
 
 if __name__ == "__main__":
