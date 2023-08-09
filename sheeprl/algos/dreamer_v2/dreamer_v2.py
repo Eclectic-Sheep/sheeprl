@@ -114,6 +114,7 @@ def train(
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
+    stoch_state_size = args.stochastic_size * args.discrete_size
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, args.stochastic_size, args.discrete_size, device=device)
 
@@ -122,13 +123,11 @@ def train(
     recurrent_states = torch.zeros(sequence_length, batch_size, args.recurrent_state_size, device=device)
 
     # Initialize all the tensor to collect priors and posteriors states with their associated logits
-    priors_logits = torch.empty(sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device)
+    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, args.discrete_size, device=device)
-    posteriors_logits = torch.empty(
-        sequence_length, batch_size, args.stochastic_size * args.discrete_size, device=device
-    )
+    posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
-    # Embedded observations from the environment
+    # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
     for i in range(0, sequence_length):
@@ -207,7 +206,7 @@ def train(
 
     # Behaviour Learning
     # (1, batch_size * sequence_length, stochastic_size * discrete_size)
-    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size * args.discrete_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
 
     # (1, batch_size * sequence_length, recurrent_state_size).
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
@@ -219,7 +218,7 @@ def train(
     imagined_trajectories = torch.empty(
         args.horizon + 1,
         batch_size * sequence_length,
-        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
+        stoch_state_size + args.recurrent_state_size,
         device=device,
     )
     imagined_trajectories[0] = imagined_latent_state
@@ -243,7 +242,7 @@ def train(
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
 
         # Update current state
-        imagined_prior = imagined_prior.view(1, -1, args.stochastic_size * args.discrete_size)
+        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
 

@@ -35,7 +35,7 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) ->
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
+    dist = Independent(OneHotCategoricalStraightThrough(logits=logits, validate_args=False), 1)
     stochastic_state = dist.rsample() if sample else dist.mode
     return stochastic_state
 
