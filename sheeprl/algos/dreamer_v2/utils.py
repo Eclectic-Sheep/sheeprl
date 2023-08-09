@@ -13,7 +13,7 @@ from torch.distributions import Independent, OneHotCategoricalStraightThrough
 from sheeprl.utils.utils import get_dummy_env
 
 if TYPE_CHECKING:
-    from sheeprl.algos.dreamer_v3.agent import Player
+    from sheeprl.algos.dreamer_v2.agent import Player
 
 from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.envs.wrappers import ActionRepeat
@@ -251,7 +251,13 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: "Player", fabric: Fabric, args: DreamerV2Args, cnn_keys: List[str], mlp_keys: List[str], test_name: str = ""
+    player: "Player",
+    fabric: Fabric,
+    args: DreamerV2Args,
+    cnn_keys: List[str],
+    mlp_keys: List[str],
+    test_name: str = "",
+    sample_actions: bool = False,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -259,9 +265,8 @@ def test(
         player (Player): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
     """
-    env = make_env(
-        args.env_id, args.seed, 0, args, fabric.logger.log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
-    )()
+    log_dir = fabric.logger.log_dir if len(fabric.loggers) > 0 else os.getcwd()
+    env = make_env(args.env_id, args.seed, 0, args, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
     device = fabric.device
@@ -279,7 +284,7 @@ def test(
             else:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
-            preprocessed_obs, False, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+            preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
         )
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()
@@ -293,7 +298,8 @@ def test(
         done = done or truncated or args.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
-    fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+    if len(fabric.loggers) > 0:
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
 
 
