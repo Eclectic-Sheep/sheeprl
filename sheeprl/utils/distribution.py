@@ -145,7 +145,7 @@ class TruncatedNormal(TruncatedStandardNormal):
 
 
 # From https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/jaxutils.py
-class SymlogDist(Distribution):
+class SymlogDistribution(Distribution):
     def __init__(
         self,
         mode: Tensor,
@@ -189,7 +189,7 @@ class SymlogDist(Distribution):
         return -loss
 
 
-class MSEDist(Distribution):
+class MSEDistribution(Distribution):
     def __init__(self, mode: Tensor, dims: int, agg: str = "sum"):
         self._mode = mode
         self._dims = tuple([-x for x in range(1, dims + 1)])
@@ -217,7 +217,7 @@ class MSEDist(Distribution):
         return -loss
 
 
-class DiscDist(Distribution):
+class TwoHotEncodingDistribution(Distribution):
     def __init__(
         self,
         logits: Tensor,
