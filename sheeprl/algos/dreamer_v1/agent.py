@@ -193,7 +193,7 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class Player(nn.Module):
+class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:

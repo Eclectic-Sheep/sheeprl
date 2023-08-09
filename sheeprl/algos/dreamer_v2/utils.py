@@ -12,10 +12,11 @@ from torch.distributions import Independent, OneHotCategoricalStraightThrough
 from sheeprl.utils.env import make_dict_env
 
 if TYPE_CHECKING:
+    from sheeprl.algos.dreamer_v1.agent import PlayerDV1
     from sheeprl.algos.dreamer_v1.args import DreamerV1Args
     from sheeprl.algos.dreamer_v2.agent import PlayerDV2
-    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
     from sheeprl.algos.dreamer_v2.args import DreamerV2Args
+    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
     from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 
 
@@ -82,7 +83,7 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: Union["PlayerDV2", "PlayerDV3"],
+    player: Union["PlayerDV3", "PlayerDV2", "PlayerDV1"],
     fabric: Fabric,
     args: Union["DreamerV3Args", "DreamerV2Args", "DreamerV1Args"],
     cnn_keys: List[str],

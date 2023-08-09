@@ -19,7 +19,7 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
@@ -443,7 +443,7 @@ def main():
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
     )
-    player = Player(
+    player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
