@@ -24,7 +24,7 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v2.utils import make_env, test
+from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
@@ -33,6 +33,7 @@ from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.distribution import DiscDist, MSEDist, SymlogDist
+from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
@@ -442,7 +443,7 @@ def main():
         [
             partial(
                 RestartOnException,
-                env_fn=make_env(
+                env_fn=make_dict_env(
                     args.env_id,
                     args.seed + rank * args.num_envs,
                     rank,
@@ -657,7 +658,7 @@ def main():
                 if is_continuous:
                     real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
                 else:
-                    real_actions = np.array([real_act.cpu().argmax(dim=-1) for real_act in real_actions])
+                    real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         step_data["actions"] = torch.from_numpy(actions).view(args.num_envs, -1).float()
         data_to_add = step_data[None, ...]
