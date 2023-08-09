@@ -106,11 +106,25 @@ def train(
         mlp_keys (Sequence[str]): the mlp keys to encode/decode.
         actions_dim (Sequence[int]): the actions dimension.
     """
+
+    # The environment interaction goes like this:
+    # Actions:       0   a1       a2       a3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     \  /     \  /     \
+    # Observations:  o0       o1       o2       o3
+    # Rewards:       0        r1       r2       r3
+    # Dones:         0        d1       d2       d3
+    # Is-first       1        i1       i2       i3
+
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
     device = fabric.device
     batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
+
+    # Given how the environment interaction works, we assume that the first element in a sequence
+    # is the first one, as if the environment has been reset
     data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
 
     # Dynamic Learning
@@ -232,6 +246,18 @@ def train(
     )
     imagined_actions[0] = torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1])
 
+    # The imagination goes like this, with H=3:
+    # Actions:       0   a'1      a'2     a'3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     \  /     \  /     \
+    # States:        z0 ---> z'1 ---> z'2 ---> z'3
+    # Rewards:       r'0     r'1      r'2      r'3
+    # Values:        v'0     v'1      v'2      v'3
+    # Lambda-values: l'0     l'1      l'2
+    # Continues:     c'0     c'1      c'2      c'3
+    # where z0 comes from the posterior, while z'i is the imagined states (prior)
+
     # Imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
         # (1, batch_size * sequence_length, sum(actions_dim))
@@ -258,7 +284,7 @@ def train(
     else:
         continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
 
-    # Compute the lambda_values, by passing as last values the values of the last imagined state
+    # Compute the lambda_values, by passing as last value the value of the last imagined state
     # (horizon, batch_size * sequence_length, 1)
     lambda_values = compute_lambda_values(
         predicted_rewards[:-1],
@@ -269,7 +295,7 @@ def train(
         lmbda=args.lmbda,
     )
 
-    # Compute the discounts to multiply to the lambda values
+    # Compute the discounts to multiply the lambda values
     with torch.no_grad():
         discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
@@ -308,7 +334,7 @@ def train(
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
-    # It removes the last imagined state in the trajectory because it is used only for computing correclty the lambda values
+    # It removes the last imagined state in the trajectory because it is used for bootstrapping
     qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
     # Critic optimization step. Eq. 5 from the paper.
