@@ -22,165 +22,157 @@ from torch.distributions.utils import probs_to_logits
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
-class MultiEncoder(nn.Module):
+class CNNEncoder(nn.Module):
     def __init__(
         self,
-        obs_space: Dict[str, Any],
-        cnn_keys: Sequence[str],
-        mlp_keys: Sequence[str],
-        cnn_channels_multiplier: int,
-        mlp_layers: int = 4,
-        dense_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
-        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
-        device: Union[str, torch.device] = "cpu",
+        keys: Sequence[str],
+        input_channels: Sequence[int],
+        image_size: Tuple[int, int],
+        channels_multiplier: int,
         layer_norm: bool = False,
+        activation: ModuleType = nn.SiLU,
     ) -> None:
         super().__init__()
-        if isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
-        self.cnn_keys = cnn_keys
-        self.mlp_keys = mlp_keys
-        self.mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
-        cnn_input_channels = sum([obs_space[k].shape[0] for k in cnn_keys])
-        self.cnn_input_dim = (cnn_input_channels, *obs_space[cnn_keys[0]].shape[1:])
-        if self.cnn_keys != []:
-            self.cnn_encoder = nn.Sequential(
-                CNN(
-                    input_channels=cnn_input_channels,
-                    hidden_channels=(torch.tensor([1, 2, 4, 8]) * cnn_channels_multiplier).tolist(),
-                    cnn_layer=nn.Conv2d,
-                    layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                    activation=cnn_act,
-                    norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                    norm_args=[{"normalized_shape": (2**i) * cnn_channels_multiplier, "eps": 1e-3} for i in range(4)]
-                    if layer_norm
-                    else None,
-                ),
-                nn.Flatten(-3, -1),
-            )
-            with torch.no_grad():
-                self.cnn_output_dim = self.cnn_encoder(torch.zeros(1, *self.cnn_input_dim)).shape[-1]
-        else:
-            self.cnn_output_dim = 0
-
-        if self.mlp_keys != []:
-            self.mlp_encoder = MLP(
-                self.mlp_input_dim,
-                None,
-                [dense_units] * mlp_layers,
-                activation=mlp_act,
-                layer_args={"bias": not layer_norm},
-                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-                norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+        self.keys = keys
+        self.input_dim = (sum(input_channels), *image_size)
+        self.model = nn.Sequential(
+            CNN(
+                input_channels=self.input_dim[0],
+                hidden_channels=(torch.tensor([1, 2, 4, 8]) * channels_multiplier).tolist(),
+                cnn_layer=nn.Conv2d,
+                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                activation=activation,
+                norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
+                norm_args=[{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(4)]
                 if layer_norm
                 else None,
-            )
-            self.mlp_output_dim = dense_units
-        else:
-            self.mlp_output_dim = 0
+            ),
+            nn.Flatten(-3, -1),
+        )
+        with torch.no_grad():
+            self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
 
-    def forward(self, obs):
-        cnn_out = torch.tensor((), device=self.device)
-        mlp_out = torch.tensor((), device=self.device)
-        if self.cnn_keys != []:
-            cnn_input = torch.cat([obs[k] for k in self.cnn_keys], -3) - 0.5  # channels dimension
-            cnn_out = cnn_forward(self.cnn_encoder, cnn_input, cnn_input.shape[-3:], (-1,))
-        if self.mlp_keys != []:
-            mlp_input = torch.cat([symlog(obs[k]) for k in self.mlp_keys], -1).type(torch.float32)
-            mlp_out = self.mlp_encoder(mlp_input)
-        return torch.cat((cnn_out, mlp_out), -1)
+    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
+        x = torch.cat([obs[k] for k in self.keys], -3)  # channels dimension
+        return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
-class MultiDecoder(nn.Module):
+class MLPEncoder(nn.Module):
     def __init__(
         self,
-        obs_space: Dict[str, Any],
-        cnn_keys: Sequence[str],
-        mlp_keys: Sequence[str],
-        cnn_channels_multiplier: int,
+        keys: Sequence[str],
+        input_dims: Sequence[int],
+        mlp_layers: int = 4,
+        dense_units: int = 512,
+        layer_norm: bool = False,
+        activation: ModuleType = nn.SiLU,
+        symlog_inputs: bool = True,
+    ) -> None:
+        super().__init__()
+        self.keys = keys
+        self.input_dim = sum(input_dims)
+        self.model = MLP(
+            self.input_dim,
+            None,
+            [dense_units] * mlp_layers,
+            activation=activation,
+            layer_args={"bias": not layer_norm},
+            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+            if layer_norm
+            else None,
+        )
+        self.output_dim = dense_units
+        self.symlog_inputs = symlog_inputs
+
+    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
+        x = torch.cat([symlog(obs[k]) if self.symlog_inputs else obs[k] for k in self.keys], -1)
+        return self.model(x)
+
+
+class CNNDecoder(nn.Module):
+    def __init__(
+        self,
+        keys: Sequence[str],
+        output_channels: Sequence[int],
+        channels_multiplier: int,
         latent_state_size: int,
-        cnn_decoder_input_dim: int,
-        cnn_decoder_output_dim: Tuple[int, int, int],
-        mlp_layers: int = 4,
-        dense_units: int = 512,
-        cnn_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
-        mlp_act: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.SiLU,
-        device: Union[str, torch.device] = "cpu",
+        cnn_encoder_output_dim: int,
+        image_size: Tuple[int, int],
+        activation: nn.Module = nn.SiLU,
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
-        if isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
-        self.mlp_splits = [obs_space[k].shape[0] for k in mlp_keys]
-        self.cnn_splits = [obs_space[k].shape[0] for k in cnn_keys]
-        self.cnn_keys = cnn_keys
-        self.mlp_keys = mlp_keys
-        self.cnn_decoder_output_dim = cnn_decoder_output_dim
-        if self.cnn_keys != []:
-            self.cnn_decoder = nn.Sequential(
-                nn.Linear(latent_state_size, cnn_decoder_input_dim),
-                nn.Unflatten(1, (-1, 4, 4)),
-                DeCNN(
-                    input_channels=8 * cnn_channels_multiplier,
-                    hidden_channels=(torch.tensor([4, 2, 1]) * cnn_channels_multiplier).tolist()
-                    + [cnn_decoder_output_dim[0]],
-                    cnn_layer=nn.ConvTranspose2d,
-                    layer_args=[
-                        {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                        {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                        {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                        {"kernel_size": 4, "stride": 2, "padding": 1},
-                    ],
-                    activation=[cnn_act, cnn_act, cnn_act, None],
-                    norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                    norm_args=[
-                        {"normalized_shape": (2 ** (4 - i - 2)) * cnn_channels_multiplier, "eps": 1e-3}
-                        for i in range(3)
-                    ]
-                    + [None]
-                    if layer_norm
-                    else None,
-                ),
-            )
-        if self.mlp_keys != []:
-            self.mlp_decoder = MLP(
-                latent_state_size,
-                None,
-                [dense_units] * mlp_layers,
-                activation=mlp_act,
-                layer_args={"bias": not layer_norm},
-                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-                norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+        self.keys = keys
+        self.output_channels = output_channels
+        self.cnn_encoder_output_dim = cnn_encoder_output_dim
+        self.image_size = image_size
+        self.output_dim = (sum(output_channels), *image_size)
+        self.model = nn.Sequential(
+            nn.Linear(latent_state_size, cnn_encoder_output_dim),
+            nn.Unflatten(1, (-1, 4, 4)),
+            DeCNN(
+                input_channels=8 * channels_multiplier,
+                hidden_channels=(torch.tensor([4, 2, 1]) * channels_multiplier).tolist() + [self.output_dim[0]],
+                cnn_layer=nn.ConvTranspose2d,
+                layer_args=[
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                    {"kernel_size": 4, "stride": 2, "padding": 1},
+                ],
+                activation=[activation, activation, activation, None],
+                norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
+                norm_args=[
+                    {"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier, "eps": 1e-3} for i in range(3)
+                ]
+                + [None]
                 if layer_norm
                 else None,
-            )
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.mlp_splits])
+            ),
+        )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        reconstructed_obs = {}
-        if self.cnn_keys != []:
-            cnn_out = (
-                cnn_forward(self.cnn_decoder, latent_states, (latent_states.shape[-1],), self.cnn_decoder_output_dim)
-                + 0.5
-            )
-            reconstructed_obs.update(
-                {k: rec_obs for k, rec_obs in zip(self.cnn_keys, torch.split(cnn_out, self.cnn_splits, -3))}
-            )
-        if self.mlp_keys != []:
-            mlp_out = self.mlp_decoder(latent_states)
-            reconstructed_obs.update({k: head(mlp_out) for k, head in zip(self.mlp_keys, self.mlp_heads)})
-        return reconstructed_obs
+        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim) + 0.5
+        return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
+
+
+class MLPDecoder(nn.Module):
+    def __init__(
+        self,
+        keys: Sequence[str],
+        output_dims: Sequence[str],
+        latent_state_size: int,
+        mlp_layers: int = 4,
+        dense_units: int = 512,
+        activation: ModuleType = nn.SiLU,
+        layer_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        self.output_dims = output_dims
+        self.keys = keys
+        self.model = MLP(
+            latent_state_size,
+            None,
+            [dense_units] * mlp_layers,
+            activation=activation,
+            layer_args={"bias": not layer_norm},
+            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
+            if layer_norm
+            else None,
+        )
+        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+
+    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+        x = self.model(latent_states)
+        return {k: h(x) for k, h in zip(self.keys, self.heads)}
 
 
 class RecurrentModel(nn.Module):
@@ -464,7 +456,7 @@ class PlayerDV3(nn.Module):
         else:
             expl_actions = []
             for act in actions:
-                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(self.device)
+                sample = OneHotCategorical(logits=torch.zeros_like(act), validate_args=False).sample().to(self.device)
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
@@ -616,7 +608,9 @@ class Actor(nn.Module):
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
+                actions_dist.append(
+                    OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits), validate_args=False)
+                )
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
                 else:
@@ -740,35 +734,51 @@ def build_models(
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
-
     try:
         cnn_act = getattr(nn, args.cnn_act)
     except:
         raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for cnn_act, given {args.cnn_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
-
     try:
         dense_act = getattr(nn, args.dense_act)
     except:
         raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for dense_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
-    # Define models
-    encoder = MultiEncoder(
-        obs_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
-    )
+    # Sizes
     stochastic_size = args.stochastic_size * args.discrete_size
+    latent_state_size = stochastic_size + args.recurrent_state_size
+
+    # Define models
+    cnn_encoder = (
+        CNNEncoder(
+            keys=cnn_keys,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            channels_multiplier=args.cnn_channels_multiplier,
+            layer_norm=args.layer_norm,
+            activation=cnn_act,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
+    )
+    mlp_encoder = (
+        MLPEncoder(
+            keys=mlp_keys,
+            input_dims=[obs_space[k].shape[0] for k in mlp_keys],
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
     recurrent_model = RecurrentModel(
         int(np.sum(actions_dim)) + stochastic_size,
         args.recurrent_state_size,
@@ -801,21 +811,34 @@ def build_models(
         transition_model.apply(init_weights),
         args.discrete_size,
     )
-    observation_model = MultiDecoder(
-        obs_space,
-        cnn_keys,
-        mlp_keys,
-        args.cnn_channels_multiplier,
-        args.stochastic_size * args.discrete_size + args.recurrent_state_size,
-        encoder.cnn_output_dim,
-        encoder.cnn_input_dim,
-        args.mlp_layers,
-        args.dense_units,
-        cnn_act,
-        dense_act,
-        fabric.device,
-        args.layer_norm,
+    cnn_decoder = (
+        CNNDecoder(
+            keys=cnn_keys,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
+            channels_multiplier=args.cnn_channels_multiplier,
+            latent_state_size=latent_state_size,
+            cnn_encoder_output_dim=cnn_encoder.output_dim,
+            image_size=obs_space[cnn_keys[0]].shape[-2:],
+            activation=cnn_act,
+            layer_norm=args.layer_norm,
+        )
+        if cnn_keys is not None and len(cnn_keys) > 0
+        else None
     )
+    mlp_decoder = (
+        MLPDecoder(
+            keys=mlp_keys,
+            output_dims=[obs_space[k].shape[0] for k in mlp_keys],
+            latent_state_size=latent_state_size,
+            mlp_layers=args.mlp_layers,
+            dense_units=args.dense_units,
+            activation=dense_act,
+            layer_norm=args.layer_norm,
+        )
+        if mlp_keys is not None and len(mlp_keys) > 0
+        else None
+    )
+    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
         input_dims=stochastic_size + args.recurrent_state_size,
         output_dim=args.bins,
@@ -895,10 +918,10 @@ def build_models(
         rssm.representation_model.model[-1].apply(partial(init_weights, mode="uniform"))
         world_model.reward_model.model[-1].apply(partial(init_weights, mode="zero"))
         world_model.continue_model.model[-1].apply(partial(init_weights, mode="uniform"))
-        if len(world_model.observation_model.mlp_keys) > 0:
-            world_model.observation_model.mlp_heads.apply(partial(init_weights, mode="uniform"))
-        if len(world_model.observation_model.cnn_keys) > 0:
-            world_model.observation_model.cnn_decoder[-1].model[-1].apply(partial(init_weights, mode="uniform"))
+        if mlp_decoder is not None:
+            mlp_decoder.heads.apply(partial(init_weights, mode="uniform"))
+        if cnn_decoder is not None:
+            cnn_decoder.model[-1].model[-1].apply(partial(init_weights, mode="uniform"))
 
     # Load models from checkpoint
     if world_model_state:
