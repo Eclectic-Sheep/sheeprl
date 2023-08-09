@@ -1,17 +1,18 @@
 from dataclasses import dataclass
+from typing import List, Optional
 
 from sheeprl.algos.sac.args import SACArgs
 from sheeprl.utils.parser import Arg
 
 
 @dataclass
-class SACPixelContinuousArgs(SACArgs):
+class SACAEArgs(SACArgs):
     env_id: str = Arg(default="CarRacing-v2", help="the id of the environment")
     num_envs: int = Arg(default=1, help="the number of parallel game environments")
     action_repeat: int = Arg(default=1, help="how many actions to repeat. Must be greater than 0.")
     frame_stack: int = Arg(default=3, help="how many frames to stack. 0 to disable.")
     screen_size: int = Arg(
-        default=84, help="the dimension of the image rendered by the environment (screen_size x screen_size)"
+        default=64, help="the dimension of the image rendered by the environment (screen_size x screen_size)"
     )
     learning_starts: int = Arg(default=1000, help="timestep to start learning")
     features_dim: int = Arg(default=64, help="the features dimension after the convolutional layer.")
@@ -34,3 +35,32 @@ class SACPixelContinuousArgs(SACArgs):
     encoder_tau: float = Arg(default=0.05, help="target smoothing coefficient for the critic encoder ema")
     actor_hidden_size: int = Arg(default=1024, help="the dimension of the hidden sizes of the actor network")
     critic_hidden_size: int = Arg(default=1024, help="the dimension of the hidden sizes of the critic network")
+    cnn_channels_multiplier: int = Arg(default=16, help="cnn width multiplication factor, must be greater than zero")
+    dense_units: int = Arg(default=64, help="the number of units in dense layers, must be greater than zero")
+    mlp_layers: int = Arg(
+        default=2, help="the number of MLP layers for every model: actor, critic, continue and reward"
+    )
+    dense_act: str = Arg(
+        default="ReLU",
+        help="the activation function for the dense layers, one of "
+        "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+    )
+    layer_norm: bool = Arg(
+        default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
+    )
+    grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

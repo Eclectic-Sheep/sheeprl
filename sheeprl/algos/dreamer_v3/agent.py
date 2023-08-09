@@ -19,13 +19,12 @@ from torch.distributions import (
 )
 from torch.distributions.utils import probs_to_logits
 
-from sheeprl.algos.dreamer_v1.utils import cnn_forward
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.model import Conv2dSame, LayerNormChannelLast, ModuleType
+from sheeprl.utils.model import Conv2dSame, LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 

@@ -5,6 +5,7 @@ import collections
 from itertools import repeat
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -228,6 +229,66 @@ class Conv2dSame(nn.Module):
         """
         padded = F.pad(imgs, self._reversed_padding_repeated_twice)
         return self.conv(padded)
+
+
+def cnn_forward(
+    model: nn.Module,
+    input: Tensor,
+    input_dim: Union[torch.Size, Tuple[int, ...]],
+    output_dim: Union[torch.Size, Tuple[int, ...]],
+) -> Tensor:
+    """
+    Compute the forward of a Convolutional neural network.
+    It flattens all the dimensions before the model input_size, i.e., the dimensions before the (C_in, H, W) dimensions for the encoder
+    and the dimensions before the (feature_size,) dimension for the decoder.
+
+    Args:
+        model (nn.Module): the model.
+        input (Tensor): the input tensor of dimension (*, C_in, H, W) or (*, feature_size),
+            where * means any number of dimensions including None.
+        input_dim (Union[torch.Size, Tuple[int, ...]]): the input dimensions,
+            i.e., either (C_in, H, W) or (feature_size,).
+        output_dim (Union[torch.Size, Tuple[int, ...]]): the desired dimensions in output.
+
+    Returns:
+        The output of dimensions (*, *output_dim).
+
+    Examples:
+        >>> encoder
+        CNN(
+            (network): Sequential(
+                (0): Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+                (1): ReLU()
+                (2): Conv2d(4, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+                (3): ReLU()
+                (4): Flatten(start_dim=1, end_dim=-1)
+                (5): Linear(in_features=128, out_features=25, bias=True)
+            )
+        )
+        >>> input = torch.rand(10, 20, 3, 4, 4)
+        >>> cnn_forward(encoder, input, (3, 4, 4), -1).shape
+        torch.Size([10, 20, 25])
+
+        >>> decoder
+        Sequential(
+            (0): Linear(in_features=230, out_features=1024, bias=True)
+            (1): Unflatten(dim=-1, unflattened_size=(1024, 1, 1))
+            (2): ConvTranspose2d(1024, 128, kernel_size=(5, 5), stride=(2, 2))
+            (3): ReLU()
+            (4): ConvTranspose2d(128, 64, kernel_size=(5, 5), stride=(2, 2))
+            (5): ReLU()
+            (6): ConvTranspose2d(64, 32, kernel_size=(6, 6), stride=(2, 2))
+            (7): ReLU()
+            (8): ConvTranspose2d(32, 3, kernel_size=(6, 6), stride=(2, 2))
+        )
+        >>> input = torch.rand(10, 20, 230)
+        >>> cnn_forward(decoder, input, (230,), (3, 64, 64)).shape
+        torch.Size([10, 20, 3, 64, 64])
+    """
+    batch_shapes = input.shape[: -len(input_dim)]
+    flatten_input = input.reshape(-1, *input_dim)
+    model_out = model(flatten_input)
+    return model_out.reshape(*batch_shapes, *output_dim)
 
 
 class LayerNormChannelLast(nn.LayerNorm):

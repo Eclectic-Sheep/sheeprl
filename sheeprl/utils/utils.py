@@ -1,12 +1,8 @@
-import os
 from typing import Optional, Tuple
 
-import gymnasium as gym
 import torch
 import torch.nn as nn
 from torch import Tensor
-
-from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper
 
 
 @torch.no_grad()
@@ -126,55 +122,6 @@ def polynomial_decay(
         return final
     else:
         return (initial - final) * ((1 - current_step / max_decay_steps) ** power) + final
-
-
-def make_env(
-    env_id: str,
-    seed: Optional[int],
-    idx: int,
-    capture_video: bool,
-    run_name: Optional[str] = None,
-    prefix: str = "",
-    mask_velocities: bool = False,
-    vector_env_idx: int = 0,
-    action_repeat: int = 1,
-):
-    def thunk():
-        env = gym.make(env_id, render_mode="rgb_array")
-        if mask_velocities:
-            env = MaskVelocityWrapper(env)
-        env = ActionRepeat(env, action_repeat)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if vector_env_idx == 0 and idx == 0 and run_name is not None:
-                env = gym.experimental.wrappers.RecordVideoV0(
-                    env,
-                    os.path.join(run_name, prefix + "_videos" if prefix else "videos"),
-                    disable_logger=True,
-                )
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
-
-    return thunk
-
-
-def get_dummy_env(env_id: str):
-    if "continuous" in env_id:
-        from sheeprl.envs.dummy import ContinuousDummyEnv
-
-        env = ContinuousDummyEnv()
-    elif "multidiscrete" in env_id:
-        from sheeprl.envs.dummy import MultiDiscreteDummyEnv
-
-        env = MultiDiscreteDummyEnv()
-    elif "discrete" in env_id:
-        from sheeprl.envs.dummy import DiscreteDummyEnv
-
-        env = DiscreteDummyEnv()
-    else:
-        raise ValueError(f"Unrecognized dummy environment: {env_id}")
-    return env
 
 
 # From https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/jaxutils.py
