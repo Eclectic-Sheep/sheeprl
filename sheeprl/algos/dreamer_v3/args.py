@@ -24,12 +24,6 @@ class DreamerV3Args(DreamerV2Args):
     checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
     checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
-    buffer_type: str = Arg(
-        default="sequential",
-        help="which buffer to use: `sequential` or `episode`. The `episode` "
-        "buffer will save an entire episode, while the sequential will save every step.",
-    )
-    prioritize_ends: bool = Arg(default=False, help="whether to sample episodes prioritizing the end of them.")
 
     # Agent settings
     world_lr: float = Arg(default=1e-4, help="the learning rate of the optimizer of the world model")
