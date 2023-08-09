@@ -35,8 +35,8 @@ class DreamerV3Args(DreamerV2Args):
     use_continues: bool = Arg(default=True, help="wheter or not to use the continue predictor")
     stochastic_size: int = Arg(default=32, help="the dimension of the stochastic state")
     discrete_size: int = Arg(default=32, help="the dimension of the discrete state")
-    hidden_size: int = Arg(default=768, help="the hidden size for the transition and representation model")
-    recurrent_state_size: int = Arg(default=2048, help="the dimension of the recurrent state")
+    hidden_size: int = Arg(default=512, help="the hidden size for the transition and representation model")
+    recurrent_state_size: int = Arg(default=512, help="the dimension of the recurrent state")
     kl_dynamic: float = Arg(default=0.5, help="the regularizer for the KL dynamic loss")
     kl_representation: float = Arg(default=0.1, help="the regularizer for the KL representation loss")
     kl_free_nats: float = Arg(default=1.0, help="the minimum value for the kl divergence")
@@ -56,11 +56,11 @@ class DreamerV3Args(DreamerV2Args):
     world_clip_gradients: float = Arg(default=1000.0, help="how much to clip the gradient norms")
     actor_clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     critic_clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
-    dense_units: int = Arg(default=768, help="the number of units in dense layers, must be greater than zero")
+    dense_units: int = Arg(default=512, help="the number of units in dense layers, must be greater than zero")
     mlp_layers: int = Arg(
-        default=4, help="the number of MLP layers for every model: actor, critic, continue and reward"
+        default=2, help="the number of MLP layers for every model: actor, critic, continue and reward"
     )
-    cnn_channels_multiplier: int = Arg(default=64, help="cnn width multiplication factor, must be greater than zero")
+    cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="SiLU",
         help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
@@ -90,9 +90,11 @@ class DreamerV3Args(DreamerV2Args):
     expl_decay: bool = Arg(default=False, help="whether or not to decrement the exploration amount")
     expl_min: float = Arg(default=0.0, help="the minimum value for the exploration amout")
     max_step_expl_decay: int = Arg(default=0, help="the maximum number of decay steps")
-    action_repeat: int = Arg(default=1, help="the number of times an action is repeated")
+    action_repeat: int = Arg(default=4, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
-        default=-1, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+        default=108000,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
     )
     atari_noop_max: int = Arg(
         default=30,
@@ -117,9 +119,14 @@ class DreamerV3Args(DreamerV2Args):
     mine_sticky_attack: int = Arg(default=30, help="the sticky value for the attack action")
     mine_sticky_jump: int = Arg(default=10, help="the sticky value for the jump action")
 
-    moments_decay: float = Arg(default=0.99, help="")
-    moment_max: float = Arg(default=1.0, help="")
-    moments_perclo: float = Arg(default=0.05, help="")
-    moments_perchi: float = Arg(default=0.95, help="")
+    # Returns normalization: returns are rescaled by an exponentially
+    # decaying average of the range from their 5th to their 95th batch percentile
+    moments_decay: float = Arg(default=0.99, help="exponential moving average decay factor")
+    moment_max: float = Arg(
+        default=1.0, help="max value to be applied in `max(moment_max, Per(R_t, 95th) - Per(R_t, 5th))`"
+    )
+    moments_percentile_low: float = Arg(default=0.05, help="lower percentile")
+    moments_percentile_high: float = Arg(default=0.95, help="higher percentile")
 
-    bins: int = Arg(default=255, help="")
+    # Two-hot encoding bins
+    bins: int = Arg(default=255, help="the number of bins to two-hot-encode rewards and critic values")
