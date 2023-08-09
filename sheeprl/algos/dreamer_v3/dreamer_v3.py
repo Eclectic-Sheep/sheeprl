@@ -63,51 +63,21 @@ def train(
 ) -> None:
     """Runs one-step update of the agent.
 
-    The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - prior: the stochastic state coming out from the transition model, depicted as z-hat_t
-        in Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - posterior: the stochastic state coming out from the representation model, depicted as z_t
-        in Figure 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one) and recurrent states on the last dimension.
-        - p: the output of the transition model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - q: the output of the representation model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - po: the output of the observation model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - pr: the output of the reward model, from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - pc: the output of the continue model (discout predictor), from Eq. 1 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        - pv: the output of the value model (critic), from Eq. 3 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-
-    In particular, it updates the agent as specified by Algorithm 1 in
-    [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-
-    1. Dynamic Learning:
-        - Encoder: encode the observations.
-        - Recurrent Model: compute the recurrent state from the previous recurrent state,
-            the previous stochastic state, and from the previous actions.
-        - Transition Model: predict the stochastic state from the recurrent state, i.e., the deterministic state or ht.
-        - Representation Model: compute the actual stochastic state from the recurrent state and
-            from the embedded observations provided by the environment.
-        - Observation Model: reconstructs observations from latent states.
-        - Reward Model: estimate rewards from the latent states.
-        - Update the models
-    2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
-        - Predict rewards and values in the imagined trajectories.
-        - Compute lambda targets (Eq. 4 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193))
-        - Update the actor and the critic
-
     Args:
         fabric (Fabric): the fabric instance.
         world_model (_FabricModule): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
+        target_critic (nn.Module): the target critic model.
         world_optimizer (Optimizer): the world optimizer.
         actor_optimizer (Optimizer): the actor optimizer.
         critic_optimizer (Optimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV3Args): the configs.
-        is_continuous (bool): whether the action space is a continuous or discrete space
+        cnn_keys (Sequence[str]): the cnn keys to encode/decode.
+        mlp_keys (Sequence[str]): the mlp keys to encode/decode.
+        actions_dim (Sequence[int]): the actions dimension.
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -147,8 +117,7 @@ def train(
     po.update({k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in mlp_keys})
 
     # compute the distribution over the rewards
-    with fabric.device:
-        pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
+    pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
     # compute the distribution over the terminal steps, if required
     pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
@@ -226,10 +195,9 @@ def train(
         actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
         imagined_actions[i] = actions
 
-    # predict values and rewards
-    with fabric.device:
-        predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
-        predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
+    # predict values, rewards and continues
+    predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
+    predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
@@ -283,11 +251,10 @@ def train(
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # predict the values
-    with fabric.device:
-        qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
-        predicted_target_values = TwoHotEncodingDistribution(
-            target_critic(imagined_trajectories.detach()[:-1]), dims=1
-        ).mean
+    qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
+    predicted_target_values = TwoHotEncodingDistribution(
+        target_critic(imagined_trajectories.detach()[:-1]), dims=1
+    ).mean
 
     # critic optimization
     critic_optimizer.zero_grad(set_to_none=True)

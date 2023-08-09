@@ -230,7 +230,7 @@ class TwoHotEncodingDistribution(Distribution):
         self.logits = logits
         self.probs = F.softmax(logits, dim=-1)
         self.dims = tuple([-x for x in range(1, dims + 1)])
-        self.bins = torch.linspace(low, high, logits.shape[-1])
+        self.bins = torch.linspace(low, high, logits.shape[-1], device=logits.device)
         self.low = low
         self.high = high
         self.transfwd = transfwd
