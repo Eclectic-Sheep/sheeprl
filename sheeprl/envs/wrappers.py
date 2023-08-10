@@ -103,7 +103,7 @@ class RestartOnException(gym.Wrapper):
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
-    ) -> tuple[Any, Dict[str, Any]]:
+    ) -> Tuple[Any, Dict[str, Any]]:
         try:
             return self.env.reset(seed=seed, options=options)
         except self._exceptions as e:
