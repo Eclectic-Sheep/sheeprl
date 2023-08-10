@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v1.args import DreamerV1Args
     from sheeprl.algos.dreamer_v2.agent import PlayerDV2
     from sheeprl.algos.dreamer_v2.args import DreamerV2Args
-    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
-    from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 
 
 def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) -> Tensor:
@@ -83,9 +81,9 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: Union["PlayerDV3", "PlayerDV2", "PlayerDV1"],
+    player: Union["PlayerDV2", "PlayerDV1"],
     fabric: Fabric,
-    args: Union["DreamerV3Args", "DreamerV2Args", "DreamerV1Args"],
+    args: Union["DreamerV2Args", "DreamerV1Args"],
     cnn_keys: List[str],
     mlp_keys: List[str],
     test_name: str = "",
