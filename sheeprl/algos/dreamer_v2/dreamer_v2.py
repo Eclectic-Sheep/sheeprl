@@ -111,11 +111,11 @@ def train(
     # Actions:       0   a1       a2       a3
     #                    ^ \      ^ \      ^ \
     #                   /   \    /   \    /   \
-    #                  /     \  /     \  /     \
-    # Observations:  o0       o1       o2       o3
-    # Rewards:       0        r1       r2       r3
-    # Dones:         0        d1       d2       d3
-    # Is-first       1        i1       i2       i3
+    #                  /     v  /     v  /     v
+    # Observations:  o0       o1       o2      o3
+    # Rewards:       0        r1       r2      r3
+    # Dones:         0        d1       d2      d3
+    # Is-first       1        i1       i2      i3
 
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -250,13 +250,14 @@ def train(
     # Actions:       0   a'1      a'2     a'3
     #                    ^ \      ^ \      ^ \
     #                   /   \    /   \    /   \
-    #                  /     \  /     \  /     \
+    #                  /     v  /     v  /     v
     # States:        z0 ---> z'1 ---> z'2 ---> z'3
     # Rewards:       r'0     r'1      r'2      r'3
     # Values:        v'0     v'1      v'2      v'3
     # Lambda-values: l'0     l'1      l'2
     # Continues:     c'0     c'1      c'2      c'3
-    # where z0 comes from the posterior, while z'i is the imagined states (prior)
+    # where z0 comes from the posterior (is initialized as the concatenation of the posteriors and the recurrent states),
+    # while z'i is the imagined states (prior)
 
     # Imagine trajectories in the latent space
     for i in range(1, args.horizon + 1):
@@ -300,6 +301,21 @@ def train(
         discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
     # Actor optimization step. Eq. 6 from the paper
+    # Given the following diagram, with H=3:
+    # Actions:       0  [a'1]    [a'2]     a'3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     v  /     v  /     v
+    # States:       [z0] -> [z'1] ->  z'2 ->   z'3
+    # Values:       [v'0]   [v'1]     v'2      v'3
+    # Lambda-values: l'0    [l'1]    [l'2]
+    # Entropies:            [e'1]    [e'2]
+    # The quantities wrapped into `[]` are the ones used for the actor optimization.
+    # From Hafner (https://github.com/danijar/dreamerv2/blob/main/dreamerv2/agent.py#L253):
+    # `Two states are lost at the end of the trajectory, one for the boostrap
+    #  value prediction and one because the corresponding action does not lead
+    #  anywhere anymore. One target is lost at the start of the trajectory
+    #  because the initial state comes from the replay buffer.`
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
 
