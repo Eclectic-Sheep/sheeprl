@@ -1,6 +1,6 @@
 import copy
 from functools import partial
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -29,13 +29,31 @@ from sheeprl.utils.utils import symlog
 
 
 class CNNEncoder(nn.Module):
+    """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
+    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
+    is used after the convolution. This 4-stages model assumes that the image
+    is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
+    be concatenated on the channel dimension and fed to the encoder.
+
+    Args:
+        keys (Sequence[str]): the keys representing the image observations to encode.
+        input_channels (Sequence[int]): the input channels, one for each image observation to encode.
+        image_size (Tuple[int, int]): the image size as (Height,Width).
+        channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
+            will be [1, 2, 4, 8] * `channels_multiplier`.
+        layer_norm (bool, optional): whether to apply the layer normalization.
+            Defaults to True.
+        activation (ModuleType, optional): the activation function.
+            Defaults to nn.SiLU.
+    """
+
     def __init__(
         self,
         keys: Sequence[str],
         input_channels: Sequence[int],
         image_size: Tuple[int, int],
         channels_multiplier: int,
-        layer_norm: bool = False,
+        layer_norm: bool = True,
         activation: ModuleType = nn.SiLU,
     ) -> None:
         super().__init__()
@@ -64,13 +82,33 @@ class CNNEncoder(nn.Module):
 
 
 class MLPEncoder(nn.Module):
+    """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
+    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    If more than one vector is to be encoded, then those will concatenated on the last
+    dimension before being fed to the encoder.
+
+    Args:
+        keys (Sequence[str]): the keys representing the vector observations to encode.
+        input_dims (Sequence[int]): the dimensions of every vector to encode.
+        mlp_layers (int, optional): how many mlp layers.
+            Defaults to 4.
+        dense_units (int, optional): the dimension of every mlp.
+            Defaults to 512.
+        layer_norm (bool, optional): whether to apply the layer normalization.
+            Defaults to True.
+        activation (ModuleType, optional): the activation function after every layer.
+            Defaults to nn.SiLU.
+        symlog_inputs (bool, optional): whether to squash the input with the symlog function.
+            Defaults to True.
+    """
+
     def __init__(
         self,
         keys: Sequence[str],
         input_dims: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        layer_norm: bool = False,
+        layer_norm: bool = True,
         activation: ModuleType = nn.SiLU,
         symlog_inputs: bool = True,
     ) -> None:
@@ -97,6 +135,28 @@ class MLPEncoder(nn.Module):
 
 
 class CNNDecoder(nn.Module):
+    """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
+    of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
+    images are to be reconstructed, then it will create a dictionary with an entry
+    for every reconstructed image. No bias is used if a `nn.LayerNorm` is used after
+    the `nn.Conv2dTranspose` layer.
+
+    Args:
+        keys (Sequence[str]): the keys of the image observation to be reconstructed.
+        output_channels (Sequence[int]): the output channels, one for every image observation.
+        channels_multiplier (int): the channels multiplier, same for the encoder network.
+        latent_state_size (int): the size of the latent state. Before applying the decoder,
+            a `nn.Linear` layer is used to project the latent state to a feature vector
+            of dimension [8 * `channels_multiplier`, 4, 4].
+        cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
+            8 * `channels_multiplier` * 4 * 4.
+        image_size (Tuple[int, int]): the final image size.
+        activation (nn.Module, optional): the activation function.
+            Defaults to nn.SiLU.
+        layer_norm (bool, optional): whether to apply the layer normalization.
+            Defaults to True.
+    """
+
     def __init__(
         self,
         keys: Sequence[str],
@@ -106,7 +166,7 @@ class CNNDecoder(nn.Module):
         cnn_encoder_output_dim: int,
         image_size: Tuple[int, int],
         activation: nn.Module = nn.SiLU,
-        layer_norm: bool = False,
+        layer_norm: bool = True,
     ) -> None:
         super().__init__()
         self.keys = keys
@@ -144,6 +204,25 @@ class CNNDecoder(nn.Module):
 
 
 class MLPDecoder(nn.Module):
+    """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
+    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    If more than one vector is to be decoded, then it will create a dictionary with an entry
+    for every reconstructed vector.
+
+    Args:
+        keys (Sequence[str]): the keys representing the vector observations to decode.
+        output_dims (Sequence[int]): the dimensions of every vector to decode.
+        latent_state_size (int): the dimension of the latent state.
+        mlp_layers (int, optional): how many mlp layers.
+            Defaults to 4.
+        dense_units (int, optional): the dimension of every mlp.
+            Defaults to 512.
+        layer_norm (bool, optional): whether to apply the layer normalization.
+            Defaults to True.
+        activation (ModuleType, optional): the activation function after every layer.
+            Defaults to nn.SiLU.
+    """
+
     def __init__(
         self,
         keys: Sequence[str],
@@ -152,7 +231,7 @@ class MLPDecoder(nn.Module):
         mlp_layers: int = 4,
         dense_units: int = 512,
         activation: ModuleType = nn.SiLU,
-        layer_norm: bool = False,
+        layer_norm: bool = True,
     ) -> None:
         super().__init__()
         self.output_dims = output_dims
@@ -176,8 +255,10 @@ class MLPDecoder(nn.Module):
 
 
 class RecurrentModel(nn.Module):
-    """
-    Recurrent model for the model-base Dreamer agent.
+    """Recurrent model for the model-base Dreamer-V3 agent.
+    This implementation uses the `sheeprl.models.models.LayerNormGRUCell`, which combines
+    the standard GRUCell from PyTorch with the `nn.LayerNorm`, where the normalization is applied
+    right after having computed the projection from the input to the weight space.
 
     Args:
         input_size (int): the input size of the model.
@@ -195,7 +276,7 @@ class RecurrentModel(nn.Module):
         recurrent_state_size: int,
         dense_units: int,
         activation_fn: nn.Module = nn.SiLU,
-        layer_norm: bool = False,
+        layer_norm: bool = True,
     ) -> None:
         super().__init__()
         self.mlp = MLP(
@@ -527,7 +608,7 @@ class Actor(nn.Module):
         dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
-        layer_norm: bool = False,
+        layer_norm: bool = True,
         unimix: float = 0.01,
     ) -> None:
         super().__init__()
@@ -638,7 +719,7 @@ class MinedojoActor(Actor):
         dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 4,
         distribution: str = "auto",
-        layer_norm: bool = False,
+        layer_norm: bool = True,
     ) -> None:
         super().__init__(
             latent_state_size,
