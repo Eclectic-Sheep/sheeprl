@@ -83,7 +83,7 @@ class RestartOnException(gym.Wrapper):
         self._fails = 0
         super().__init__(self._env_fn())
 
-    def step(self, action) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+    def step(self, action) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         try:
             return self.env.step(action)
         except self._exceptions as e:
@@ -103,7 +103,7 @@ class RestartOnException(gym.Wrapper):
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
-    ) -> tuple[Any, Dict[str, Any]]:
+    ) -> Tuple[Any, Dict[str, Any]]:
         try:
             return self.env.reset(seed=seed, options=options)
         except self._exceptions as e:
