@@ -1,3 +1,7 @@
+"""Dreamer-V3 implementation from [https://arxiv.org/abs/2301.04104](https://arxiv.org/abs/2301.04104)
+Adapted from the original implementation from https://github.com/danijar/dreamerv3
+"""
+
 import copy
 import os
 import pathlib
@@ -40,7 +44,6 @@ from sheeprl.utils.utils import polynomial_decay
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
 # os.environ["MUJOCO_GL"] = "osmesa"
-torch.set_float32_matmul_precision("medium" or "high")
 
 
 def train(
@@ -83,7 +86,7 @@ def train(
     # Actions:           a0       a1       a2      a4
     #                    ^ \      ^ \      ^ \     ^
     #                   /   \    /   \    /   \   /
-    #                  /     \  /     \  /     \ /
+    #                  /     v  /     v  /     v /
     # Observations:  o0       o1       o2       o3
     # Rewards:       0        r1       r2       r3
     # Dones:         0        d1       d2       d3
@@ -122,17 +125,17 @@ def train(
         posteriors_logits[i] = posterior_logits
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
-    # compute predictions for the observations
+    # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
-    # compute the distribution over the reconstructed observations
+    # Compute the distribution over the reconstructed observations
     po = {k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cnn_keys}
     po.update({k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in mlp_keys})
 
-    # compute the distribution over the rewards
+    # Compute the distribution over the rewards
     pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
-    # compute the distribution over the terminal steps, if required
+    # Compute the distribution over the terminal steps, if required
     pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
     continue_targets = 1 - data["dones"]
 
@@ -140,7 +143,7 @@ def train(
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
     posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], args.stochastic_size, args.discrete_size)
 
-    # world model optimization step
+    # World model optimization step. Eq. 4 in the paper
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
         po,
@@ -208,7 +211,7 @@ def train(
     # Rewards:       r'0     r'1      r'2      r'3
     # Values:        v'0     v'1      v'2      v'3
     # Lambda-values:         l'1      l'2      l'3
-    # Continues:     c'0     c'1      c'2      c'3
+    # Continues:     c0      c'1      c'2      c'3
     # where z0 comes from the posterior, while z'i is the imagined states (prior)
 
     # Imagine trajectories in the latent space
@@ -220,14 +223,14 @@ def train(
         actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
         imagined_actions[i] = actions
 
-    # predict values, rewards and continues
+    # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 
-    # estimate values
+    # Estimate lambda-values
     lambda_values = compute_lambda_values(
         predicted_rewards[1:],
         predicted_values[1:],
@@ -235,11 +238,20 @@ def train(
         lmbda=args.lmbda,
     )
 
-    # compute the discounts to multiply to the lambda values
+    # Compute the discounts to multiply the lambda values to
     with torch.no_grad():
         discount = torch.cumprod(continues * args.gamma, dim=0) / args.gamma
 
-    # actor optimization step. Eq. 6 from the paper
+    # Actor optimization step. Eq. 11 from the paper
+    # Given the following diagram, with H=3
+    # Actions:          [a'0]    [a'1]    [a'2]    a'3
+    #                    ^ \      ^ \      ^ \     ^
+    #                   /   \    /   \    /   \   /
+    #                  /     \  /     \  /     \ /
+    # States:       [z0] -> [z'1] -> [z'2] ->  z'3
+    # Values:       [v'0]   [v'1]    [v'2]     v'3
+    # Lambda-values:        [l'1]    [l'2]    [l'3]
+    # Entropies:    [e'0]   [e'1]    [e'2]
     actor_optimizer.zero_grad(set_to_none=True)
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
@@ -275,13 +287,13 @@ def train(
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # predict the values
+    # Predict the values
     qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
     predicted_target_values = TwoHotEncodingDistribution(
         target_critic(imagined_trajectories.detach()[:-1]), dims=1
     ).mean
 
-    # critic optimization
+    # Critic optimization. Eq. 10 in the paper
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -qv.log_prob(lambda_values.detach())
     value_loss = value_loss - qv.log_prob(predicted_target_values.detach())

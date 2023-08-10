@@ -255,7 +255,7 @@ def train(
     # Rewards:       r'0     r'1      r'2      r'3
     # Values:        v'0     v'1      v'2      v'3
     # Lambda-values: l'0     l'1      l'2
-    # Continues:     c'0     c'1      c'2      c'3
+    # Continues:     c0      c'1      c'2      c'3
     # where z0 comes from the posterior (is initialized as the concatenation of the posteriors and the recurrent states),
     # while z'i is the imagined states (prior)
 
