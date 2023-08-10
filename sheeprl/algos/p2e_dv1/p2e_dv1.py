@@ -21,7 +21,7 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.agent import Player, WorldModel
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_models
@@ -472,7 +472,7 @@ def main():
     if args.checkpoint_path:
         ensembles.load_state_dict(state["ensembles"])
     fabric.setup_module(ensembles)
-    player = Player(
+    player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,

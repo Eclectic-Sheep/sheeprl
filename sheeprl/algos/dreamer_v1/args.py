@@ -69,7 +69,9 @@ class DreamerV1Args(StandardArgs):
     )
     action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
-        default=1000, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+        default=1000,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
     )
     atari_noop_max: int = Arg(
         default=30,
