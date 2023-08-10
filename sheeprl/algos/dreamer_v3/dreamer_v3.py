@@ -443,7 +443,9 @@ def main():
     world_optimizer, actor_optimizer, critic_optimizer = fabric.setup_optimizers(
         world_optimizer, actor_optimizer, critic_optimizer
     )
-    moments = Moments(fabric, args.moments_decay, args.moment_max, args.moments_perclo, args.moments_perchi)
+    moments = Moments(
+        fabric, args.moments_decay, args.moment_max, args.moments_percentile_low, args.moments_percentile_high
+    )
 
     # Metrics
     with device:
