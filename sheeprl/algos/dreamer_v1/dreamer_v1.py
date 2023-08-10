@@ -19,7 +19,7 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
@@ -209,8 +209,8 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/p_entropy", p.entropy().mean().detach())
-    aggregator.update("State/q_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", p.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
     # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
@@ -443,7 +443,7 @@ def main():
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
     )
-    player = Player(
+    player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
@@ -482,8 +482,8 @@ def main():
                 "Loss/reward_loss": MeanMetric(sync_on_compute=False),
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/post_entropy": MeanMetric(sync_on_compute=False),
+                "State/prior_entropy": MeanMetric(sync_on_compute=False),
                 "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/world_model": MeanMetric(sync_on_compute=False),

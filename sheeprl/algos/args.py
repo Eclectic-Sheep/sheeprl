@@ -32,7 +32,11 @@ class StandardArgs:
     screen_size: int = Arg(default=64, help="the size of the pixel-from observations (if any)")
     frame_stack: int = Arg(default=-1, help="how many frame to stack (only for pixel-like observations)")
     frame_stack_dilation: int = Arg(default=1, help="the dilation between the stacked frames, 1 no dilation")
-    max_episode_steps: int = Arg(default=-1)
+    max_episode_steps: int = Arg(
+        default=-1,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
+    )
 
     def __setattr__(self, __name: str, __value: Any) -> None:
         super().__setattr__(__name, __value)

@@ -60,7 +60,11 @@ class PPOArgs(StandardArgs):
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
     eps: float = Arg(default=1e-4)
-    max_episode_steps: int = Arg(default=-1, help="the maximum amount of steps in an episode")
+    max_episode_steps: int = Arg(
+        default=-1,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
+    )
     cnn_features_dim: int = Arg(default=512, help="the features dimension after the CNNEncoder")
     mlp_features_dim: int = Arg(default=64, help="the features dimension after the MLPEncoder")
     atari_noop_max: int = Arg(default=30, help="the maximum number of noop in Atari envs on reset")

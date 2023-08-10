@@ -92,7 +92,7 @@ class DiambraWrapper(core.Env):
             for k, v in obs.items()
         }
 
-    def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, infos = self._env.step(action)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done, False, infos
