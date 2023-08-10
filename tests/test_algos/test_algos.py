@@ -20,7 +20,7 @@ def devices(request):
 
 @pytest.fixture()
 def standard_args():
-    return ["--num_envs=1", "--dry_run"]
+    return ["--num_envs=1", "--dry_run=True", f"--sync_env={_IS_WINDOWS}"]
 
 
 @pytest.fixture()
