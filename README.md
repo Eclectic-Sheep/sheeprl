@@ -160,7 +160,7 @@ That's all it takes to train an agent with SheepRL! 🎉
 
 > **Note**
 >
-> you can find more information about the observation space by following this [link](./howto/select_observations.md).
+> you can find more information about the observation space by following this [link](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md).
 
 ### :chart_with_upwards_trend: Check your results
 
