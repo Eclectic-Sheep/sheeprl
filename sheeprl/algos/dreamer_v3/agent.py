@@ -314,9 +314,13 @@ class RSSM(nn.Module):
         representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
         transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-            The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
+            The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
+        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical distribution over states,
+            i.e. given some logits `l` and probabilities `p = softmax(l)`, then `p = (1 - self.unimix) * p + self.unimix * unif`,
+            where `unif = `1 / self.discrete`.
+            Defaults to 0.01.
     """
 
     def __init__(
@@ -344,7 +348,8 @@ class RSSM(nn.Module):
             Transition model: predict the prior from the recurrent output.
             Representation model: compute the posterior from the recurrent state and from
                 the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551) and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+        and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
         Args:
             posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected
@@ -595,6 +600,12 @@ class Actor(nn.Module):
             `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
             space is a discrete one, `trunc_normal` otherwise.
             Defaults to `auto`.
+        layer_norm (bool, optional): whether to apply the layer normalization.
+            Defaults to True.
+        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical distribution over actions,
+            i.e. given some logits `l` and probabilities `p = softmax(l)`, then `p = (1 - self.unimix) * p + self.unimix * unif`,
+            where `unif = `1 / self.discrete`.
+            Defaults to 0.01.
     """
 
     def __init__(
@@ -802,14 +813,25 @@ def build_models(
     Args:
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
-        observation_shape (Tuple[int, ...]): the shape of the observations.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of Dreamer_v1.
+        args (DreamerV3Args): the hyper-parameters of DreamerV2.
+        obs_space (Dict[str, Any]): the observation space.
+        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
+        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
+        world_model_state (Dict[str, Tensor], optional): the state of the world model.
+            Default to None.
+        actor_state: (Dict[str, Tensor], optional): the state of the actor.
+            Default to None.
+        critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
+        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The target critic (nn.Module).
     """
     if args.cnn_channels_multiplier <= 0:
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
