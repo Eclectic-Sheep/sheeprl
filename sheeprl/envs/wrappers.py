@@ -147,7 +147,7 @@ class FrameStack(gym.Wrapper):
                 )
 
         if self._cnn_keys is None or len(self._cnn_keys) == 0:
-            raise RuntimeError(f"Specify at least one valid cnn key to be stacked")
+            raise RuntimeError("Specify at least one valid cnn key to be stacked")
         self._frames = {k: deque(maxlen=num_stack * dilation) for k in self._cnn_keys}
 
     def _get_obs(self, key):

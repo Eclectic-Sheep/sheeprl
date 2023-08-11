@@ -238,7 +238,7 @@ def main():
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for mlp_act, given {args.dense_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"

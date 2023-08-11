@@ -8,7 +8,8 @@ from torch.distributions.kl import kl_divergence
 
 def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Tensor:
     """
-    Compute the critic loss as described in Eq. 8 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the critic loss as described in Eq. 8 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         qv (Distribution): the predicted distribution of the values.
@@ -25,7 +26,8 @@ def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Te
 
 def actor_loss(lambda_values: Tensor) -> Tensor:
     """
-    Compute the actor loss as described in Eq. 7 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the actor loss as described in Eq. 7 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         lambda_values (Tensor): the lambda values computed on the predictions in the latent space.
@@ -50,7 +52,8 @@ def reconstruction_loss(
     continue_scale_factor: float = 10.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
-    Compute the reconstruction loss as described in Eq. 10 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the reconstruction loss as described in Eq. 10 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         qo (Distribution): the distribution returned by the observation_model (decoder).

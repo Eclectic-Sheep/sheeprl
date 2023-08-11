@@ -15,7 +15,8 @@ def test_fsdp_strategy_fail():
 
 def test_run_decoupled_algo():
     subprocess.run(
-        "lightning run model --strategy=ddp --devices=2 sheeprl.py ppo_decoupled --dry_run --rollout_steps=1 --cnn_keys all --mlp_keys all",
+        "lightning run model --strategy=ddp --devices=2 sheeprl.py ppo_decoupled --dry_run --rollout_steps=1 "
+        "--cnn_keys rgb --mlp_keys state",
         shell=True,
         check=True,
     )
@@ -23,7 +24,7 @@ def test_run_decoupled_algo():
 
 def test_run_algo():
     subprocess.run(
-        sys.executable + " sheeprl.py ppo --dry_run --rollout_steps=1 --cnn_keys all --mlp_keys all",
+        sys.executable + " sheeprl.py ppo --dry_run --rollout_steps=1 --cnn_keys rgb --mlp_keys state",
         shell=True,
         check=True,
     )

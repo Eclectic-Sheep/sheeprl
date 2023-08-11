@@ -51,9 +51,9 @@ class DiambraWrapper(core.Env):
                 )
             settings["step_ratio"] = 1
         if diambra_wrappers.pop("frame_stack", None) is not None:
-            warnings.warn(f"the DIAMBRA frame_stack wrapper is disabled")
+            warnings.warn("the DIAMBRA frame_stack wrapper is disabled")
         if diambra_wrappers.pop("dilation", None) is not None:
-            warnings.warn(f"the DIAMBRA dilation wrapper is disabled")
+            warnings.warn("the DIAMBRA dilation wrapper is disabled")
         wrappers = {
             **diambra_wrappers,
             "no_op_max": noop_max,

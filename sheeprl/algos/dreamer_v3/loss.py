@@ -22,7 +22,8 @@ def reconstruction_loss(
     continue_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
-    Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+    Compute the reconstruction loss as described in Eq. 5 in
+    [https://arxiv.org/abs/2301.04104](https://arxiv.org/abs/2301.04104).
 
     Args:
         po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).

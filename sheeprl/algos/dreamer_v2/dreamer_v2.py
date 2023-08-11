@@ -64,7 +64,8 @@ def train(
         - recurrent_state: is what is called ht or deterministic state from Figure 2 in .
         - prior: the stochastic state coming out from the transition model, depicted as z-hat_t in Figure 2.
         - posterior: the stochastic state coming out from the representation model, depicted as z_t in Figure 2.
-        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one) and recurrent states on the last dimension.
+        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one)
+        and recurrent states on the last dimension.
         - p: the output of the transition model, from Eq. 1.
         - q: the output of the representation model, from Eq. 1.
         - po: the output of the observation model (decoder), from Eq. 1.
@@ -85,7 +86,8 @@ def train(
         - Reward Model: estimate rewards from the latent states.
         - Update the models
     2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Imagine trajectories in the latent space from each latent state
+        s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
         - Compute lambda targets (Eq. 4 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193))
         - Update the actor and the critic
@@ -256,7 +258,7 @@ def train(
     # Values:        v'0     v'1      v'2      v'3
     # Lambda-values: l'0     l'1      l'2
     # Continues:     c0      c'1      c'2      c'3
-    # where z0 comes from the posterior (is initialized as the concatenation of the posteriors and the recurrent states),
+    # where z0 comes from the posterior (is initialized as the concatenation of the posteriors and the recurrent states)
     # while z'i is the imagined states (prior)
 
     # Imagine trajectories in the latent space
@@ -349,7 +351,8 @@ def train(
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # Predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
+    # Predict the values distribution only for the first H (horizon)
+    # imagined states (to match the dimension with the lambda values),
     # It removes the last imagined state in the trajectory because it is used for bootstrapping
     qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 

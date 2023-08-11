@@ -47,8 +47,10 @@ def register_command(command, task, name: Optional[str] = None):
                 )
             if name in decoupled_tasks and strategy is not None:
                 warnings.warn(
-                    "You are running a decoupled algorithm through the Lightning CLI and you have specified a strategy: "
-                    f"`lightning run model --strategy={strategy}`. When a decoupled algorithm is run the default strategy will be "
+                    "You are running a decoupled algorithm through the Lightning CLI "
+                    "and you have specified a strategy: "
+                    f"`lightning run model --strategy={strategy}`. "
+                    "When a decoupled algorithm is run the default strategy will be "
                     "a `lightning.fabric.strategies.DDPStrategy`."
                 )
                 os.environ.pop("LT_STRATEGY")

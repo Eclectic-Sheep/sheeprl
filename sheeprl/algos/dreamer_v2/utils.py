@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from torch import Tensor, nn
+from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.utils.env import make_dict_env

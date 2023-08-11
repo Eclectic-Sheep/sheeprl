@@ -106,7 +106,8 @@ class CustomObtain(CustomSimpleEmbodimentEnvSpec):
             ),
             handlers.SmeltItemNearby([none, "iron_ingot", "coal"], _other=none, _default=none),
             # As apart of pervious todo
-            # this should be handlers.SmeltItem([none, 'iron_ingot', 'coal', other]), but this is not supported by mineRL-v0
+            # this should be handlers.SmeltItem([none, 'iron_ingot', 'coal', other]),
+            # but this is not supported by mineRL-v0
         ]
 
     def create_rewardables(self) -> List[Handler]:
@@ -191,22 +192,23 @@ class CustomObtainDiamond(CustomObtain):
             """
 .. image:: ../assets/odia1.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/odia2.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/odia3.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/odia4.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 In this environment the agent is required to obtain a diamond.
-The agent begins in a random starting location on a random survival map without any items, matching the normal starting conditions for human players in Minecraft.
+The agent begins in a random starting location on a random survival map without any items,
+matching the normal starting conditions for human players in Minecraft.
 The agent is given access to a selected summary of its inventory and GUI free
 crafting, smelting, and inventory management actions.
 
@@ -267,20 +269,22 @@ class CustomObtainIronPickaxe(CustomObtain):
             """
 .. image:: ../assets/orion1.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/orion2.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/orion3.mp4.gif
   :scale: 100 %
-  :alt: 
+  :alt:
 
 .. image:: ../assets/orion4.mp4.gif
   :scale: 100 %
-  :alt: 
-In this environment the agent is required to obtain an iron pickaxe. The agent begins in a random starting location, on a random survival map, without any items, matching the normal starting conditions for human players in Minecraft.
+  :alt:
+In this environment the agent is required to obtain an iron pickaxe.
+The agent begins in a random starting location, on a random survival map, without any items,
+matching the normal starting conditions for human players in Minecraft.
 The agent is given access to a selected view of its inventory and GUI free
 crafting, smelting, and inventory management actions.
 

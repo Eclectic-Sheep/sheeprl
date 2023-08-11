@@ -54,16 +54,23 @@ def train(
     """Runs one-step update of the agent.
 
     The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is what is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - recurrent_state: is what is called ht or deterministic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - stochastic_state: is what is called st or stochastic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             It can be both posterior or prior.
         - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
-        - p: the output of the representation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - q: the output of the transition model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qo: the output of the observation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qr: the output of the reward model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - p: the output of the representation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - q: the output of the transition model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qo: the output of the observation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qr: the output of the reward model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         - qc: the output of the continue model.
-        - qv: the output of the value model (critic), from Eq. 2 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qv: the output of the value model (critic), from Eq. 2 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     In particular, it updates the agent as specified by Algorithm 1 in
     [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
@@ -79,7 +86,8 @@ def train(
         - Reward Model: estimate rewards from the latent states.
         - Update the models
     2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Imagine trajectories in the latent space from each latent state s_t up
+        to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
         - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
         - Update the actor and the critic
@@ -107,11 +115,13 @@ def train(
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
-    # the recurrent state is the deterministic state (or ht) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    # the recurrent state is the deterministic state (or ht) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
     # initialize the posterior that must be of dimension (1, batch_size, stochastic_size)
-    # the stochastic state is the stochastic state (or st) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    # the stochastic state is the stochastic state (or st) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
 
     # initialize the tensors for dynamic learning
@@ -122,12 +132,14 @@ def train(
     # and its dimension is (sequence_length, batch_size, stochastic_size)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # posteriors_mean and posteriors_std will contain all the actual means and stds of the posterior states respectively,
+    # posteriors_mean and posteriors_std will contain all
+    # the actual means and stds of the posterior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
     posteriors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     posteriors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # priors_mean and priors_std will contain all the predicted means and stds of the prior states respectively,
+    # priors_mean and priors_std will contain all
+    # the predicted means and stds of the prior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
     priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
@@ -213,7 +225,8 @@ def train(
     aggregator.update("State/prior_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
-    # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
+    # Unflatten first 2 dimensions of recurrent and posterior states in order
+    # to have all the states on the first dimension.
     # The 1 in the second dimension is needed for the recurrent model in the imagination step,
     # 1 because the agent imagines one state at a time.
     # (1, batch_size * sequence_length, stochastic_size)
@@ -316,8 +329,10 @@ def train(
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
+    # Predict the values distribution only for the first H (horizon) imagined states
+    # (to match the dimension with the lambda values),
+    # it removes the last imagined state in the trajectory
+    # because it is used only for computing correclty the lambda values
     qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
     # critic optimization step

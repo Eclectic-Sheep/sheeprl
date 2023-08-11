@@ -135,7 +135,8 @@ def make_dict_env(
                 raise ValueError("You must use the SyncVectorEnv with DIAMBRA envs, set args.sync_env to True")
             if args.diambra_noop_max < 0:
                 raise ValueError(
-                    f"Negative value of diambra_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
+                    f"Negative value of diambra_noop_max parameter ({args.atari_noop_max}), "
+                    "the minimum value allowed is 0"
                 )
             task_id = "_".join(env_id.split("_")[1:])
             env = DiambraWrapper(
@@ -160,7 +161,8 @@ def make_dict_env(
             elif "atari" in env_spec:
                 if args.atari_noop_max < 0:
                     raise ValueError(
-                        f"Negative value of atari_noop_max parameter ({args.atari_noop_max}), the minimum value allowed is 0"
+                        f"Negative value of atari_noop_max parameter ({args.atari_noop_max}), "
+                        "the minimum value allowed is 0"
                     )
                 env = gym.wrappers.AtariPreprocessing(
                     env,
@@ -194,7 +196,8 @@ def make_dict_env(
                 if args.mlp_keys is not None and len(args.mlp_keys) > 0:
                     if len(args.mlp_keys) > 1:
                         warnings.warn(
-                            f"Multiple mlp keys have been specified and only one pixel observation is allowed in {env_id}, "
+                            "Multiple mlp keys have been specified and only one pixel observation "
+                            f"is allowed in {env_id}, "
                             f"only the first one is kept: {args.mlp_keys[0]}"
                         )
                     mlp_key = args.mlp_keys[0]

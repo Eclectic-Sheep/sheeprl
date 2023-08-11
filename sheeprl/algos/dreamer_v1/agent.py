@@ -102,10 +102,14 @@ class RSSM(nn.Module):
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
-            The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
-            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
-            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
+            The posterior state (Tensor): computed by the representation model
+            from the recurrent state and the embedded observation.
+            The prior state (Tensor): computed by the transition model from the recurrent state
+            and the embedded observation.
+            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of
+            the distribution of the posterior state.
+            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of
+            the distribution of the prior state.
         """
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_state_mean_std, prior = self._transition(recurrent_out)
@@ -117,11 +121,13 @@ class RSSM(nn.Module):
 
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
-                what is called h or deterministic state in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+                what is called h or deterministic state in
+                [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
-            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation of the distribution of the posterior state.
+            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation
+            of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior.
         """
         posterior_mean_std, posterior = compute_stochastic_state(
@@ -339,7 +345,8 @@ def build_models(
             Default to None.
 
     Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
@@ -347,18 +354,16 @@ def build_models(
         raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
     if args.dense_units <= 0:
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
-
     try:
         cnn_act = getattr(nn, args.cnn_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for cnn_act, given {args.cnn_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
-
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for dense_act, given {args.dense_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"

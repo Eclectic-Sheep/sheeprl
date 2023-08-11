@@ -63,11 +63,15 @@ class DreamerV3Args(DreamerV2Args):
     cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="SiLU",
-        help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the dense layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
         default="SiLU",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the convolutional layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     critic_target_network_update_freq: int = Arg(default=1, help="the frequency to update the target critic network")
     layer_norm: bool = Arg(default=True, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D")
@@ -81,8 +85,9 @@ class DreamerV3Args(DreamerV2Args):
     hafner_initialization: bool = Arg(
         default=True,
         help="whether to initialize the models as in the original Hafner code, i.e. "
-        "every model is initialized with a standard Xavier Normal initialization; every last layer before a distribution is "
-        "initialized with a Xavier Uniform distribution; the last critic and reward model layer are initialized to zero.",
+        "every model is initialized with a standard Xavier Normal initialization; "
+        "every last layer before a distribution is initialized with a Xavier Uniform distribution; "
+        "the last critic and reward model layer are initialized to zero.",
     )
 
     # Environment settings
@@ -98,7 +103,8 @@ class DreamerV3Args(DreamerV2Args):
     )
     atari_noop_max: int = Arg(
         default=30,
-        help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
+        help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset. "
+        "To turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
