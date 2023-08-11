@@ -25,4 +25,4 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
