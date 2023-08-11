@@ -44,7 +44,8 @@ def miniblock(
 ) -> List[nn.Module]:
     """Construct a miniblock with given input/output-size, dropout layer, norm layer and activation function.
 
-    Based on Tianshou's miniblock function (https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py).
+    Based on Tianshou's miniblock function
+    (https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py).
 
     Args:
         input_size (int): the input size of the miniblock (in_features for Linear and in_channels for Conv2d).
@@ -107,7 +108,10 @@ def create_layers(
         ([nn.Linear, nn.Linear, nn.Linear], [None, None, None])
 
         >>> create_layers(nn.Linear, {"arg1":3, "arg2": "foo"}, 3)
-        ([nn.Linear, nn.Linear, nn.Linear], [{'arg1': 3, 'arg2': 'foo'}, {'arg1': 3, 'arg2': 'foo'}, {'arg1': 3, 'arg2': 'foo'}])
+        (
+            [nn.Linear, nn.Linear, nn.Linear],
+            [{'arg1': 3, 'arg2': 'foo'}, {'arg1': 3, 'arg2': 'foo'}, {'arg1': 3, 'arg2': 'foo'}]
+        )
 
         >>> create_layers([nn.Linear, nn.Conv2d], [{"bias":False}, {"kernel_size": 5, "bias": True}], 2)
         ([nn.Linear, nn.Conv2d], [{'bias': False}, {'kernel_size':5, 'bias': True}])
@@ -165,7 +169,8 @@ def cnn_forward(
 ) -> Tensor:
     """
     Compute the forward of a Convolutional neural network.
-    It flattens all the dimensions before the model input_size, i.e., the dimensions before the (C_in, H, W) dimensions for the encoder
+    It flattens all the dimensions before the model input_size, i.e.,
+    the dimensions before the (C_in, H, W) dimensions for the encoder
     and the dimensions before the (feature_size,) dimension for the decoder.
 
     Args:

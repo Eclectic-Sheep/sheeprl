@@ -299,7 +299,8 @@ class SequentialReplayBuffer(ReplayBuffer):
             )
             if len(valid_idxes) < batch_dim:
                 raise ValueError(
-                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), check also sequence_length"
+                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), "
+                    "check also sequence_length"
                 )
             # start_idxes are the indices of the first elements of the sequences
             start_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_dim,), device=self.device)]
@@ -352,7 +353,8 @@ class EpisodeBuffer:
 
     Args:
         buffer_size (int): The capacity of the buffer.
-        sequence_length (int): The length of the sequences of the samples (an episode cannot be shorter than the episode length).
+        sequence_length (int): The length of the sequences of the samples
+            (an episode cannot be shorter than the episode length).
         device (Union[torch.device, str]): The device where the buffer is created. Defaults to "cpu".
         memmap (bool): Whether to memory-mapping the buffer.
     """
@@ -371,7 +373,8 @@ class EpisodeBuffer:
             raise ValueError(f"The sequence length must be greater than zero, got: {sequence_length}")
         if buffer_size < sequence_length:
             raise ValueError(
-                f"The sequence length must be lower than the buffer size, got: bs = {buffer_size} and sl = {sequence_length}"
+                "The sequence length must be lower than the buffer size, "
+                f"got: bs = {buffer_size} and sl = {sequence_length}"
             )
         self._buffer_size = buffer_size
         self._sequence_length = sequence_length
@@ -542,9 +545,9 @@ class AsyncReplayBuffer:
         sequential: bool = False,
     ):
         """An async replay buffer which internally uses a TensorDict. This replay buffer
-        saves a experiences independently for every environment. when new data has to be added, it expects
-        the TensorDict or the ReplayBuffer to be added to have a single shape dimension, representing the number of independent environments,
-        while the tensors to be at least 2D tensors, where the second dimension representing the sequence length.
+        saves a experiences independently for every environment. When new data has to be added, it expects
+        the TensorDict or the ReplayBuffer to be added to have a 2D shape dimension as [T, B], where T`
+        represents the sequence length, while `B` is the number of environments to be batched.
 
         Args:
             buffer_size (int): The buffer size.

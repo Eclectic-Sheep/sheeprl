@@ -19,6 +19,7 @@ class P2EDV2Args(DreamerV2Args):
     exploration_steps: int = Arg(
         default=int(5e6),
         help="the total number of exploration steps. If this number is "
-        "less than the total number of steps, then for `total_steps - exploration_steps` steps the actor will be finetuned. "
+        "less than the total number of steps, then for `total_steps - exploration_steps` "
+        "steps the actor will be finetuned. "
         "Otherwise the actor will be learned in a zero-shot setting.",
     )

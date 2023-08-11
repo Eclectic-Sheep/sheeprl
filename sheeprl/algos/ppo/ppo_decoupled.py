@@ -140,7 +140,6 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         "cnn_channels_multiplier": args.cnn_channels_multiplier,
         "mlp_layers": args.mlp_layers,
         "dense_units": args.dense_units,
-        "cnn_act": args.cnn_act,
         "mlp_act": args.dense_act,
         "layer_norm": args.layer_norm,
         "is_continuous": is_continuous,

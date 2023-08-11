@@ -342,7 +342,8 @@ class SACAEAgent(nn.Module):
 
         # Create target critic unwrapping the DDP module from the critics to prevent
         # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
+        # That is, when you have called init_process_group and have not passed process_group
+        # argument to DDP constructor`.
         # This happens when we're using the decoupled version of SACAE for example
         if hasattr(critic, "module"):
             critic_module = critic.module

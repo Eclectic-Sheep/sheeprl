@@ -296,10 +296,13 @@ class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
     Args:
-        recurrent_model (_FabricModule): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (_FabricModule): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
+        recurrent_model (_FabricModule): the recurrent model of the RSSM model described in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (_FabricModule): the representation model composed by a multi-layer perceptron
+            to compute the stochastic part of the latent state.
             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        transition_model (_FabricModule): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        transition_model (_FabricModule): the transition model described in
+            [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
@@ -359,7 +362,8 @@ class RSSM(nn.Module):
         """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
-                what is called h or deterministic state in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+                what is called h or deterministic state in
+                [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
@@ -801,7 +805,8 @@ def build_models(
             Default to None.
 
     Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
         The target critic (nn.Module).
@@ -812,15 +817,17 @@ def build_models(
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
         cnn_act = getattr(nn, args.cnn_act)
-    except:
+    except AttributeError:
         raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for cnn_act, given {args.cnn_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for dense_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     # Sizes

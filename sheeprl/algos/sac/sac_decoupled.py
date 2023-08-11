@@ -77,7 +77,8 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         raise ValueError("Only continuous action space is supported for the SAC agent")
     if len(envs.single_observation_space.shape) > 1:
         raise ValueError(
-            f"Only environments with vector-only observations are supported by the SAC agent. Provided environment: {args.env_id}"
+            "Only environments with vector-only observations are supported by the SAC agent. "
+            f"Provided environment: {args.env_id}"
         )
 
     # Define the agent and the optimizer and setup them with Fabric

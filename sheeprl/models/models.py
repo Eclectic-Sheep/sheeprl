@@ -123,7 +123,8 @@ class CNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -205,7 +206,8 @@ class DeCNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -412,20 +414,24 @@ class MultiEncoder(nn.Module):
         if cnn_encoder is not None:
             if getattr(cnn_encoder, "input_dim", None) is None:
                 raise AttributeError(
-                    "`cnn_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                    "`cnn_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
                 )
             if getattr(cnn_encoder, "output_dim", None) is None:
                 raise AttributeError(
-                    "`cnn_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                    "`cnn_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
                 )
         if mlp_encoder is not None:
             if getattr(mlp_encoder, "input_dim", None) is None:
                 raise AttributeError(
-                    "`mlp_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                    "`mlp_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
                 )
             if getattr(mlp_encoder, "output_dim", None) is None:
                 raise AttributeError(
-                    "`mlp_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                    "`mlp_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
                 )
         self.cnn_encoder = cnn_encoder
         self.mlp_encoder = mlp_encoder

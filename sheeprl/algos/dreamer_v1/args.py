@@ -52,11 +52,15 @@ class DreamerV1Args(StandardArgs):
     cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="ELU",
-        help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the dense layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
         default="ReLU",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the convolutional layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
 
     # Environment settings
@@ -75,7 +79,8 @@ class DreamerV1Args(StandardArgs):
     )
     atari_noop_max: int = Arg(
         default=30,
-        help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
+        help="No-op reset in Atari environment, the max number no-ops actions are taken at reset. "
+        "To turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")

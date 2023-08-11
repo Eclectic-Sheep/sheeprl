@@ -310,16 +310,19 @@ class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
     Args:
-        recurrent_model (nn.Module): the recurrent model of the RSSM model described in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a multi-layer perceptron to compute the stochastic part of the latent state.
+        recurrent_model (nn.Module): the recurrent model of the RSSM model described in
+            [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        representation_model (nn.Module): the representation model composed by a
+            multi-layer perceptron to compute the stochastic part of the latent state.
             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        transition_model (nn.Module): the transition model described in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+        transition_model (nn.Module): the transition model described in
+            [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
-        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical distribution over states,
-            i.e. given some logits `l` and probabilities `p = softmax(l)`, then `p = (1 - self.unimix) * p + self.unimix * unif`,
-            where `unif = `1 / self.discrete`.
+        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
+            distribution over states, i.e. given some logits `l` and probabilities `p = softmax(l)`,
+            then `p = (1 - self.unimix) * p + self.unimix * unif`, where `unif = `1 / self.discrete`.
             Defaults to 0.01.
     """
 
@@ -396,7 +399,8 @@ class RSSM(nn.Module):
         """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
-                what is called h or deterministic state in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+                what is called h or deterministic state in
+                [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
@@ -602,8 +606,9 @@ class Actor(nn.Module):
             Defaults to `auto`.
         layer_norm (bool, optional): whether to apply the layer normalization.
             Defaults to True.
-        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical distribution over actions,
-            i.e. given some logits `l` and probabilities `p = softmax(l)`, then `p = (1 - self.unimix) * p + self.unimix * unif`,
+        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
+            distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
+            then `p = (1 - self.unimix) * p + self.unimix * unif`,
             where `unif = `1 / self.discrete`.
             Defaults to 0.01.
     """
@@ -828,7 +833,8 @@ def build_models(
             Default to None.
 
     Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
         The target critic (nn.Module).
@@ -839,14 +845,14 @@ def build_models(
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
         cnn_act = getattr(nn, args.cnn_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for cnn_act, given {args.cnn_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for dense_act, given {args.dense_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
