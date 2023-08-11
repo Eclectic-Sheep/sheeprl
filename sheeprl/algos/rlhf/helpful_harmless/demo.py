@@ -1,23 +1,14 @@
 """ Adapted from https://huggingface.co/spaces/stabilityai/stablelm-tuned-alpha-chat/blob/main/app.py """
+import os
 from dataclasses import asdict, dataclass, field
-import json
-from typing import List, Optional
+from threading import Thread
+from typing import Optional
+
 import gradio as gr
 import torch
-from transformers import (
-    AutoTokenizer,
-    GenerationConfig,
-    StoppingCriteriaList,
-    TextIteratorStreamer,
-    StoppingCriteria,
-)
-import time
-import numpy as np
-from torch.nn import functional as F
-import os
-from threading import Thread
+from transformers import AutoTokenizer, GenerationConfig, StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
 
-from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs, TrainArgs
+from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import load_args_from_json
 
@@ -69,7 +60,8 @@ class ChatUI:
             print(f"Model loading failed: {str(e)}")
             return gr.update(
                 visible=True,
-                value="""<h3 style="color:red;text-align:center;word-break: break-all;">Model load failed:{}{}</h3>""".format(
+                value="""<h3 style="color:red;text-align:center;word-break: break-all;">
+                Model load failed:{}{}</h3>""".format(
                     " ", str(e)
                 ),
             )
@@ -91,7 +83,8 @@ class ChatUI:
             print(f"Experiment loading failed: {str(e)}")
             return gr.update(
                 visible=True,
-                value="""<h3 style="color:red;text-align:center;word-break: break-all;">Experiment load failed:{}{}</h3>""".format(
+                value="""<h3 style="color:red;text-align:center;word-break: break-all;">
+                Experiment load failed:{}{}</h3>""".format(
                     " ", str(e)
                 ),
             )
@@ -198,13 +191,13 @@ class ChatUI:
                         clear = gr.Button("Clear")
                         submit = gr.Button("Submit")
                         load_example_info = gr.Markdown(visible=False, value="")
-                        submit_event = msg.submit(
-                            fn=self.user, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=False
-                        ).then(fn=self.chat, inputs=[chatbot], outputs=[chatbot], queue=True)
-                        submit_click_event = submit.click(
-                            fn=self.user, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=False
-                        ).then(fn=self.chat, inputs=[chatbot], outputs=[chatbot], queue=True)
-                        load_example_event = load_example.click(
+                        msg.submit(fn=self.user, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=False).then(
+                            fn=self.chat, inputs=[chatbot], outputs=[chatbot], queue=True
+                        )
+                        submit.click(fn=self.user, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=False).then(
+                            fn=self.chat, inputs=[chatbot], outputs=[chatbot], queue=True
+                        )
+                        load_example.click(
                             fn=self.load_example,
                             outputs=[load_example_info, msg],
                             queue=False,
@@ -267,7 +260,8 @@ class ChatUI:
                             print(self.gen_args)
                             return gr.update(
                                 visible=True,
-                                value="""<h3 style="color:green;text-align:center">Settings updated successfully</h3>""",
+                                value="""<h3 style="color:green;text-align:center">
+                                Settings updated successfully</h3>""",
                             )
 
                         update_button.click(

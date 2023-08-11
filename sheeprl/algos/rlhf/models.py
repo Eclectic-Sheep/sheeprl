@@ -108,7 +108,8 @@ class CriticModel(torch.nn.Module):
                 self.transformer = model.model
             else:
                 raise ValueError(
-                    f"{model} Could not find transformer, searched for 'transformer' and 'model' attributes, if your model has a different attribute name, please specify it in `transformer_name`"
+                    f"{model} Could not find transformer, searched for 'transformer' and 'model' attributes, "
+                    "if your model has a different attribute name, please specify it in `transformer_name`"
                 )
         else:
             self.transformer = getattr(model, transformer_name)

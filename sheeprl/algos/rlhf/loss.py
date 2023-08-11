@@ -11,7 +11,8 @@ def reward_loss_last_token(
     rejected_rewards: torch.Tensor,
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from last generated non-terminal token"""
+    """This loss computes the logsigmoid of the difference between the chosen and
+    rejected rewards from last generated non-terminal token"""
     mask_chosen = chosen != pad_token_id
     mask_rejected = rejected != pad_token_id
 
@@ -33,7 +34,9 @@ def reward_loss_average(
     rejected_rewards: torch.Tensor,
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """This loss computes the logsigmoid of the difference between the chosen and rejected rewards from average of all output tokens excluding padding tokens"""
+    """This loss computes the logsigmoid of the difference between the chosen and
+    rejected rewards from average of all output tokens excluding padding tokens
+    """
     mask_chosen = chosen != pad_token_id  # (B, T)
     mask_rejected = rejected != pad_token_id  # (B, T)
 

@@ -141,7 +141,7 @@ def main():
 
     # Setup Dataloaders
     collator = RMCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / f"preference_train.pt")
+    train_data = torch.load(Path(train_args.data_dir) / "preference_train.pt")
     train_dataloader = DataLoader(
         train_data,
         shuffle=True,
@@ -151,7 +151,7 @@ def main():
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
 
-    val_data = torch.load(Path(train_args.data_dir) / f"preference_validation.pt")
+    val_data = torch.load(Path(train_args.data_dir) / "preference_validation.pt")
     val_dataloader = DataLoader(
         val_data,
         shuffle=False,

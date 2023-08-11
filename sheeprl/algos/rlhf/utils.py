@@ -56,9 +56,11 @@ def trainable_parameter_summary(
     print_fn(f"Trainable {trainable}")
     print_fn(f"Non-Trainable {non_trainable}")
     total_params = sum([sum(v.values()) for v in param_count.values()])
-    total_trainable_params = sum([v for k, v in param_count["trainable"].items()])
+    sum([v for k, v in param_count["trainable"].items()])
     print_fn(
-        f"Total: {total_params}, Trainable: {total_trainable_params}, Percentage: {total_trainable_params/total_params:.2%}"
+        f"Total: {total_params}, "
+        "Trainable: {total_trainable_params}, "
+        "Percentage: {total_trainable_params/total_params:.2%}"
     )
 
 

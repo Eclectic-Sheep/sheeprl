@@ -75,7 +75,7 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
+from sheeprl.utils.env import make_env
 
 
 def train(
@@ -251,11 +251,10 @@ To let the `register_algorithm` decorator add our new `sota` algorithm to the av
 ```diff
 from dotenv import load_dotenv
 
-from sheeprl.algos.droq import droq
 from sheeprl.algos.ppo import ppo, ppo_decoupled
-from sheeprl.algos.ppo_continuous import ppo_continuous
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
 from sheeprl.algos.sac import sac, sac_decoupled
+from sheeprl.algos.sac_ae import sac_ae
 +from sheeprl.algos.sota import sota
 
 try:
@@ -280,7 +279,6 @@ Options:
 Commands:
   droq
   ppo
-  ppo_continuous
   ppo_decoupled
   ppo_recurrent
   sac

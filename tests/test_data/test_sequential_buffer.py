@@ -57,7 +57,7 @@ def test_seq_replay_buffer_sample_fail_full():
     rb = SequentialReplayBuffer(buf_size, n_envs)
     td1 = TensorDict({"t": torch.rand(6, 1, 1)}, batch_size=[6, n_envs])
     rb.add(td1)
-    with pytest.raises(ValueError, match=f"larger than the replay buffer size"):
+    with pytest.raises(ValueError, match="larger than the replay buffer size"):
         rb.sample(4, sequence_length=2, n_samples=2)
 
 
@@ -78,7 +78,7 @@ def test_seq_replay_buffer_sample_shapes():
     buf_size = 30
     n_envs = 2
     rb = SequentialReplayBuffer(buf_size, n_envs)
-    t = TensorDict({f"t": torch.arange(60).reshape(-1, 2, 1) % buf_size}, batch_size=[30, n_envs])
+    t = TensorDict({"t": torch.arange(60).reshape(-1, 2, 1) % buf_size}, batch_size=[30, n_envs])
     rb.add(t)
     sample = rb.sample(3, sequence_length=5, n_samples=2)
     assert sample.shape == torch.Size([2, 5, 3])
@@ -116,7 +116,7 @@ def test_seq_replay_buffer_sampleable_items():
     rb = SequentialReplayBuffer(buf_size, n_envs)
     t = TensorDict({"t": torch.arange(15).reshape(-1, 1, 1)}, batch_size=[15, n_envs])
     rb.add(t)
-    with pytest.raises(ValueError, match=f"sampleable items"):
+    with pytest.raises(ValueError, match="sampleable items"):
         rb.sample(5, sequence_length=seq_len, n_samples=2)
 
 
@@ -127,7 +127,7 @@ def test_seq_replay_buffer_sample_fail_not_full():
     rb = SequentialReplayBuffer(buf_size, n_envs)
     t = TensorDict({"t": torch.arange(5).reshape(-1, 1, 1)}, batch_size=[5, n_envs])
     rb.add(t)
-    with pytest.raises(ValueError, match=f"too long sequence length"):
+    with pytest.raises(ValueError, match="too long sequence length"):
         rb.sample(5, sequence_length=seq_len, n_samples=1)
 
 
@@ -146,5 +146,5 @@ def test_seq_replay_buffer_sample_no_add():
     buf_size = 10
     n_envs = 1
     rb = SequentialReplayBuffer(buf_size, n_envs)
-    with pytest.raises(ValueError, match=f"No sample has been added"):
+    with pytest.raises(ValueError, match="No sample has been added"):
         rb.sample(2, sequence_length=5, n_samples=2)

@@ -2,9 +2,9 @@ name: SheepRL CPU tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
@@ -17,33 +17,32 @@ defaults:
 jobs:
   cpu-tests:
     runs-on: ${{ matrix.os }}
-    
+
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.8", "3.9", "3.10"]
-    
-    timeout-minutes: 15
+
+    timeout-minutes: 20
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-        cache: 'pip'
-        cache-dependency-path: |
-          requirements.txt
-          setup.py
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            setup.py
 
-    - name: Install packages
-      run: |
-        pip install -U pip
-        pip install .[atari,rlhf,test]
-    
-    - name: Run tests
-      run: |
-        python tests/run_tests.py
-      
+      - name: Install packages
+        run: |
+          python -m pip install -U pip
+          python -m pip install .[rlhf,atari,test,dev]
+
+      - name: Run tests
+        run: |
+          python tests/run_tests.py

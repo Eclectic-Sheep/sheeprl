@@ -148,7 +148,7 @@ def main():
 
     # Setup Dataloaders
     collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / f"finetune_train.pt")
+    train_data = torch.load(Path(train_args.data_dir) / "finetune_train.pt")
     train_dataloader = DataLoader(
         train_data,
         shuffle=True,
@@ -158,7 +158,7 @@ def main():
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
 
-    val_data = torch.load(Path(train_args.data_dir) / f"finetune_validation.pt")
+    val_data = torch.load(Path(train_args.data_dir) / "finetune_validation.pt")
     val_dataloader = DataLoader(
         val_data,
         shuffle=False,
@@ -168,7 +168,7 @@ def main():
     )
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
 
-    example_prompt = torch.load(Path(train_args.data_dir) / f"example_prompt.pt")
+    example_prompt = torch.load(Path(train_args.data_dir) / "example_prompt.pt")
 
     # Setup Optimizer Scheduler
     trainable_params, _, _ = prepare_optimizer_parameters(model, train_args.weight_decay)

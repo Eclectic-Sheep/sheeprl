@@ -86,7 +86,7 @@ def main():
     # Setup Dataloaders
     collator = SFTCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
 
-    test_data = torch.load(Path(data_args.destination_dir) / f"finetune_test.pt")
+    test_data = torch.load(Path(data_args.destination_dir) / "finetune_test.pt")
     test_dataloader = DataLoader(
         test_data,
         shuffle=False,

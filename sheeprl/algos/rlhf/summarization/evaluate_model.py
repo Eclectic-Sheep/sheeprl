@@ -1,20 +1,21 @@
-from dataclasses import asdict
 import os
 import sys
-from _pytest.cacheprovider import Path
+from dataclasses import asdict
+
+import evaluate
 import lightning
 import torch
+from _pytest.cacheprovider import Path
+from dotenv import load_dotenv
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from transformers import AutoTokenizer, GenerationConfig
+
 from sheeprl.algos.rlhf.args import EvaluateArgs, GenerationArgs, ModelArgs, TextDataArgs
 from sheeprl.algos.rlhf.data import EvaluateCollate
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json
 from sheeprl.utils.parser import HfArgumentParser
-from tqdm.auto import tqdm
-from dotenv import load_dotenv
-import evaluate
-import pandas as pd
 
 rouge_metric = evaluate.load("rouge")
 
@@ -96,7 +97,7 @@ def main():
 
     # Setup Dataloaders
     collator = EvaluateCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    test_data = torch.load(Path(data_args.destination_dir) / f"finetune_test.pt")
+    test_data = torch.load(Path(data_args.destination_dir) / "finetune_test.pt")
 
     test_dataloader = DataLoader(
         test_data,

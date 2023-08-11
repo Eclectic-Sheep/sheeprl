@@ -1,21 +1,14 @@
 """ Adapted from https://huggingface.co/spaces/stabilityai/stablelm-tuned-alpha-chat/blob/main/app.py """
+import os
 from dataclasses import asdict, dataclass, field
-import json
+from threading import Thread
 from typing import Optional
+
 import gradio as gr
 import torch
-from transformers import (
-    AutoTokenizer,
-    GenerationConfig,
-    TextIteratorStreamer,
-)
-import time
-import numpy as np
-from torch.nn import functional as F
-import os
-from threading import Thread
+from transformers import AutoTokenizer, GenerationConfig, TextIteratorStreamer
 
-from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs, TrainArgs
+from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import load_args_from_json
 
@@ -55,7 +48,8 @@ class SummaryUI:
             print(f"Model loading failed: {str(e)}")
             return gr.update(
                 visible=True,
-                value="""<h3 style="color:red;text-align:center;word-break: break-all;">Model load failed:{}{}</h3>""".format(
+                value="""<h3 style="color:red;text-align:center;word-break: break-all;">
+                Model load failed:{}{}</h3>""".format(
                     " ", str(e)
                 ),
             )
@@ -77,7 +71,8 @@ class SummaryUI:
             print(f"Experiment loading failed: {str(e)}")
             return gr.update(
                 visible=True,
-                value="""<h3 style="color:red;text-align:center;word-break: break-all;">Experiment load failed:{}{}</h3>""".format(
+                value="""<h3 style="color:red;text-align:center;word-break: break-all;">
+                Experiment load failed:{}{}</h3>""".format(
                     " ", str(e)
                 ),
             )
@@ -204,13 +199,13 @@ class SummaryUI:
                         clear = gr.Button("Clear")
                         submit = gr.Button("Submit")
                         load_example_info = gr.Markdown(visible=False, value="")
-                        submit_click_event = submit.click(
+                        submit.click(
                             fn=self.summary,
                             inputs=[self.subreddit_text, self.title_text, self.post_text],
                             outputs=[self.summary_text],
                             queue=False,
                         )
-                        load_example_event = load_example.click(
+                        load_example.click(
                             fn=self.load_example,
                             outputs=[load_example_info, self.subreddit_text, self.title_text, self.post_text],
                             queue=False,
@@ -274,7 +269,8 @@ class SummaryUI:
                             print(self.gen_args)
                             return gr.update(
                                 visible=True,
-                                value="""<h3 style="color:green;text-align:center">Settings updated successfully</h3>""",
+                                value="""<h3 style="color:green;text-align:center">
+                                Settings updated successfully</h3>""",
                             )
 
                         update_button.click(

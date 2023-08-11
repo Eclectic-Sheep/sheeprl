@@ -5,16 +5,14 @@ import time
 import warnings
 from contextlib import nullcontext
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 from typing import List
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, pad_sequence
 from torch.distributed.algorithms.join import Join
@@ -29,10 +27,12 @@ from sheeprl.algos.ppo_recurrent.args import RecurrentPPOArgs
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -128,36 +128,12 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "ppo_recurrent", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "ppo_recurrent")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -177,7 +153,12 @@ def main():
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+        raise ValueError("Only discrete action space is supported by the PPO recurrent agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            "Only environments with vector-only observations are supported by the PPO recurrent agent. "
+            f"Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     obs_dim = prod(envs.single_observation_space.shape)
@@ -209,7 +190,13 @@ def main():
         )
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
+    rb = ReplayBuffer(
+        args.rollout_steps,
+        args.num_envs,
+        device=device,
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+    )
     step_data = TensorDict({}, batch_size=[1, args.num_envs], device=device)
 
     # Global variables
@@ -226,8 +213,8 @@ def main():
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0]).unsqueeze(0)  # [1, N_envs, N_obs]
-        next_done = torch.zeros(1, args.num_envs, 1)  # [1, N_envs, 1]
+        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+        next_done = torch.zeros(1, args.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
     for update in range(1, num_updates + 1):
@@ -243,12 +230,12 @@ def main():
 
             # Single environment step
             obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+            done = np.logical_or(done, truncated)
 
             with device:
-                obs = torch.tensor(obs).unsqueeze(0)  # [1, N_envs, N_obs]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))
-                done = done.view(1, args.num_envs, 1).float()  # [1, N_envs, 1]
-                reward = torch.tensor(reward).view(1, args.num_envs, -1)  # [1, N_envs, 1]
+                obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+                done = torch.tensor(done, dtype=torch.float32).view(1, args.num_envs, -1)  # [1, N_envs, 1]
+                reward = torch.tensor(reward, dtype=torch.float32).view(1, args.num_envs, -1)  # [1, N_envs, 1]
 
             step_data["dones"] = next_done
             step_data["values"] = values

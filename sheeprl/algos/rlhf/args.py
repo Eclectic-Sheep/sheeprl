@@ -29,16 +29,19 @@ class TrainArgs:
     )
     eval_iters: Optional[int] = Arg(
         default=None,
-        help="Number of iterations to evaluate on. If None, evaluate on full validation set. Setting a smaller number makes the training script run faster with less reliable validation score to track.",
+        help="Number of iterations to evaluate on. If None, evaluate on full validation set."
+        "Setting a smaller number makes the training script run faster with less reliable validation score to track.",
     )
     num_workers: int = Arg(default=4, help="Number of workers for dataloaders")
     mini_batch_size: int = Arg(
         default=4,
-        help="Mini batch size for training. This is the expected batch size when there is no gradient accumulation applied.",
+        help="Mini batch size for training. This is the expected batch size when "
+        "there is no gradient accumulation applied.",
     )
     micro_batch_size: int = Arg(
         default=4,
-        help="Micro batch size for training. If mini_batch_size // micro_batch_size == 1, no gradient accumulation is performed",
+        help="Micro batch size for training. If mini_batch_size // micro_batch_size == 1, "
+        "no gradient accumulation is performed",
     )
     gradient_clip_val: float = Arg(default=1.0, help="Gradient clipping value")
     gradient_accumulation_steps: int = Arg(
@@ -70,11 +73,14 @@ class SFTArgs(TrainArgs):
     experiment_name: str = Arg(default="rlhf-supervised-finetuning", help="Name of the experiment")
     label_smoothing: float = Arg(
         default=0.0,
-        help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. Label smoothing helps when the model is overconfident according to Hugginface documentation.",
+        help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. "
+        "Label smoothing helps when the model is overconfident according to Hugginface documentation.",
     )
     use_targets: bool = Arg(
         default=False,
-        help="Whether to use masked targets for training. Using masked targets may lead to overfitting. If targets are used model will only compute the loss based on the masked targets such as answer on question/answer based dataset.",
+        help="Whether to use masked targets for training. Using masked targets may lead to overfitting. "
+        "If targets are used model will only compute the loss based on the masked targets such as answer "
+        "on question/answer based dataset.",
     )
     learning_rate: float = Arg(default=1e-4, help="Learning rate for optimizer")
     lr_warmup_steps: int = Arg(
@@ -94,7 +100,8 @@ class RMArgs(TrainArgs):
     )
     loss_type: Literal["average", "last_token", "per_sample"] = Arg(
         default="per_sample",
-        help="Loss type for reward modelling. Each loss type computes reward differently. `per_sample` loss type uses similar reward loss to DeepSpeedChat.",
+        help="Loss type for reward modelling. Each loss type computes reward differently. "
+        "`per_sample` loss type uses similar reward loss to DeepSpeedChat.",
     )
 
 
@@ -103,11 +110,13 @@ class PPOArgs(TrainArgs):
     experiment_name: str = Arg(default="rlhf-ppo", help="Name of the experiment")
     rollout_size: int = Arg(
         default=128,
-        help="Rollout size for PPO. For every training iteration this number of samples will be sampled from dataset and each will be used for generating response.",
+        help="Rollout size for PPO. For every training iteration this number of samples will be sampled from dataset "
+        "and each will be used for generating response.",
     )
     rollout_mini_batch_size: int = Arg(
         default=32,
-        help="Rollout mini batch size for PPO. This number is useful when the GPU memory is not sufficient for running all generation code with single batch.",
+        help="Rollout mini batch size for PPO. This number is useful when the GPU memory is not sufficient "
+        "for running all generation code with single batch.",
     )
     ppo_epochs: int = Arg(
         default=1, help="Number of ppo epochs to training. `ppo_step` function will be called `ppo_epochs` times"
@@ -120,7 +129,8 @@ class PPOArgs(TrainArgs):
     reward_clip_value: float = Arg(default=5.0, help="Reward clipping value")
     init_kl_coeff: float = Arg(
         default=0.1,
-        help="KL divergence coefficient for comparing actor model with reference model. Higher value means more trust to reference model.",
+        help="KL divergence coefficient for comparing actor model with reference model. Higher value means more trust "
+        "to reference model.",
     )
     target_kl_coeff: float = Arg(default=0.1, help="Target KL divergence coefficient")
     clip_coeff: float = Arg(default=0.2, help="Clip coefficient for PPO loss")
@@ -140,7 +150,8 @@ class PPOArgs(TrainArgs):
         super().__post_init__()
         if self.rollout_mini_batch_size > self.rollout_size:
             raise ValueError(
-                f"Rollout mini batch size ({self.rollout_mini_batch_size}) cannot be bigger than rollout size ({self.rollout_size})"
+                f"Rollout mini batch size ({self.rollout_mini_batch_size}) cannot be bigger than "
+                "rollout size ({self.rollout_size})"
             )
         if self.normalize_rewards and self.rollout_size < 8:
             raise ValueError(f"Rollout size ({self.rollout_size}) cannot be smaller than 8 when rewards are normalized")
@@ -157,7 +168,8 @@ class EvaluateArgs:
     num_workers: int = Arg(default=4, help="Number of workers for data loading")
     use_pretrained: bool = Arg(
         default=False,
-        help="Whether to use pretrained model for evaluation or finetuned model. It is useful to evaluate both pretrained and finetuned model to measure the performance and compare the improvement.",
+        help="Whether to use pretrained model for evaluation or finetuned model. It is useful to evaluate both "
+        "pretrained and finetuned model to measure the performance and compare the improvement.",
     )
 
 
@@ -176,7 +188,8 @@ class EvaluatePerplexityArgs(EvaluateArgs):
     )
     use_targets: bool = Arg(
         default=True,
-        help="Whether to use masked targets for training. We would like to evaluate models on possible generated responses.",
+        help="Whether to use masked targets for training. We would like to evaluate models on "
+        "possible generated responses.",
     )
 
 
@@ -188,24 +201,30 @@ class ModelArgs:
     model_name: str = Arg(help="Name of the model. It will be used to load huggingface model.")
     embedding_dim_name: Optional[str] = Arg(
         default=None,
-        help="Name of the embedding dimension in the model config. If it is None, the code will try to call `get_input_embeddings` method. It is used for Critic models where we add head layer after the embedding layer.",
+        help="Name of the embedding dimension in the model config. If it is None, the code will "
+        "try to call `get_input_embeddings` method. It is used for Critic models where we add head "
+        "layer after the embedding layer.",
     )
     transformer_name: Optional[str] = Arg(
         default=None,
-        help="Name of the transformer module that is loaded from huggingface. If it is provided this attribute of the transformer module will be used to retrieve the part of the model except head layer.",
+        help="Name of the transformer module that is loaded from huggingface. If it is provided this "
+        "attribute of the transformer module will be used to retrieve the part of the model except head layer.",
     )
     casual: bool = Arg(
         default=True,
-        help="Whether to use casual attention mask for transformer.If it is true the model will be loaded from `AutoModelForCausalLM`. Currently scripts are expecting this parameter is set to `true`.",
+        help="Whether to use casual attention mask for transformer.If it is true the model will be "
+        "loaded from `AutoModelForCausalLM`. Currently scripts are expecting this parameter is set to `true`.",
     )
     use_cache: bool = Arg(
         default=False,
-        help="Whether to use cache for huggingface transformer. It is better to set this false and control where the cache is used inside the script. It is advised to use during the evaluation.",
+        help="Whether to use cache for huggingface transformer. It is better to set this false and control "
+        "where the cache is used inside the script. It is advised to use during the evaluation.",
     )
     trust_remote_code: bool = Arg(default=False, help="Whether to trust remote code for huggingface transformer.")
     load_in_8bit: bool = Arg(
         default=False,
-        help="Whether to load model in 8bit precision. It is not tested to load models with this parameter set to true.",
+        help="Whether to load model in 8bit precision. It is not tested to load models "
+        "with this parameter set to true.",
     )
     low_cpu_mem_usage: bool = Arg(
         default=False, help="Whether to use low cpu memory usage for huggingface transformer."
@@ -213,11 +232,15 @@ class ModelArgs:
     freeze_transformer: bool = Arg(default=True, help="Freeze transformer weights when it is loading.")
     disable_dropout: bool = Arg(
         default=False,
-        help="Whether to disable dropout layers in the model. During SFT dropout allows not to overfit to the dataset. However, Disabling dropout layers helps stabilizing training during PPO training since `log_ratio` for the first iteration becomes one. ",
+        help="Whether to disable dropout layers in the model. During SFT dropout allows not to overfit "
+        "to the dataset. However, Disabling dropout layers helps stabilizing training during PPO "
+        "training since `log_ratio` for the first iteration becomes one. ",
     )
     finetune_mode: Literal["all", "last_layer", "lora"] = Arg(
         default="all",
-        help="Whether to finetune the model. If it is `all`, all the layers will be finetuned. If it is `head`, only the head layer will be finetuned. If it is 'lora', lora approximation will be used for the model finetuning.",
+        help="Whether to finetune the model. If it is `all`, all the layers will be finetuned. "
+        "If it is `head`, only the head layer will be finetuned. If it is 'lora', "
+        "lora approximation will be used for the model finetuning.",
     )
     lora_targets: Optional[str] = Arg(
         default=None,
@@ -236,7 +259,8 @@ class GPT2(ModelArgs):
     model_name: str = Arg(default="gpt2-medium", help="Name of the model. It will be used to load huggingface model.")
     embedding_dim_name: str = Arg(
         default="n_embd",
-        help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
+        help="Name of the embedding dimension in the model config. It is useful for Critic models "
+        "where we attach head layer.",
     )
     lora_targets: Optional[str] = Arg(default="('c_attn',)", help="LoRA target layer names for the model.")
 
@@ -248,7 +272,8 @@ class OPT(ModelArgs):
     )
     embedding_dim_name: str = Arg(
         default="word_embed_proj_dim",
-        help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
+        help="Name of the embedding dimension in the model config. It is useful for Critic models where we "
+        "attach head layer.",
     )
     lora_targets: Optional[str] = Arg(
         default="('q_proj','v_proj')",
@@ -274,7 +299,8 @@ class Pythia(ModelArgs):
     )
     embedding_dim_name: str = Arg(
         default="hidden_size",
-        help="Name of the embedding dimension in the model config. It is useful for Critic models where we attach head layer.",
+        help="Name of the embedding dimension in the model config. It is useful for Critic models "
+        "where we attach head layer.",
     )
     lora_targets: Optional[str] = Arg(default="('query_key_value',)", help="LoRA target layer names for the model.")
 
@@ -299,7 +325,8 @@ class TextDataArgs:
     mask_prompt: bool = Arg(default=True, help="Whether to mask prompt tokens.")
     ignore_index: int = Arg(
         default=-1,
-        help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss calculation if it is enabled.",
+        help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss "
+        "calculation if it is enabled.",
     )
     remove_same_responses: bool = Arg(
         default=True, help="Whether to remove samples with same chosen and rejected outputs."

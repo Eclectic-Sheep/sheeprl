@@ -174,7 +174,7 @@ def main():
 
     # Setup Dataloaders
     collator = LeftPadCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / f"finetune_train.pt")
+    train_data = torch.load(Path(train_args.data_dir) / "finetune_train.pt")
     train_dataloader = DataLoader(
         train_data,
         shuffle=True,
@@ -183,7 +183,7 @@ def main():
         num_workers=train_args.num_workers,
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
-    example_prompt = torch.load(Path(train_args.data_dir) / f"example_prompt.pt")
+    example_prompt = torch.load(Path(train_args.data_dir) / "example_prompt.pt")
 
     # Setup Optimizer Scheduler fabric models
     optimizer_cls: Union[torch.optim.Adam, torch.optim.AdamW] = getattr(torch.optim, train_args.optimizer)

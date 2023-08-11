@@ -25,10 +25,10 @@ from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
 
 
 @torch.no_grad()
@@ -43,6 +43,9 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(asdict(args))
+
+    # Save args as dict automatically
+    args.log_dir = logger.log_dir
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
@@ -70,7 +73,13 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
             for i in range(args.num_envs)
         ]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    if not isinstance(envs.single_action_space, gym.spaces.Box):
+        raise ValueError("Only continuous action space is supported for the SAC agent")
+    if len(envs.single_observation_space.shape) > 1:
+        raise ValueError(
+            "Only environments with vector-only observations are supported by the SAC agent. "
+            f"Provided environment: {args.env_id}"
+        )
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -103,7 +112,13 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
     # Local data
     buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
-    rb = ReplayBuffer(buffer_size, args.num_envs, device=device, memmap=args.memmap_buffer)
+    rb = ReplayBuffer(
+        buffer_size,
+        args.num_envs,
+        device=device,
+        memmap=args.memmap_buffer,
+        memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+    )
     step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
 
     # Global variables

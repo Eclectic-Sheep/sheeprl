@@ -9,18 +9,52 @@
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm    | Coupled            | Decoupled          | Recurrent          | Pixel              | Status             |
-| ----------   | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C          | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
-| A3C          | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :construction:     |
-| PPO          | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC          | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ         | :heavy_check_mark: | :x:                | :x:                | :x:                | :heavy_check_mark: |
-| Dreamer-V1   | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V2   | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
-| Plan2Explore | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Algorithm                 | Coupled            | Decoupled          | Recurrent          | Vector obs         | Pixel obs          | Status             |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
+
+
+The actions supported by sheeprl agents are:
+| Algorithm                 | Continuous         | Discrete           | Multi-Discrete     |
+| ------------------------- | -------------------| ------------------ | ------------------ |
+| A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :x:                | :heavy_check_mark: | :x:                |
+| SAC                       | :heavy_check_mark: | :x:                | :x:                |
+| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                |
+| DroQ                      | :heavy_check_mark: | :x:                | :x:                |
+| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+
+The environments supported by sheeprl are:
+| Algorithm          | Installation command         | More info                                       | Status             |
+| ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
+| Classic Control    | `pip install -e .`           |                                                 | :heavy_check_mark: |
+| Box2D              | `pip install -e .`           |                                                 | :heavy_check_mark: |
+| Mujoco (Gymnasium) | `pip install -e .`           | [how_to/mujoco](./howto/learn_in_dmc.md)        | :heavy_check_mark: |
+| Atari              | `pip install -e .[atari]`    | [how_to/atari](./howto/learn_in_atari.md)       | :heavy_check_mark: |
+| DeepMind Control   | `pip install -e .[dmc]`      | [how_to/dmc](./howto/learn_in_dmc.md)           | :heavy_check_mark: |
+| MineRL             | `pip install -e .[minerl]`   | [how_to/minerl](./howto/learn_in_minerl.md)     | :heavy_check_mark: |
+| MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
+| DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
+
 
 ## Why
 
@@ -74,6 +108,10 @@ pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 pip install "sheeprl[atari,mujoco,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minedojo environment support, do
 pip install "sheeprl[minedojo,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with minerl environment support, do
+pip install "sheeprl[minerl,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with diambra environment support, do
+pip install "sheeprl[diambra,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install all extras, do
 pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
@@ -85,6 +123,8 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 > if you are on an M-series mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
 >
 > if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
+>
+> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
 
 <details>
     <summary>Installing SWIG</summary>
@@ -104,7 +144,7 @@ pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sh
 
 Now you can use one of the already available algorithms, or create your own.
 
-For example, to train a PPO agent on the CartPole environment, just run
+For example, to train a PPO agent on the CartPole environment with only vector-like observations, just run
 
 ```bash
 python sheeprl.py ppo --env_id CartPole-v1
@@ -117,6 +157,10 @@ python sheeprl.py --sheeprl_help
 ```
 
 That's all it takes to train an agent with SheepRL! 🎉
+
+> **Note**
+>
+> you can find more information about the observation space by following this [link](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md).
 
 ### :chart_with_upwards_trend: Check your results
 
