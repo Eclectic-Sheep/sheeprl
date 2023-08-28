@@ -20,7 +20,7 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 | DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
 | Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
+| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
@@ -53,7 +53,7 @@ The environments supported by sheeprl are:
 | DeepMind Control   | `pip install -e .[dmc]`      | [how_to/dmc](./howto/learn_in_dmc.md)           | :heavy_check_mark: |
 | MineRL             | `pip install -e .[minerl]`   | [how_to/minerl](./howto/learn_in_minerl.md)     | :heavy_check_mark: |
 | MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
-| DIAMBRA            |                              |                                                 | :construction:     |
+| DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
 
 
 ## Why
@@ -108,8 +108,10 @@ pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 pip install "sheeprl[atari,mujoco,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minedojo environment support, do
 pip install "sheeprl[minedojo,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
-# or, to install with minedojo environment support, do
+# or, to install with minerl environment support, do
 pip install "sheeprl[minerl,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with diambra environment support, do
+pip install "sheeprl[diambra,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install all extras, do
 pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
@@ -122,7 +124,7 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 >
 > if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 >
-> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively.
+> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
 
 <details>
     <summary>Installing SWIG</summary>

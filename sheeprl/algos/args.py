@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from sheeprl.utils.parser import Arg
 
@@ -29,10 +29,14 @@ class StandardArgs:
     checkpoint_every: int = Arg(default=100, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
 
-    screen_size: int = Arg(default=64, help="The size of the pixel-from observations (if any)")
-    frame_stack: int = Arg(default=-1, help="How many frame to stack (only for pixel-like observations)")
-    frame_stack_keys: Optional[List[str]] = Arg(default=None, help="The cnn keys to apply the frame stack wrapper")
-    max_episode_steps: int = Arg(default=-1)
+    screen_size: int = Arg(default=64, help="the size of the pixel-from observations (if any)")
+    frame_stack: int = Arg(default=-1, help="how many frame to stack (only for pixel-like observations)")
+    frame_stack_dilation: int = Arg(default=1, help="the dilation between the stacked frames, 1 no dilation")
+    max_episode_steps: int = Arg(
+        default=-1,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
+    )
 
     def __setattr__(self, __name: str, __value: Any) -> None:
         super().__setattr__(__name, __value)

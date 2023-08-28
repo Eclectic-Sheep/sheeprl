@@ -43,7 +43,8 @@ class SACAEArgs(SACArgs):
     dense_act: str = Arg(
         default="ReLU",
         help="the activation function for the dense layers, one of "
-        "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     layer_norm: bool = Arg(
         default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
@@ -55,3 +56,12 @@ class SACAEArgs(SACArgs):
     mlp_keys: Optional[List[str]] = Arg(
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

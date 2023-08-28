@@ -3,7 +3,6 @@ import os
 import pathlib
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, Sequence
 
 import gymnasium as gym
@@ -12,8 +11,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from lightning.pytorch.utilities.seed import isolate_rng
 from tensordict import TensorDict
@@ -24,7 +21,7 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v2.agent import Player, WorldModel
+from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, test
 from sheeprl.algos.p2e_dv2.agent import build_models
@@ -32,10 +29,12 @@ from sheeprl.algos.p2e_dv2.args import P2EDV2Args
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_dict_env, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -72,24 +71,31 @@ def train(
     [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
 
     The algorithm is made by different phases:
-    1. Dynamic Learning: see Algorithm 1 in [Dream to Control: Learning Behaviors by Latent Imagination](https://arxiv.org/abs/1912.01603)
-    2. Ensemble Learning: learn the ensemble models as described in [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
+    1. Dynamic Learning: see Algorithm 1 in
+        [Dream to Control: Learning Behaviors by Latent Imagination](https://arxiv.org/abs/1912.01603)
+    2. Ensemble Learning: learn the ensemble models as described in
+        [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
         The ensemble models give the novelty of the state visited by the agent.
-    3. Behaviour Learning Exploration: the agent learns to explore the environment, having as reward only the intrinsic reward, computed from the ensembles.
-    4. Behaviour Learning Task (zero-shot): the agent learns to solve the task, the experiences it uses to learn it are the ones collected during the exploration:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+    3. Behaviour Learning Exploration: the agent learns to explore the environment,
+        having as reward only the intrinsic reward, computed from the ensembles.
+    4. Behaviour Learning Task (zero-shot): the agent learns to solve the task,
+        the experiences it uses to learn it are the ones collected during the exploration:
+        - Imagine trajectories in the latent space from each latent state
+        s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
         - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
         - Update the actor and the critic
 
     This method is based on [sheeprl.algos.dreamer_v1.dreamer_v1](sheeprl.algos.dreamer_v1.dreamer_v1) algorithm,
-    extending it to implement the [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
+    extending it to implement the
+    [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
+        world_model (WorldModel): the world model wrapped with Fabric.
         actor_task (_FabricModule): the actor for solving the task.
         critic_task (_FabricModule): the critic for solving the task.
+        target_critic_task (nn.Module): the target critic for solving the task.
         world_optimizer (_FabricOptimizer): the world optimizer.
         actor_task_optimizer (_FabricOptimizer): the actor optimizer for solving the task.
         critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
@@ -100,11 +106,18 @@ def train(
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
         actor_exploration (_FabricModule): the actor for exploration.
         critic_exploration (_FabricModule): the critic for exploration.
+        target_critic_exploration (nn.Module): the target critic for exploration.
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
         critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
+        is_continuous (bool): whether or not are continuous actions.
+        actions_dim (Sequence[int]): the actions dimension.
         is_exploring (bool): whether the agent is exploring.
-        cnn_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the CNN encoder
-        mlp_keys: (List[str]): a list containing the keys of the observations to be encoded/decoded by the MLP encoder
+        cnn_keys: (Sequence[str]): a list containing the keys of the observations
+            to be encoded/decoded by the CNN encoder.
+            Default to ["rgb"].
+        mlp_keys: (Sequence[str]): a list containing the keys of the observations
+            to be encoded/decoded by the MLP encoder.
+            Default to [].
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -228,7 +241,7 @@ def train(
             )
             aggregator.update("Grads/ensemble", ensemble_grad.detach())
         ensemble_optimizer.step()
-        aggregator.update(f"Loss/ensemble_loss", loss.detach().cpu())
+        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
 
         # Behaviour Learning Exploration
         imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size * args.discrete_size)
@@ -453,7 +466,10 @@ def train(
 def main():
     parser = HfArgumentParser(P2EDV2Args)
     args: P2EDV2Args = parser.parse_args_into_dataclasses()[0]
-    torch.set_num_threads(1)
+
+    # These arguments cannot be changed
+    args.screen_size = 64
+    args.frame_stack = -1
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -471,42 +487,12 @@ def main():
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "p2e_dv2", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        if args.checkpoint_path:
-            root_dir = ckpt_path.parent.parent
-            run_name = "resume_from_checkpoint"
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "p2e_dv2")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -514,11 +500,12 @@ def main():
         [
             make_dict_env(
                 args.env_id,
-                args.seed + rank * args.num_envs,
+                args.seed + rank * args.num_envs + i,
                 rank,
                 args,
                 logger.log_dir if rank == 0 else None,
                 "train",
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
@@ -616,7 +603,7 @@ def main():
     if args.checkpoint_path:
         ensembles.load_state_dict(state["ensembles"])
     fabric.setup_module(ensembles)
-    player = Player(
+    player = PlayerDV2(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,

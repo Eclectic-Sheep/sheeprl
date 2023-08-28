@@ -200,7 +200,8 @@ class MineDojoWrapper(core.Env):
             # it the selected action is not jump, then the agent stops the sticky jump
             elif converted_action[2] != 1:
                 self._sticky_jump_counter = 0
-        # if the agent selects the craft action (value 4 in index 5 of the converted actions), then it also selects the element to craft
+        # if the agent selects the craft action (value 4 in index 5 of the converted actions),
+        # then it also selects the element to craft
         converted_action[6] = int(action[1]) if converted_action[5] == 4 else 0
         # if the agent selects the equip/place/destroy action (value 5 or 6 or 7 in index 5 of the converted actions),
         # then it also selects the element to equip/place/destroy
@@ -275,6 +276,7 @@ class MineDojoWrapper(core.Env):
                 "food": float(obs["life_stats"]["food"].item()),
             },
             "location_stats": copy.deepcopy(self._pos),
+            "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
 
     def close(self):

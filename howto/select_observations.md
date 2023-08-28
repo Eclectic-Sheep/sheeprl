@@ -1,5 +1,9 @@
 ## Observations types
-There are two types of algorithms in this repository: *(i)* the ones that can work with both image and vector observations. *(ii)* The ones that can work with either image or vector observations.
+There are two types of algorithms in this repository:
+
+1. the ones that can work with both image and vector observations.
+2. The ones that can work with either image or vector observations.
+
 In the first case the observations are returned in form of python dictionary, whereas in the second case the observations are returned as 1-dimensional arrays or 3/4-dimensional arrays for grayscale/rgb or stacked images, respectively.
 
 ### Dict observations
@@ -14,6 +18,10 @@ The algorithms that can work with both image and vector observations are specifi
 
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover you can select all/some/none of the image observations.
 You just need to pass the `mlp_keys` and `cnn_keys` to the script to select the vector observations and the image observations, respectively.
+
+> **Recommended**
+>
+> We recommend to read [this](./work_with_multi-encoder_multi-decoder.md) to know how the encoder and decoder work with more observations.
 
 For instance, to train the ppo algorithm on the *walker walk* task provided by *DMC* using image observations and only the `orientations` and `velocity` as vector observation, you have to run the following command:
 ```bash
@@ -31,10 +39,10 @@ It is important to know the observations the environment provides, for instance,
 > `lightning run model sheeprl.py ppo --cnn_keys rgb`
 
 #### Frame Stack
-For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. If you want to stack more frames, then you must specify on which image observations you want to apply the `FrameStack` wrapper through `frame_stack_keys` argument.
+For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --frame_stack=3 --frame_stack_keys rgb
+lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --frame_stack=3
 ```
 
 #### How to choose the correct keys

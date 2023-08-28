@@ -20,12 +20,12 @@ class DROQCritic(nn.Module):
 
         Args:
             observation_dim (int): the input dimension.
+            hidden_size (int): the hidden size for both of the two-layer MLP.
+                Defaults to 256.
             num_critics (int, optional): the number of critic values to output.
                 This is useful if one wants to have a single shared backbone that outputs
                 `num_critics` critic values.
                 Defaults to 1.
-            hidden_size (int): the hidden size for both of the two-layer MLP.
-                Defaults to 256.
             dropout (float, optional): the dropout probability for every layer.
                 Defaults to 0.0.
         """
@@ -88,7 +88,8 @@ class DROQAgent(nn.Module):
 
         # Create target critic unwrapping the DDP module from the critics to prevent
         # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
+        # That is, when you have called init_process_group and have not passed
+        # process_group argument to DDP constructor`.
         # This happens when we're using the decoupled version of SAC for example
         qfs_unwrapped_modules = []
         for critic in critics:

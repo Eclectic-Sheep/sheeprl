@@ -27,7 +27,7 @@ def build_models(
     actor_exploration_state: Optional[Dict[str, Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, Tensor]] = None,
     target_critic_exploration_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module, int]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -48,7 +48,8 @@ def build_models(
             Default to None.
 
     Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
         The actor_task (_FabricModule).
         The critic_task (_FabricModule).
         The target_critic_task (nn.Module).
@@ -62,7 +63,7 @@ def build_models(
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
             f"Invalid value for dense_act, given {args.dense_act}, "
             "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"

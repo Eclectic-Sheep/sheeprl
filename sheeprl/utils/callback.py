@@ -12,9 +12,10 @@ class CheckpointCallback:
     Three methods are defined to checkpoint the models, the optimizers, and the replay buffers during the training:
         1. `on_checkpoint_coupled`: The method called by all processes in coupled algorithms,
             the process on rank-0 gets the buffers from all the processes and saves the state of the training.
-        2. `on_checkpoint_player`: called by the player process of decoupled algorithms (rank-0), it receives the state from
-            the trainer of rank-1 and, if required, adds the replay_buffer to the state.
-        3. `on_checkpoint_trainer`: called by the rank-1 trainer process of decoupled algorithms that sends the state to the player process (rank-0).
+        2. `on_checkpoint_player`: called by the player process of decoupled algorithms (rank-0),
+            it receives the state from the trainer of rank-1 and, if required, adds the replay_buffer to the state.
+        3. `on_checkpoint_trainer`: called by the rank-1 trainer process of decoupled algorithms that
+            sends the state to the player process (rank-0).
 
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
     """

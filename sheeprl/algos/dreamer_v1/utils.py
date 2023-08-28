@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn.functional as F
@@ -8,8 +8,8 @@ from torch.distributions import Distribution, Independent, Normal
 
 def compute_stochastic_state(
     state_information: Tensor,
-    event_shape: Optional[int] = 1,
-    min_std: Optional[float] = 0.1,
+    event_shape: int = 1,
+    min_std: float = 0.1,
 ) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
     """
     Compute the stochastic state from the information of the distribution of the stochastic state.
@@ -17,9 +17,9 @@ def compute_stochastic_state(
     Args:
         state_information (Tensor): information about the distribution of the stochastic state,
             it is the output of either the representation model or the transition model.
-        event_shape (int, optional): how many batch dimensions have to be reinterpreted as event dims.
+        event_shape (int): how many batch dimensions have to be reinterpreted as event dims.
             Default to 1.
-        min_std (float, optional): the minimum value for the standard deviation.
+        min_std (float): the minimum value for the standard deviation.
             Default to 0.1.
 
     Returns:

@@ -123,7 +123,8 @@ class CNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -146,6 +147,7 @@ class CNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int],
+        cnn_layer: ModuleType = nn.Conv2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -181,7 +183,7 @@ class CNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(in_dim, out_dim, nn.Conv2d, l_args, drop, drop_args, norm, norm_args, activ, act_args)
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)
@@ -204,7 +206,8 @@ class DeCNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -227,6 +230,7 @@ class DeCNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int] = (),
+        cnn_layer: ModuleType = nn.ConvTranspose2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -262,9 +266,7 @@ class DeCNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(
-                in_dim, out_dim, nn.ConvTranspose2d, l_args, drop, drop_args, norm, norm_args, activ, act_args
-            )
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)
@@ -412,20 +414,24 @@ class MultiEncoder(nn.Module):
         if cnn_encoder is not None:
             if getattr(cnn_encoder, "input_dim", None) is None:
                 raise AttributeError(
-                    "`cnn_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                    "`cnn_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
                 )
             if getattr(cnn_encoder, "output_dim", None) is None:
                 raise AttributeError(
-                    "`cnn_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                    "`cnn_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
                 )
         if mlp_encoder is not None:
             if getattr(mlp_encoder, "input_dim", None) is None:
                 raise AttributeError(
-                    "`mlp_encoder` must contain the `input_dim` attribute representing the dimension of the input tensor"
+                    "`mlp_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
                 )
             if getattr(mlp_encoder, "output_dim", None) is None:
                 raise AttributeError(
-                    "`mlp_encoder` must contain the `output_dim` attribute representing the dimension of the output tensor"
+                    "`mlp_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
                 )
         self.cnn_encoder = cnn_encoder
         self.mlp_encoder = mlp_encoder

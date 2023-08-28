@@ -2,7 +2,6 @@ import copy
 import os
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Union
 
 import gymnasium as gym
@@ -10,8 +9,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
@@ -26,10 +23,12 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_dict_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -105,6 +104,15 @@ def train(
 def main():
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+
+    if "minedojo" in args.env_id:
+        raise ValueError(
+            "MineDojo is not currently supported by PPO agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
     initial_ent_coef = copy.deepcopy(args.ent_coef)
     initial_clip_coef = copy.deepcopy(args.clip_coef)
 
@@ -118,39 +126,12 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "ppo", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "ppo")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -220,11 +201,9 @@ def main():
         cnn_channels_multiplier=args.cnn_channels_multiplier,
         mlp_layers=args.mlp_layers,
         dense_units=args.dense_units,
-        cnn_act=args.cnn_act,
         mlp_act=args.dense_act,
         layer_norm=args.layer_norm,
         is_continuous=is_continuous,
-        device=fabric.device,
     )
 
     # Define the agent and the optimizer and setup them with Fabric

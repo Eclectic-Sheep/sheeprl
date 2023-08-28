@@ -3,7 +3,6 @@ import os
 import time
 import warnings
 from dataclasses import asdict
-from datetime import datetime
 from math import prod
 from typing import Optional, Union
 
@@ -14,8 +13,6 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
@@ -43,10 +40,11 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_pixel
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_dict_env
 
 
 def train(
@@ -136,6 +134,15 @@ def train(
 def main():
     parser = HfArgumentParser(SACAEArgs)
     args: SACAEArgs = parser.parse_args_into_dataclasses()[0]
+
+    if "minedojo" in args.env_id:
+        raise ValueError(
+            "MineDojo is not currently supported by SAC-AE agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
     # These arguments cannot be changed
     args.screen_size = 64
 
@@ -164,39 +171,12 @@ def main():
     fabric.seed_everything(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "sac_pixel_continuous", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "sac_ae")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -258,13 +238,14 @@ def main():
         raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
     try:
         dense_act = getattr(nn, args.dense_act)
-    except:
+    except AttributeError:
         raise ValueError(
-            f"Invalid value for mlp_act, given {args.dense_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+            f"Invalid value for mlp_act, given {args.dense_act}, "
+            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
         )
 
     cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cnn_keys]
-    mlp_splits = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
+    mlp_dims = [envs.single_observation_space[k].shape[0] for k in mlp_keys]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
@@ -278,7 +259,7 @@ def main():
     )
     mlp_encoder = (
         MLPEncoder(
-            sum(mlp_splits),
+            sum(mlp_dims),
             mlp_keys,
             args.dense_units,
             args.mlp_layers,
@@ -304,7 +285,7 @@ def main():
     mlp_decoder = (
         MLPDecoder(
             encoder.output_dim,
-            mlp_splits,
+            mlp_dims,
             mlp_keys,
             args.dense_units,
             args.mlp_layers,
@@ -337,7 +318,7 @@ def main():
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    # The agent will tied convolutional weights between the encoder actor and critic
+    # The agent will tied convolutional and linear weights between the encoder actor and critic
     agent = SACAEAgent(
         actor,
         critic,

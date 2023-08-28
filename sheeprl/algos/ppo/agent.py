@@ -1,5 +1,5 @@
 from math import prod
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -70,9 +70,7 @@ class PPOAgent(nn.Module):
         cnn_channels_multiplier: int = 1,
         mlp_layers: int = 2,
         dense_units: int = 64,
-        cnn_act: str = "ReLU",
         mlp_act: str = "ReLU",
-        device: Union[str, torch.device] = "cpu",
         layer_norm: bool = False,
         is_continuous: bool = False,
     ):
@@ -81,16 +79,11 @@ class PPOAgent(nn.Module):
         if dense_units <= 0:
             raise ValueError(f"dense_units must be greater than zero, given {dense_units}")
         try:
-            getattr(nn, cnn_act)
-        except:
-            raise ValueError(
-                f"Invalid value for cnn_act, given {cnn_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-            )
-        try:
             dense_act = getattr(nn, mlp_act)
-        except:
+        except AttributeError:
             raise ValueError(
-                f"Invalid value for mlp_act, given {mlp_act}, must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
+                f"Invalid value for mlp_act, given {mlp_act}, must be one of "
+                "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
             )
         super().__init__()
         self.actions_dim = actions_dim

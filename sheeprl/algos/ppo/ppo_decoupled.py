@@ -28,10 +28,11 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_dict_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 # Simple wrapper to let torch.distributed.algorithms.join.Join
@@ -139,7 +140,6 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
         "cnn_channels_multiplier": args.cnn_channels_multiplier,
         "mlp_layers": args.mlp_layers,
         "dense_units": args.dense_units,
-        "cnn_act": args.cnn_act,
         "mlp_act": args.dense_act,
         "layer_norm": args.layer_norm,
         "is_continuous": is_continuous,
@@ -542,6 +542,14 @@ def main():
 
     parser = HfArgumentParser(PPOArgs)
     args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+
+    if "minedojo" in args.env_id:
+        raise ValueError(
+            "MineDojo is not currently supported by PPO agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
 
     if args.share_data:
         warnings.warn(

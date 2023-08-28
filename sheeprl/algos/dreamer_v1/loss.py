@@ -8,12 +8,15 @@ from torch.distributions.kl import kl_divergence
 
 def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Tensor:
     """
-    Compute the critic loss as described in Eq. 8 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the critic loss as described in Eq. 8 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         qv (Distribution): the predicted distribution of the values.
         lambda_values (Tensor): the lambda values computed from the imagined states.
+            Shape of (sequence_length, batch_size, 1).
         discount (Tensor): the discount to apply to the loss.
+            Shape of (sequence_length, batch_size), the log_prob removes the last dimension.
 
     Returns:
         The tensor of the critic loss.
@@ -23,7 +26,8 @@ def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Te
 
 def actor_loss(lambda_values: Tensor) -> Tensor:
     """
-    Compute the actor loss as described in Eq. 7 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the actor loss as described in Eq. 7 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         lambda_values (Tensor): the lambda values computed on the predictions in the latent space.
@@ -48,15 +52,16 @@ def reconstruction_loss(
     continue_scale_factor: float = 10.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
-    Compute the reconstruction loss as described in Eq. 10 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    Compute the reconstruction loss as described in Eq. 10 in
+    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
         qo (Distribution): the distribution returned by the observation_model (decoder).
         observations (Dict[str, Tensor]): the observations provided by the environment.
         qr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
-        p (torch.distributios.distribution.Distribution): the distribution of the stochastic state.
-        q (torch.distributios.distribution.Distribution): the predicted distribution of the stochastic state.
+        p (Distribution): the distribution of the stochastic state.
+        q (Distribution): the predicted distribution of the stochastic state.
         kl_free_nats (float): lower bound of the KL divergence.
             Default to 3.0.
         kl_regularizer (float): scale factor of the KL divergence.
@@ -71,6 +76,7 @@ def reconstruction_loss(
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
+        kl (Tensor): the value of the kl between p and q.
         reward_loss (Tensor): the value of the reward loss.
         state_loss (Tensor): the value of the state loss.
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).

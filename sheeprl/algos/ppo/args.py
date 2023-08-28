@@ -43,11 +43,15 @@ class PPOArgs(StandardArgs):
     cnn_channels_multiplier: int = Arg(default=1, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="Tanh",
-        help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the dense layers, one of "
+        "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
         default="Tanh",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the convolutional layers, one of "
+        "https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     layer_norm: bool = Arg(
         default=False, help="whether to apply nn.LayerNorm after every Linear/Conv2D/ConvTranspose2D"
@@ -60,7 +64,20 @@ class PPOArgs(StandardArgs):
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
     eps: float = Arg(default=1e-4)
-    max_episode_steps: int = Arg(default=-1, help="the maximum amount of steps in an episode")
+    max_episode_steps: int = Arg(
+        default=-1,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
+    )
     cnn_features_dim: int = Arg(default=512, help="the features dimension after the CNNEncoder")
     mlp_features_dim: int = Arg(default=64, help="the features dimension after the MLPEncoder")
     atari_noop_max: int = Arg(default=30, help="the maximum number of noop in Atari envs on reset")
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

@@ -52,11 +52,15 @@ class DreamerV1Args(StandardArgs):
     cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="ELU",
-        help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the dense layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
         default="ReLU",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the convolutional layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
 
     # Environment settings
@@ -69,11 +73,14 @@ class DreamerV1Args(StandardArgs):
     )
     action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
-        default=1000, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+        default=1000,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
     )
     atari_noop_max: int = Arg(
         default=30,
-        help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
+        help="No-op reset in Atari environment, the max number no-ops actions are taken at reset. "
+        "To turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
@@ -88,3 +95,12 @@ class DreamerV1Args(StandardArgs):
     mlp_keys: Optional[List[str]] = Arg(
         default=None, help="a list of observation keys to be processed by the MLP encoder"
     )
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

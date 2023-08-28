@@ -3,7 +3,6 @@ import os
 import pathlib
 import time
 from dataclasses import asdict
-from datetime import datetime
 from typing import Dict, Sequence
 
 import gymnasium as gym
@@ -12,8 +11,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
-from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -22,16 +19,18 @@ from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, make_dict_env, polynomial_decay
+from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -55,16 +54,23 @@ def train(
     """Runs one-step update of the agent.
 
     The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is what is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - recurrent_state: is what is called ht or deterministic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - stochastic_state: is what is called st or stochastic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             It can be both posterior or prior.
         - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
-        - p: the output of the representation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - q: the output of the transition model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qo: the output of the observation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qr: the output of the reward model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - p: the output of the representation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - q: the output of the transition model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qo: the output of the observation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qr: the output of the reward model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         - qc: the output of the continue model.
-        - qv: the output of the value model (critic), from Eq. 2 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qv: the output of the value model (critic), from Eq. 2 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     In particular, it updates the agent as specified by Algorithm 1 in
     [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
@@ -80,14 +86,15 @@ def train(
         - Reward Model: estimate rewards from the latent states.
         - Update the models
     2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Imagine trajectories in the latent space from each latent state s_t up
+        to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
         - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
         - Update the actor and the critic
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
+        world_model (WorldModel): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
         world_optimizer (_FabricOptimizer): the world optimizer.
@@ -96,6 +103,8 @@ def train(
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         args (DreamerV1Args): the configs.
+        cnn_keys: Sequence[str]: the sequence of cnn keys to encode/decode.
+        mlp_keys: Sequence[str]: the sequence of mlp keys to encode/decode.
     """
     batch_size = args.per_rank_batch_size
     sequence_length = args.per_rank_sequence_length
@@ -106,11 +115,13 @@ def train(
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
-    # the recurrent state is the deterministic state (or ht) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    # the recurrent state is the deterministic state (or ht) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
 
-    # initialize the posterior that must be of dimension (batch_size, 1, stochastic_size)
-    # the stochastic state is the stochastic state (or st) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    # initialize the posterior that must be of dimension (1, batch_size, stochastic_size)
+    # the stochastic state is the stochastic state (or st) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
 
     # initialize the tensors for dynamic learning
@@ -121,12 +132,14 @@ def train(
     # and its dimension is (sequence_length, batch_size, stochastic_size)
     posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # posteriors_mean and posteriors_std will contain all the actual means and stds of the posterior states respectively,
+    # posteriors_mean and posteriors_std will contain all
+    # the actual means and stds of the posterior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
     posteriors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     posteriors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
 
-    # priors_mean and priors_std will contain all the predicted means and stds of the prior states respectively,
+    # priors_mean and priors_std will contain all
+    # the predicted means and stds of the prior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
     priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
     priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
@@ -208,11 +221,12 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/p_entropy", p.entropy().mean().detach())
-    aggregator.update("State/q_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", p.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
-    # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
+    # Unflatten first 2 dimensions of recurrent and posterior states in order
+    # to have all the states on the first dimension.
     # The 1 in the second dimension is needed for the recurrent model in the imagination step,
     # 1 because the agent imagines one state at a time.
     # (1, batch_size * sequence_length, stochastic_size)
@@ -222,6 +236,7 @@ def train(
     # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
     recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
 
+    # starting states for the imagination phase.
     # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
     imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
 
@@ -314,15 +329,17 @@ def train(
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
+    # Predict the values distribution only for the first H (horizon) imagined states
+    # (to match the dimension with the lambda values),
+    # it removes the last imagined state in the trajectory
+    # because it is used only for computing correclty the lambda values
     qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
     # critic optimization step
     critic_optimizer.zero_grad(set_to_none=True)
     # compute the value loss
     # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
-    # it is necessary to remove the last dimension properly match the shapes
+    # it is necessary to remove the last dimension to properly match the shapes
     # for the log prob
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
@@ -342,8 +359,10 @@ def train(
 def main():
     parser = HfArgumentParser(DreamerV1Args)
     args: DreamerV1Args = parser.parse_args_into_dataclasses()[0]
+
+    # These arguments cannot be changed
+    args.screen_size = 64
     args.frame_stack = -1
-    torch.set_num_threads(1)
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -361,42 +380,12 @@ def main():
         args.per_rank_batch_size = state["batch_size"] // fabric.world_size
         ckpt_path = pathlib.Path(args.checkpoint_path)
 
-    # Set logger only on rank-0 but share the logger directory: since we don't know
-    # what is happening during the `fabric.save()` method, at least we assure that all
-    # ranks save under the same named folder.
-    # As a plus, rank-0 sets the time uniquely for everyone
-    world_collective = TorchCollective()
-    if fabric.world_size > 1:
-        world_collective.setup()
-        world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "dreamer_v1", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        if args.checkpoint_path:
-            root_dir = ckpt_path.parent.parent
-            run_name = "resume_from_checkpoint"
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, args, "dreamer_v1")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
         fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-
-        # Save args as dict automatically
-        args.log_dir = log_dir
-    else:
-        data = [None]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
@@ -404,11 +393,12 @@ def main():
         [
             make_dict_env(
                 args.env_id,
-                args.seed + rank * args.num_envs,
+                args.seed + rank * args.num_envs + i,
                 rank,
                 args,
                 logger.log_dir if rank == 0 else None,
                 "train",
+                vector_env_idx=i,
             )
             for i in range(args.num_envs)
         ]
@@ -468,7 +458,7 @@ def main():
         state["actor"] if args.checkpoint_path else None,
         state["critic"] if args.checkpoint_path else None,
     )
-    player = Player(
+    player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
@@ -507,8 +497,8 @@ def main():
                 "Loss/reward_loss": MeanMetric(sync_on_compute=False),
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/post_entropy": MeanMetric(sync_on_compute=False),
+                "State/prior_entropy": MeanMetric(sync_on_compute=False),
                 "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/world_model": MeanMetric(sync_on_compute=False),
