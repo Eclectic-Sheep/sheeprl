@@ -339,7 +339,7 @@ def train(
     )
     objective = cfg.algo.actor.objective_mix * reinforce + (1 - cfg.algo.actor.objective_mix) * dynamics
     try:
-        entropy = cfg.algo.actor.actor_ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
+        entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
     except NotImplementedError:
         entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
