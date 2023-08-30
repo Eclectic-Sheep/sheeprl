@@ -7,7 +7,7 @@ if not _IS_DIAMBRA_AVAILABLE:
 if not _IS_DIAMBRA_ARENA_AVAILABLE:
     raise ModuleNotFoundError(_IS_DIAMBRA_ARENA_AVAILABLE)
 
-from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
 
 import diambra
 import diambra.arena
@@ -15,6 +15,7 @@ import gym
 import gymnasium
 import numpy as np
 from gymnasium import core
+from gymnasium.core import RenderFrame
 
 
 class DiambraWrapper(core.Env):
@@ -90,6 +91,7 @@ class DiambraWrapper(core.Env):
                 raise RuntimeError(f"Invalid observation space, got: {type(self._env.observation_space[k])}")
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
         self.observation_space = gymnasium.spaces.Dict(obs)
+        self.render_mode = "rgb_array"
 
     def _convert_obs(self, obs: Dict[str, Union[int, np.ndarray]]) -> Dict[str, np.ndarray]:
         return {
@@ -101,6 +103,9 @@ class DiambraWrapper(core.Env):
         obs, reward, done, infos = self._env.step(action)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done, False, infos
+
+    def render(self) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
+        return self._env.render("rgb_array")
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
