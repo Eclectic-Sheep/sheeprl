@@ -1,0 +1,42 @@
+# @package _global_
+
+defaults:
+  - dreamer_v2
+  - _self_
+
+seed: 5
+env:
+  env:
+    id: MsPacmanNoFrameskip-v0
+  max_episode_steps: 108000
+
+per_rank_batch_size: 32
+checkpoint_every: 200000
+total_steps: 200000000
+learning_starts: 200000
+pretrain_steps: 1
+gradient_steps: 1
+train_every: 16
+use_continues: True
+clip_rewards: True
+buffer:
+  size: 2000000
+  type: episode
+  prioritize_ends: True
+  checkpoint: True
+
+algo:
+  gamma: 0.995
+  world_model:
+    kl_free_nats: 0.0
+    kl_regularizer: 0.1
+    discount_scale_factor: 0.5
+    optimizer:
+      lr: 0.0002
+  actor:
+    ent_coef: 0.001
+    optimizer:
+      lr: 4e-05
+  critic:
+    optimizer:
+      lr: 0.0001
