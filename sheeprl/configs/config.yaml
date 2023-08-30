@@ -13,8 +13,8 @@ num_threads: 1
 exp_name: "default"
 dry_run: False
 torch_deterministic: False
-root_dir: null
-run_name: null
+root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+run_name: ${env.env.id}_${exp_name}_${seed}
 memmap_buffer: False
 checkpoint_every: 100
 checkpoint_path: null
@@ -22,8 +22,8 @@ num_envs: 4
 sync_env: False
 clip_rewards: False
 cnn_keys:
-  encoder: []
-  decoder: []
+  encoder: ["rgb"]
+  decoder: ${cnn_keys.encoder}
 mlp_keys:
   encoder: []
-  decoder: []
+  decoder: ${mlp_keys.encoder}

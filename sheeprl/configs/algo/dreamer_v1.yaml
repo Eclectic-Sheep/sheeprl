@@ -12,8 +12,8 @@ horizon: 15
 # Model related parameters
 dense_units: 400
 mlp_layers: 4
-dense_act: ELU
-cnn_act: ReLU
+dense_act: torch.nn.ELU
+cnn_act: torch.nn.ReLU
 
 world_model:
   stochastic_size: 30
@@ -24,8 +24,6 @@ world_model:
   clip_gradients: 100.0
 
   encoder:
-    cnn_keys: ["all"]
-    mlp_keys: null
     cnn_channels_multiplier: 32
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
@@ -81,7 +79,6 @@ actor:
     weight_decay: 0
 
 critic:
-  lr: 8e-5
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}

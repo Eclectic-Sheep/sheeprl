@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.distributions import (
     Distribution,
@@ -17,7 +18,6 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
-from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
@@ -776,10 +776,8 @@ def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    args: DreamerV2Args,
+    cfg: DictConfig,
     obs_space: Dict[str, Any],
-    cnn_keys: Optional[Sequence[str]],
-    mlp_keys: Optional[Sequence[str]],
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
@@ -791,10 +789,8 @@ def build_models(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV2Args): the hyper-parameters of DreamerV2.
+        cfg (DictConfig): the configs.
         obs_space (Dict[str, Any]): the observation space.
-        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
-        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_state: (Dict[str, Tensor], optional): the state of the actor.
@@ -811,132 +807,133 @@ def build_models(
         The critic (_FabricModule).
         The target critic (nn.Module).
     """
-    if args.cnn_channels_multiplier <= 0:
-        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
-    if args.dense_units <= 0:
-        raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
-    try:
-        cnn_act = getattr(nn, args.cnn_act)
-    except AttributeError:
-        raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, "
-            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
-    try:
-        dense_act = getattr(nn, args.dense_act)
-    except AttributeError:
-        raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, "
-            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
+    world_model_cfg = cfg.algo.world_model
+    actor_cfg = cfg.algo.actor
+    critic_cfg = cfg.algo.critic
 
     # Sizes
-    stochastic_size = args.stochastic_size * args.discrete_size
-    latent_state_size = stochastic_size + args.recurrent_state_size
+    stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
+    latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Define models
     cnn_encoder = (
         CNNEncoder(
-            keys=cnn_keys,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
-            image_size=obs_space[cnn_keys[0]].shape[-2:],
-            channels_multiplier=args.cnn_channels_multiplier,
-            layer_norm=args.layer_norm,
-            activation=cnn_act,
+            keys=cfg.cnn_keys.encoder,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.encoder],
+            image_size=obs_space[cfg.cnn_keys.encoder[0]].shape[-2:],
+            channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
+            layer_norm=world_model_cfg.encoder.layer_norm,
+            activation=eval(world_model_cfg.encoder.cnn_act),
         )
-        if cnn_keys is not None and len(cnn_keys) > 0
+        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
-            keys=mlp_keys,
-            input_dims=[obs_space[k].shape[0] for k in mlp_keys],
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
-            layer_norm=args.layer_norm,
+            keys=cfg.mlp_keys.encoder,
+            input_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.encoder],
+            mlp_layers=world_model_cfg.encoder.mlp_layers,
+            dense_units=world_model_cfg.encoder.dense_units,
+            activation=eval(world_model_cfg.encoder.dense_act),
+            layer_norm=world_model_cfg.encoder.layer_norm,
         )
-        if mlp_keys is not None and len(mlp_keys) > 0
+        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
     recurrent_model = RecurrentModel(
+        **world_model_cfg.recurrent_model,
         input_size=int(sum(actions_dim) + stochastic_size),
-        recurrent_state_size=args.recurrent_state_size,
-        dense_units=args.dense_units,
-        layer_norm=args.layer_norm,
     )
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
+        input_dims=(
+            world_model_cfg.recurrent_model.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim
+        ),
         output_dim=stochastic_size,
-        hidden_sizes=[args.hidden_size],
-        activation=dense_act,
+        hidden_sizes=[world_model_cfg.representation_model.hidden_size],
+        activation=eval(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
+        norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
+        norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+        if world_model_cfg.representation_model.layer_norm
+        else None,
     )
     transition_model = MLP(
-        input_dims=args.recurrent_state_size,
+        input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
         output_dim=stochastic_size,
-        hidden_sizes=[args.hidden_size],
-        activation=dense_act,
+        hidden_sizes=[world_model_cfg.transition_model.hidden_size],
+        activation=eval(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.hidden_size}] if args.layer_norm else None,
+        norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
+        norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+        if world_model_cfg.transition_model.layer_norm
+        else None,
     )
     rssm = RSSM(
         recurrent_model.apply(init_weights),
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),
-        args.discrete_size,
+        world_model_cfg.discrete_size,
     )
     cnn_decoder = (
         CNNDecoder(
-            keys=cnn_keys,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
-            channels_multiplier=args.cnn_channels_multiplier,
+            keys=cfg.cnn_keys.decoder,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.decoder],
+            channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cnn_keys[0]].shape[-2:],
-            activation=cnn_act,
-            layer_norm=args.layer_norm,
+            image_size=obs_space[cfg.cnn_keys.decoder[0]].shape[-2:],
+            activation=eval(world_model_cfg.observation_model.cnn_act),
+            layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if cnn_keys is not None and len(cnn_keys) > 0
+        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            keys=mlp_keys,
-            output_dims=[obs_space[k].shape[0] for k in mlp_keys],
+            keys=cfg.mlp_keys.decoder,
+            output_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.decoder],
             latent_state_size=latent_state_size,
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
-            layer_norm=args.layer_norm,
+            mlp_layers=world_model_cfg.observation_model.mlp_layers,
+            dense_units=world_model_cfg.observation_model.dense_units,
+            activation=eval(world_model_cfg.observation_model.dense_act),
+            layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if mlp_keys is not None and len(mlp_keys) > 0
+        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.mlp_layers,
-        activation=dense_act,
+        hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
+        activation=eval(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+        if world_model_cfg.reward_model.layer_norm
+        else None,
+        norm_args=[
+            {"normalized_shape": world_model_cfg.reward_model.dense_units}
+            for _ in range(world_model_cfg.reward_model.mlp_layers)
+        ]
+        if world_model_cfg.reward_model.layer_norm
+        else None,
     )
-    if args.use_continues:
+    if cfg.use_continues:
         continue_model = MLP(
             input_dims=latent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units] * args.mlp_layers,
-            activation=dense_act,
+            hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
+            activation=eval(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
-            norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-            norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)]
-            if args.layer_norm
+            norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+            if world_model_cfg.discount_model.layer_norm
+            else None,
+            norm_args=[
+                {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                for _ in range(world_model_cfg.discount_model.mlp_layers)
+            ]
+            if world_model_cfg.discount_model.layer_norm
             else None,
         )
     world_model = WorldModel(
@@ -944,42 +941,31 @@ def build_models(
         rssm,
         observation_model.apply(init_weights),
         reward_model.apply(init_weights),
-        continue_model.apply(init_weights) if args.use_continues else None,
+        continue_model.apply(init_weights) if cfg.use_continues else None,
     )
-    if "minedojo" in args.env_id:
-        actor = MinedojoActor(
-            latent_state_size=latent_state_size,
-            actions_dim=actions_dim,
-            is_continuous=is_continuous,
-            init_std=args.actor_init_std,
-            min_std=args.actor_min_std,
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
-            distribution=args.actor_distribution,
-            layer_norm=args.layer_norm,
-        )
-    else:
-        actor = Actor(
-            latent_state_size=latent_state_size,
-            actions_dim=actions_dim,
-            is_continuous=is_continuous,
-            init_std=args.actor_init_std,
-            min_std=args.actor_min_std,
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
-            distribution=args.actor_distribution,
-            layer_norm=args.layer_norm,
-        )
+    actor_class = eval(actor_cfg._target_)
+    actor: nn.Module = actor_class(
+        latent_state_size=latent_state_size,
+        actions_dim=actions_dim,
+        is_continuous=is_continuous,
+        init_std=actor_cfg.init_std,
+        min_std=actor_cfg.min_std,
+        mlp_layers=actor_cfg.mlp_layers,
+        dense_units=actor_cfg.dense_units,
+        activation=eval(actor_cfg.dense_act),
+        distribution=actor_cfg.distribution,
+        layer_norm=actor_cfg.layer_norm,
+    )
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.mlp_layers,
-        activation=dense_act,
+        hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
+        activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(args.mlp_layers)] if args.layer_norm else None,
-        norm_args=[{"normalized_shape": args.dense_units} for _ in range(args.mlp_layers)] if args.layer_norm else None,
+        norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
+        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+        if critic_cfg.layer_norm
+        else None,
     )
     actor.apply(init_weights)
     critic.apply(init_weights)

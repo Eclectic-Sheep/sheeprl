@@ -46,7 +46,7 @@ class DreamerV2Args(StandardArgs):
     kl_free_nats: float = Arg(default=1.0, help="the minimum value for the kl divergence")
     kl_free_avg: bool = Arg(default=True, help="whether to apply free average")
     kl_regularizer: float = Arg(default=1.0, help="the scale factor for the kl divergence")
-    continue_scale_factor: float = Arg(default=1.0, help="the scale factor for the continue loss")
+    discount_scale_factor: float = Arg(default=1.0, help="the scale factor for the continue loss")
     actor_ent_coef: float = Arg(default=1e-4, help="the entropy coefficient for the actor loss")
     actor_init_std: float = Arg(
         default=0.0, help="the amout to sum to the input of the function of the standard deviation of the actions"
