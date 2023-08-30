@@ -413,7 +413,7 @@ def main(cfg: DictConfig):
                 cfg,
                 cfg.seed + rank * cfg.num_envs + i,
                 rank * cfg.num_envs,
-                None,
+                logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
