@@ -2,6 +2,7 @@
 
 defaults:
   - dreamer_v2
+  - override /env: atari
   - _self_
 
 seed: 5
