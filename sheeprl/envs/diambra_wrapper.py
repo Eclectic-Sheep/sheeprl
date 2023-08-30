@@ -81,6 +81,11 @@ class DiambraWrapper(core.Env):
                 high = self._env.observation_space[k].n - 1
                 shape = (1,)
                 dtype = np.int32
+            elif isinstance(self._env.observation_space[k], gym.spaces.MultiDiscrete):
+                low = np.zeros_like(self._env.observation_space[k].nvec)
+                high = self._env.observation_space[k].nvec - 1
+                shape = (len(high),)
+                dtype = np.int32
             else:
                 raise RuntimeError(f"Invalid observation space, got: {type(self._env.observation_space[k])}")
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
