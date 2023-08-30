@@ -361,9 +361,9 @@ def train(
     critic_optimizer.zero_grad(set_to_none=True)
     value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
+    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
+            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
     aggregator.update("Grads/critic", critic_grads.mean().detach())
