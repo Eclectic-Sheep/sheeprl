@@ -51,7 +51,7 @@ ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
 class MineDojoWrapper(core.Env):
     def __init__(
         self,
-        task_id: str,
+        id: str,
         height: int = 64,
         width: int = 64,
         pitch_limits: Tuple[int, int] = (-60, 60),
@@ -77,7 +77,7 @@ class MineDojoWrapper(core.Env):
             )
 
         self._env = minedojo.make(
-            task_id=task_id,
+            task_id=id,
             image_size=(height, width),
             world_seed=seed,
             start_position=self._pos,

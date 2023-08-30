@@ -1,0 +1,10 @@
+defaults:
+  - default
+  - _self_
+
+env:
+  _target_: gymnasium.make
+  id: CarRacing-v2
+  render_mode: rgb_array
+
+mask_velocities: False

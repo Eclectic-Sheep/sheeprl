@@ -48,8 +48,7 @@ def _flatten_obs(obs: Dict[Any, Any]) -> np.ndarray:
 class DMCWrapper(core.Env):
     def __init__(
         self,
-        domain_name: str,
-        task_name: str,
+        id: str,
         from_pixels: bool = False,
         height: int = 84,
         width: int = 84,
@@ -61,6 +60,8 @@ class DMCWrapper(core.Env):
         visualize_reward: bool = False,
         seed: Optional[int] = None,
     ):
+        domain_name, task_name = id.split("_")
+
         self._from_pixels = from_pixels
         self._height = height
         self._width = width

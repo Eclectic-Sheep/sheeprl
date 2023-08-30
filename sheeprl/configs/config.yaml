@@ -13,11 +13,17 @@ num_threads: 1
 exp_name: "default"
 dry_run: False
 torch_deterministic: False
-root_dir: None
-run_name: None
+root_dir: null
+run_name: null
 memmap_buffer: False
 checkpoint_every: 100
-checkpoint_path: None
+checkpoint_path: null
 num_envs: 4
 sync_env: False
-clip_rewards: Identity
+clip_rewards: False
+cnn_keys:
+  encoder: []
+  decoder: []
+mlp_keys:
+  encoder: []
+  decoder: []

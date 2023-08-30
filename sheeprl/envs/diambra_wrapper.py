@@ -20,7 +20,7 @@ from gymnasium import core
 class DiambraWrapper(core.Env):
     def __init__(
         self,
-        env_id: str,
+        id: str,
         action_space: str = "discrete",
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
@@ -61,7 +61,7 @@ class DiambraWrapper(core.Env):
             "actions_stack": actions_stack,
             "sticky_actions": sticky_actions,
         }
-        self._env = diambra.arena.make(env_id, settings, wrappers, seed=seed, rank=rank)
+        self._env = diambra.arena.make(id, settings, wrappers, seed=seed, rank=rank)
 
         # Observation and action space
         self.action_space = (

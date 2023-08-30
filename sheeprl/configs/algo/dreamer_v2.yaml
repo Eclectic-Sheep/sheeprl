@@ -8,6 +8,10 @@ defaults:
 gamma: 0.99
 lmbda: 0.95
 horizon: 15
+buffer:
+  type: sequential
+  prioritize_ends: False
+  checkpoint: False
 
 # Model related parameters
 layer_norm: False
@@ -28,8 +32,6 @@ world_model:
   clip_gradients: 100.0
 
   encoder:
-    cnn_keys: ["all"]
-    mlp_keys: null
     cnn_channels_multiplier: 48
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
@@ -53,6 +55,7 @@ world_model:
     layer_norm: ${algo.layer_norm}
 
   observation_model:
+    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}

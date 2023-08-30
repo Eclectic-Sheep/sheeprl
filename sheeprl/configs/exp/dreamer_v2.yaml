@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - override /algo: dreamer_v2
+  - override /env: atari
+  - _self_
+
+per_rank_batch_size: 16
+per_rank_sequence_length: 50
+total_steps: 5000000
+buffer_size: 5000000
+learning_starts: 1000
+pretrain_steps: 100
+gradient_steps: 1
+train_every: 5
+use_continues: False
+
+# override
+memmap_buffer: True
