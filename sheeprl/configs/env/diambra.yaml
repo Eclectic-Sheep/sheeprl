@@ -13,10 +13,11 @@ env:
   screen_size: ${env.screen_size}
   grayscale: ${env.grayscale}
   attack_but_combination: False
-  noop_max: 12
   sticky_actions: ${env.action_repeat} 
   seed: null
   rank: null
-  diambra_settings: {}
+  diambra_settings: 
+    player: P1
   diambra_wrappers: 
     actions_stack: 12
+    noop_max: 0

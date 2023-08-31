@@ -26,8 +26,6 @@ class DiambraWrapper(core.Env):
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
         attack_but_combination: bool = True,
-        actions_stack: int = 1,
-        noop_max: int = 0,
         sticky_actions: int = 1,
         seed: Optional[int] = None,
         rank: int = 0,
@@ -57,9 +55,7 @@ class DiambraWrapper(core.Env):
             warnings.warn("the DIAMBRA dilation wrapper is disabled")
         wrappers = {
             **diambra_wrappers,
-            "no_op_max": noop_max,
             "flatten": True,
-            "actions_stack": actions_stack,
             "sticky_actions": sticky_actions,
         }
         self._env = diambra.arena.make(id, settings, wrappers, seed=seed, rank=rank)
@@ -104,7 +100,7 @@ class DiambraWrapper(core.Env):
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done, False, infos
 
-    def render(self) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
+    def render(self, mode: str = "rgb_array", **kwargs) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
         return self._env.render("rgb_array")
 
     def reset(
