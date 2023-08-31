@@ -37,11 +37,12 @@ class DiambraWrapper(core.Env):
         if isinstance(screen_size, int):
             screen_size = (screen_size,) * 2
 
+        if diambra_settings.pop("frame_shape", None) is not None:
+            warnings.warn("The DIAMBRA frame_shape setting is disabled")
         settings = {
             **diambra_settings,
-            "action_space": action_space,
+            "action_space": action_space.lower(),
             "attack_but_combination": attack_but_combination,
-            "frame_shape": (*screen_size, int(1 * grayscale)),
         }
         if sticky_actions > 1:
             if "step_ratio" not in settings or settings["step_ratio"] > 1:
@@ -49,21 +50,24 @@ class DiambraWrapper(core.Env):
                     f"step_ratio parameter modified to 1 because the sticky action is active ({sticky_actions})"
                 )
             settings["step_ratio"] = 1
+        if diambra_wrappers.pop("hwc_obs_resize", None) is not None:
+            warnings.warn("The DIAMBRA hwc_obs_resize wrapper is disabled")
         if diambra_wrappers.pop("frame_stack", None) is not None:
-            warnings.warn("the DIAMBRA frame_stack wrapper is disabled")
+            warnings.warn("The DIAMBRA frame_stack wrapper is disabled")
         if diambra_wrappers.pop("dilation", None) is not None:
-            warnings.warn("the DIAMBRA dilation wrapper is disabled")
+            warnings.warn("The DIAMBRA dilation wrapper is disabled")
         wrappers = {
             **diambra_wrappers,
             "flatten": True,
             "sticky_actions": sticky_actions,
+            "hwc_obs_resize": screen_size + (1 if grayscale else 3,),
         }
         self._env = diambra.arena.make(id, settings, wrappers, seed=seed, rank=rank)
 
         # Observation and action space
         self.action_space = (
             gymnasium.spaces.Discrete(self._env.action_space.n)
-            if action_space == "discrete"
+            if action_space.lower() == "discrete"
             else gymnasium.spaces.MultiDiscrete(self._env.action_space.nvec)
         )
         obs = {}
@@ -88,6 +92,9 @@ class DiambraWrapper(core.Env):
             obs[k] = gymnasium.spaces.Box(low, high, shape, dtype)
         self.observation_space = gymnasium.spaces.Dict(obs)
         self.render_mode = "rgb_array"
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
 
     def _convert_obs(self, obs: Dict[str, Union[int, np.ndarray]]) -> Dict[str, np.ndarray]:
         return {

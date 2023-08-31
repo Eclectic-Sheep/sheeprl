@@ -12,10 +12,10 @@ env:
       characters: Kasumi
 
 seed: 5
-num_envs: 8
+num_envs: 16
 checkpoint_every: 200000
 total_steps: 5000000
-train_every: 64
+train_every: 4
 buffer:
   checkpoint: True
 

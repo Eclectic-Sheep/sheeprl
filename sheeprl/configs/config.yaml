@@ -19,7 +19,6 @@ memmap_buffer: False
 checkpoint_every: 100
 checkpoint_path: null
 num_envs: 4
-sync_env: False
 clip_rewards: False
 cnn_keys:
   encoder: ["rgb"]

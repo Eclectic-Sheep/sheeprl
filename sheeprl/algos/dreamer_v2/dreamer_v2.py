@@ -406,7 +406,7 @@ def main(cfg: DictConfig):
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
             make_dict_env(
