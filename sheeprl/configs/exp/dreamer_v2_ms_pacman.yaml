@@ -18,7 +18,6 @@ learning_starts: 200000
 pretrain_steps: 1
 gradient_steps: 1
 train_every: 16
-use_continues: True
 clip_rewards: True
 buffer:
   size: 2000000
@@ -29,6 +28,7 @@ buffer:
 algo:
   gamma: 0.995
   world_model:
+    use_continues: True
     kl_free_nats: 0.0
     kl_regularizer: 0.1
     discount_scale_factor: 0.5

@@ -8,13 +8,12 @@ defaults:
 per_rank_batch_size: 16
 per_rank_sequence_length: 64
 total_steps: 5000000
+checkpoint_every: 100000
 buffer:
   size: 1000000
   checkpoint: False
+  memmap: True
 learning_starts: 1024
 pretrain_steps: 1
 gradient_steps: 1
 train_every: 16
-
-# override
-memmap_buffer: True

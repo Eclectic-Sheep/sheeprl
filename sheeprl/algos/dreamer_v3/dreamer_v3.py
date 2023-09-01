@@ -477,7 +477,7 @@ def main(cfg: DictConfig):
         buffer_size,
         cfg.num_envs,
         device="cpu",
-        memmap=cfg.memmap_buffer,
+        memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         sequential=True,
     )

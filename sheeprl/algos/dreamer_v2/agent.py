@@ -919,7 +919,7 @@ def build_models(
         if world_model_cfg.reward_model.layer_norm
         else None,
     )
-    if cfg.use_continues:
+    if world_model_cfg.use_continues:
         continue_model = MLP(
             input_dims=latent_state_size,
             output_dim=1,
@@ -941,7 +941,7 @@ def build_models(
         rssm,
         observation_model.apply(init_weights),
         reward_model.apply(init_weights),
-        continue_model.apply(init_weights) if cfg.use_continues else None,
+        continue_model.apply(init_weights) if world_model_cfg.use_continues else None,
     )
     actor_class = eval(actor_cfg._target_)
     actor: nn.Module = actor_class(

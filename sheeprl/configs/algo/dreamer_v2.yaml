@@ -25,6 +25,7 @@ world_model:
   kl_free_avg: True
   kl_regularizer: 1.0
   discount_scale_factor: 1.0
+  use_continues: False
   clip_gradients: 100.0
 
   encoder:

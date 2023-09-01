@@ -8,6 +8,7 @@ defaults:
 gamma: 0.99
 lmbda: 0.95
 horizon: 15
+name: dreamer_v1
 
 # Model related parameters
 dense_units: 400
@@ -18,8 +19,9 @@ cnn_act: torch.nn.ReLU
 world_model:
   stochastic_size: 30
   kl_free_nats: 3.0
-  kl_free_avg: True
   kl_regularizer: 1.0
+  min_std: 0.1
+  use_continues: False
   continue_scale_factor: 1.0
   clip_gradients: 100.0
 
@@ -43,6 +45,7 @@ world_model:
     dense_act: ${algo.dense_act}
 
   observation_model:
+    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
@@ -65,6 +68,7 @@ world_model:
     weight_decay: 0
 
 actor:
+  _target_: Actor
   min_std: 0.1
   init_std: 5.0
   distribution: "auto"

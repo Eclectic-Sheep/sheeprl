@@ -169,7 +169,7 @@ def train(
     pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
 
     # Compute the distribution over the terminal steps, if required
-    if cfg.use_continues and world_model.continue_model:
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
         pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
@@ -279,7 +279,7 @@ def train(
     # Predict values and rewards
     predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
     predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
-    if cfg.use_continues and world_model.continue_model:
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
         continues = Independent(
             Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
         ).mean
@@ -523,7 +523,7 @@ def main(cfg: DictConfig):
             buffer_size,
             cfg.num_envs,
             device="cpu",
-            memmap=cfg.memmap_buffer,
+            memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
             sequential=True,
         )
@@ -532,7 +532,7 @@ def main(cfg: DictConfig):
             buffer_size,
             sequence_length=cfg.per_rank_sequence_length,
             device="cpu",
-            memmap=cfg.memmap_buffer,
+            memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         )
     else:
