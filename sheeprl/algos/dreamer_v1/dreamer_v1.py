@@ -516,7 +516,7 @@ def main(cfg: DictConfig):
     # Global variables
     start_time = time.perf_counter()
     start_step = state["global_step"] // fabric.world_size if cfg.checkpoint_path else 1
-    single_global_step = int(cfg.num_envs * fabric.world_size * cfg.env.action_repeat)
+    single_global_step = int(cfg.num_envs * fabric.world_size)
     step_before_training = cfg.train_every // single_global_step if not cfg.dry_run else 0
     num_updates = int(cfg.total_steps // single_global_step) if not cfg.dry_run else 1
     learning_starts = (cfg.learning_starts // single_global_step) if not cfg.dry_run else 0

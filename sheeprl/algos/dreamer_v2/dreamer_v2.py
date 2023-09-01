@@ -420,7 +420,6 @@ def main(cfg: DictConfig):
             for i in range(cfg.num_envs)
         ]
     )
-
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
 
