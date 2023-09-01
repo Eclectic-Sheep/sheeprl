@@ -1,16 +1,17 @@
 defaults:
-  - dreamer_v1
+  - dreamer_v2
   - /optim@ensembles.optimizer: adam
   - _self_
 
-intrinsic_reward_multiplier: 10000
-name: p2e_dv1
+intrinsic_reward_multiplier: 1
+name: p2e_dv2
 
 ensembles:
   n: 10 # the number of the ensembles
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
+  layer_norm: ${algo.layer_norm}
   clip_gradients: 100
   
   optimizer:
@@ -21,7 +22,6 @@ ensembles:
 # override
 dense_units: 400
 world_model:
-  stochastic_size: 60
   recurrent_model:
     recurrent_state_size: 400
   representation_model:
