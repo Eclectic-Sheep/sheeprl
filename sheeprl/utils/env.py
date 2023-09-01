@@ -109,7 +109,7 @@ def make_dict_env(
         ):
             env = ActionRepeat(env, cfg.env.action_repeat)
 
-        if "mask_velocities" in cfg and cfg.env.mask_velocities:
+        if "mask_velocities" in cfg.env and cfg.env.mask_velocities:
             env = MaskVelocityWrapper(env)
 
         # Create observation dict
