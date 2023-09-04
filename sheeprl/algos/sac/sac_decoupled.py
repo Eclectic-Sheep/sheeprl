@@ -1,10 +1,10 @@
 import os
 import time
-from dataclasses import asdict
 from datetime import datetime, timedelta
 from math import prod
 
 import gymnasium as gym
+import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
@@ -13,39 +13,34 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
-from torch.optim import Adam
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
-from sheeprl.algos.sac.args import SACArgs
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 
 
 @torch.no_grad()
-def player(args: SACArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
     root_dir = (
-        args.root_dir
-        if args.root_dir is not None
-        else os.path.join("logs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        os.path.join("logs", "runs", cfg.root_dir)
+        if cfg.root_dir is not None
+        else os.path.join("logs", "runs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
     run_name = (
-        args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
+        cfg.run_name if cfg.run_name is not None else f"{cfg.env.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-    logger.log_hyperparams(asdict(args))
-
-    # Save args as dict automatically
-    args.log_dir = logger.log_dir
+    logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     # Initialize Fabric
     fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
@@ -53,24 +48,24 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    fabric.seed_everything(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
             make_env(
-                args.env_id,
-                args.seed + rank * args.num_envs + i,
+                cfg.env.env.id,
+                cfg.seed + rank * cfg.num_envs + i,
                 rank,
-                args.capture_video,
+                cfg.env.capture_video,
                 logger.log_dir,
                 "train",
                 mask_velocities=False,
                 vector_env_idx=i,
             )
-            for i in range(args.num_envs)
+            for i in range(cfg.num_envs)
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
@@ -78,7 +73,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     if len(envs.single_observation_space.shape) > 1:
         raise ValueError(
             "Only environments with vector-only observations are supported by the SAC agent. "
-            f"Provided environment: {args.env_id}"
+            f"Provided environment: {cfg.env.env.id}"
         )
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -87,7 +82,7 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
-        hidden_size=args.actor_hidden_size,
+        hidden_size=cfg.algo.actor.hidden_size,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,
     ).to(device)
@@ -111,27 +106,27 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         )
 
     # Local data
-    buffer_size = args.buffer_size // args.num_envs if not args.dry_run else 1
+    buffer_size = cfg.buffer.size // cfg.num_envs if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        args.num_envs,
+        cfg.num_envs,
         device=device,
-        memmap=args.memmap_buffer,
+        memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
-    step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = int(args.total_steps // args.num_envs) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // args.num_envs if not args.dry_run else 0
+    num_updates = int(cfg.total_steps // cfg.num_envs) if not cfg.dry_run else 1
+    learning_starts = cfg.learning_starts // cfg.num_envs if not cfg.dry_run else 0
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=args.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
+        obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
     for global_step in range(1, num_updates + 1):
-        if global_step < args.learning_starts:
+        if global_step < learning_starts:
             actions = envs.action_space.sample()
         else:
             # Sample an action given the observation received by the environment
@@ -159,14 +154,14 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
 
         with device:
             next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
-            actions = torch.tensor(actions, dtype=torch.float32).view(args.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(args.num_envs, -1)  # [N_envs, 1]
-            dones = torch.tensor(dones, dtype=torch.float32).view(args.num_envs, -1)
+            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.num_envs, -1)  # [N_envs, 1]
+            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        if not args.sample_next_obs:
+        if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
@@ -175,12 +170,12 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         obs = next_obs
 
         # Send data to the training agents
-        if global_step >= args.learning_starts - 1:
-            training_steps = args.learning_starts if global_step == args.learning_starts - 1 else 1
+        if global_step >= learning_starts - 1:
+            training_steps = learning_starts if global_step == learning_starts - 1 else 1
             chunks = rb.sample(
-                training_steps * args.gradient_steps * args.per_rank_batch_size * (fabric.world_size - 1),
-                sample_next_obs=args.sample_next_obs,
-            ).split(training_steps * args.gradient_steps * args.per_rank_batch_size)
+                training_steps * cfg.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
+                sample_next_obs=cfg.buffer.sample_next_obs,
+            ).split(training_steps * cfg.gradient_steps * cfg.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
@@ -199,14 +194,14 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         aggregator.reset()
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
+        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_player",
                 fabric=fabric,
                 player_trainer_collective=player_trainer_collective,
                 ckpt_path=ckpt_path,
-                replay_buffer=rb if args.checkpoint_buffer else None,
+                replay_buffer=rb if cfg.buffer.checkpoint else None,
             )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
@@ -218,26 +213,26 @@ def player(args: SACArgs, world_collective: TorchCollective, player_trainer_coll
         fabric=fabric,
         player_trainer_collective=player_trainer_collective,
         ckpt_path=ckpt_path,
-        replay_buffer=rb if args.checkpoint_buffer else None,
+        replay_buffer=rb if cfg.buffer.checkpoint else None,
     )
 
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
-            args.env_id,
+            cfg.env.env.id,
             None,
             0,
-            args.capture_video,
+            cfg.env.capture_video,
             fabric.logger.log_dir,
             "test",
             mask_velocities=False,
             vector_env_idx=0,
         )()
-        test(actor, test_env, fabric, args)
+        test(actor, test_env, fabric, cfg)
 
 
 def trainer(
-    args: SACArgs,
+    cfg: DictConfig,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
@@ -250,12 +245,12 @@ def trainer(
     if not _is_using_cli():
         fabric.launch()
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    fabric.seed_everything(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
-    envs = vectorized_env([make_env(args.env_id, 0, 0, False, None, mask_velocities=False)])
+    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env([make_env(cfg.env.env.id, 0, 0, False, None, mask_velocities=False)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -265,25 +260,25 @@ def trainer(
         SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
-            hidden_size=args.actor_hidden_size,
+            hidden_size=cfg.algo.actor.hidden_size,
             action_low=envs.single_action_space.low,
             action_high=envs.single_action_space.high,
         )
     )
     critics = [
         fabric.setup_module(
-            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=args.critic_hidden_size, num_critics=1)
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
         )
-        for _ in range(args.num_critics)
+        for _ in range(cfg.algo.critic.n)
     ]
     target_entropy = -act_dim
-    agent = SACAgent(actor, critics, target_entropy, alpha=args.alpha, tau=args.tau, device=fabric.device)
+    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
 
     # Optimizers
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        Adam(agent.qfs.parameters(), lr=args.q_lr, eps=1e-4),
-        Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-4),
-        Adam([agent.log_alpha], lr=args.alpha_lr, eps=1e-4),
+        hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters()),
+        hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters()),
+        hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha]),
     )
 
     # Send weights to rank-0, a.k.a. the player
@@ -317,13 +312,12 @@ def trainer(
                     "qf_optimizer": qf_optimizer.state_dict(),
                     "actor_optimizer": actor_optimizer.state_dict(),
                     "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "args": asdict(args),
                     "global_step": global_step,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
-        sampler = BatchSampler(range(len(data)), batch_size=args.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(range(len(data)), batch_size=cfg.per_rank_batch_size, drop_last=False)
         for batch_idxes in sampler:
             train(
                 fabric,
@@ -334,7 +328,7 @@ def trainer(
                 data[batch_idxes],
                 aggregator,
                 global_step,
-                args,
+                cfg,
                 group=optimization_pg,
             )
             global_step += 1
@@ -351,24 +345,21 @@ def trainer(
             )
 
         # Checkpoint model on rank-0: send it everything
-        if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
+        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
             if global_rank == 1:
                 state = {
                     "agent": agent.state_dict(),
                     "qf_optimizer": qf_optimizer.state_dict(),
                     "actor_optimizer": actor_optimizer.state_dict(),
                     "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "args": asdict(args),
                     "global_step": global_step,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
 
 
 @register_algorithm(decoupled=True)
-def main():
-    parser = HfArgumentParser(SACArgs)
-    args: SACArgs = parser.parse_args_into_dataclasses()[0]
-
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+def main(cfg: DictConfig):
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
     world_collective.setup(
@@ -398,9 +389,9 @@ def main():
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(args, world_collective, player_trainer_collective)
+        player(cfg, world_collective, player_trainer_collective)
     else:
-        trainer(args, world_collective, player_trainer_collective, optimization_pg)
+        trainer(cfg, world_collective, player_trainer_collective, optimization_pg)
 
 
 if __name__ == "__main__":

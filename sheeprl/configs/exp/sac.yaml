@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - override /algo: sac
+  - override /env: gym
+  - _self_
+
+total_steps: 1000000
+per_rank_batch_size: 256
+learning_starts: 100
+gradient_steps: 1
+checkpoint_every: 50000
+
+buffer:
+  size: 1000000
+  checkpoint: False
+  memmap: True
+  sample_next_obs: False
+
+env:
+  env:
+    id: MountainCarContinuous-v0

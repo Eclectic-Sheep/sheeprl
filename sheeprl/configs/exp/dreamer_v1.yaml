@@ -14,5 +14,5 @@ train_every: 1000
 checkpoint_every: 100000
 buffer:
   size: 5000000
-  checkpoint: True
+  checkpoint: False
   memmap: True
