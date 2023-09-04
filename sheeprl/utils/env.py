@@ -80,12 +80,12 @@ def make_dict_env(
         except Exception:
             env_spec = ""
 
-        instanziate_kwargs = {}
+        instantiate_kwargs = {}
         if "seed" in cfg.env.env:
-            instanziate_kwargs["seed"] = seed
+            instantiate_kwargs["seed"] = seed
         if "rank" in cfg.env.env:
-            instanziate_kwargs["rank"] = rank + vector_env_idx
-        env = hydra.utils.instantiate(cfg.env.env, **instanziate_kwargs)
+            instantiate_kwargs["rank"] = rank + vector_env_idx
+        env = hydra.utils.instantiate(cfg.env.env, **instantiate_kwargs)
         if "mujoco" in env_spec:
             env.frame_skip = 0
         if "atari" in env_spec:
