@@ -3,10 +3,6 @@
 defaults:
   - dreamer_v2
   - override /algo: p2e_dv2
-  - override /env: minedojo
   - _self_
 
 exploration_steps: 5000000
-algo:
-  actor:
-    _target_: MinedojoActor

@@ -80,7 +80,7 @@ world_model:
     weight_decay: 0
 
 actor:
-  _target_: Actor
+  cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
   init_std: 0.0

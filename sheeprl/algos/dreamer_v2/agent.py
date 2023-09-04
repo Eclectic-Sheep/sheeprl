@@ -1,6 +1,7 @@
 import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -943,8 +944,8 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if world_model_cfg.use_continues else None,
     )
-    actor_class = eval(actor_cfg._target_)
-    actor: nn.Module = actor_class(
+    actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
+    actor: nn.Module = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,

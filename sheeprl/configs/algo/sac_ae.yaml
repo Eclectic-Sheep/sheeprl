@@ -32,7 +32,6 @@ decoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
-  
 
   optimizer:
     lr: 1e-3

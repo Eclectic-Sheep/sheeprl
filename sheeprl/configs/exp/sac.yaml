@@ -19,4 +19,4 @@ buffer:
 
 env:
   env:
-    id: MountainCarContinuous-v0
+    id: LunarLanderContinuous-v2

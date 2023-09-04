@@ -4,7 +4,7 @@ defaults:
 
 env:
   _target_: gymnasium.make
-  id: CarRacing-v2
+  id: CartPole-v1
   render_mode: rgb_array
 
 mask_velocities: False

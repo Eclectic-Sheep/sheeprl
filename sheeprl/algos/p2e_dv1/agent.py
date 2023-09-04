@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
+import hydra
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
@@ -69,8 +70,8 @@ def build_models(
         actor_state=actor_exploration_state,
         critic_state=critic_exploration_state,
     )
-    actor_class = eval(actor_cfg._target_)
-    actor_task: Union[Actor, MinedojoActor] = actor_class(
+    actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
+    actor_task: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,

@@ -218,7 +218,7 @@ def main(cfg: DictConfig):
         step_data["dones"] = dones
         step_data["actions"] = actions
         step_data["observations"] = obs
-        if not cfg.sample_next_obs:
+        if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs
         step_data["rewards"] = rewards
         rb.add(step_data.unsqueeze(0))
@@ -232,7 +232,7 @@ def main(cfg: DictConfig):
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
-                    cfg.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.sample_next_obs
+                    cfg.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
                 )  # [G*B, 1]
                 gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
                 gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]

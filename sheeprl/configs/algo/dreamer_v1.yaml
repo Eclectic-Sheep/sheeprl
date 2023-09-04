@@ -68,7 +68,7 @@ world_model:
     weight_decay: 0
 
 actor:
-  _target_: Actor
+  cls: sheeprl.algos.dreamer_v2.agent.Actor
   min_std: 0.1
   init_std: 5.0
   distribution: "auto"

@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
@@ -459,8 +460,8 @@ def build_models(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights) if world_model_cfg.use_continues else None,
     )
-    actor_class = eval(actor_cfg._target_)
-    actor: Union[Actor, MinedojoActor] = actor_class(
+    actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
+    actor: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
