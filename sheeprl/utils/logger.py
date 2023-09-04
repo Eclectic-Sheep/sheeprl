@@ -1,5 +1,4 @@
 import os
-import pathlib
 import time
 from datetime import datetime
 from typing import Optional, Tuple
@@ -32,10 +31,6 @@ def create_tensorboard_logger(
             if cfg.run_name is not None
             else f"{cfg.env.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
-        if cfg.checkpoint_path:
-            ckpt_path = pathlib.Path(cfg.checkpoint_path)
-            root_dir = ckpt_path.parent.parent
-            run_name = "resume_from_checkpoint"
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         log_dir = logger.log_dir
         if fabric.world_size > 1:

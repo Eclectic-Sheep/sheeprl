@@ -392,11 +392,15 @@ def main(cfg: DictConfig):
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     if cfg.checkpoint_path:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint_path)
         ckpt_path = pathlib.Path(cfg.checkpoint_path)
         cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
         cfg.checkpoint_path = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.root_dir = root_dir
+        cfg.run_name = f"resume_from_checkpoint_{run_name}"
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
