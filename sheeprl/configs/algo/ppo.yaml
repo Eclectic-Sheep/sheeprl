@@ -22,6 +22,7 @@ dense_units: 64
 mlp_layers: 2
 dense_act: torch.nn.Tanh
 layer_norm: False
+max_grad_norm: 0.0
 encoder:
   cnn_features_dim: 512
   mlp_features_dim: 64
@@ -39,7 +40,6 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
-max_grad_norm: 0.0
 
 optimizer:
   lr: 1e-3

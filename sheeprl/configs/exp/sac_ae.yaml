@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - sac
+  - override /algo: sac_ae
+  - _self_
+
+learning_starts: 1000
+per_rank_batch_size: 128
+
+env:
+  env:
+    id: CarRacing-v2
+  frame_stack: 3

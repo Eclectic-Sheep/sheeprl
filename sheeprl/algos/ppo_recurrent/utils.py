@@ -1,17 +1,17 @@
 import gymnasium as gym
 import torch
 from lightning import Fabric
+from omegaconf import DictConfig
 
-from sheeprl.algos.ppo.args import PPOArgs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 
 
 @torch.no_grad()
-def test(agent: RecurrentPPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs):
+def test(agent: RecurrentPPOAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     agent.eval()
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(env.reset(seed=args.seed)[0], device=fabric.device).view(1, 1, -1)
+    next_obs = torch.tensor(env.reset(seed=cfg.seed)[0], device=fabric.device).view(1, 1, -1)
     state = (
         torch.zeros(1, 1, agent.lstm_hidden_size, device=fabric.device),
         torch.zeros(1, 1, agent.lstm_hidden_size, device=fabric.device),
@@ -26,7 +26,7 @@ def test(agent: RecurrentPPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs):
         cumulative_rew += reward
         next_obs = torch.tensor(next_obs, device=fabric.device).view(1, 1, -1)
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
