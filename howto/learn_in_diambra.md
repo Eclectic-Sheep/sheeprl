@@ -45,7 +45,7 @@ Each environment has its own observation and action space, so it is reccomended 
 >
 > You have to be [registered](https://diambra.ai/register/) and logged in to acces the [DIAMRA documentation](https://docs.diambra.ai/).
 
-The observation space is slightly modified to be compatible with our algorithms, in particular, the `gym.spaces.Box` observations are converted in `gymnasium.spaces.Box` observations, mantaining the dimensions, the range and the type of the observations. Moreover, the `gym.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `1` to `n`, where `n` is the number of options of the Discrete space.
+The observation space is slightly modified to be compatible with our algorithms, in particular, the `gym.spaces.Box` observations are converted in `gymnasium.spaces.Box` observations, mantaining the dimensions, the range and the type of the observations. Moreover, the `gym.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gym.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
 
 > **Note**
 >
@@ -113,7 +113,7 @@ diambra run -s=4 lightning run model sheeprl.py dreamer_v3 exp=custom_exp num_en
 >
 > **Important**
 >
-> You must set the **`sync_env`** cli argument to **`True`**.
+> You **must** set the **`sync_env`** cli argument to **`True`**.
 
 ## Headless machines
 
