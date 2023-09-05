@@ -217,7 +217,7 @@ def make_dict_env(
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         if cfg.env.max_episode_steps and cfg.env.max_episode_steps > 0:
-            env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.env.max_episode_steps // cfg.env.action_repeat)
+            env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.env.max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if cfg.env.capture_video and rank == 0 and vector_env_idx == 0 and run_name is not None:
             env = gym.experimental.wrappers.RecordVideoV0(

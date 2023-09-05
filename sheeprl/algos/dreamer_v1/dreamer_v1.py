@@ -664,7 +664,7 @@ def main(cfg: DictConfig):
                     aggregator,
                     cfg,
                 )
-            step_before_training = cfg.train_every // (cfg.num_envs * fabric.world_size * cfg.env.action_repeat)
+            step_before_training = cfg.train_every // single_global_step
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(

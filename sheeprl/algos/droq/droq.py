@@ -206,9 +206,7 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    buffer_size = (
-        cfg.buffer.size // int(cfg.num_envs * fabric.world_size * cfg.env.action_repeat) if not cfg.dry_run else 1
-    )
+    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
         cfg.num_envs,
@@ -220,12 +218,8 @@ def main(cfg: DictConfig):
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = (
-        int(cfg.total_steps // (cfg.num_envs * fabric.world_size * cfg.env.action_repeat)) if not cfg.dry_run else 1
-    )
-    learning_starts = (
-        cfg.learning_starts // int(cfg.num_envs * fabric.world_size * cfg.env.action_repeat) if not cfg.dry_run else 0
-    )
+    num_updates = int(cfg.total_steps // (cfg.num_envs * fabric.world_size)) if not cfg.dry_run else 1
+    learning_starts = cfg.learning_starts // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 0
 
     with device:
         # Get the first environment observation and start the optimization
