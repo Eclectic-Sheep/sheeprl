@@ -12,7 +12,7 @@ ensembles:
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
   clip_gradients: 100
-  
+
   optimizer:
     lr: 3e-4
     eps: 1e-5
@@ -28,3 +28,5 @@ world_model:
     hidden_size: 400
   transition_model:
     hidden_size: 400
+actor:
+  cls: sheeprl.algos.p2e_dv1.agent.Actor

@@ -28,7 +28,7 @@ def test_run_decoupled_algo():
 def test_run_algo():
     subprocess.run(
         sys.executable
-        + " sheeprl.py ppo exp=ppo dry_run=True rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state]"
+        + " sheeprl.py ppo exp=ppo dry_run=True rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
         "env.capture_video=False",
         shell=True,
         check=True,

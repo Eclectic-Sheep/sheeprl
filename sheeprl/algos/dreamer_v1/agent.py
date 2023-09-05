@@ -11,12 +11,18 @@ from torch import Tensor, nn
 from torch.distributions import Normal, OneHotCategorical
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
-from sheeprl.algos.dreamer_v2.agent import Actor as Actor
+from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
-from sheeprl.algos.dreamer_v2.agent import MinedojoActor as MinedojoActor
+from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.utils import init_weights
+
+# In order to use the hydra.utils.get_class method, in this way the user can
+# specify in the configs the name of the class without having to know where
+# to go to retrieve the class
+Actor = DV2Actor
+MinedojoActor = DV2MinedojoActor
 
 
 class RecurrentModel(nn.Module):

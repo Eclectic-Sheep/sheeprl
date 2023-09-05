@@ -200,7 +200,7 @@ def main(cfg: DictConfig):
         len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
         and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
     ):
-        raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
+        raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
     if (
         len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0
         or len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0

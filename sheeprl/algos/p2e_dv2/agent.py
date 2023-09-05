@@ -8,10 +8,18 @@ from lightning.fabric.wrappers import _FabricModule
 from omegaconf import DictConfig
 from torch import nn
 
-from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor, WorldModel
+from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
+from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_models as dv2_build_models
 from sheeprl.models.models import MLP
 from sheeprl.utils.utils import init_weights
+
+# In order to use the hydra.utils.get_class method, in this way the user can
+# specify in the configs the name of the class without having to know where
+# to go to retrieve the class
+Actor = DV2Actor
+MinedojoActor = DV2MinedojoActor
 
 
 def build_models(
