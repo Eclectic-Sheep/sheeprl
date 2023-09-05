@@ -1,4 +1,4 @@
-# Configuration 
+# Configurations
 
 This document explains how the configuration files and folders are structured. It will help you to understand how to use add new configuration files and where to put them. 
 
