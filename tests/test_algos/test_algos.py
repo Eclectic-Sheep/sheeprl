@@ -4,6 +4,7 @@ import shutil
 import sys
 import time
 from contextlib import closing, nullcontext
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -20,7 +21,7 @@ def devices(request):
 
 @pytest.fixture()
 def standard_args():
-    return ["--num_envs=1", "--dry_run"]
+    return ["num_envs=1", "dry_run=True", f"env.sync_env={_IS_WINDOWS}"]
 
 
 @pytest.fixture()
@@ -38,7 +39,7 @@ def mock_env_and_destroy(devices):
         dist.destroy_process_group()
 
 
-def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool = True):
+def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool = True):
     fabric = Fabric(accelerator="cpu")
 
     # check the presence of the checkpoint
@@ -53,7 +54,7 @@ def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool =
     assert checkpoint_buffer or "rb" not in ckpt_keys
 
     # check args are saved
-    assert os.path.exists(os.path.join(os.path.dirname(ckpt_path), "args.json"))
+    assert os.path.exists(ckpt_path.parent.parent / ".hydra" / "config.yaml")
 
 
 @pytest.mark.timeout(60)
@@ -66,26 +67,27 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=droq",
+        "per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -98,26 +100,27 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=sac",
+        "per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -130,20 +133,24 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        "--mlp_keys=state",
-        "--cnn_keys=rgb",
-        "--screen_size=64",
-        "--actor_network_frequency=1",
-        "--decoder_update_freq=1",
+        "exp=sac_ae",
+        "per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "mlp_keys.encoder=[state]",
+        "cnn_keys.encoder=[rgb]",
+        "env.screen_size=64",
+        "algo.hidden_size=4",
+        "algo.dense_units=4",
+        "algo.cnn_channels_multiplier=2",
+        "algo.actor.network_frequency=1",
+        "algo.decoder.update_freq=1",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -159,14 +166,13 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "alpha_optimizer",
         "encoder_optimizer",
         "decoder_optimizer",
-        "args",
         "global_step",
         "batch_size",
     }
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -179,14 +185,15 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=sac",
+        "per_rank_batch_size=1",
+        "learning_starts=0",
+        "gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
@@ -211,11 +218,11 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
+        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
         if checkpoint_buffer:
             keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree(f"pytest_{start_time}")
+        check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+        shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -228,19 +235,22 @@ def test_ppo(standard_args, start_time, env_id):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        f"--env_id={env_id}",
+        "exp=ppo",
+        "env=dummy",
+        f"rollout_steps={os.environ['LT_DEVICES']}",
+        "per_rank_batch_size=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"env.env.id={env_id}",
+        "env.capture_video=False",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
 
-    check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -253,12 +263,15 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--update_epochs=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        f"--env_id={env_id}",
+        "exp=ppo",
+        "env=dummy",
+        f"rollout_steps={os.environ['LT_DEVICES']}",
+        "per_rank_batch_size=1",
+        "algo.update_epochs=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"env.env.id={env_id}",
+        "env.capture_video=False",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         import torch.distributed.run as torchrun
@@ -283,8 +296,10 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree(f"pytest_{start_time}")
+        check_checkpoint(
+            Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"}
+        )
+        shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -296,18 +311,20 @@ def test_ppo_recurrent(standard_args, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=ppo_recurrent",
+        f"rollout_steps={os.environ['LT_DEVICES']}",
+        "per_rank_batch_size=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "env.capture_video=False",
     ]
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
             if command == "main":
                 task.__dict__[command]()
 
-    check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -321,21 +338,23 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        "--per_rank_sequence_length=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--horizon=2",
-        f"--env_id={env_id}",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        "--dense_units=8",
-        "--cnn_channels_multiplier=2",
-        "--recurrent_state_size=8",
+        "exp=dreamer_v1",
+        "env=dummy",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        "algo.horizon=2",
+        f"env.env.id={env_id}",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -350,14 +369,14 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "actor_optimizer",
         "critic_optimizer",
         "expl_decay_steps",
-        "args",
         "global_step",
         "batch_size",
     }
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(f"logs/runs/pytest_{start_time}")
 
 
 @pytest.mark.timeout(60)
@@ -371,21 +390,23 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=2",
-        "--per_rank_sequence_length=2",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--horizon=8",
-        "--env_id=" + env_id,
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        "--dense_units=8",
-        "--cnn_channels_multiplier=2",
-        "--recurrent_state_size=8",
+        "exp=p2e_dv1",
+        "env=dummy",
+        "per_rank_batch_size=2",
+        "per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        "algo.horizon=8",
+        "env.env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -402,7 +423,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "critic_task_optimizer",
         "ensemble_optimizer",
         "expl_decay_steps",
-        "args",
         "global_step",
         "batch_size",
         "actor_exploration",
@@ -412,63 +432,8 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
     }
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
-    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        "--per_rank_batch_size=1",
-        "--per_rank_sequence_length=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--horizon=8",
-        "--env_id=" + env_id,
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        "--dense_units=8",
-        "--cnn_channels_multiplier=2",
-        "--recurrent_state_size=8",
-        "--hidden_size=8",
-        "--cnn_keys=rgb",
-        "--pretrain_steps=1",
-        "--layer_norm=True",
-    ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
-
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    keys = {
-        "world_model",
-        "actor",
-        "critic",
-        "target_critic",
-        "world_optimizer",
-        "actor_optimizer",
-        "critic_optimizer",
-        "expl_decay_steps",
-        "args",
-        "global_step",
-        "batch_size",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -482,24 +447,27 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "--per_rank_batch_size=2",
-        "--per_rank_sequence_length=2",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--horizon=2",
-        "--env_id=" + env_id,
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-        "--dense_units=8",
-        "--cnn_channels_multiplier=2",
-        "--recurrent_state_size=8",
-        "--hidden_size=8",
-        "--cnn_keys=rgb",
-        "--pretrain_steps=1",
+        "exp=p2e_dv2",
+        "env=dummy",
+        "per_rank_batch_size=2",
+        "per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        "algo.horizon=2",
+        "env.env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "cnn_keys.encoder=[rgb]",
+        "pretrain_steps=1",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
     with mock.patch.object(sys, "argv", [task.__file__] + args):
         for command in task.__all__:
@@ -517,7 +485,6 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "critic_task_optimizer",
         "ensemble_optimizer",
         "expl_decay_steps",
-        "args",
         "global_step",
         "batch_size",
         "actor_exploration",
@@ -528,5 +495,120 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
     }
     if checkpoint_buffer:
         keys.add("rb")
-    check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-    shutil.rmtree(f"pytest_{start_time}")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("checkpoint_buffer", [True, False])
+def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
+    task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
+    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "exp=dreamer_v2",
+        "env=dummy",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        "algo.horizon=8",
+        "env.env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "cnn_keys.encoder=[rgb]",
+        "pretrain_steps=1",
+        "algo.layer_norm=True",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
+    ]
+
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+    keys = {
+        "world_model",
+        "actor",
+        "critic",
+        "target_critic",
+        "world_optimizer",
+        "actor_optimizer",
+        "critic_optimizer",
+        "expl_decay_steps",
+        "global_step",
+        "batch_size",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("checkpoint_buffer", [True, False])
+def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
+    task = importlib.import_module("sheeprl.algos.dreamer_v3.dreamer_v3")
+    root_dir = os.path.join("pytest_" + start_time, "dreamer_v3", os.environ["LT_DEVICES"])
+    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "exp=dreamer_v3",
+        "env=dummy",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "learning_starts=0",
+        "gradient_steps=1",
+        "algo.horizon=8",
+        "env.env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "cnn_keys.encoder=[rgb]",
+        "algo.layer_norm=True",
+        "train_every=1",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "env.capture_video=False",
+    ]
+
+    with mock.patch.object(sys, "argv", [task.__file__] + args):
+        for command in task.__all__:
+            if command == "main":
+                task.__dict__[command]()
+
+    keys = {
+        "world_model",
+        "actor",
+        "critic",
+        "target_critic",
+        "world_optimizer",
+        "actor_optimizer",
+        "critic_optimizer",
+        "expl_decay_steps",
+        "global_step",
+        "batch_size",
+        "moments",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))

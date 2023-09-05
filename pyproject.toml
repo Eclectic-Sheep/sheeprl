@@ -52,6 +52,7 @@ dev = [
   "black==23.3.0",
   "isort==5.12.0",
   "autoflake==2.1.1",
+  "ruff==0.0.284",
 ]
 mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==0.29.*"]
 dmc = ["dm_control>=1.0.12"]
@@ -62,7 +63,7 @@ atari = [
 ]
 minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
 minerl = ["minerl==0.4.4"]
-diambra = ["wheel==0.38.4", "setuptools==66.0.0", "diambra", "diambra-arena"]
+diambra = ["wheel==0.38.4", "setuptools==66.0.0", "gym==0.21.0", "diambra==0.0.16", "diambra-arena==2.1.2"]
 
 [tool.ruff]
 line-length = 120
@@ -74,9 +75,10 @@ select = [
 ]
 ignore = [
   "E731", # Do not assign a lambda expression, use a def
+  "E402", # Module level import not at top of file
 ]
 # Exclude a variety of commonly ignored directories.
-exclude = [".git", "docs", "_notebooks"]
+exclude = [".git", "docs", "_notebooks", "examples"]
 ignore-init-module-imports = true
 
 # Black formatting

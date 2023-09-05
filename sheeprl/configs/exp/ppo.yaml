@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - override /algo: ppo
+  - override /env: gym
+  - _self_
+
+per_rank_batch_size: 64
+total_steps: 65536
+buffer:
+  share_data: False
+rollout_steps: 128

@@ -1,15 +1,20 @@
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from omegaconf import DictConfig
+from sympy import Union
 from torch import Tensor, nn
 from torch.distributions import Normal, OneHotCategorical
 
-from sheeprl.algos.dreamer_v1.args import DreamerV1Args
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
-from sheeprl.algos.dreamer_v2.agent import Actor, CNNDecoder, CNNEncoder, MinedojoActor, MLPDecoder, MLPEncoder
+from sheeprl.algos.dreamer_v2.agent import Actor as Actor
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
+from sheeprl.algos.dreamer_v2.agent import MinedojoActor as MinedojoActor
+from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.utils import init_weights
 
@@ -102,10 +107,14 @@ class RSSM(nn.Module):
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The posterior state (Tensor): computed by the representation model from the recurrent state and the embedded observation.
-            The prior state (Tensor): computed by the transition model from the recurrent state and the embedded observation.
-            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of the distribution of the posterior state.
-            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of the distribution of the prior state.
+            The posterior state (Tensor): computed by the representation model
+            from the recurrent state and the embedded observation.
+            The prior state (Tensor): computed by the transition model from the recurrent state
+            and the embedded observation.
+            The posterior mean and std (Tuple[Tensor, Tensor]): the posterior mean and std of
+            the distribution of the posterior state.
+            The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of
+            the distribution of the prior state.
         """
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_state_mean_std, prior = self._transition(recurrent_out)
@@ -117,11 +126,13 @@ class RSSM(nn.Module):
 
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
-                what is called h or deterministic state in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+                what is called h or deterministic state in
+                [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
-            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation of the distribution of the posterior state.
+            posterior_mean_std (Tensor, Tensor): the mean and the standard deviation
+            of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior.
         """
         posterior_mean_std, posterior = compute_stochastic_state(
@@ -193,7 +204,7 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class Player(nn.Module):
+class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
@@ -313,10 +324,8 @@ def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    args: DreamerV1Args,
+    cfg: DictConfig,
     obs_space: Dict[str, Any],
-    cnn_keys: Sequence[str],
-    mlp_keys: Sequence[str],
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
@@ -327,10 +336,8 @@ def build_models(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        args (DreamerV1Args): the hyper-parameters of DreamerV1.
+        cfg (DictConfig): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
-        cnn_keys (Sequence[str]): the keys of the observation space to encode through the cnn encoder.
-        mlp_keys (Sequence[str]): the keys of the observation space to encode through the mlp encoder.
         world_model_state (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the world model.
             Default to None.
         actor_state: (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the actor.
@@ -339,125 +346,111 @@ def build_models(
             Default to None.
 
     Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and reward models and the continue model.
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
     """
-    if args.cnn_channels_multiplier <= 0:
-        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
-    if args.dense_units <= 0:
-        raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
-
-    try:
-        cnn_act = getattr(nn, args.cnn_act)
-    except:
-        raise ValueError(
-            f"Invalid value for cnn_act, given {args.cnn_act}, "
-            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
-
-    try:
-        dense_act = getattr(nn, args.dense_act)
-    except:
-        raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, "
-            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
+    world_model_cfg = cfg.algo.world_model
+    actor_cfg = cfg.algo.actor
+    critic_cfg = cfg.algo.critic
 
     # Sizes
-    latent_state_size = args.stochastic_size + args.recurrent_state_size
-    mlp_dims = [obs_space[k].shape[0] for k in mlp_keys]
+    latent_state_size = world_model_cfg.stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Define models
     cnn_encoder = (
         CNNEncoder(
-            keys=cnn_keys,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
-            image_size=obs_space[cnn_keys[0]].shape[-2:],
-            channels_multiplier=args.cnn_channels_multiplier,
+            keys=cfg.cnn_keys.encoder,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.encoder],
+            image_size=obs_space[cfg.cnn_keys.encoder[0]].shape[-2:],
+            channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=False,
-            activation=cnn_act,
+            activation=eval(world_model_cfg.encoder.cnn_act),
         )
-        if cnn_keys is not None and len(cnn_keys) > 0
+        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
-            keys=mlp_keys,
-            input_dims=mlp_dims,
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
+            keys=cfg.mlp_keys.encoder,
+            input_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.encoder],
+            mlp_layers=world_model_cfg.encoder.mlp_layers,
+            dense_units=world_model_cfg.encoderdense_units,
+            activation=eval(world_model_cfg.encoder.dense_act),
             layer_norm=False,
         )
-        if mlp_keys is not None and len(mlp_keys) > 0
+        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
     recurrent_model = RecurrentModel(
-        input_size=sum(actions_dim) + args.stochastic_size, recurrent_state_size=args.recurrent_state_size
+        input_size=sum(actions_dim) + world_model_cfg.stochastic_size,
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
     )
     representation_model = MLP(
-        input_dims=args.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim,
-        output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.hidden_size],
-        activation=dense_act,
+        input_dims=(
+            world_model_cfg.recurrent_model.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim
+        ),
+        output_dim=world_model_cfg.stochastic_size * 2,
+        hidden_sizes=[world_model_cfg.representation_model.hidden_size],
+        activation=eval(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
     )
     transition_model = MLP(
-        input_dims=args.recurrent_state_size,
-        output_dim=args.stochastic_size * 2,
-        hidden_sizes=[args.hidden_size],
-        activation=dense_act,
+        input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
+        output_dim=world_model_cfg.stochastic_size * 2,
+        hidden_sizes=[world_model_cfg.transition_model.hidden_size],
+        activation=eval(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
     )
     rssm = RSSM(
         recurrent_model.apply(init_weights),
         representation_model.apply(init_weights),
         transition_model.apply(init_weights),
-        args.min_std,
+        world_model_cfg.min_std,
     )
     cnn_decoder = (
         CNNDecoder(
-            keys=cnn_keys,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
-            channels_multiplier=args.cnn_channels_multiplier,
+            keys=cfg.cnn_keys.decoder,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.decoder],
+            channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cnn_keys[0]].shape[-2:],
-            activation=cnn_act,
+            image_size=obs_space[cfg.cnn_keys.decoder[0]].shape[-2:],
+            activation=eval(world_model_cfg.observation_model.cnn_act),
             layer_norm=False,
         )
-        if cnn_keys is not None and len(cnn_keys) > 0
+        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            keys=mlp_keys,
-            output_dims=mlp_dims,
+            keys=cfg.mlp_keys.decoder,
+            output_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.decoder],
             latent_state_size=latent_state_size,
-            mlp_layers=args.mlp_layers,
-            dense_units=args.dense_units,
-            activation=dense_act,
+            mlp_layers=world_model_cfg.observation_model.mlp_layers,
+            dense_units=world_model_cfg.observation_model.dense_units,
+            activation=eval(world_model_cfg.observation_model.dense_act),
             layer_norm=False,
         )
-        if mlp_keys is not None and len(mlp_keys) > 0
+        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.mlp_layers,
-        activation=dense_act,
+        hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
+        activation=eval(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
     )
-    if args.use_continues:
+    if world_model_cfg.use_continues:
         continue_model = MLP(
             input_dims=latent_state_size,
             output_dim=1,
-            hidden_sizes=[args.dense_units] * args.mlp_layers,
-            activation=dense_act,
+            hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
+            activation=eval(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
         )
     world_model = WorldModel(
@@ -465,39 +458,26 @@ def build_models(
         rssm,
         observation_model.apply(init_weights),
         reward_model.apply(init_weights),
-        continue_model.apply(init_weights) if args.use_continues else None,
+        continue_model.apply(init_weights) if world_model_cfg.use_continues else None,
     )
-    if "minedojo" in args.env_id:
-        actor = MinedojoActor(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            args.actor_init_std,
-            args.actor_min_std,
-            args.dense_units,
-            dense_act,
-            args.mlp_layers,
-            distribution="tanh_normal",
-            layer_norm=False,
-        )
-    else:
-        actor = Actor(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            args.actor_init_std,
-            args.actor_min_std,
-            args.dense_units,
-            dense_act,
-            args.mlp_layers,
-            distribution="tanh_normal",
-            layer_norm=False,
-        )
+    actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
+    actor: Union[Actor, MinedojoActor] = actor_cls(
+        latent_state_size=latent_state_size,
+        actions_dim=actions_dim,
+        is_continuous=is_continuous,
+        init_std=actor_cfg.init_std,
+        min_std=actor_cfg.min_std,
+        mlp_layers=actor_cfg.mlp_layers,
+        dense_units=actor_cfg.dense_units,
+        activation=eval(actor_cfg.dense_act),
+        distribution=actor_cfg.distribution,
+        layer_norm=False,
+    )
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.mlp_layers,
-        activation=dense_act,
+        hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
+        activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
     )
     actor.apply(init_weights)

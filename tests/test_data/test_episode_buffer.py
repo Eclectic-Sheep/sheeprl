@@ -61,30 +61,30 @@ def test_episode_buffer_error_add():
     sl = 5
     rb = EpisodeBuffer(buf_size, sl)
     td1 = TensorDict({"dones": torch.zeros(sl - 2, 1)}, batch_size=[sl - 2])
-    with pytest.raises(RuntimeError, match=f"The episode must contain exactly one done"):
+    with pytest.raises(RuntimeError, match="The episode must contain exactly one done"):
         rb.add(td1)
 
     td1["dones"][-3:] = 1
-    with pytest.raises(RuntimeError, match=f"The episode must contain exactly one done"):
+    with pytest.raises(RuntimeError, match="The episode must contain exactly one done"):
         rb.add(td1)
 
     td1["dones"][-2:] = 0
-    with pytest.raises(RuntimeError, match=f"The last step must contain a done"):
+    with pytest.raises(RuntimeError, match="The last step must contain a done"):
         rb.add(td1)
 
     td1["dones"][-3] = 0
     td1["dones"][-1] = 1
-    with pytest.raises(RuntimeError, match=f"Episode too short"):
+    with pytest.raises(RuntimeError, match="Episode too short"):
         rb.add(td1)
 
     td1 = TensorDict({"dones": torch.zeros(15, 1)}, batch_size=[15])
     td1["dones"][-1] = 1
-    with pytest.raises(RuntimeError, match=f"Episode too long"):
+    with pytest.raises(RuntimeError, match="Episode too long"):
         rb.add(td1)
 
     td1 = TensorDict({"t": torch.zeros(15, 1)}, batch_size=[15])
     td1["t"][-1] = 1
-    with pytest.raises(KeyError, match=f'key "dones" not found'):
+    with pytest.raises(KeyError, match='key "dones" not found'):
         rb.add(td1)
 
 
@@ -105,7 +105,7 @@ def test_episode_buffer_sample_shapes():
     buf_size = 30
     sl = 2
     rb = EpisodeBuffer(buf_size, sl)
-    t = TensorDict({f"dones": torch.zeros(sl, 1)}, batch_size=[sl])
+    t = TensorDict({"dones": torch.zeros(sl, 1)}, batch_size=[sl])
     t["dones"][-1] = 1
     rb.add(t)
     sample = rb.sample(3, n_samples=2)
@@ -136,11 +136,11 @@ def test_episode_buffer_error_sample():
     buf_size = 10
     sl = 5
     rb = EpisodeBuffer(buf_size, sl)
-    with pytest.raises(RuntimeError, match=f"No sample has been added"):
+    with pytest.raises(RuntimeError, match="No sample has been added"):
         rb.sample(2, 2)
-    with pytest.raises(ValueError, match=f"Batch size must be greater than 0"):
+    with pytest.raises(ValueError, match="Batch size must be greater than 0"):
         rb.sample(-1, n_samples=2)
-    with pytest.raises(ValueError, match=f"The number of samples must be greater than 0"):
+    with pytest.raises(ValueError, match="The number of samples must be greater than 0"):
         rb.sample(2, -1)
 
 

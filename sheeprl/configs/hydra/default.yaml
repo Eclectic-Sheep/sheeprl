@@ -1,2 +1,2 @@
 run:
-  dir: logs/runs/${env.env.id}/{get_rank:}/${now:%Y-%m-%d_%H-%M-%S}
+  dir: logs/runs/${root_dir}/${run_name}

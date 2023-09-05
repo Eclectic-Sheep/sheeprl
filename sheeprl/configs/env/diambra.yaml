@@ -1,0 +1,23 @@
+defaults:
+  - default
+  - _self_
+
+action_repeat: 1
+frame_stack: 4
+sync_env: True
+
+env:
+  _target_: sheeprl.envs.diambra_wrapper.DiambraWrapper
+  id: doapp
+  action_space: discrete
+  screen_size: ${env.screen_size}
+  grayscale: ${env.grayscale}
+  attack_but_combination: False
+  sticky_actions: ${env.action_repeat} 
+  seed: null
+  rank: null
+  diambra_settings: 
+    player: P1
+  diambra_wrappers: 
+    actions_stack: 12
+    noop_max: 0

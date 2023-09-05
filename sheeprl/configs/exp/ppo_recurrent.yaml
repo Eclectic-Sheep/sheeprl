@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - ppo
+  - override /algo: ppo_recurrent
+  - _self_
+
+per_rank_num_batches: 4
+reset_recurrent_state_on_done: False
+
+env:
+  env:
+    id: CartPole-v1

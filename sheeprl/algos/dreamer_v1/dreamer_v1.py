@@ -2,25 +2,24 @@ import copy
 import os
 import pathlib
 import time
-from dataclasses import asdict
-from typing import Dict, Sequence
+from typing import Dict
 
 import gymnasium as gym
+import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
-from torch.optim import Adam
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v1.agent import Player, WorldModel, build_models
-from sheeprl.algos.dreamer_v1.args import DreamerV1Args
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
@@ -28,7 +27,6 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
 
@@ -47,23 +45,28 @@ def train(
     critic_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    args: DreamerV1Args,
-    cnn_keys: Sequence[str],
-    mlp_keys: Sequence[str],
+    cfg: DictConfig,
 ) -> None:
     """Runs one-step update of the agent.
 
     The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is what is called st or stochastic state from Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - recurrent_state: is what is called ht or deterministic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+        - stochastic_state: is what is called st or stochastic state from Figure 2c in
+        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
             It can be both posterior or prior.
         - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
-        - p: the output of the representation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - q: the output of the transition model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qo: the output of the observation model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qr: the output of the reward model, from Eq. 9 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - p: the output of the representation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - q: the output of the transition model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qo: the output of the observation model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qr: the output of the reward model, from Eq. 9 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
         - qc: the output of the continue model.
-        - qv: the output of the value model (critic), from Eq. 2 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - qv: the output of the value model (critic), from Eq. 2 in
+        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     In particular, it updates the agent as specified by Algorithm 1 in
     [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
@@ -79,7 +82,8 @@ def train(
         - Reward Model: estimate rewards from the latent states.
         - Update the models
     2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Imagine trajectories in the latent space from each latent state s_t up
+        to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
         - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
         - Update the actor and the critic
@@ -94,43 +98,47 @@ def train(
         critic_optimizer (_FabricOptimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
-        args (DreamerV1Args): the configs.
-        cnn_keys: Sequence[str]: the sequence of cnn keys to encode/decode.
-        mlp_keys: Sequence[str]: the sequence of mlp keys to encode/decode.
+        cfg (DictConfig): the configs.
     """
-    batch_size = args.per_rank_batch_size
-    sequence_length = args.per_rank_sequence_length
+    batch_size = cfg.per_rank_batch_size
+    sequence_length = cfg.per_rank_sequence_length
+    recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
+    stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
-    batch_obs.update({k: data[k] for k in mlp_keys})
+    batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.cnn_keys.encoder}
+    batch_obs.update({k: data[k] for k in cfg.mlp_keys.encoder})
 
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
-    # the recurrent state is the deterministic state (or ht) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
-    recurrent_state = torch.zeros(1, batch_size, args.recurrent_state_size, device=device)
+    # the recurrent state is the deterministic state (or ht) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
 
     # initialize the posterior that must be of dimension (1, batch_size, stochastic_size)
-    # the stochastic state is the stochastic state (or st) from the Figure 2c in [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
-    posterior = torch.zeros(1, batch_size, args.stochastic_size, device=device)
+    # the stochastic state is the stochastic state (or st) from the Figure 2c in
+    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    posterior = torch.zeros(1, batch_size, stochastic_size, device=device)
 
     # initialize the tensors for dynamic learning
     # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
     # and its dimension is (sequence_length, batch_size, recurrent_state_size)
-    recurrent_states = torch.empty(sequence_length, batch_size, args.recurrent_state_size, device=device)
+    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
     # posteriors will contain all the posterior states computed during the dynamic learning phase,
     # and its dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
 
-    # posteriors_mean and posteriors_std will contain all the actual means and stds of the posterior states respectively,
+    # posteriors_mean and posteriors_std will contain all
+    # the actual means and stds of the posterior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    posteriors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    posteriors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+    posteriors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
 
-    # priors_mean and priors_std will contain all the predicted means and stds of the prior states respectively,
+    # priors_mean and priors_std will contain all
+    # the predicted means and stds of the prior states respectively,
     # their dimension is (sequence_length, batch_size, stochastic_size)
-    priors_mean = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
-    priors_std = torch.empty(sequence_length, batch_size, args.stochastic_size, device=device)
+    priors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+    priors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
 
     embedded_obs = world_model.encoder(batch_obs)
 
@@ -167,9 +175,9 @@ def train(
     qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
 
     # compute predictions for terminal steps, if required
-    if args.use_continues and world_model.continue_model:
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
         qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
-        continue_targets = (1 - data["dones"]) * args.gamma
+        continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         qc = continue_targets = None
 
@@ -190,16 +198,16 @@ def train(
         data["rewards"],
         p,
         q,
-        args.kl_free_nats,
-        args.kl_regularizer,
+        cfg.algo.world_model.kl_free_nats,
+        cfg.algo.world_model.kl_regularizer,
         qc,
         continue_targets,
-        args.continue_scale_factor,
+        cfg.algo.world_model.continue_scale_factor,
     )
     fabric.backward(rec_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
+    if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
-            module=world_model, optimizer=world_optimizer, max_norm=args.clip_gradients
+            module=world_model, optimizer=world_optimizer, max_norm=cfg.algo.world_model.clip_gradients
         )
     world_optimizer.step()
     aggregator.update("Grads/world_model", world_model_grads.mean().detach())
@@ -209,19 +217,20 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/p_entropy", p.entropy().mean().detach())
-    aggregator.update("State/q_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", p.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", q.entropy().mean().detach())
 
     # Behaviour Learning
-    # unflatten first 2 dimensions of recurrent and posterior states in order to have all the states on the first dimension.
+    # Unflatten first 2 dimensions of recurrent and posterior states in order
+    # to have all the states on the first dimension.
     # The 1 in the second dimension is needed for the recurrent model in the imagination step,
     # 1 because the agent imagines one state at a time.
     # (1, batch_size * sequence_length, stochastic_size)
-    imagined_prior = posteriors.detach().reshape(1, -1, args.stochastic_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
 
     # initialize the recurrent state of the recurrent model with the recurrent states computed
     # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
-    recurrent_state = recurrent_states.detach().reshape(1, -1, args.recurrent_state_size)
+    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
 
     # starting states for the imagination phase.
     # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
@@ -229,11 +238,11 @@ def train(
 
     # initialize the tensor of the imagined states
     imagined_trajectories = torch.empty(
-        args.horizon, batch_size * sequence_length, args.stochastic_size + args.recurrent_state_size, device=device
+        cfg.algo.horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size, device=device
     )
 
     # imagine trajectories in the latent space
-    for i in range(args.horizon):
+    for i in range(cfg.algo.horizon):
         # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
         actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
 
@@ -252,10 +261,10 @@ def train(
     predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
 
     # predict the probability that the episode will continue in the imagined states
-    if args.use_continues and world_model.continue_model:
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
         predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
     else:
-        predicted_continues = torch.ones_like(predicted_rewards.detach()) * args.gamma
+        predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
     # compute the lambda_values, by passing as last values the values of the last imagined state
     # the dimensions of the lambda_values tensor are
@@ -265,8 +274,8 @@ def train(
         predicted_values,
         predicted_continues,
         last_values=predicted_values[-1],
-        horizon=args.horizon,
-        lmbda=args.lmbda,
+        horizon=cfg.algo.horizon,
+        lmbda=cfg.algo.lmbda,
     )
 
     # compute the discounts to multiply to the lambda values
@@ -310,14 +319,18 @@ def train(
     # compute the policy loss
     policy_loss = actor_loss(discount * lambda_values)
     fabric.backward(policy_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
-        actor_grads = fabric.clip_gradients(module=actor, optimizer=actor_optimizer, max_norm=args.clip_gradients)
+    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
+        actor_grads = fabric.clip_gradients(
+            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients
+        )
     actor_optimizer.step()
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # predict the values distribution only for the first H (horizon) imagined states (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory because it is used only for compuing correclty the lambda values
+    # Predict the values distribution only for the first H (horizon) imagined states
+    # (to match the dimension with the lambda values),
+    # it removes the last imagined state in the trajectory
+    # because it is used only for computing correclty the lambda values
     qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
     # critic optimization step
@@ -328,8 +341,10 @@ def train(
     # for the log prob
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
-    if args.clip_gradients is not None and args.clip_gradients > 0:
-        critic_grads = fabric.clip_gradients(module=critic, optimizer=critic_optimizer, max_norm=args.clip_gradients)
+    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
+        critic_grads = fabric.clip_gradients(
+            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients
+        )
     critic_optimizer.step()
     aggregator.update("Grads/critic", critic_grads.mean().detach())
     aggregator.update("Loss/value_loss", value_loss.detach())
@@ -341,13 +356,11 @@ def train(
 
 
 @register_algorithm()
-def main():
-    parser = HfArgumentParser(DreamerV1Args)
-    args: DreamerV1Args = parser.parse_args_into_dataclasses()[0]
-
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+def main(cfg: DictConfig):
     # These arguments cannot be changed
-    args.screen_size = 64
-    args.frame_stack = -1
+    cfg.env.screen_size = 64
+    cfg.env.frame_stack = 1
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -355,40 +368,42 @@ def main():
         fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    fabric.seed_everything(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
-    if args.checkpoint_path:
-        state = fabric.load(args.checkpoint_path)
-        state["args"]["checkpoint_path"] = args.checkpoint_path
-        args = DreamerV1Args(**state["args"])
-        args.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        ckpt_path = pathlib.Path(args.checkpoint_path)
+    if cfg.checkpoint_path:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
+        state = fabric.load(cfg.checkpoint_path)
+        ckpt_path = pathlib.Path(cfg.checkpoint_path)
+        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg.checkpoint_path = str(ckpt_path)
+        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.root_dir = root_dir
+        cfg.run_name = f"resume_from_checkpoint_{run_name}"
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, args, "dreamer_v1")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg, "dreamer_v1")
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(asdict(args))
+        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if args.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
             make_dict_env(
-                args.env_id,
-                args.seed + rank * args.num_envs + i,
-                rank,
-                args,
+                cfg,
+                cfg.seed + rank * cfg.num_envs + i,
+                rank * cfg.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(args.num_envs)
+            for i in range(cfg.num_envs)
         ]
     )
-
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
 
@@ -398,69 +413,58 @@ def main():
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # observation_shape = observation_space["rgb"].shape
-    clip_rewards_fn = lambda r: torch.tanh(r) if args.clip_rewards else r
-    cnn_keys = []
-    mlp_keys = []
-    if isinstance(observation_space, gym.spaces.Dict):
-        cnn_keys = []
-        for k, v in observation_space.spaces.items():
-            if args.cnn_keys and k in args.cnn_keys:
-                if len(v.shape) == 3:
-                    cnn_keys.append(k)
-                else:
-                    fabric.print(
-                        f"Found a CNN key which is not an image: `{k}` of shape {v.shape}. "
-                        "Try to transform the observation from the environment into a 3D image"
-                    )
-        mlp_keys = []
-        for k, v in observation_space.spaces.items():
-            if args.mlp_keys and k in args.mlp_keys:
-                if len(v.shape) == 1:
-                    mlp_keys.append(k)
-                else:
-                    fabric.print(
-                        f"Found an MLP key which is not a vector: `{k}` of shape {v.shape}. "
-                        "Try to flatten the observation from the environment"
-                    )
-    else:
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {type(observation_space)}")
-    if cnn_keys == [] and mlp_keys == []:
+    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.clip_rewards else r
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
         raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` or `--mlp_keys state` "
+            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` "
+            "or `--mlp_keys state` "
         )
-    fabric.print("CNN keys:", cnn_keys)
-    fabric.print("MLP keys:", mlp_keys)
+    if (
+        len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
+        and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
+    ):
+        raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
+    if (
+        len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0
+        or len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0
+    ):
+        raise RuntimeError("The CNN keys and the MLP keys of the decoder must be contained in the ones of the encoder")
+    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
+    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+    fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
+    fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
+    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
     world_model, actor, critic = build_models(
         fabric,
         actions_dim,
         is_continuous,
-        args,
+        cfg,
         observation_space,
-        cnn_keys,
-        mlp_keys,
-        state["world_model"] if args.checkpoint_path else None,
-        state["actor"] if args.checkpoint_path else None,
-        state["critic"] if args.checkpoint_path else None,
+        state["world_model"] if cfg.checkpoint_path else None,
+        state["actor"] if cfg.checkpoint_path else None,
+        state["critic"] if cfg.checkpoint_path else None,
     )
-    player = Player(
+    player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
         actor.module,
         actions_dim,
-        args.expl_amount,
-        args.num_envs,
-        args.stochastic_size,
-        args.recurrent_state_size,
+        cfg.algo.player.expl_amount,
+        cfg.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
     )
 
     # Optimizers
-    world_optimizer = Adam(world_model.parameters(), lr=args.world_lr)
-    actor_optimizer = Adam(actor.parameters(), lr=args.actor_lr)
-    critic_optimizer = Adam(critic.parameters(), lr=args.critic_lr)
-    if args.checkpoint_path:
+    world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
+    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters())
+    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters())
+    if cfg.checkpoint_path:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
@@ -482,8 +486,8 @@ def main():
                 "Loss/reward_loss": MeanMetric(sync_on_compute=False),
                 "Loss/state_loss": MeanMetric(sync_on_compute=False),
                 "Loss/continue_loss": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
+                "State/post_entropy": MeanMetric(sync_on_compute=False),
+                "State/prior_entropy": MeanMetric(sync_on_compute=False),
                 "State/kl": MeanMetric(sync_on_compute=False),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=False),
                 "Grads/world_model": MeanMetric(sync_on_compute=False),
@@ -494,61 +498,61 @@ def main():
     aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = args.buffer_size // int(args.num_envs * fabric.world_size) if not args.dry_run else 2
+    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 2
     rb = AsyncReplayBuffer(
         buffer_size,
-        args.num_envs,
-        device=fabric.device if args.memmap_buffer else "cpu",
-        memmap=args.memmap_buffer,
+        cfg.num_envs,
+        device=fabric.device if cfg.buffer.memmap else "cpu",
+        memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         sequential=True,
     )
-    if args.checkpoint_path and args.checkpoint_buffer:
+    if cfg.checkpoint_path and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
         elif isinstance(state["rb"], AsyncReplayBuffer):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[args.num_envs], device=fabric.device if args.memmap_buffer else "cpu")
-    expl_decay_steps = state["expl_decay_steps"] if args.checkpoint_path else 0
+    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
+    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint_path else 0
 
     # Global variables
     start_time = time.perf_counter()
-    start_step = state["global_step"] // fabric.world_size if args.checkpoint_path else 1
-    single_global_step = int(args.num_envs * fabric.world_size * args.action_repeat)
-    step_before_training = args.train_every // single_global_step if not args.dry_run else 0
-    num_updates = int(args.total_steps // single_global_step) if not args.dry_run else 1
-    learning_starts = (args.learning_starts // single_global_step) if not args.dry_run else 0
-    if args.checkpoint_path and not args.checkpoint_buffer:
-        learning_starts = start_step + args.learning_starts // single_global_step
-    max_step_expl_decay = args.max_step_expl_decay // (args.gradient_steps * fabric.world_size)
-    if args.checkpoint_path:
+    start_step = state["global_step"] // fabric.world_size if cfg.checkpoint_path else 1
+    single_global_step = int(cfg.num_envs * fabric.world_size)
+    step_before_training = cfg.train_every // single_global_step if not cfg.dry_run else 0
+    num_updates = int(cfg.total_steps // single_global_step) if not cfg.dry_run else 1
+    learning_starts = (cfg.learning_starts // single_global_step) if not cfg.dry_run else 0
+    if cfg.checkpoint_path and not cfg.buffer.checkpoint:
+        learning_starts = start_step + cfg.learning_starts // single_global_step
+    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.gradient_steps * fabric.world_size)
+    if cfg.checkpoint_path:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
-            initial=args.expl_amount,
-            final=args.expl_min,
+            initial=cfg.algo.player.expl_amount,
+            final=cfg.algo.player.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
 
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=args.seed)[0]
+    o = envs.reset(seed=cfg.seed)[0]
     obs = {}
-    for k in o.keys():
-        torch_obs = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
-        if k in mlp_keys:
+    for k in obs_keys:
+        torch_obs = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
+        if k in cfg.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         obs[k] = torch_obs
-    step_data["dones"] = torch.zeros(args.num_envs, 1)
-    step_data["actions"] = torch.zeros(args.num_envs, sum(actions_dim))
-    step_data["rewards"] = torch.zeros(args.num_envs, 1)
+    step_data["dones"] = torch.zeros(cfg.num_envs, 1)
+    step_data["actions"] = torch.zeros(cfg.num_envs, sum(actions_dim))
+    step_data["rewards"] = torch.zeros(cfg.num_envs, 1)
     rb.add(step_data[None, ...])
     player.init_states()
 
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and args.checkpoint_path is None and "minedojo" not in args.env_id:
+        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -562,7 +566,7 @@ def main():
             with torch.no_grad():
                 preprocessed_obs = {}
                 for k, v in obs.items():
-                    if k in cnn_keys:
+                    if k in cfg.cnn_keys.encoder:
                         preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
                     else:
                         preprocessed_obs[k] = v[None, ...].to(device)
@@ -597,14 +601,14 @@ def main():
 
         next_obs = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
-            next_obs[k] = torch.from_numpy(o[k]).view(args.num_envs, *o[k].shape[1:])
-            step_data[k] = torch.from_numpy(real_next_obs[k]).view(args.num_envs, *real_next_obs[k].shape[1:])
-            if k in mlp_keys:
+            next_obs[k] = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
+            step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.num_envs, *real_next_obs[k].shape[1:])
+            if k in cfg.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
                 step_data[k] = step_data[k].float()
-        actions = torch.from_numpy(actions).view(args.num_envs, -1).float()
-        rewards = torch.from_numpy(rewards).view(args.num_envs, -1).float()
-        dones = torch.from_numpy(dones).view(args.num_envs, -1).float()
+        actions = torch.from_numpy(actions).view(cfg.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(cfg.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(cfg.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
@@ -637,9 +641,9 @@ def main():
         if global_step > learning_starts and step_before_training <= 0:
             fabric.barrier()
             local_data = rb.sample(
-                args.per_rank_batch_size,
-                sequence_length=args.per_rank_sequence_length,
-                n_samples=args.gradient_steps,
+                cfg.per_rank_batch_size,
+                sequence_length=cfg.per_rank_sequence_length,
+                n_samples=cfg.gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
@@ -651,19 +655,17 @@ def main():
                     world_optimizer,
                     actor_optimizer,
                     critic_optimizer,
-                    local_data[i].view(args.per_rank_sequence_length, args.per_rank_batch_size),
+                    local_data[i].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
                     aggregator,
-                    args,
-                    cnn_keys,
-                    mlp_keys,
+                    cfg,
                 )
-            step_before_training = args.train_every // (args.num_envs * fabric.world_size * args.action_repeat)
-            if args.expl_decay:
+            step_before_training = cfg.train_every // (cfg.num_envs * fabric.world_size * cfg.env.action_repeat)
+            if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
                     expl_decay_steps,
-                    initial=args.expl_amount,
-                    final=args.expl_min,
+                    initial=cfg.algo.player.expl_amount,
+                    final=cfg.algo.player.expl_min,
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
@@ -673,8 +675,8 @@ def main():
 
         # Checkpoint Model
         if (
-            (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0)
-            or args.dry_run
+            (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0)
+            or cfg.dry_run
             or global_step == num_updates
         ):
             state = {
@@ -685,9 +687,8 @@ def main():
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
-                "args": asdict(args),
                 "global_step": global_step * fabric.world_size,
-                "batch_size": args.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
             }
             ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.call(
@@ -695,12 +696,12 @@ def main():
                 fabric=fabric,
                 ckpt_path=ckpt_path,
                 state=state,
-                replay_buffer=rb if args.checkpoint_buffer else None,
+                replay_buffer=rb if cfg.buffer.checkpoint else None,
             )
 
     envs.close()
     if fabric.is_global_zero:
-        test(player, fabric, args, cnn_keys, mlp_keys)
+        test(player, fabric, cfg)
 
 
 if __name__ == "__main__":

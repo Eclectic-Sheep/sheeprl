@@ -19,10 +19,11 @@ def reconstruction_loss(
     kl_regularizer: float = 1.0,
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
-    continue_scale_factor: float = 1.0,
+    discount_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
-    Compute the reconstruction loss as described in Eq. 2 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+    Compute the reconstruction loss as described in Eq. 2 in
+    [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     Args:
         po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
@@ -43,7 +44,7 @@ def reconstruction_loss(
         continue_targets (Tensor, optional): the targets for the discount predictor. Those are normally computed
             as `(1 - data["dones"]) * args.gamma`.
             Default to None.
-        continue_scale_factor (float): the scale factor for the continue loss.
+        discount_scale_factor (float): the scale factor for the continue loss.
             Default to 1.0.
 
     Returns:
@@ -76,6 +77,6 @@ def reconstruction_loss(
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
     if pc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
+        continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl, kl_loss, reward_loss, observation_loss, continue_loss

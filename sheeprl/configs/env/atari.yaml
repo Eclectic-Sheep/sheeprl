@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - gym
+  - _self_
+
+noop_max: 30
+terminal_on_life_loss: False
+action_repeat: 4
+
+env:
+  id: PongNoFrameskip-v4

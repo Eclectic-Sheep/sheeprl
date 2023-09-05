@@ -37,7 +37,10 @@ def register_command(command, task, name: Optional[str] = None):
     @click.argument("cli_args", nargs=-1, type=click.UNPROCESSED)
     @functools.wraps(command)
     def wrapper(cli_args):
-        with patch("sys.argv", [task.__file__] + list(cli_args)) as sys_argv_mock:
+        additional_args = [f"algo.name={name}"]
+        if len(list(cli_args)) == 0:
+            additional_args.append(f"exp={name}")
+        with patch("sys.argv", [task.__file__] + list(cli_args) + additional_args) as sys_argv_mock:
             devices = os.environ.get("LT_DEVICES", None)
             strategy = os.environ.get("LT_STRATEGY", None)
             if strategy == "fsdp":
@@ -47,8 +50,10 @@ def register_command(command, task, name: Optional[str] = None):
                 )
             if name in decoupled_tasks and strategy is not None:
                 warnings.warn(
-                    "You are running a decoupled algorithm through the Lightning CLI and you have specified a strategy: "
-                    f"`lightning run model --strategy={strategy}`. When a decoupled algorithm is run the default strategy will be "
+                    "You are running a decoupled algorithm through the Lightning CLI "
+                    "and you have specified a strategy: "
+                    f"`lightning run model --strategy={strategy}`. "
+                    "When a decoupled algorithm is run the default strategy will be "
                     "a `lightning.fabric.strategies.DDPStrategy`."
                 )
                 os.environ.pop("LT_STRATEGY")

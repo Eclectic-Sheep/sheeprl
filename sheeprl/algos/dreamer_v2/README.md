@@ -47,7 +47,7 @@ def reconstruction_loss(
     kl_regularizer: float = 1.0,
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
-    continue_scale_factor: float = 1.0,
+    discount_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     device = observations.device
     observation_loss = -po.log_prob(observations).mean()
@@ -71,11 +71,11 @@ def reconstruction_loss(
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
     if pc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
+        continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
 ```
-Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `continue_scale_factor`, the parameter to scale the *continue loss*.
+Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `discount_scale_factor`, the parameter to scale the *continue loss*.
 
 Another difference between Dreamer-V1 and Dreamer-V2 is in the *actor loss*, which mixes standard on-policy Reinforce with Dynamic backprop, while adding the policy entropy to favor the exploration of the environment:
 
@@ -122,7 +122,7 @@ lightning run model --devices=1 sheeprl.py dreamer_v2 \
 --train_every=4 \
 --gamma=0.995 \
 --kl_regularizer=0.1 \
---continue_scale_factor=5.0 \
+--discount_scale_factor=5.0 \
 --actor_ent_coef=1e-3 \
 --actor_lr=4e-5 \
 --critic_lr=1e-4 \
