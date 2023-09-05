@@ -54,7 +54,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         else os.path.join("logs", "runs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
     run_name = (
-        cfg.run_name if cfg.run_name is not None else f"{cfg.env.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
+        cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -102,6 +102,10 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
+
+    # Send (possibly updated, by the make_dict_env method for example) cfg to the trainers
+    world_collective.broadcast_object_list([cfg], src=0)
+
     # Create the actor and critic models
     agent_args = {
         "actions_dim": actions_dim,
@@ -213,6 +217,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             step_data["actions"] = actions
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
+            if cfg.buffer.memmap:
+                step_data["returns"] = torch.zeros_like(rewards)
+                step_data["advantages"] = torch.zeros_like(rewards)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -317,12 +324,16 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
 
 def trainer(
-    cfg: DictConfig,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
+
+    # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
+    data = [None]
+    world_collective.broadcast_object_list(data, src=0)
+    cfg: DictConfig = data[0]
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
@@ -544,7 +555,7 @@ def main(cfg: DictConfig):
     if global_rank == 0:
         player(cfg, world_collective, player_trainer_collective)
     else:
-        trainer(cfg, world_collective, player_trainer_collective, optimization_pg)
+        trainer(world_collective, player_trainer_collective, optimization_pg)
 
 
 if __name__ == "__main__":

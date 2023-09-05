@@ -37,7 +37,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         else os.path.join("logs", "runs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
     )
     run_name = (
-        cfg.run_name if cfg.run_name is not None else f"{cfg.env.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
+        cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
     logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -56,7 +56,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     envs = vectorized_env(
         [
             make_env(
-                cfg.env.env.id,
+                cfg.env.id,
                 cfg.seed + rank * cfg.num_envs + i,
                 rank,
                 cfg.env.capture_video,
@@ -73,8 +73,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     if len(envs.single_observation_space.shape) > 1:
         raise ValueError(
             "Only environments with vector-only observations are supported by the SAC agent. "
-            f"Provided environment: {cfg.env.env.id}"
+            f"Provided environment: {cfg.env.id}"
         )
+
+    # Send (possibly updated, by the make_dict_env method for example) cfg to the trainers
+    world_collective.broadcast_object_list([cfg], src=0)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -219,7 +222,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
-            cfg.env.env.id,
+            cfg.env.id,
             None,
             0,
             cfg.env.capture_video,
@@ -232,13 +235,17 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
 
 def trainer(
-    cfg: DictConfig,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
     global_rank - 1
+
+    # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
+    data = [None]
+    world_collective.broadcast_object_list(data, src=0)
+    cfg: DictConfig = data[0]
 
     # Initialize Fabric
     fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
@@ -250,7 +257,7 @@ def trainer(
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
-    envs = vectorized_env([make_env(cfg.env.env.id, 0, 0, False, None, mask_velocities=False)])
+    envs = vectorized_env([make_env(cfg.env.id, 0, 0, False, None, mask_velocities=False)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -391,7 +398,7 @@ def main(cfg: DictConfig):
     if global_rank == 0:
         player(cfg, world_collective, player_trainer_collective)
     else:
-        trainer(cfg, world_collective, player_trainer_collective, optimization_pg)
+        trainer(world_collective, player_trainer_collective, optimization_pg)
 
 
 if __name__ == "__main__":
