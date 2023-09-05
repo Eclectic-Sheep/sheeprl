@@ -626,7 +626,7 @@ def main(cfg: DictConfig):
                 test(copy.deepcopy(player), fabric, cfg, "zero-shot")
 
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.env.id:
+        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(

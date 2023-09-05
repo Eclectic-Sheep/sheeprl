@@ -557,7 +557,7 @@ def main(cfg: DictConfig):
 
     for global_step in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.env.id:
+        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(

@@ -85,7 +85,7 @@ exp_name: "default"
 dry_run: False
 torch_deterministic: False
 root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
-run_name: ${env.env.id}_${exp_name}_${seed}
+run_name: ${env.id}_${exp_name}_${seed}
 buffer: 
   memmap: True
 checkpoint_every: 100

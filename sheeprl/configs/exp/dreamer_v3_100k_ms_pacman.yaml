@@ -6,8 +6,7 @@ defaults:
   - _self_
 
 env:
-  env:
-    id: MsPacmanNoFrameskip-v4
+  id: MsPacmanNoFrameskip-v4
   max_episode_steps: 27000
 
 seed: 5

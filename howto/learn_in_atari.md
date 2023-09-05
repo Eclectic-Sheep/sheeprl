@@ -46,5 +46,5 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo exp=ppo env=atari env.env.id=PongNoFrameskip-v4 cnn_keys.encoder=[rgb]
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo exp=ppo env=atari env.id=PongNoFrameskip-v4 cnn_keys.encoder=[rgb]
 ```

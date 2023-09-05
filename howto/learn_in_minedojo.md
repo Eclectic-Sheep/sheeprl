@@ -25,11 +25,11 @@ pip install -e .[minedojo]
 >
 > So far, you can run an experiment with the MineDojo environments only with the Dreamers' agents.
 
-It is possible to train your agents on all the tasks provided by MineDojo. You need to select the *MineDojo* environment (`env=minedojo`) and set the `env.env.id` to the name of the task on which you want to train your agent. Moreover, you have to specify the class of the `MinedojoActor` (`algo.actor.cls=sheeprl.algos.<algo_name>.agent.MinedojoActor`).
+It is possible to train your agents on all the tasks provided by MineDojo. You need to select the *MineDojo* environment (`env=minedojo`) and set the `env.id` to the name of the task on which you want to train your agent. Moreover, you have to specify the class of the `MinedojoActor` (`algo.actor.cls=sheeprl.algos.<algo_name>.agent.MinedojoActor`).
 For instance, you can use the following command to select the MineDojo open-ended environment.
 
 ```bash
-lightning run model sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ened algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor cnn_keys.encoder=[rgb]
+lightning run model sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.id=open-ened algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor cnn_keys.encoder=[rgb]
 ```
 
 ### Observation Space
@@ -67,5 +67,5 @@ For more information about the MineDojo action space, check [here](https://docs.
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

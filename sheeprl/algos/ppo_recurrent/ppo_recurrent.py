@@ -137,7 +137,7 @@ def main(cfg: DictConfig):
     envs = vectorized_env(
         [
             make_env(
-                cfg.env.env.id,
+                cfg.env.id,
                 cfg.seed + rank * cfg.num_envs + i,
                 rank,
                 cfg.env.capture_video,
@@ -154,7 +154,7 @@ def main(cfg: DictConfig):
     if len(envs.single_observation_space.shape) > 1:
         raise ValueError(
             "Only environments with vector-only observations are supported by the PPO recurrent agent. "
-            f"Provided environment: {cfg.env.env.id}"
+            f"Provided environment: {cfg.env.id}"
         )
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -244,6 +244,9 @@ def main(cfg: DictConfig):
             step_data["actor_cxs"] = next_state[0][1]
             step_data["critic_hxs"] = next_state[1][0]
             step_data["critic_cxs"] = next_state[1][1]
+            if cfg.buffer.memmap:
+                step_data["returns"] = torch.zeros_like(reward)
+                step_data["advantages"] = torch.zeros_like(reward)
 
             # Append data to buffer
             rb.add(step_data)
@@ -351,7 +354,7 @@ def main(cfg: DictConfig):
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
-            cfg.env.env.id,
+            cfg.env.id,
             None,
             0,
             cfg.env.capture_video,

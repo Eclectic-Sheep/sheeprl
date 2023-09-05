@@ -28,7 +28,7 @@ You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decod
 
 For instance, to train the ppo algorithm on the *walker walk* task provided by *DMC* using image observations and only the `orientations` and `velocity` as vector observation, you have to run the following command:
 ```bash
-lightning run model sheeprl.py ppo exp=ppo env=dmc env.env.id=walker_walk cnn_keys.encoder=[rgb] mlp_keys.encoder=[orientations,velocity]
+lightning run model sheeprl.py ppo exp=ppo env=dmc env.id=walker_walk cnn_keys.encoder=[rgb] mlp_keys.encoder=[orientations,velocity]
 ```
 
 > **Note**
@@ -69,7 +69,7 @@ You can specify different observations for the encoder and the decoder, but ther
 
 You can specify the *mlp* and *cnn* keys of the decoder as follows:
 ```bash
-lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.env.id=custom_navigate mlp_keys.encoder=[life_stats,inventory,max_inventory] mlp_keys.decoder=[life_stats,inventory]
+lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.id=custom_navigate mlp_keys.encoder=[life_stats,inventory,max_inventory] mlp_keys.decoder=[life_stats,inventory]
 ```
 
 ### Vector observations algorithms

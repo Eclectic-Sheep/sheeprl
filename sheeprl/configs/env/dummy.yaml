@@ -2,6 +2,8 @@ defaults:
   - default
   - _self_
 
+id: discrete_dummy
+
 env:
   _target_: sheeprl.utils.env.get_dummy_env
-  id: discrete_dummy
+  id: ${env.id}

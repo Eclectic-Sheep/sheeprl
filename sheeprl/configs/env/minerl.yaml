@@ -2,11 +2,12 @@ defaults:
   - minecraft
   - _self_
 
+id: custom_navigate
 action_repeat: 1
 
 env:
   _target_: sheeprl.envs.minerl.MineRLWrapper
-  id: custom_navigate
+  id: ${env.id}
   height: ${env.screen_size}
   width: ${env.screen_size}
   pitch_limits:

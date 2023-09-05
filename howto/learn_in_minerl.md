@@ -19,9 +19,9 @@ pip install -e .[minerl]
 
 ## MineRL environments
 We have modified the MineRL environments to have a custom action and observation space. We provide three different tasks:
-1. Navigate: you need to set the `env.env.id` argument to `custom_navigate`.
-2. Obtain Iron Pickaxe: you need to set the `env.env.id` argument to `custom_obtain_iron_pickaxe`.
-3. Obtain Diamond: you need to set the `env.env.id` argument to `custom_obtain_diamond`.
+1. Navigate: you need to set the `env.id` argument to `custom_navigate`.
+2. Obtain Iron Pickaxe: you need to set the `env.id` argument to `custom_obtain_iron_pickaxe`.
+3. Obtain Diamond: you need to set the `env.id` argument to `custom_obtain_diamond`.
 
 > **Note**
 > If you want to use a *MineRL* environment, you must specify it, for example, by setting `env=minerl` in the cli arguments or by creating your custom config file.
@@ -54,5 +54,5 @@ Finally we added sticky action for the `jump` and `attack` actions. You can set 
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.env.id=custom_navigate cnn_keys.encoder=[rgb]`.
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.id=custom_navigate cnn_keys.encoder=[rgb]`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

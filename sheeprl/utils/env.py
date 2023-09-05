@@ -76,7 +76,7 @@ def make_dict_env(
 
     def thunk():
         try:
-            env_spec = gym.spec(cfg.env.env.id).entry_point
+            env_spec = gym.spec(cfg.env.id).entry_point
         except Exception:
             env_spec = ""
 
@@ -88,17 +88,6 @@ def make_dict_env(
         env = hydra.utils.instantiate(cfg.env.env, **instantiate_kwargs)
         if "mujoco" in env_spec:
             env.frame_skip = 0
-        if "atari" in env_spec:
-            env = gym.wrappers.AtariPreprocessing(
-                env,
-                noop_max=cfg.env.noop_max,
-                frame_skip=cfg.env.action_repeat,
-                screen_size=cfg.env.screen_size,
-                grayscale_obs=cfg.env.grayscale,
-                scale_obs=False,
-                terminal_on_life_loss=cfg.env.terminal_on_life_loss,
-                grayscale_newaxis=True,
-            )
 
         # action repeat
         if (
@@ -118,7 +107,7 @@ def make_dict_env(
                 if len(cfg.cnn_keys.encoder) > 1:
                     warnings.warn(
                         "Multiple cnn keys have been specified and only one pixel observation "
-                        f"is allowed in {cfg.env.env.id}, "
+                        f"is allowed in {cfg.env.id}, "
                         f"only the first one is kept: {cfg.cnn_keys.encoder[0]}"
                     )
                 env = gym.wrappers.PixelObservationWrapper(
@@ -129,7 +118,7 @@ def make_dict_env(
                     if len(cfg.mlp_keys.encoder) > 1:
                         warnings.warn(
                             "Multiple mlp keys have been specified and only one pixel observation "
-                            f"is allowed in {cfg.env.env.id}, "
+                            f"is allowed in {cfg.env.id}, "
                             f"only the first one is kept: {cfg.mlp_keys.encoder[0]}"
                         )
                     mlp_key = cfg.mlp_keys.encoder[0]
@@ -142,7 +131,7 @@ def make_dict_env(
             if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 1:
                 warnings.warn(
                     "Multiple cnn keys have been specified and only one pixel observation "
-                    f"is allowed in {cfg.env.env.id}, "
+                    f"is allowed in {cfg.env.id}, "
                     f"only the first one is kept: {cfg.cnn_keys.encoder[0]}"
                 )
                 cnn_key = cfg.cnn_keys.encoder[0]

@@ -27,9 +27,7 @@ def create_tensorboard_logger(
             else os.path.join("logs", "runs", algo_name, datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
-            cfg.run_name
-            if cfg.run_name is not None
-            else f"{cfg.env.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
+            cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
         log_dir = logger.log_dir

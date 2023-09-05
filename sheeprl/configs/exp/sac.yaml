@@ -18,5 +18,4 @@ buffer:
   sample_next_obs: False
 
 env:
-  env:
-    id: LunarLanderContinuous-v2
+  id: LunarLanderContinuous-v2

@@ -268,6 +268,9 @@ def main(cfg: DictConfig):
             step_data["actions"] = actions
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
+            if cfg.buffer.memmap:
+                step_data["returns"] = torch.zeros_like(rewards)
+                step_data["advantages"] = torch.zeros_like(rewards)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
