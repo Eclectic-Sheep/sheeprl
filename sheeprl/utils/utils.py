@@ -42,8 +42,8 @@ def gae(
         else:
             nextnonterminal = not_done[t + 1]
             nextvalues = values[t + 1]
-        delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-        advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+        delta = rewards[t] + nextvalues * nextnonterminal * gamma - values[t]
+        advantages[t] = lastgaelam = delta + nextnonterminal * lastgaelam * gamma * gae_lambda
     returns = advantages + values
     return returns, advantages
 
