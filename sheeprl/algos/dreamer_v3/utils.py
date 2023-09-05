@@ -67,7 +67,7 @@ def test(
     """Test the model on the environment with the frozen model.
 
     Args:
-        player (PlayerDV2): the agent which contains all the models needed to play.
+        player (PlayerDV3): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
         cfg (DictConfig): the hyper-parameters.
         test_name (str): the name of the test.
@@ -111,3 +111,50 @@ def test(
     if len(fabric.loggers) > 0:
         fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+
+
+# Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L929
+def init_weights(m):
+    if isinstance(m, torch.nn.Linear):
+        in_num = m.in_features
+        out_num = m.out_features
+        denoms = (in_num + out_num) / 2.0
+        scale = 1.0 / denoms
+        std = np.sqrt(scale) / 0.87962566103423978
+        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+        if hasattr(m.bias, "data"):
+            m.bias.data.fill_(0.0)
+    elif isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.ConvTranspose2d):
+        space = m.kernel_size[0] * m.kernel_size[1]
+        in_num = space * m.in_channels
+        out_num = space * m.out_channels
+        denoms = (in_num + out_num) / 2.0
+        scale = 1.0 / denoms
+        std = np.sqrt(scale) / 0.87962566103423978
+        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
+        if hasattr(m.bias, "data"):
+            m.bias.data.fill_(0.0)
+    elif isinstance(m, torch.nn.LayerNorm):
+        m.weight.data.fill_(1.0)
+        if hasattr(m.bias, "data"):
+            m.bias.data.fill_(0.0)
+
+
+# Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L957
+def uniform_init_weights(given_scale):
+    def f(m):
+        if isinstance(m, torch.nn.Linear):
+            in_num = m.in_features
+            out_num = m.out_features
+            denoms = (in_num + out_num) / 2.0
+            scale = given_scale / denoms
+            limit = np.sqrt(3 * scale)
+            torch.nn.init.uniform_(m.weight.data, a=-limit, b=limit)
+            if hasattr(m.bias, "data"):
+                m.bias.data.fill_(0.0)
+        elif isinstance(m, torch.nn.LayerNorm):
+            m.weight.data.fill_(1.0)
+            if hasattr(m.bias, "data"):
+                m.bias.data.fill_(0.0)
+
+    return f

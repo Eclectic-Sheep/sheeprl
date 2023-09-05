@@ -184,11 +184,14 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/post_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach(), validate_args=False), 1)
+        .entropy()
+        .mean()
+        .detach(),
     )
     aggregator.update(
         "State/prior_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach(), validate_args=False), 1).entropy().mean().detach(),
     )
 
     # Behaviour Learning
@@ -235,7 +238,9 @@ def train(
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
+    continues = Independent(
+        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+    ).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 

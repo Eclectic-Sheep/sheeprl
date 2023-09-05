@@ -1,5 +1,4 @@
 import copy
-from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import hydra
@@ -22,7 +21,8 @@ from torch.distributions import (
 from torch.distributions.utils import probs_to_logits
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
+from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
@@ -688,13 +688,15 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Independent(
+                    TransformedDistribution(actions_dist, TanhTransform(), validate_args=False), 1
+                )
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std)
+                actions_dist = Normal(mean, std, validate_args=False)
                 actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=False)
                 actions_dist = Independent(dist, 1)
             if is_training:
                 actions = actions_dist.rsample()
@@ -1002,16 +1004,16 @@ def build_models(
     critic.apply(init_weights)
 
     if cfg.algo.hafner_initialization:
-        actor.mlp_heads.apply(partial(init_weights, mode="uniform"))
-        critic.model[-1].apply(partial(init_weights, mode="zero"))
-        rssm.transition_model.model[-1].apply(partial(init_weights, mode="uniform"))
-        rssm.representation_model.model[-1].apply(partial(init_weights, mode="uniform"))
-        world_model.reward_model.model[-1].apply(partial(init_weights, mode="zero"))
-        world_model.continue_model.model[-1].apply(partial(init_weights, mode="uniform"))
+        actor.mlp_heads.apply(uniform_init_weights(1.0))
+        critic.model[-1].apply(uniform_init_weights(0.0))
+        rssm.transition_model.model[-1].apply(uniform_init_weights(1.0))
+        rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
+        world_model.reward_model.model[-1].apply(uniform_init_weights(0.0))
+        world_model.continue_model.model[-1].apply(uniform_init_weights(1.0))
         if mlp_decoder is not None:
-            mlp_decoder.heads.apply(partial(init_weights, mode="uniform"))
+            mlp_decoder.heads.apply(uniform_init_weights(1.0))
         if cnn_decoder is not None:
-            cnn_decoder.model[-1].model[-1].apply(partial(init_weights, mode="uniform"))
+            cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
 
     # Load models from checkpoint
     if world_model_state:
