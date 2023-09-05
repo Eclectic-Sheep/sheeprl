@@ -107,7 +107,7 @@ def make_dict_env(
                 height=args.screen_size,
                 width=args.screen_size,
                 pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
-                seed=args.seed,
+                seed=seed,
                 start_position=start_position,
             )
             args.action_repeat = 1
@@ -120,7 +120,7 @@ def make_dict_env(
                 height=args.screen_size,
                 width=args.screen_size,
                 pitch_limits=(args.mine_min_pitch, args.mine_max_pitch),
-                seed=args.seed,
+                seed=seed,
                 break_speed_multiplier=args.mine_break_speed,
                 sticky_attack=args.mine_sticky_attack,
                 sticky_jump=args.mine_sticky_jump,
@@ -148,7 +148,7 @@ def make_dict_env(
                 actions_stack=args.diambra_actions_stack,
                 noop_max=args.diambra_noop_max,
                 sticky_actions=args.action_repeat,
-                seed=args.seed,
+                seed=seed,
                 rank=rank + vector_env_idx,
                 diambra_settings={},
                 diambra_wrappers={},

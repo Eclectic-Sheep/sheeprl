@@ -25,11 +25,10 @@ from torch.optim import Adam, Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric
 
-from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.args import DreamerV3Args
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.callback import CheckpointCallback
@@ -175,11 +174,14 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/post_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=posteriors_logits.detach(), validate_args=False), 1)
+        .entropy()
+        .mean()
+        .detach(),
     )
     aggregator.update(
         "State/prior_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(OneHotCategorical(logits=priors_logits.detach(), validate_args=False), 1).entropy().mean().detach(),
     )
 
     # Behaviour Learning
@@ -226,7 +228,9 @@ def train(
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mode
+    continues = Independent(
+        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+    ).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 
@@ -354,7 +358,7 @@ def main():
                 RestartOnException,
                 env_fn=make_dict_env(
                     args.env_id,
-                    args.seed + rank * args.num_envs,
+                    args.seed + rank * args.num_envs + i,
                     rank,
                     args,
                     logger.log_dir if rank == 0 else None,
