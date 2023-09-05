@@ -532,11 +532,16 @@ def main(cfg: DictConfig):
         and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
     ):
         raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-    if (
-        len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0
-        or len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0
-    ):
-        raise RuntimeError("The CNN keys and the MLP keys of the decoder must be contained in the ones of the encoder")
+    if len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0:
+        raise RuntimeError(
+            "The CNN keys of the decoder must be contained in the encoder ones. "
+            f"Those keys are decoded without being encoded: {list(set(cfg.cnn_keys.decoder))}"
+        )
+    if len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0:
+        raise RuntimeError(
+            "The MLP keys of the decoder must be contained in the encoder ones. "
+            f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
+        )
     fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
     fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
     fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)

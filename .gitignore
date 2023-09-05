@@ -166,3 +166,4 @@ notebooks
 pytest_*
 !sheeprl/configs/env
 .diambra*
+.hydra
