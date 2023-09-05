@@ -9,7 +9,7 @@ seed: 5
 env:
   env:
     id: MsPacmanNoFrameskip-v0
-  max_episode_steps: 108000
+  max_episode_steps: 27000
 
 per_rank_batch_size: 32
 checkpoint_every: 200000

@@ -3,6 +3,7 @@ defaults:
   - _self_
 
 action_repeat: 2
+max_episode_steps: 500
 
 env:
   _target_: sheeprl.envs.dmc.DMCWrapper

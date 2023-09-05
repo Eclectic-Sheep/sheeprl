@@ -6,6 +6,7 @@ defaults:
 noop_max: 30
 terminal_on_life_loss: False
 action_repeat: 4
+max_episode_steps: 27000
 
 env:
   id: PongNoFrameskip-v4
