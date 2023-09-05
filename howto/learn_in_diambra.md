@@ -51,58 +51,63 @@ The observation space is slightly modified to be compatible with our algorithms,
 >
 > To know more about gymnasium spaces, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
 
-## Args
-The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to prefix the `"diambra_"` string to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env_id` argument to `"diambra_doapp"` (i.e., `--env_id=diambra_doapp`).
+## Multi-environments / Distributed training
+In order to train your agent with multiple environments or to perform a distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch (the number of *player* processes for decoupled algorithms). Thus, in case of coupled algorithm (e.g., `dreamer_v2`), if you want distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
+```bash
+diambra run -s=8 lightning run model --devices=2 sheeprl.py dreamer_v3 exp=dreamer_v3 env=diambra env.env.id=doapp num_envs=4 env.sync_env=True cnn_keys.encoder=[frame]
+```
 
-Moreover, the following are the cli arguments specific for the DIAMBRA environments:
-* `diambra_action_space`: the type of the action space (either `discrete` or `multi_discrete`).
-* `diambra_attack_but_combination`: whether or not to use the attack button combinations.
-* `diambra_noop_max`: the maximum number of noop operations after the reset.
-* `diambra_actions_stack`: the number of actions stacked in the observations.
+## Args
+The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the diambra configs with the argument `env=diambra`, then set the `env.env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.env.id` argument to `doapp` (i.e., `env.env.id=doapp`).
+
+```bash
+diambra run -s=4 lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3 env=diambra env.env.id=doapp num_envs=4
+```
+
+Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
 
 DIAMBRA enables to customize the environment with several [settings](https://docs.diambra.ai/envs/#general-environment-settings) and [wrappers](https://docs.diambra.ai/wrappers/).
-To modify the default settings or add other wrappers, you have to modify the `make_dict_env` function in the `./sheeprl/utils/utils.py` file.
+To modify the default settings or add other wrappers, you have to add the settings or wrappers you want in `env.env.diambra_settings` or `env.env.diambra_wrappers`, respectively.
 
-For insance, in the following example, the player one is selected and a step ratio of $5$ is choosen. Moreover, the rewards are normalized by a factor of $0.3$.
+For insance, in the following example, we create the `custom_exp.yaml` file in the `sheeprl/configs/exp` folder where the we select the diambra environment, in addition, the player one is selected and a step ratio of $5$ is choosen. Moreover, the rewards are normalized by a factor of $0.3$.
+
 
 ```diff
-    env = DiambraWrapper(
-        env_id=task_id,
-        action_space=args.diambra_action_space,
-        screen_size=args.screen_size,
-        grayscale=args.grayscale_obs,
-        attack_but_combination=args.diambra_attack_but_combination,
-        actions_stack=args.diambra_actions_stack,
-        noop_max=args.diambra_noop_max,
-        sticky_actions=args.action_repeat,
-        seed=args.seed,
-        rank=rank,
--       diambra_settings={},
-+       diambra_settings={
-+           "player": "P1"
-+           "step_ratio": 5,
-+       },
--       diambra_wrappers={},
-+       diambra_wrappers={
-+           "reward_normalization": True,
-+           "reward_normalization_factor": 0.3,
-+       },
-    )
+# @package _global_
+
+defaults:
+    - dreamer_v3
+    - override /env: diambra 
+    - _self_
+
+env:
+    env:
+    id: doapp
+    diambra_settings:
+        characters: Kasumi
+        step_ratio: 5
+        player: P1
+    diambra_wrappers:
+        reward_normalization: True
+        reward_normalization_factor: 0.3
+```
+
+Now, to run your experiment, you have to execute the following command:
+```bash
+diambra run -s=4 lightning run model sheeprl.py dreamer_v3 exp=custom_exp num_envs=4
 ```
 
 > **Note**
 >
 > Some settings and wrappers are included in the cli arguments when the command is launched. These settings/wrappers cannot be specified in the `diambra_settings` and `diambra_wrappers` parameters, respectively.
 > The settings/wrappers you cannot specify in the `diambra_settings` and `diambra_wrappers` parameters are the following:
-> * `action_space` (settings)
-> * `attack_but_combination` (settings)
-> * `frame_shape` (settings)
-> * `no_op_max` (wrappers)
-> * `flatten` (wrappers)
-> * `actions_stack` (wrappers)
-> * `sticky_actions` (wrappers)
-> * `frame_stack` (wrappers)
-> * `dilation` (wrappers)
+> * `action_space` (settings): you can set it with the `env.env.action_space` argument.
+> * `attack_but_combination` (settings): you can set it with the `env.env.attack_but_combination` argument.
+> * `frame_shape` (settings): you can set it with the `env.screen_size` argument.
+> * `flatten` (wrappers): you cannot set it, since it is always `True`.
+> * `sticky_actions` (wrappers): you can set it with the `env.action_repeat` argument.
+> * `frame_stack` (wrappers): you can set it with the `env.frame_stack` argument.
+> * `dilation` (wrappers): you can set it with the `env.frame_stack_dilation` argument
 >
 > When you set the `action_repeat` cli argument greater than one (i.e., the `sticky_actions` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
 >
@@ -110,14 +115,8 @@ For insance, in the following example, the player one is selected and a step rat
 >
 > You must set the **`sync_env`** cli argument to **`True`**.
 
-## Multi-environments / Distributed training
-In order to train your agent with multiple environments or to perform a distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch (the number of *player* processes for decoupled algorithms). Thus, in case of coupled algorithm (e.g., `dreamer_v2`), if you want distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
-```bash
-diambra run -s=8 lightning run model --devices=2 sheeprl.py dreamer_v2 --env_id=diambra_doapp --num_envs=4 --sync_env=True --cnn_keys frame
-```
-
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run diambra run lightning run model --devices=1 sheeprl.py dreamer_v2 --env_id=diambra_doapp --sync_env=True --num_envs=1 --cnn_keys frame`
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run diambra run lightning run model --devices=1 sheeprl.py dreamer_v3 exp=dreamer_v3 env=diambra env.env.id=doapp env.sync_env=True num_envs=1 cnn_keys.encoder=[frame]`
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

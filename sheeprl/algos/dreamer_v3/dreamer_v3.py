@@ -539,7 +539,7 @@ def main(cfg: DictConfig):
         if (
             global_step <= learning_starts
             and cfg.checkpoint_path is None
-            and "minedojo" not in cfg.algo.actor._target_.lower()
+            and "minedojo" not in cfg.algo.actor.cls.lower()
         ):
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:

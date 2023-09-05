@@ -36,6 +36,7 @@ It is important to remind that not all the algorithms can work with images, so i
 The list of selectable algorithms is given below:
 * `dreamer_v1`
 * `dreamer_v2`
+* `dreamer_v3`
 * `p2e_dv1`
 * `p2e_dv2`
 * `ppo`
@@ -45,5 +46,5 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo --env_id PongNoFrameskip-v4 --cnn_keys rgb
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo exp=ppo env=atari env.env.id=PongNoFrameskip-v4 cnn_keys.encoder=[rgb]
 ```

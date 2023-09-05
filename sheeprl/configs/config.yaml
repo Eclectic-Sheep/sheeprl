@@ -22,7 +22,7 @@ checkpoint_path: null
 num_envs: 4
 clip_rewards: False
 cnn_keys:
-  encoder: ["rgb"]
+  encoder: []
   decoder: ${cnn_keys.encoder}
 mlp_keys:
   encoder: []
