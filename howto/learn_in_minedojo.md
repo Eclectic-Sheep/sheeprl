@@ -21,8 +21,16 @@ pip install -e .[minedojo]
 ```
 
 ## MineDojo environments
-It is possible to train your agents on all the tasks provided by MineDojo. You need to prefix `"minedojo"` to the `task_id` of the task on which you want to train your agent, and pass it to the `env_id` cli argument.
-For instance, you have to set the `env_id` cli argument to `"minedojo_open-ended"` to select the MineDojo open-ended environment.
+> **Note**
+>
+> So far, you can run an experiment with the MineDojo environments only with the Dreamers' agents.
+
+It is possible to train your agents on all the tasks provided by MineDojo. You need to select the *MineDojo* environment (`env=minedojo`) and set the `env.env.id` to the name of the task on which you want to train your agent. Moreover, you have to specify the class of the `MinedojoActor` (`algo.actor.cls=sheeprl.algos.<algo_name>.agent.MinedojoActor`).
+For instance, you can use the following command to select the MineDojo open-ended environment.
+
+```bash
+lightning run model sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ened algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor cnn_keys.encoder=[rgb]
+```
 
 ### Observation Space
 We slightly modified the observation space, by reshaping it (based on the idea proposed by Hafner in [DreamerV3](https://arxiv.org/abs/2301.04104)):
@@ -45,9 +53,9 @@ We decided to convert the 8 multi-discrete action space into a 3 multi-discrete 
 2. The second one maps the argument for the *craf* action.
 3. The third one maps the argument for the *equip*, *place*, and *destroy* actions. 
 
-Moreover, we restrict the look up/down actions between `min_pitch` and `max_pitch` degrees, where `min_pitch` and `max_pitch` are two parameters that can be defined through the `mine_min_pitch` and `mine_max_pitch` cli arguments, respectively.
+Moreover, we restrict the look up/down actions between `min_pitch` and `max_pitch` degrees, where `min_pitch` and `max_pitch` are two parameters that can be defined through the `env.min_pitch` and `env.max_pitch` cli arguments, respectively.
 In addition, we added the forward action when the agent selects one of the follwing actions: `jump`, `sprint`, and `sneak`.
-Finally we added sticky action for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `mine_sticky_jump` and `mine_sticky_attack` cli arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
+Finally we added sticky action for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `env.sticky_jump` and `env.sticky_attack` cli arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
 
 For more information about the MineDojo action space, check [here](https://docs.minedojo.org/sections/core_api/action_space.html).
 
@@ -59,5 +67,5 @@ For more information about the MineDojo action space, check [here](https://docs.
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py dreamer_v2 --env_id=minedojo_open-ended --cnn_keys rgb`, or `MINEDOJO_HEADLESS=1 lightning run model --devices=1 sheeprl.py dreamer_v2 --env_id=minedojo_open-ended --cnn_keys rgb`.
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 lightning run model --devices=1 sheeprl.py p2e_dv2 exp=p2e_dv2 env=minedojo env.env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.
