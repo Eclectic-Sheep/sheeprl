@@ -21,7 +21,13 @@ def devices(request):
 
 @pytest.fixture()
 def standard_args():
-    return ["num_envs=1", "dry_run=True", f"env.sync_env={_IS_WINDOWS}"]
+    return [
+        "hydra/job_logging=disabled",
+        "hydra/hydra_logging=disabled",
+        "num_envs=1",
+        "dry_run=True",
+        f"env.sync_env={_IS_WINDOWS}",
+    ]
 
 
 @pytest.fixture()
@@ -376,7 +382,7 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         keys.add("rb")
 
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(f"logs/runs/pytest_{start_time}")
+    # shutil.rmtree(f"logs/runs/pytest_{start_time}")
 
 
 @pytest.mark.timeout(60)
