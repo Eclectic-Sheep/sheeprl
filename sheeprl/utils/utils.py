@@ -48,6 +48,44 @@ def gae(
     return returns, advantages
 
 
+def nstep_returns(
+    rewards: Tensor,
+    values: Tensor,
+    dones: Tensor,
+    nstep_horizon: int,
+    gamma: float,
+) -> Tensor:
+    """
+    Compute the nstep return of the trajectory. If the trajectory has less then nsteps, uses all the steps.
+
+    Args:
+        rewards (Tensor): all rewards collected in the trajectory.
+        values (Tensor): all values collected in the trajectory.
+        dones (Tensor): all dones collected in the trajectory.
+        nstep_horizon (int): the number of steps to use for computing the estimate.
+        gamma (float): discout factor.
+
+    Returns:
+        Estimated returns.
+    """
+    if nstep_horizon > rewards.shape[0]:
+        nstep_horizon = rewards.shape[0]
+
+    # create the gammas vector of len num_steps
+    extra_shapes = rewards.shape[1:]
+    gammas = torch.tensor([gamma**i for i in range(nstep_horizon)], device=rewards.device).view(-1, *extra_shapes)
+
+    # for each time step, use the num_steps rewards and values to compute the nstep return
+    returns = torch.zeros_like(rewards)
+    for t in range(rewards.shape[0]):
+        n_to_consider = min(nstep_horizon, rewards.shape[0] - t)
+        returns[t] = (rewards[t : t + n_to_consider] * gammas[:n_to_consider]).sum() + (
+            gamma**n_to_consider
+        ) * values[t + n_to_consider - 1 : t + n_to_consider] * ~dones[t + n_to_consider - 1 : t + n_to_consider]
+
+    return returns
+
+
 def compute_lambda_values(
     rewards: Tensor,
     values: Tensor,

@@ -21,6 +21,7 @@ class MuzeroArgs(StandardArgs):
     max_trajectory_len: int = Arg(default=1000, help="The maximum length of a trajectory.")
     num_simulations: int = Arg(default=50, help="The number of MCTS simulations to run for each action.")
     gamma: float = Arg(default=0.997, help="The discount factor.")
+    nstep_horizon: int = Arg(default=50, help="The number of steps to use for computing the nstep return.")
     dirichlet_alpha: float = Arg(default=0.25, help="The alpha parameter of the Dirichlet distribution.")
     exploration_fraction: float = Arg(default=0.25, help="The fraction of the exploration phase.")
     checkpoint_every: int = Arg(default=-1, help="How often to make the checkpoint, -1 to deactivate the checkpoint.")

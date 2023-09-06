@@ -20,10 +20,11 @@ from sheeprl.algos.muzero.utils import Node, test, visit_softmax_temperature
 from sheeprl.data.buffers import Trajectory, TrajectoryReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
+from sheeprl.utils.utils import nstep_returns
 
 
 def apply_temperature(logits, temperature):
@@ -87,7 +88,7 @@ def main():
     assert isinstance(env.action_space, gym.spaces.Discrete), "Only discrete action space is supported"
 
     # Create the model
-    embedding_size = 10
+    embedding_size = 8
     full_support_size = 2 * args.support_size + 1
     agent = MuzeroAgent(
         representation=MLP(
@@ -159,7 +160,9 @@ def main():
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
                 visit_probs = visits_count / args.num_simulations
                 visit_probs = torch.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])
-                logits = apply_temperature(visit_probs, temperature)
+                tiny = torch.finfo(visit_probs.dtype).tiny
+                visit_logits = torch.log(torch.maximum(visit_probs, torch.tensor(tiny, device=device)))
+                logits = apply_temperature(visit_logits, temperature)
                 action = torch.distributions.Categorical(logits=logits).sample()
 
                 # Single environment step
@@ -174,6 +177,7 @@ def main():
                         "observations": obs.unsqueeze(0),
                         "rewards": torch.tensor([reward]).reshape(1, 1, -1),
                         "values": node.value().reshape(1, 1, -1),
+                        "dones": torch.tensor([done]).reshape(1, 1, -1),
                         "trajectory_steps": torch.tensor([update_step, trajectory_step]).reshape(1, 1, -1),
                     },
                     batch_size=(1, 1),
@@ -195,6 +199,9 @@ def main():
             aggregator.update("Game/ep_len_avg", trajectory_step)
             print("Finished episode")
             if len(steps_data) >= args.chunk_sequence_len:
+                steps_data["returns"] = nstep_returns(
+                    steps_data["rewards"], steps_data["values"], steps_data["dones"], args.nstep_horizon, args.gamma
+                )
                 rb.add(trajectory=steps_data)
 
         if len(rb) >= args.learning_starts:
@@ -204,7 +211,7 @@ def main():
                 data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
 
                 target_rewards = data["rewards"].squeeze(-1)
-                target_values = data["values"].squeeze(-1)
+                target_values = data["returns"].squeeze(-1)
                 target_policies = data["policies"].squeeze()
                 observations: torch.Tensor = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
                 actions = data["actions"].squeeze(2)
