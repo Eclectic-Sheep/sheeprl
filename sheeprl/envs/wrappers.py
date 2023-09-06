@@ -1,7 +1,7 @@
 import copy
 import time
 from collections import deque
-from typing import Any, Callable, Dict, Optional, Sequence, SupportsFloat, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -180,3 +180,45 @@ class FrameStack(gym.Wrapper):
             [self._frames[k].append(obs[k]) for _ in range(self._num_stack * self._dilation)]
             obs[k] = self._get_obs(k)
         return obs, infos
+
+
+class RewardAsObservationWrapper(gym.Wrapper):
+    def __init__(self, env: Env) -> None:
+        super().__init__(env)
+        self._env = env
+
+        reward_range = self._env.reward_range if hasattr(self._env, "reward_range") else (-np.inf, np.inf)
+        # The reward is assumed to be a scalar
+        if isinstance(self._env.observation_space, gym.spaces.Dict):
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "reward": gym.spaces.Box(*reward_range, (1,), np.int32),
+                    **{k: v for k, v in self._env.observation_space.items()},
+                }
+            )
+        else:
+            self.observation_space = gym.spaces.Dict(
+                {"obs": self._env.observation_space, "reward": gym.spaces.Box(*reward_range, (1,), np.int32)}
+            )
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
+
+    def _convert_obs(self, obs: Any, reward: Union[int, np.ndarray]) -> Dict[str, Any]:
+        reward_obs = (np.array(reward) if not isinstance(reward, np.ndarray) else reward).reshape(-1)
+        if isinstance(obs, dict):
+            obs["reward"] = reward_obs
+        else:
+            obs = {
+                "obs": obs,
+                "reward": reward_obs,
+            }
+        return obs
+
+    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        obs, reward, done, truncated, infos = self._env.step(action)
+        return self._convert_obs(obs, copy.deepcopy(reward)), reward, done, truncated, infos
+
+    def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any, Dict[str, Any]]:
+        obs, infos = self._env.reset(seed=seed, options=options)
+        return self._convert_obs(obs, 0), infos
