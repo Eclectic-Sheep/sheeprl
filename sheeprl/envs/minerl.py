@@ -55,6 +55,7 @@ class MineRLWrapper(core.Env):
         sticky_attack: Optional[int] = 30,
         sticky_jump: Optional[int] = 10,
         break_speed_multiplier: Optional[int] = 100,
+        countvect_obs: bool = True,
         **kwargs: Optional[Dict[Any, Any]],
     ):
         self._height = height
@@ -65,6 +66,7 @@ class MineRLWrapper(core.Env):
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
         self._break_speed_multiplier = break_speed_multiplier
+        self._countvect_obs = countvect_obs
         if "navigate" not in id.lower():
             kwargs.pop("extreme", None)
 
@@ -98,13 +100,49 @@ class MineRLWrapper(core.Env):
         obs_space = {
             "rgb": gymnasium.spaces.Box(0, 255, (3, 64, 64), np.uint8),
             "life_stats": gymnasium.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
-            "inventory": gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
-            "max_inventory": gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
+            "inventory": (
+                gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32)
+                if countvect_obs
+                else gymnasium.spaces.Box(0.0, np.inf, (len(self._env.observation_space["inventory"]),), np.float32)
+            ),
+            "max_inventory": (
+                gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32)
+                if countvect_obs
+                else gymnasium.spaces.Box(0.0, np.inf, (len(self._env.observation_space["inventory"]),), np.float32)
+            ),
         }
         if "compass" in self._env.observation_space.spaces:
             obs_space["compass"] = gymnasium.spaces.Box(-180, 180, (1,), np.float32)
         if "equipped_items" in self._env.observation_space.spaces:
-            obs_space["equipment"] = gymnasium.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32)
+            obs_space["equipment"] = (
+                gymnasium.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32)
+                if countvect_obs
+                else gymnasium.spaces.Box(
+                    0.0,
+                    1.0,
+                    (len(self._env.observation_space["equipped_items"]["mainhand"]["type"].values.tolist()),),
+                    np.int32,
+                )
+            )
+
+        # Mapping from names to ids (index in the vector)
+        if not countvect_obs:
+            self.inventory_size = obs_space["inventory"].shape[0]
+            self.inventory_item_to_id = dict(zip(self._env.observation_space["inventory"], range(self.inventory_size)))
+            if "equipment" in obs_space:
+                self.equip_size = obs_space["equipment"].shape[0]
+                self.equip_item_to_id = dict(
+                    zip(
+                        self._env.observation_space["equipped_items"]["mainhand"]["type"].values.tolist(),
+                        range(self.equip_size),
+                    )
+                )
+        else:
+            self.inventory_item_to_id = ITEM_NAME_TO_ID
+            self.inventory_size = N_ALL_ITEMS
+            if "equipment" in obs_space:
+                self.equip_item_to_id = ITEM_NAME_TO_ID
+                self.equip_size = N_ALL_ITEMS
         self.observation_space = gymnasium.spaces.Dict(obs_space)
         self._pos = {
             "pitch": 0.0,
@@ -137,19 +175,19 @@ class MineRLWrapper(core.Env):
         return converted_actions
 
     def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
-        equip = np.zeros(N_ALL_ITEMS, dtype=np.int32)
-        equip[ITEM_NAME_TO_ID[equipment["mainhand"]["type"]]] = 1
+        equip = np.zeros(self.equip_size, dtype=np.int32)
+        equip[self.equip_item_to_id[equipment["mainhand"]["type"]]] = 1
         return equip
 
     def _convert_inventory(self, inventory: Dict[str, Any]) -> Dict[str, np.ndarray]:
         # the inventory counts, as a vector with one entry for each Minecraft item
-        converted_inventory = {"inventory": np.zeros(N_ALL_ITEMS)}
+        converted_inventory = {"inventory": np.zeros(self.inventory_size)}
         for i, (item, quantity) in enumerate(inventory.items()):
             # count the items in the inventory
             if item == "air":
-                converted_inventory["inventory"][ITEM_NAME_TO_ID[item]] += 1
+                converted_inventory["inventory"][self.inventory_item_to_id[item]] += 1
             else:
-                converted_inventory["inventory"][ITEM_NAME_TO_ID[item]] += quantity
+                converted_inventory["inventory"][self.inventory_item_to_id[item]] += quantity
         converted_inventory["max_inventory"] = np.maximum(converted_inventory["inventory"], self._max_inventory)
         self._max_inventory = converted_inventory["max_inventory"].copy()
         return converted_inventory

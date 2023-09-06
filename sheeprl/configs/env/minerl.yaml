@@ -15,6 +15,7 @@ env:
     - ${env.max_pitch}
   seed: null
   break_speed_multiplier: ${env.break_speed_multiplier}
+  countvect_obs: True
   sticky_attack: ${env.sticky_attack}
   sticky_jump: ${env.sticky_jump}
   dense: True
