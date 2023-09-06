@@ -148,7 +148,7 @@ class MineRLWrapper(core.Env):
             "pitch": 0.0,
             "yaw": 0.0,
         }
-        self._max_inventory = np.zeros(N_ALL_ITEMS)
+        self._max_inventory = np.zeros(self.inventory_size)
         self.render_mode: str = "rgb_array"
         self.seed(seed=seed)
 
@@ -230,7 +230,7 @@ class MineRLWrapper(core.Env):
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         obs = self._env.reset()
-        self._max_inventory = np.zeros(N_ALL_ITEMS)
+        self._max_inventory = np.zeros(self.inventory_size)
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
         self._pos = {
