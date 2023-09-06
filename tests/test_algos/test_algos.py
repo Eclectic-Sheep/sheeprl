@@ -14,9 +14,6 @@ from lightning import Fabric
 
 from sheeprl.utils.imports import _IS_WINDOWS
 
-RM_SUBDIRS_RETRY_TIME = 0.1
-RM_SUBDIRS_N_RETRY = 10
-
 
 @pytest.fixture(params=["1", "2"])
 def devices(request):
@@ -69,18 +66,10 @@ def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool 
 
 def remove_test_dir(path: str) -> None:
     """Utility function to cleanup a temporary folder if it still exists."""
-    # allow the rmtree to fail once, wait and re-try.
-    # if the error is raised again, fail
-    err_count = 0
-    while True:
-        try:
-            shutil.rmtree(path, False, None)
-            break
-        except (OSError, WindowsError):
-            err_count += 1
-            if err_count > RM_SUBDIRS_N_RETRY:
-                warnings.warn("Unable to delete folder {} after {} tentatives.".format(path, RM_SUBDIRS_N_RETRY))
-            time.sleep(RM_SUBDIRS_RETRY_TIME)
+    try:
+        shutil.rmtree(path, False, None)
+    except (OSError, WindowsError):
+        warnings.warn("Unable to delete folder {}.".format(path))
 
 
 @pytest.mark.timeout(60)
