@@ -67,7 +67,7 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 Two options exist for using SheepRL. One can either clone the repo and install the local version, or one can pip install the framework using the GitHub clone URL. Instructions for both methods are shown below.
 
 <details>
-<summary>Cloning and installing a local version</summary>
+  <summary>Cloning and installing a local version</summary>
 
 First, clone the repo with:
 
@@ -89,7 +89,7 @@ pip install .
 </details>
 
 <details>
-    <summary>Pip installing the framework from the GitHub repo</summary>
+  <summary>Installing the framework from the GitHub repo</summary>
 
 If you haven't already done so, create an environment with your choice of venv or conda.
 
@@ -118,16 +118,13 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 
 </details>
 
+<details>
+  <summary>Installing on an M-series Mac</summary>
+
 > **Note**
 >
-> if you are on an M-series mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
->
-> if you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
->
-> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
+> if you are on an M-series Mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
 
-<details>
-    <summary>Installing SWIG</summary>
 
 It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://formulae.brew.sh/formula/swig) to support [Gym](https://github.com/openai/gym).
 
@@ -141,6 +138,17 @@ pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sh
 ```
 
 </details>
+
+<details>
+  <summary>MineRL, MineDojo and DIAMBRA</summary>
+
+> **Note**
+>
+> If you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
+>
+> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
+
+</details>  
 
 Now you can use one of the already available algorithms, or create your own.
 
@@ -160,7 +168,7 @@ That's all it takes to train an agent with SheepRL! 🎉
 
 > **Note**
 >
-> you can find more information about the observation space by following this [link](./howto/select_observations.md).
+> You can find more information about the observation space by checking [the related howto section](./howto/select_observations.md).
 
 ### :chart_with_upwards_trend: Check your results
 
