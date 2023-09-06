@@ -17,7 +17,10 @@ The algorithms that can work with both image and vector observations are specifi
 * Plan2Explore (Dreamer-V1)
 
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover you can select all/some/none of the image observations.
-You just need to pass the `mlp_keys` and `cnn_keys` to the script to select the vector observations and the image observations, respectively.
+You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decoder to the script to select the vector observations and the image observations, respectively.
+> **Note**
+>
+> The `mlp_keys` and the `cnn_keys` specified for the encoder are used by default as `mlp_keys` and `cnn_keys` of the decoder, respectively.
 
 > **Recommended**
 >
@@ -25,24 +28,24 @@ You just need to pass the `mlp_keys` and `cnn_keys` to the script to select the 
 
 For instance, to train the ppo algorithm on the *walker walk* task provided by *DMC* using image observations and only the `orientations` and `velocity` as vector observation, you have to run the following command:
 ```bash
-lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --mlp_keys orientations velocity
+lightning run model sheeprl.py ppo exp=ppo env=dmc env.id=walker_walk cnn_keys.encoder=[rgb] mlp_keys.encoder=[orientations,velocity]
 ```
 
 > **Note**
 >
-> By default the `mlp_keys` and `cnn_keys` arguments are set to None, so no observations are selected for the training. This will raise an exception, because at least one of them must be set.
+> By default the `mlp_keys` and `cnn_keys` arguments are set to `[]` (empty list), so no observations are selected for the training. This might raise an exception: the agent tries to automatically set the *mlp* or *cnn* keys, but it is not always possible, so it is **strongly recommended to properly set them**.
 
-It is important to know the observations the environment provides, for instance, the `dmc_walker_walk` provides both vector observations and image observations, whereas all the atari environments provide only the image observations. 
+It is important to know the observations the environment provides, for instance, the *DIAMBRA* environments provides both vector observations and image observations, whereas all the atari environments provide only the image observations. 
 > **Note**
 >
 > For some environments provided by gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the `cnn_keys` args:
-> `lightning run model sheeprl.py ppo --cnn_keys rgb`
+> `lightning run model sheeprl.py ppo cnn_keys.encoder=[rgb]`
 
 #### Frame Stack
 For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-lightning run model sheeprl.py ppo --env_id=dmc_walker_walk --cnn_keys rgb --frame_stack=3
+lightning run model sheeprl.py ppo --env_id=dmc_walker_walk "cnn_keys.encoder=[rgb]" env.frame_stack=3
 ```
 
 #### How to choose the correct keys
@@ -58,6 +61,16 @@ There can be three possible scenarios:
 3. You want to **use both** the **vector** and **image** observations: You must specify the *cnn key* (as point 2). Instead, for the vector observations, you have two possibilities:
    1. if the environment provides more than one vector observation, then you **must choose between them**; 
    2. if the environment provides only one vector observation, you **must specify** the default vector observation key, i.e., **`state`**.
+
+#### Different observations for the Encoder and the Decoder
+You can specify different observations for the encoder and the decoder, but there are some constraints:
+1. The *mlp* and *cnn* keys of the decoder must be contained in the *mlp* and *cnn* keys of the decoder respectively.
+2. Both the intersections between the *mlp* and *cnn* keys of the encoder and decoder and cannot be empty.
+
+You can specify the *mlp* and *cnn* keys of the decoder as follows:
+```bash
+lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.id=custom_navigate mlp_keys.encoder=[life_stats,inventory,max_inventory] mlp_keys.decoder=[life_stats,inventory]
+```
 
 ### Vector observations algorithms
 The algorithms which works with only vector observations are reported here:

@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - dreamer_v1
+  - override /algo: p2e_dv1
+  - _self_
+
+exploration_steps: 5000000

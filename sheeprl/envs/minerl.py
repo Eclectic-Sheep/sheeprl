@@ -47,7 +47,7 @@ ITEM_NAME_TO_ID = dict(zip(mc.ALL_ITEMS, range(N_ALL_ITEMS)))
 class MineRLWrapper(core.Env):
     def __init__(
         self,
-        task_id: str,
+        id: str,
         height: int = 64,
         width: int = 64,
         pitch_limits: Tuple[int, int] = (-60, 60),
@@ -65,10 +65,10 @@ class MineRLWrapper(core.Env):
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
         self._break_speed_multiplier = break_speed_multiplier
-        if "navigate" not in task_id.lower():
+        if "navigate" not in id.lower():
             kwargs.pop("extreme", None)
 
-        self._env = CUSTOM_ENVS[task_id.lower()](break_speed=break_speed_multiplier, **kwargs).make()
+        self._env = CUSTOM_ENVS[id.lower()](break_speed=break_speed_multiplier, **kwargs).make()
         self.ACTIONS_MAP = {0: {}}
         act_idx = 1
         for act in self._env.action_space:

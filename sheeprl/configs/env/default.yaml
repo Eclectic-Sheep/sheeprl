@@ -1,0 +1,8 @@
+sync_env: False
+screen_size: 64
+frame_stack: 1
+frame_stack_dilation: 1
+grayscale: False
+action_repeat: 1
+max_episode_steps: null
+capture_video: True

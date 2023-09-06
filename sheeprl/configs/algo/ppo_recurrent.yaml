@@ -1,0 +1,14 @@
+defaults:
+  - ppo
+  - _self_
+
+name: ppo_recurrent
+
+lstm:
+  hidden_size: ${algo.dense_units}
+
+actor:
+  pre_lstm_hidden_size: ${algo.dense_units}
+
+critic:
+  pre_lstm_hidden_size: ${algo.dense_units}

@@ -1,0 +1,6 @@
+_target_: torch.optim.SGD
+lr: 2e-04
+momentum: 0
+nesterov: false
+weight_decay: 0
+dampening: 0

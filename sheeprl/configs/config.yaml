@@ -1,0 +1,29 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+  - algo: default.yaml
+  - env: default.yaml
+  - exp: null
+  - hydra: default.yaml
+
+seed: 42
+num_threads: 1
+exp_name: "default"
+dry_run: False
+torch_deterministic: False
+root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+run_name: ${env.id}_${exp_name}_${seed}
+checkpoint_every: 100
+checkpoint_path: null
+num_envs: 4
+clip_rewards: False
+cnn_keys:
+  encoder: []
+  decoder: ${cnn_keys.encoder}
+mlp_keys:
+  encoder: []
+  decoder: ${mlp_keys.encoder}
+buffer:
+  memmap: True

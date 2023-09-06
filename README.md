@@ -29,7 +29,7 @@ and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/
 
 The actions supported by sheeprl agents are:
 | Algorithm                 | Continuous         | Discrete           | Multi-Discrete     |
-| ------------------------- | -------------------| ------------------ | ------------------ |
+| ------------------------- | ------------------ | ------------------ | ------------------ |
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
@@ -67,7 +67,7 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 Two options exist for using SheepRL. One can either clone the repo and install the local version, or one can pip install the framework using the GitHub clone URL. Instructions for both methods are shown below.
 
 <details>
-<summary>Cloning and installing a local version</summary>
+  <summary>Cloning and installing a local version</summary>
 
 First, clone the repo with:
 
@@ -89,7 +89,7 @@ pip install .
 </details>
 
 <details>
-    <summary>Pip installing the framework from the GitHub repo</summary>
+  <summary>Installing the framework from the GitHub repo</summary>
 
 If you haven't already done so, create an environment with your choice of venv or conda.
 
@@ -118,16 +118,13 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 
 </details>
 
+<details>
+  <summary>Installing on an M-series Mac</summary>
+
 > **Note**
 >
-> if you are on an M-series mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
->
-> if you want to install the minedojo environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
->
-> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
+> if you are on an M-series Mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
 
-<details>
-    <summary>Installing SWIG</summary>
 
 It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://formulae.brew.sh/formula/swig) to support [Gym](https://github.com/openai/gym).
 
@@ -142,12 +139,23 @@ pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sh
 
 </details>
 
+<details>
+  <summary>MineRL, MineDojo and DIAMBRA</summary>
+
+> **Note**
+>
+> If you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
+>
+> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
+
+</details>  
+
 Now you can use one of the already available algorithms, or create your own.
 
 For example, to train a PPO agent on the CartPole environment with only vector-like observations, just run
 
 ```bash
-python sheeprl.py ppo --env_id CartPole-v1
+python sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1
 ```
 
 You check all the available algorithms with
@@ -160,7 +168,7 @@ That's all it takes to train an agent with SheepRL! 🎉
 
 > **Note**
 >
-> you can find more information about the observation space by following this [link](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md).
+> You can find more information about the observation space by checking [the related howto section](./howto/select_observations.md).
 
 ### :chart_with_upwards_trend: Check your results
 
@@ -179,21 +187,17 @@ What you run is the PPO algorithm with the default configuration. But you can al
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 
 ```bash
-python sheeprl.py ppo --env_id CartPole-v1 --num_envs 8
+python sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1 num_envs=8
 ```
 
-All the available arguments, with their descriptions, are listed in the `args.py` file under the algorithm's folder or can be retrieved by passing `-h` argument:
-
-```bash
-python sheeprl.py ppo -h
-```
+All the available arguments, with their descriptions, are listed in the `sheeprl/config` directory. You can find more information about the hierarchy of configs [here](./howto/run_experiments.md).
 
 ### Running with Lightning Fabric
 
 To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo --env_id CartPole-v1
+lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
@@ -207,10 +211,9 @@ The repository is structured as follows:
   - `<algorithm>.py`: contains the implementation of the algorithm.
   - `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm, if present.
   - `agent`: optional, contains the implementation of the agent.
-  - `args.py`: contains the arguments of the algorithm, with their default values and descriptions.
   - `loss.py`: contains the implementation of the loss functions of the algorithm.
   - `utils.py`: contains utility functions for the algorithm.
-
+- `configs`: contains the default configs of the algorithms.
 - `data`: contains the implementation of the data buffers.
 - `envs`: contains the implementation of the environment wrappers.
 - `models`: contains the implementation of the some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
@@ -265,7 +268,7 @@ For the buffer implementation, we choose to use a wrapper around a [TensorDict](
 
 TensorDict comes handy since we can easily add custom fields to the buffer as if we are working with dictionaries, but we can also easily perform operations on them as if we are working with tensors.
 
-This flexibility makes it very simple to implement, with the single class `ReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
+This flexibility makes it very simple to implement, with the classes `ReplayBuffer`, `SequentialReplayBuffer`, `EpisodeBuffer`, and `AsyncReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
 
 ### :mag: Technical details
 

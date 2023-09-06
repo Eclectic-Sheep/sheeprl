@@ -1,0 +1,8 @@
+defaults:
+  - sac
+  - _self_
+
+name: droq
+
+critic:
+  dropout: 0.01

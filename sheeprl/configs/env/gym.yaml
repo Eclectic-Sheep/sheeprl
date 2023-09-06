@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - _self_
+
+id: CartPole-v1
+mask_velocities: False
+
+env:
+  _target_: gymnasium.make
+  id: ${env.id}
+  render_mode: rgb_array

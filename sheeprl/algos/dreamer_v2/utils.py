@@ -1,11 +1,12 @@
 import os
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
+from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
@@ -13,9 +14,7 @@ from sheeprl.utils.env import make_dict_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v1.agent import PlayerDV1
-    from sheeprl.algos.dreamer_v1.args import DreamerV1Args
     from sheeprl.algos.dreamer_v2.agent import PlayerDV2
-    from sheeprl.algos.dreamer_v2.args import DreamerV2Args
 
 
 def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) -> Tensor:
@@ -83,9 +82,7 @@ def compute_lambda_values(
 def test(
     player: Union["PlayerDV2", "PlayerDV1"],
     fabric: Fabric,
-    args: Union["DreamerV2Args", "DreamerV1Args"],
-    cnn_keys: List[str],
-    mlp_keys: List[str],
+    cfg: DictConfig,
     test_name: str = "",
     sample_actions: bool = False,
 ):
@@ -101,13 +98,11 @@ def test(
             Default to "".
     """
     log_dir = fabric.logger.log_dir if len(fabric.loggers) > 0 else os.getcwd()
-    env: gym.Env = make_dict_env(
-        args.env_id, args.seed, 0, args, log_dir, "test" + (f"_{test_name}" if test_name != "" else "")
-    )()
+    env: gym.Env = make_dict_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
     device = fabric.device
-    next_obs = env.reset(seed=args.seed)[0]
+    next_obs = env.reset(seed=cfg.seed)[0]
     for k in next_obs.keys():
         next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
     player.num_envs = 1
@@ -116,9 +111,9 @@ def test(
         # Act greedly through the environment
         preprocessed_obs = {}
         for k, v in next_obs.items():
-            if k in cnn_keys:
+            if k in cfg.cnn_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
-            elif k in mlp_keys:
+            elif k in cfg.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
             preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
@@ -132,7 +127,7 @@ def test(
         next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
         for k in next_obs.keys():
             next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
-        done = done or truncated or args.dry_run
+        done = done or truncated or cfg.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
     if len(fabric.loggers) > 0:

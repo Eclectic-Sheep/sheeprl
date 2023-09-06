@@ -1,3 +1,7 @@
+import os
+
+ROOT_DIR = os.path.dirname(__file__)
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,4 +31,4 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

@@ -1,0 +1,34 @@
+defaults:
+  - default
+  - /optim@actor.optimizer: adam
+  - /optim@critic.optimizer: adam
+  - /optim@alpha.optimizer: adam
+  - _self_
+
+name: sac
+
+gamma: 0.99
+tau: 0.005
+hidden_size: 256
+
+actor:
+  hidden_size: ${algo.hidden_size}
+
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4
+
+critic:
+  n: 2
+  hidden_size: ${algo.hidden_size}
+  target_network_frequency: 1
+  
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4
+
+alpha:
+  alpha: 1.0
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4
