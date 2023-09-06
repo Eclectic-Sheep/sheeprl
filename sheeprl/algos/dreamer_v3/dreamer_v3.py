@@ -129,12 +129,12 @@ def train(
 
     # Compute the distribution over the reconstructed observations
     po = {
-        k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cfg.cnn_keys.encoder
+        k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cfg.cnn_keys.decoder
     }
     po.update(
         {
             k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
-            for k in cfg.mlp_keys.encoder
+            for k in cfg.mlp_keys.decoder
         }
     )
 
