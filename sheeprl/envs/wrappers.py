@@ -219,6 +219,8 @@ class RewardAsObservationWrapper(gym.Wrapper):
         obs, reward, done, truncated, infos = self._env.step(action)
         return self._convert_obs(obs, copy.deepcopy(reward)), reward, done, truncated, infos
 
-    def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any, Dict[str, Any]]:
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Dict[str, Any]]:
         obs, infos = self._env.reset(seed=seed, options=options)
         return self._convert_obs(obs, 0), infos
