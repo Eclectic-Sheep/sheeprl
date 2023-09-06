@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import time
+import warnings
 from contextlib import closing, nullcontext
 from pathlib import Path
 from unittest import mock
@@ -12,6 +13,9 @@ import torch.distributed as dist
 from lightning import Fabric
 
 from sheeprl.utils.imports import _IS_WINDOWS
+
+RM_SUBDIRS_RETRY_TIME = 0.1
+RM_SUBDIRS_N_RETRY = 10
 
 
 @pytest.fixture(params=["1", "2"])
@@ -45,7 +49,7 @@ def mock_env_and_destroy(devices):
         dist.destroy_process_group()
 
 
-def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool = True):
+def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool = True) -> None:
     fabric = Fabric(accelerator="cpu")
 
     # check the presence of the checkpoint
@@ -61,6 +65,22 @@ def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool 
 
     # check args are saved
     assert os.path.exists(ckpt_path.parent.parent / ".hydra" / "config.yaml")
+
+
+def remove_test_dir(path: str) -> None:
+    """Utility function to cleanup a temporary folder if it still exists."""
+    # allow the rmtree to fail once, wait and re-try.
+    # if the error is raised again, fail
+    err_count = 0
+    while True:
+        try:
+            shutil.rmtree(path, False, None)
+            break
+        except (OSError, WindowsError):
+            err_count += 1
+            if err_count > RM_SUBDIRS_N_RETRY:
+                warnings.warn("Unable to delete folder {} after {} tentatives.".format(path, RM_SUBDIRS_N_RETRY))
+            time.sleep(RM_SUBDIRS_RETRY_TIME)
 
 
 @pytest.mark.timeout(60)
@@ -93,7 +113,7 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -126,7 +146,7 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -178,7 +198,7 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -228,7 +248,7 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-        shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -256,7 +276,7 @@ def test_ppo(standard_args, start_time, env_id):
                 task.__dict__[command]()
 
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -305,7 +325,7 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         check_checkpoint(
             Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"}
         )
-        shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -330,7 +350,7 @@ def test_ppo_recurrent(standard_args, start_time):
                 task.__dict__[command]()
 
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -439,7 +459,7 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -502,7 +522,7 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -559,7 +579,7 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
@@ -617,4 +637,4 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    shutil.rmtree(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
