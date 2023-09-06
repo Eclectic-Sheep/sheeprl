@@ -176,7 +176,10 @@ class MineRLWrapper(core.Env):
 
     def _convert_equipment(self, equipment: Dict[str, Any]) -> np.ndarray:
         equip = np.zeros(self.equip_size, dtype=np.int32)
-        equip[self.equip_item_to_id[equipment["mainhand"]["type"]]] = 1
+        try:
+            equip[self.equip_item_to_id[equipment["mainhand"]["type"]]] = 1
+        except KeyError:
+            equip["air"] = 1
         return equip
 
     def _convert_inventory(self, inventory: Dict[str, Any]) -> Dict[str, np.ndarray]:
