@@ -25,7 +25,6 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import make_env
 
 
 def make_env(
@@ -113,8 +112,8 @@ class Node:
         reward (float): The reward of the node.
         value_sum (float): The sum of the values of the node.
         visit_count (int): The number of times the node has been visited.
-        children (dict[int, Node]): The children of the node, one for each action where actions are represented as integers
-            running from 0 to num_actions - 1.
+        children (dict[int, Node]): The children of the node, one for each action where actions are represented
+            as integers running from 0 to num_actions - 1.
     """
 
     def __init__(self, prior: float, image: torch.Tensor = None):
@@ -376,7 +375,8 @@ def player(
                 for i, agent_final_info in enumerate(info["final_info"]):
                     if agent_final_info is not None and "episode" in agent_final_info:
                         fabric.print(
-                            f"Rank-{global_rank}: global_step={global_step}, reward={agent_final_info['episode']['r'][0]}"
+                            f"Rank-{global_rank}: global_step={global_step},"
+                            f"reward={agent_final_info['episode']['r'][0]}"
                         )
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -517,7 +517,8 @@ def trainer(
         #             "update_step": global_step,
         #             "scheduler": scheduler.state_dict() if args.anneal_lr else None,
         #         }
-        #         # fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+        #         # fabric.call(
+        #         "on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
         #     return
 
         for _ in range(args.update_epochs):
@@ -589,14 +590,16 @@ def trainer(
         # Checkpoint model on last rank: send it everything
         if (args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0) or args.dry_run:
             if global_rank == world_collective.world_size - 2:
-                state = {
+                {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "args": asdict(args),
                     "update_step": global_step,
                     "scheduler": scheduler.state_dict() if args.anneal_lr else None,
                 }
-                # fabric.call("on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state)
+                # fabric.call(
+                #     "on_checkpoint_trainer", players_trainer_collective=players_trainer_collective, state=state
+                # )
 
 
 def buffer(

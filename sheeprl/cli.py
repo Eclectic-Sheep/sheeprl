@@ -47,8 +47,10 @@ def register_command(command, task, name: Optional[str] = None):
                 )
             if name in decoupled_tasks and strategy is not None:
                 warnings.warn(
-                    "You are running a decoupled algorithm through the Lightning CLI and you have specified a strategy: "
-                    f"`lightning run model --strategy={strategy}`. When a decoupled algorithm is run the default strategy will be "
+                    "You are running a decoupled algorithm through the Lightning CLI "
+                    "and you have specified a strategy: "
+                    f"`lightning run model --strategy={strategy}`. "
+                    "When a decoupled algorithm is run the default strategy will be "
                     "a `lightning.fabric.strategies.DDPStrategy`."
                 )
                 os.environ.pop("LT_STRATEGY")
@@ -79,7 +81,7 @@ for module, algos in tasks.items():
     for algo in algos:
         try:
             algo_name = algo
-            task = importlib.import_module(f"sheeprl.algos.{module}.{algo_name}")
+            task = importlib.import_module(f"{module}.{algo_name}")
 
             for command in task.__all__:
                 command = task.__dict__[command]

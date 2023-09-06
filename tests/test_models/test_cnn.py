@@ -92,7 +92,7 @@ def test_cnn_cast_dropout_args(batch_size, input_channels, hidden_channels, laye
     assert all([x.p == 0.6 for x in cnn.model if isinstance(x, nn.Dropout)])
 
 
-def test_cnn_cast_dropout_args(batch_size, input_channels, hidden_channels, layer_args):
+def test_cnn_cast_multiple_dropout_args(batch_size, input_channels, hidden_channels, layer_args):
     cnn = CNN(
         input_channels=input_channels,
         hidden_channels=hidden_channels,

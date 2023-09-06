@@ -1,6 +1,6 @@
 import math
 import os
-from typing import Optional, Union
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -103,11 +103,11 @@ class Node:
         reward (float): The reward of the node.
         value_sum (float): The sum of the values of the node.
         visit_count (int): The number of times the node has been visited.
-        children (dict[int, Node]): The children of the node, one for each action where actions are represented as integers
-            running from 0 to num_actions - 1.
+        children (dict[int, Node]): The children of the node, one for each action where actions are represented
+            as integers running from 0 to num_actions - 1.
     """
 
-    def __init__(self, prior: float, image: torch.Tensor = None, device=Union["cpu", torch.device]):
+    def __init__(self, prior: float, image: torch.Tensor = None, device=torch.device):
         """A Node in the MCTS tree.
 
         Args:

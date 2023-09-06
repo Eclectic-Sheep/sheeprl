@@ -1,6 +1,11 @@
+import os
 import random
+import shutil
 import typing
-from typing import List, Optional, Union
+import uuid
+import warnings
+from pathlib import Path
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -16,6 +21,8 @@ class ReplayBuffer:
         n_envs: int = 1,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        obs_keys: Sequence[str] = ("observations",),
     ):
         """A replay buffer which internally uses a TensorDict.
 
@@ -35,12 +42,23 @@ class ReplayBuffer:
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._memmap_dir = memmap_dir
         if self._memmap:
+            if memmap_dir is None:
+                warnings.warn(
+                    "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                    " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                    UserWarning,
+                )
+            else:
+                self._memmap_dir = Path(self._memmap_dir)
+                self._memmap_dir.mkdir(parents=True, exist_ok=True)
             self._buffer = None
         else:
             self._buffer = TensorDict({}, batch_size=[buffer_size, n_envs], device=device)
         self._pos = 0
         self._full = False
+        self.obs_keys = obs_keys
 
     @property
     def buffer(self) -> Optional[TensorDictBase]:
@@ -51,7 +69,7 @@ class ReplayBuffer:
         return self._buffer_size
 
     @property
-    def full(self) -> int:
+    def full(self) -> bool:
         return self._full
 
     @property
@@ -59,7 +77,9 @@ class ReplayBuffer:
         return self._n_envs
 
     @property
-    def shape(self) -> Size:
+    def shape(self) -> Optional[Size]:
+        if self.buffer is None:
+            return None
         return self.buffer.shape
 
     @property
@@ -91,6 +111,8 @@ class ReplayBuffer:
             data = data.buffer
         elif not isinstance(data, TensorDictBase):
             raise TypeError("`data` must be a TensorDictBase or a sheeprl.data.ReplayBuffer")
+        if data is None:
+            raise RuntimeError("The `data` replay buffer must be not None")
         if len(data.shape) != 2:
             raise RuntimeError(
                 "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
@@ -112,19 +134,24 @@ class ReplayBuffer:
         if self._memmap and self._buffer is None:
             self._buffer = TensorDict(
                 {
-                    k: MemmapTensor((self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype, device=v.device)
+                    k: MemmapTensor(
+                        (self._buffer_size, self._n_envs, *v.shape[2:]),
+                        dtype=v.dtype,
+                        device=v.device,
+                        filename=None if self._memmap_dir is None else self._memmap_dir / f"{k}.memmap",
+                    )
                     for k, v in data_to_store.items()
                 },
                 batch_size=[self._buffer_size, self._n_envs],
                 device=self.device,
             )
-            self._buffer.memmap_()
+            self._buffer.memmap_(prefix=self._memmap_dir)
         self._buffer[idxes, :] = data_to_store
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int, sample_next_obs: bool = False, clone: bool = False) -> TensorDictBase:
+    def sample(self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, **kwargs) -> TensorDictBase:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
@@ -173,16 +200,21 @@ class ReplayBuffer:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         buf = self._buffer[batch_idxes, env_idxes]
         if sample_next_obs:
-            buf["next_observations"] = self._buffer["observations"][(batch_idxes + 1) % self._buffer_size, env_idxes]
+            for k in self.obs_keys:
+                buf[f"next_{k}"] = self._buffer[k][(batch_idxes + 1) % self._buffer_size, env_idxes]
         return buf
 
     def __getitem__(self, key: str) -> torch.Tensor:
         if not isinstance(key, str):
             raise TypeError("`key` must be a string")
+        if self._buffer is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         return self._buffer.get(key)
 
     def __setitem__(self, key: str, t: Tensor) -> None:
-        self.buffer.set(key, t, inplace=True)
+        if self._buffer is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
+        self._buffer.set(key, t, inplace=True)
 
 
 class Trajectory(TensorDict):
@@ -266,8 +298,9 @@ class SequentialReplayBuffer(ReplayBuffer):
         n_envs: int = 1,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
     ):
-        super().__init__(buffer_size, n_envs, device, memmap)
+        super().__init__(buffer_size, n_envs, device, memmap, memmap_dir)
 
     def sample(
         self,
@@ -306,6 +339,8 @@ class SequentialReplayBuffer(ReplayBuffer):
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
+        if self._buffer is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         if batch_dim > self._buffer.shape[0]:
             raise ValueError(
                 f"n_samples * batch size ({batch_dim}) is larger than the replay buffer size ({self._buffer.shape[0]})"
@@ -331,7 +366,8 @@ class SequentialReplayBuffer(ReplayBuffer):
             )
             if len(valid_idxes) < batch_dim:
                 raise ValueError(
-                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), check also sequence_length"
+                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), "
+                    "check also sequence_length"
                 )
             # start_idxes are the indices of the first elements of the sequences
             start_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_dim,), device=self.device)]
@@ -384,7 +420,8 @@ class EpisodeBuffer:
 
     Args:
         buffer_size (int): The capacity of the buffer.
-        sequence_length (int): The length of the sequences of the samples (an episode cannot be shorter than the episode length).
+        sequence_length (int): The length of the sequences of the samples
+            (an episode cannot be shorter than the episode length).
         device (Union[torch.device, str]): The device where the buffer is created. Defaults to "cpu".
         memmap (bool): Whether to memory-mapping the buffer.
     """
@@ -395,6 +432,7 @@ class EpisodeBuffer:
         sequence_length: int,
         device: Union[device, str] = "cpu",
         memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
     ) -> None:
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
@@ -402,16 +440,27 @@ class EpisodeBuffer:
             raise ValueError(f"The sequence length must be greater than zero, got: {sequence_length}")
         if buffer_size < sequence_length:
             raise ValueError(
-                f"The sequence length must be lower than the buffer size, got: bs = {buffer_size} and sl = {sequence_length}"
+                "The sequence length must be lower than the buffer size, "
+                f"got: bs = {buffer_size} and sl = {sequence_length}"
             )
         self._buffer_size = buffer_size
         self._sequence_length = sequence_length
-        self._buffer = []
-        self._cum_lengths = []
+        self._buffer: List[TensorDictBase] = []
+        self._cum_lengths: List[int] = []
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._memmap_dir = memmap_dir
+        if memmap_dir is None:
+            warnings.warn(
+                "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                UserWarning,
+            )
+        else:
+            self._memmap_dir = Path(self._memmap_dir)
+            self._memmap_dir.mkdir(parents=True, exist_ok=True)
         self._chunk_length = torch.arange(sequence_length, device=self.device).reshape(1, -1)
 
     @property
@@ -475,16 +524,44 @@ class EpisodeBuffer:
         if self.full or len(self) + ep_len > self._buffer_size:
             cum_lengths = np.array(self._cum_lengths)
             mask = (len(self) - cum_lengths + ep_len) <= self._buffer_size
-            self._buffer = self._buffer[mask.argmax() + 1 :]
-            cum_lengths = cum_lengths[mask.argmax() + 1 :] - cum_lengths[mask.argmax()]
+            last_to_remove = mask.argmax()
+            # Remove all memmaped episodes
+            if self._memmap and self._memmap_dir is not None:
+                for _ in range(last_to_remove + 1):
+                    filename = self._buffer[0][self._buffer[0].sorted_keys[0]].filename
+                    for k in self._buffer[0].sorted_keys:
+                        f = self._buffer[0][k].file
+                        if f is not None:
+                            f.close()
+                    del self._buffer[0]
+                    shutil.rmtree(os.path.dirname(filename))
+            else:
+                self._buffer = self._buffer[last_to_remove + 1 :]
+            cum_lengths = cum_lengths[last_to_remove + 1 :] - cum_lengths[last_to_remove]
             self._cum_lengths = cum_lengths.tolist()
         self._cum_lengths.append(len(self) + ep_len)
         if self._memmap:
-            episode.memmap_()
+            episode_dir = None
+            if self._memmap_dir is not None:
+                episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
+                episode_dir.mkdir(parents=True, exist_ok=True)
+            for k, v in episode.items():
+                episode[k] = MemmapTensor.from_tensor(
+                    v,
+                    filename=None if episode_dir is None else episode_dir / f"{k}.memmap",
+                    transfer_ownership=False,
+                )
+            episode.memmap_(prefix=episode_dir)
         episode.to(self.device)
         self._buffer.append(episode)
 
-    def sample(self, batch_size: int, n_samples: int = 1, prioritize_ends: bool = False) -> TensorDictBase:
+    def sample(
+        self,
+        batch_size: int,
+        n_samples: int = 1,
+        prioritize_ends: bool = False,
+        clone: bool = False,
+    ) -> TensorDictBase:
         """Sample trajectories from the replay buffer.
 
         Args:
@@ -518,4 +595,172 @@ class EpisodeBuffer:
             )
             indices = start_idxes + self._chunk_length
             samples.append(self._buffer[i][indices])
-        return torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        samples = torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        if clone:
+            return samples.clone()
+        return samples
+
+
+class AsyncReplayBuffer:
+    def __init__(
+        self,
+        buffer_size: int,
+        n_envs: int = 1,
+        device: Union[device, str] = "cpu",
+        memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        sequential: bool = False,
+    ):
+        """An async replay buffer which internally uses a TensorDict. This replay buffer
+        saves a experiences independently for every environment. When new data has to be added, it expects
+        the TensorDict or the ReplayBuffer to be added to have a 2D shape dimension as [T, B], where T`
+        represents the sequence length, while `B` is the number of environments to be batched.
+
+        Args:
+            buffer_size (int): The buffer size.
+            n_envs (int, optional): The number of environments. Defaults to 1.
+            device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
+            memmap (bool, optional): Whether to memory-mapping the buffer.
+        """
+        if buffer_size <= 0:
+            raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
+        if n_envs <= 0:
+            raise ValueError(f"The number of environments must be greater than zero, got: {n_envs}")
+        self._buffer_size = buffer_size
+        self._n_envs = n_envs
+        if isinstance(device, str):
+            device = torch.device(device=device)
+        self._device = device
+        self._memmap = memmap
+        self._memmap_dir = memmap_dir
+        self._sequential = sequential
+        self._buffer: Optional[Sequence[ReplayBuffer]] = None
+        if self._memmap_dir is not None:
+            self._memmap_dir = Path(self._memmap_dir)
+        if self._memmap:
+            if memmap_dir is None:
+                warnings.warn(
+                    "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                    " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                    UserWarning,
+                )
+            else:
+                self._memmap_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def buffer(self) -> Optional[Sequence[ReplayBuffer]]:
+        return tuple(self._buffer)
+
+    @property
+    def buffer_size(self) -> int:
+        return self._buffer_size
+
+    @property
+    def full(self) -> Optional[Sequence[bool]]:
+        if self.buffer is None:
+            return None
+        return tuple([b.full for b in self.buffer])
+
+    @property
+    def n_envs(self) -> int:
+        return self._n_envs
+
+    @property
+    def shape(self) -> Optional[Sequence[Size]]:
+        if self.buffer is None:
+            return None
+        return tuple([b.shape for b in self.buffer])
+
+    @property
+    def device(self) -> Optional[Sequence[device]]:
+        if self.buffer is None:
+            return None
+        return self._device
+
+    def __len__(self) -> int:
+        return self.buffer_size
+
+    def add(self, data: TensorDictBase, indices: Optional[Sequence[int]] = None) -> None:
+        """Add data to the buffer.
+
+        Args:
+            data: data to add.
+            indices (Sequence[int], optional): the indices where to add the data.
+                If None, then data will be added on every indices.
+                Defaults to None.
+
+        Raises:
+            RuntimeError: the number of dimensions (the batch_size of the TensorDictBase) must be 2:
+            one for the number of environments and one for the sequence length.
+        """
+        if not isinstance(data, TensorDictBase):
+            raise TypeError("`data` must be a TensorDictBase")
+        if data is None:
+            raise RuntimeError("The `data` parameter must be not None")
+        if len(data.shape) != 2:
+            raise RuntimeError(
+                "`data` must have 2 batch dimensions: [sequence_length, n_envs]. "
+                "`sequence_length` and `n_envs` should be 1. Shape is: {}".format(data.shape)
+            )
+        if self._buffer is None:
+            buf_cls = SequentialReplayBuffer if self._sequential else ReplayBuffer
+            self._buffer = [
+                buf_cls(
+                    self.buffer_size,
+                    n_envs=1,
+                    device=self._device,
+                    memmap=self._memmap,
+                    memmap_dir=self._memmap_dir / f"env_{i}" if self._memmap_dir is not None else None,
+                )
+                for i in range(self._n_envs)
+            ]
+        if indices is None:
+            indices = tuple(range(self.n_envs))
+        for env_data_idx, env_idx in enumerate(indices):
+            self._buffer[env_idx].add(data[:, env_data_idx : env_data_idx + 1])
+
+    def sample(
+        self,
+        batch_size: int,
+        sample_next_obs: bool = False,
+        clone: bool = False,
+        sequence_length: int = 1,
+        n_samples: int = 1,
+    ) -> TensorDictBase:
+        """Sample elements from the sequential replay buffer,
+        each one is a sequence of a consecutive items.
+
+        Custom sampling when using memory efficient variant,
+        as the first element of the sequence cannot be in a position
+        greater than (pos - sequence_length) % buffer_size.
+        See comments in the code for more information.
+
+        Args:
+            batch_size (int): Number of element to sample
+            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+                Defaults to False.
+            clone (bool): whether to clone the sampled TensorDict.
+            sequence_length (int): the length of the sequence of each element. Defaults to 1.
+            n_samples (int): the number of samples to perform. Defaults to 1.
+
+        Returns:
+            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [n_samples, sequence_length, batch_size]
+        """
+        if batch_size <= 0 or n_samples <= 0:
+            raise ValueError(f"`batch_size` ({batch_size}) and `n_samples` ({n_samples}) must be both greater than 0")
+        if self._buffer is None:
+            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
+
+        bs_per_buf = torch.bincount(torch.randint(0, self._n_envs, (batch_size,)))
+        samples = [
+            b.sample(
+                batch_size=bs,
+                sample_next_obs=sample_next_obs,
+                clone=clone,
+                n_samples=n_samples,
+                sequence_length=sequence_length,
+            )
+            for b, bs in zip(self._buffer, bs_per_buf)
+            if bs > 0
+        ]
+        return torch.cat(samples, dim=2 if self._sequential else 0)

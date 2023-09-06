@@ -9,10 +9,10 @@ g { color: Green }
 ## Self-play
 The agents need to know the <r>action_space_size</r>. You can set a custom number of <r>num_actors</r>, meaning the number of parallel environments.
 An episode terminate if a final state is reached or if the <r>max_moves</r> number of actions is reached
-While playing, the agents select actions based on their **mcts** exploration.
+while playing, the agents select actions based on their **MCTS** exploration.
 
 ### Playing an episode
-The action selection is based on the mcts exploration. When the agent start playing, it starts from a root <g>Node</g> with no prior knowledge. The current state of the game is used to create an <o>image</o> of it, that can be fed to the <g>Network</g> to perform <o>initial_inference</o>, meaning the **representation** + **prediction**.
+The action selection is based on the MCTS exploration. When the agent start playing, it starts from a root <g>Node</g> with no prior knowledge. The current state of the game is used to create an <o>image</o> of it, that can be fed to the <g>Network</g> to perform <o>initial_inference</o>, meaning the **representation** + **prediction**.
 Using the <g>root, (player *for multiplayer games*), legal_actions, and the output of the Network</g>, we <o>expand_node</o> the root. This creates a new <g>Node</g> that is a child of the root, where each `child.prior` is set using the output of the Network's output policy. Meanwhile, the root is updated with the prediction of the Network. Especially: 
   * `node.hidden_state` = **representation**
   * `node.reward` = :warning: problem: the **representation** and **prediction** do not give a reward, **dynamics** does

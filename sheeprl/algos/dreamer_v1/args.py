@@ -19,9 +19,7 @@ class DreamerV1Args(StandardArgs):
     learning_starts: int = Arg(default=int(5e3), help="timestep to start learning")
     gradient_steps: int = Arg(default=100, help="the number of gradient steps per each environment interaction")
     train_every: int = Arg(default=1000, help="the number of steps between one training and another")
-    checkpoint_every: int = Arg(default=-1, help="how often to make the checkpoint, -1 to deactivate the checkpoint")
     checkpoint_buffer: bool = Arg(default=False, help="whether or not to save the buffer during the checkpoint")
-    checkpoint_path: Optional[str] = Arg(default=None, help="the path of the checkpoint from which you want to restart")
 
     # Agent settings
     world_lr: float = Arg(default=6e-4, help="the learning rate of the optimizer of the world model")
@@ -47,18 +45,22 @@ class DreamerV1Args(StandardArgs):
     actor_min_std: float = Arg(default=1e-4, help="the minimum standard deviation for the actions")
     clip_gradients: float = Arg(default=100.0, help="how much to clip the gradient norms")
     dense_units: int = Arg(default=400, help="the number of units in dense layers, must be greater than zero")
-    num_layers: int = Arg(
+    mlp_layers: int = Arg(
         default=4,
         help="the number of MLP layers for every model: actor, critic, reward and possibly the continue model",
     )
     cnn_channels_multiplier: int = Arg(default=32, help="cnn width multiplication factor, must be greater than zero")
     dense_act: str = Arg(
         default="ELU",
-        help="the activation function for the dense layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the dense layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
     cnn_act: str = Arg(
         default="ReLU",
-        help="the activation function for the convolutional layers, one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity (case sensitive, without 'nn.')",
+        help="the activation function for the convolutional layers, "
+        "one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity "
+        "(case sensitive, without 'nn.')",
     )
 
     # Environment settings
@@ -71,11 +73,14 @@ class DreamerV1Args(StandardArgs):
     )
     action_repeat: int = Arg(default=2, help="the number of times an action is repeated")
     max_episode_steps: int = Arg(
-        default=1000, help="the maximum duration in terms of number of steps of an episode, -1 to disable"
+        default=1000,
+        help="the maximum duration in terms of number of steps of an episode, -1 to disable. "
+        "This value will be divided by the `action_repeat` value during the environment creation.",
     )
     atari_noop_max: int = Arg(
         default=30,
-        help="for No-op reset in Atari environment, the max number no-ops actions are taken at reset, to turn off, set to 0",
+        help="No-op reset in Atari environment, the max number no-ops actions are taken at reset. "
+        "To turn off, set to 0",
     )
     clip_rewards: bool = Arg(default=False, help="whether or not to clip rewards using tanh")
     grayscale_obs: bool = Arg(default=False, help="whether or not to the observations are grayscale")
@@ -84,3 +89,18 @@ class DreamerV1Args(StandardArgs):
     mine_start_position: Optional[List[float]] = Arg(
         default=None, help="The starting position of the agent in Minecraft environment. (x, y, z, pitch, yaw)"
     )
+    cnn_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the CNN encoder"
+    )
+    mlp_keys: Optional[List[str]] = Arg(
+        default=None, help="a list of observation keys to be processed by the MLP encoder"
+    )
+
+    diambra_action_space: str = Arg(
+        default="discrete", help="the type of action space: one in [discrete, multi_discrete]"
+    )
+    diambra_attack_but_combination: bool = Arg(
+        default=True, help="whether or not to enable the attack button combination in the action space"
+    )
+    diambra_noop_max: int = Arg(default=0, help="the maximum number of noop actions after the reset")
+    diambra_actions_stack: int = Arg(default=1, help="the number of actions to stack in the observations")

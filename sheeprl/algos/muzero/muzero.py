@@ -161,6 +161,7 @@ def main():
                 visit_probs = torch.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])
                 logits = apply_temperature(visit_probs, temperature)
                 action = torch.distributions.Categorical(logits=logits).sample()
+
                 # Single environment step
                 next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
                 rew_sum += reward
