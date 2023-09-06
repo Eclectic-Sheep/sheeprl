@@ -55,7 +55,7 @@ class MineRLWrapper(core.Env):
         sticky_attack: Optional[int] = 30,
         sticky_jump: Optional[int] = 10,
         break_speed_multiplier: Optional[int] = 100,
-        countvect_obs: bool = True,
+        multihot_inventory: bool = True,
         **kwargs: Optional[Dict[Any, Any]],
     ):
         self._height = height
@@ -66,7 +66,7 @@ class MineRLWrapper(core.Env):
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
         self._break_speed_multiplier = break_speed_multiplier
-        self._countvect_obs = countvect_obs
+        self._multihot_inventory = multihot_inventory
         if "navigate" not in id.lower():
             kwargs.pop("extreme", None)
 
@@ -102,12 +102,12 @@ class MineRLWrapper(core.Env):
             "life_stats": gymnasium.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
             "inventory": (
                 gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32)
-                if countvect_obs
+                if multihot_inventory
                 else gymnasium.spaces.Box(0.0, np.inf, (len(self._env.observation_space["inventory"]),), np.float32)
             ),
             "max_inventory": (
                 gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32)
-                if countvect_obs
+                if multihot_inventory
                 else gymnasium.spaces.Box(0.0, np.inf, (len(self._env.observation_space["inventory"]),), np.float32)
             ),
         }
@@ -116,7 +116,7 @@ class MineRLWrapper(core.Env):
         if "equipped_items" in self._env.observation_space.spaces:
             obs_space["equipment"] = (
                 gymnasium.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32)
-                if countvect_obs
+                if multihot_inventory
                 else gymnasium.spaces.Box(
                     0.0,
                     1.0,
@@ -126,7 +126,7 @@ class MineRLWrapper(core.Env):
             )
 
         # Mapping from names to ids (index in the vector)
-        if not countvect_obs:
+        if not multihot_inventory:
             self.inventory_size = obs_space["inventory"].shape[0]
             self.inventory_item_to_id = dict(zip(self._env.observation_space["inventory"], range(self.inventory_size)))
             if "equipment" in obs_space:

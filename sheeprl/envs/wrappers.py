@@ -183,28 +183,29 @@ class FrameStack(gym.Wrapper):
 
 
 class RewardAsObservationWrapper(gym.Wrapper):
+    """ """
+
     def __init__(self, env: Env) -> None:
         super().__init__(env)
         self._env = env
-
         reward_range = self._env.reward_range if hasattr(self._env, "reward_range") else (-np.inf, np.inf)
         # The reward is assumed to be a scalar
         if isinstance(self._env.observation_space, gym.spaces.Dict):
             self.observation_space = gym.spaces.Dict(
                 {
-                    "reward": gym.spaces.Box(*reward_range, (1,), np.int32),
+                    "reward": gym.spaces.Box(*reward_range, (1,), np.float32),
                     **{k: v for k, v in self._env.observation_space.items()},
                 }
             )
         else:
             self.observation_space = gym.spaces.Dict(
-                {"obs": self._env.observation_space, "reward": gym.spaces.Box(*reward_range, (1,), np.int32)}
+                {"obs": self._env.observation_space, "reward": gym.spaces.Box(*reward_range, (1,), np.float32)}
             )
 
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-    def _convert_obs(self, obs: Any, reward: Union[int, np.ndarray]) -> Dict[str, Any]:
+    def _convert_obs(self, obs: Any, reward: Union[float, np.ndarray]) -> Dict[str, Any]:
         reward_obs = (np.array(reward) if not isinstance(reward, np.ndarray) else reward).reshape(-1)
         if isinstance(obs, dict):
             obs["reward"] = reward_obs
