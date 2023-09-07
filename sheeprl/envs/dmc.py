@@ -50,6 +50,7 @@ class DMCWrapper(core.Env):
         self,
         id: str,
         from_pixels: bool = False,
+        from_vectors: bool = True,
         height: int = 84,
         width: int = 84,
         camera_id: int = 0,
@@ -60,9 +61,63 @@ class DMCWrapper(core.Env):
         visualize_reward: bool = False,
         seed: Optional[int] = None,
     ):
-        domain_name, task_name = id.split("_")
+        """DeepMind Control Suite wrapper,
+        adapted from https://github.com/denisyarats/dmc2gym/blob/master/dmc2gym/wrappers.py.
+        The observation space is:
 
+        * If both `from_pixels` and `from_vectors` are True, then the observation space
+        will be a `gymnasium.spaces.Dict` with two keys: 'rgb' and 'state' for the
+        image and vector observation respectively
+        * If only `from_vectors` is True, then the observation will be a single numpy array
+        containing the concatenation of all the vector observations defined by the task
+        * If only `from_pixels` is True, then the observation will be the image rendered
+        by the camera specified through the `camera_id` parameter
+
+        Args:
+            id (str): the task id, e.g. 'walker_walk'. The id must be 'underscore' separated.
+            from_pixels (bool, optional): whether to return the image observation.
+                If both 'from_pixels' and 'from_vectors' are True, then the observation space
+                will be a `gymnasium.spaces.Dict` with two keys: 'rgb' and 'state' for the
+                image and vector observation respectively.
+                Defaults to False.
+            from_vectors (bool, optional): whether to return the vector observation. This will
+                be a flattened observation made up by the concatenation of the multiple
+                vector observations defined by the task.
+                If both 'from_pixels' and 'from_vectors' are True, then the observation space
+                will be a `gymnasium.spaces.Dict` with two keys: 'rgb' and 'state' for the
+                image and vector observation respectively.
+                Defaults to False.
+            height (int, optional): image observation height.
+                Defaults to 84.
+            width (int, optional): image observation width.
+                Defaults to 84.
+            camera_id (int, optional): the id of the camera from where to take the image observation.
+                Defaults to 0.
+            frame_skip (int, optional): action repeat value. Given an action, `frame_skip` steps will be performed
+                in the environment with the given action.
+                Defaults to 1.
+            task_kwargs (Optional[Dict[Any, Any]], optional): Optional dict of keyword arguments for the task.
+                Defaults to None.
+            environment_kwargs (Optional[Dict[Any, Any]], optional): Optional dict specifying
+                keyword arguments for the environment.
+                Defaults to None.
+            channels_first (bool, optional): whether to return a channel-first image.
+                Defaults to True.
+            visualize_reward (bool, optional): If True, object colours in rendered
+                frames are set to indicate the reward at each step.
+                Defaults to False.
+            seed (Optional[int], optional): the random seed.
+                Defaults to None.
+        """
+        if not (from_vectors or from_pixels):
+            raise ValueError(
+                "'from_vectors' and 'from_pixels' must not be both False: "
+                f"got {from_vectors} and {from_pixels} respectively."
+            )
+
+        domain_name, task_name = id.split("_")
         self._from_pixels = from_pixels
+        self._from_vectors = from_vectors
         self._height = height
         self._width = width
         self._camera_id = camera_id
@@ -84,10 +139,16 @@ class DMCWrapper(core.Env):
 
         # create observation space
         if from_pixels:
-            shape = [3, height, width] if channels_first else [height, width, 3]
-            self._observation_space = spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+            shape = (3, height, width) if channels_first else (height, width, 3)
+            image_observation_space = spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+        if from_vectors:
+            vector_observation_space = _spec_to_box(self._env.observation_spec().values(), np.float64)
+        if from_vectors and from_pixels:
+            self._observation_space = spaces.Dict({"rgb": image_observation_space, "state": vector_observation_space})
+        elif from_vectors:
+            self._observation_space = vector_observation_space
         else:
-            self._observation_space = _spec_to_box(self._env.observation_spec().values(), np.float64)
+            self._observation_space = image_observation_space
 
         # state space
         self._state_space = _spec_to_box(self._env.observation_spec().values(), np.float64)
@@ -104,12 +165,17 @@ class DMCWrapper(core.Env):
 
     def _get_obs(self, time_step):
         if self._from_pixels:
-            obs = self.render(camera_id=self._camera_id)
+            rgb_obs = self.render(camera_id=self._camera_id)
             if self._channels_first:
-                obs = obs.transpose(2, 0, 1).copy()
+                rgb_obs = rgb_obs.transpose(2, 0, 1).copy()
+        if self._from_vectors:
+            vec_obs = _flatten_obs(time_step.observation)
+        if self._from_vectors and self._from_pixels:
+            return {"rgb": rgb_obs, "state": vec_obs}
+        elif self._from_vectors:
+            return vec_obs
         else:
-            obs = _flatten_obs(time_step.observation)
-        return obs
+            return rgb_obs
 
     def _convert_action(self, action):
         action = action.astype(np.float64)
