@@ -7,6 +7,7 @@ defaults:
   - env: default.yaml
   - exp: null
   - hydra: default.yaml
+  - metric: default.yaml
 
 seed: 42
 num_threads: 1

@@ -1,0 +1,2 @@
+sync_on_compute: False
+log_every: 5000

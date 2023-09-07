@@ -182,8 +182,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
-            metrics = [None]
-            player_trainer_collective.broadcast_object_list(metrics, src=1)
+            if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+                metrics = [None]
+                player_trainer_collective.broadcast_object_list(metrics, src=1)
 
             # Wait the trainers to finish
             player_trainer_collective.broadcast(flattened_parameters, src=1)
@@ -191,10 +192,13 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             # Convert back the parameters
             torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
-            fabric.log_dict(metrics[0], global_step)
+            if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+                fabric.log_dict(metrics[0], global_step)
+
         aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(aggregator.compute(), global_step)
-        aggregator.reset()
+        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+            fabric.log_dict(aggregator.compute(), global_step)
+            aggregator.reset()
 
         # Checkpoint model
         if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
@@ -298,14 +302,21 @@ def trainer(
     with fabric.device:
         aggregator = MetricAggregator(
             {
-                "Loss/value_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/policy_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/alpha_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/value_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
+                "Loss/policy_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
+                "Loss/alpha_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
             }
         )
 
     # Start training
-    global_step = 1
+    learning_starts = cfg.learning_starts // cfg.num_envs if not cfg.dry_run else 0
+    global_step = learning_starts - 1
     while True:
         # Wait for data
         data = [None]
@@ -338,15 +349,17 @@ def trainer(
                 cfg,
                 group=optimization_pg,
             )
-            global_step += 1
 
         # Send updated weights to the player
-        metrics = aggregator.compute()
-        aggregator.reset()
+        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+            metrics = aggregator.compute()
+            aggregator.reset()
+            if global_rank == 1:
+                player_trainer_collective.broadcast_object_list(
+                    [metrics], src=1
+                )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
+
         if global_rank == 1:
-            player_trainer_collective.broadcast_object_list(
-                [metrics], src=1
-            )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), src=1
             )
@@ -362,6 +375,7 @@ def trainer(
                     "global_step": global_step,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+        global_step += 1
 
 
 @register_algorithm(decoupled=True)

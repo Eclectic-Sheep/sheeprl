@@ -531,32 +531,32 @@ def main(cfg: DictConfig):
     with device:
         aggregator = MetricAggregator(
             {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-                "Time/step_per_second": MeanMetric(sync_on_compute=False),
-                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=False),
-                "Loss/value_loss_task": MeanMetric(sync_on_compute=False),
-                "Loss/policy_loss_task": MeanMetric(sync_on_compute=False),
-                "Loss/value_loss_exploration": MeanMetric(sync_on_compute=False),
-                "Loss/policy_loss_exploration": MeanMetric(sync_on_compute=False),
-                "Loss/observation_loss": MeanMetric(sync_on_compute=False),
-                "Loss/reward_loss": MeanMetric(sync_on_compute=False),
-                "Loss/state_loss": MeanMetric(sync_on_compute=False),
-                "Loss/continue_loss": MeanMetric(sync_on_compute=False),
-                "Loss/ensemble_loss": MeanMetric(sync_on_compute=False),
-                "State/kl": MeanMetric(sync_on_compute=False),
-                "State/p_entropy": MeanMetric(sync_on_compute=False),
-                "State/q_entropy": MeanMetric(sync_on_compute=False),
-                "Params/exploration_amout": MeanMetric(sync_on_compute=False),
-                "Rewards/intrinsic": MeanMetric(sync_on_compute=False),
-                "Values_exploration/predicted_values": MeanMetric(sync_on_compute=False),
-                "Values_exploration/lambda_values": MeanMetric(sync_on_compute=False),
-                "Grads/world_model": MeanMetric(sync_on_compute=False),
-                "Grads/actor_task": MeanMetric(sync_on_compute=False),
-                "Grads/critic_task": MeanMetric(sync_on_compute=False),
-                "Grads/actor_exploration": MeanMetric(sync_on_compute=False),
-                "Grads/critic_exploration": MeanMetric(sync_on_compute=False),
-                "Grads/ensemble": MeanMetric(sync_on_compute=False),
+                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/policy_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/value_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/policy_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/ensemble_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "State/p_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "State/q_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Rewards/intrinsic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Values_exploration/predicted_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Values_exploration/lambda_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/actor_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/critic_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/actor_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/critic_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Grads/ensemble": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             }
         )
     aggregator.to(device)
@@ -754,8 +754,9 @@ def main(cfg: DictConfig):
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
         aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(aggregator.compute(), global_step)
-        aggregator.reset()
+        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+            fabric.log_dict(aggregator.compute(), global_step)
+            aggregator.reset()
 
         # Checkpoint Model
         if (
