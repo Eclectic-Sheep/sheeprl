@@ -186,7 +186,7 @@ class RewardAsObservationWrapper(gym.Wrapper):
     """It adds the reward to the observations.
     The reward is assumed to be a float scalar, so the reward converted as observation is a gymnasium.spaces.Box
     with shape (1,). Moreover, it tries to get the reward range from the environment to wrap, otherwise it assumes
-    that the reward has no range (-inf, _inf).
+    that the reward has no range (-inf, +inf).
 
     It converts the observation space (if it is not already) in gymnasium.spaces.Dict. In case the observation
     space of the environment is a dictionary, then it simply adds the `reward` key in the dictionary, otherwise,
