@@ -7,7 +7,7 @@ if not _IS_MINERL_0_4_4_AVAILABLE:
 
 from typing import Dict, List, Union
 
-from minerl.herobraine.hero import handlers, mc
+from minerl.herobraine.hero import handlers
 from minerl.herobraine.hero.handler import Handler
 from minerl.herobraine.hero.mc import MS_PER_STEP
 
@@ -75,7 +75,20 @@ class CustomObtain(CustomSimpleEmbodimentEnvSpec):
                     "iron_pickaxe",
                 ]
             ),
-            handlers.EquippedItemObservation(items=mc.ALL_ITEMS, _default="air", _other=other),
+            handlers.EquippedItemObservation(
+                items=[
+                    "air",
+                    "wooden_axe",
+                    "wooden_pickaxe",
+                    "stone_axe",
+                    "stone_pickaxe",
+                    "iron_axe",
+                    "iron_pickaxe",
+                    other,
+                ],
+                _default="air",
+                _other=other,
+            ),
         ]
 
     def create_actionables(self):

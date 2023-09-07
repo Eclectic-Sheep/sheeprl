@@ -6,3 +6,4 @@ grayscale: False
 action_repeat: 1
 max_episode_steps: null
 capture_video: True
+reward_as_observation: False

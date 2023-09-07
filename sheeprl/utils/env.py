@@ -8,7 +8,7 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig
 
-from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper
+from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper, RewardAsObservationWrapper
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
 
 if _IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE:
@@ -202,6 +202,9 @@ def make_dict_env(
                     f"The frame stack dilation argument must be greater than zero, got: {cfg.env.frame_stack_dilation}"
                 )
             env = FrameStack(env, cfg.env.frame_stack, cnn_keys, cfg.env.frame_stack_dilation)
+
+        if cfg.env.reward_as_observation:
+            env = RewardAsObservationWrapper(env)
 
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
