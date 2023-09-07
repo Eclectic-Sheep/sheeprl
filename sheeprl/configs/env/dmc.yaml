@@ -3,8 +3,8 @@ defaults:
   - _self_
 
 id: walker_walk
-action_repeat: 2
-max_episode_steps: 500
+action_repeat: 1
+max_episode_steps: 1000
 
 env:
   _target_: sheeprl.envs.dmc.DMCWrapper
@@ -14,3 +14,4 @@ env:
   frame_skip: ${env.action_repeat}
   seed: null
   from_pixels: True
+  from_vectors: False
