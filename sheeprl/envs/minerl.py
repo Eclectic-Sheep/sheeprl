@@ -45,6 +45,29 @@ ITEM_NAME_TO_ID = dict(zip(mc.ALL_ITEMS, range(N_ALL_ITEMS)))
 
 
 class MineRLWrapper(core.Env):
+    """Wrapper for the MineRL environments.
+
+    Args:
+        id (str): the id of the environment.
+        height (int): the height of the pixels observations.
+            Default to 64.
+        width (int): the width of the pixels observations.
+            Default to 64.
+        pitch_limits (Tuple[int, int]): the minimum and maximum angle of the pitch axis.
+            Default to (-60, 60).
+        seed (int, optional): the seed of the action and observation space.
+            Default to None.
+        sticky_attack (int, optional): how many times repeat the `attack` action when selected.
+            Default to 30.
+        sticky_jump (int, optional): how many times repeat the `jump` action when selected.
+            Default to 10.
+        break_speed_multiplier (int, optional): multiplier to increase block breaking speed.
+            Default to 100.
+        multihot_inventory (bool): whether to consider all the minecraft elements in the inventory.
+            If false, the vector of the inventory will contain only the objects obtainable in the chosen task.
+            Default to True.
+    """
+
     def __init__(
         self,
         id: str,
@@ -71,6 +94,24 @@ class MineRLWrapper(core.Env):
             kwargs.pop("extreme", None)
 
         self._env = CUSTOM_ENVS[id.lower()](break_speed=break_speed_multiplier, **kwargs).make()
+
+        # Creation a mapping between the discrete action space and the MineRL action space.
+        # The mapping will have the following form:
+        #   {
+        #       idx_action_0: {<minerl_action_0>}
+        #       idx_action_1: {<minerl_action_1>}
+        #       ...
+        #       idx_action_n: {<minerl_action_n>}
+        #   }
+        # For instance:
+        #   {
+        #       0: {}
+        #       1: {"attack": 1}
+        #       2: {"forward": 1}
+        #       ...
+        #       n-1: {"craft": "planks"}
+        #       n: {"craft": "torch"}
+        #   }
         self.ACTIONS_MAP = {0: {}}
         act_idx = 1
         for act in self._env.action_space:
@@ -100,6 +141,8 @@ class MineRLWrapper(core.Env):
         obs_space = {
             "rgb": gymnasium.spaces.Box(0, 255, (3, 64, 64), np.uint8),
             "life_stats": gymnasium.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
+            # If multihot_inventory, then all the Minecraft objects are included in the inventory vector.
+            # Otherwise, only items that can be included in the inventory with respect to the task are considered
             "inventory": (
                 gymnasium.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32)
                 if multihot_inventory
@@ -157,7 +200,35 @@ class MineRLWrapper(core.Env):
 
     def _convert_actions(self, action: np.ndarray) -> Dict[str, Any]:
         converted_actions = copy.deepcopy(NOOP)
+        # Update the NOOP actions to perform the selected action.
+        # For instance:
+        #   self.ACTIONS_MAP = {
+        #       0: {}
+        #       1: {"attack": 1}
+        #       2: {"forward": 1}
+        #       ...
+        #       n-1: {"craft": "planks"}
+        #       n: {"craft": "torch"}
+        #   }
+        #   action = np.array([2])
+        #   converted_actions = {
+        #       "camera": (0, 0),
+        #       "forward": 1,
+        #       "back": 0,
+        #       "left": 0,
+        #       "right": 0,
+        #       "attack": 0,
+        #       "sprint": 0,
+        #       "jump": 0,
+        #       "sneak": 0,
+        #       "craft": "none",
+        #       "nearbyCraft": "none",
+        #       "nearbySmelt": "none",
+        #       "place": "none",
+        #       "equip": "none",
+        #   }
         converted_actions.update(self.ACTIONS_MAP[action.item()])
+        # Add sticky actions
         if self._sticky_attack:
             if converted_actions["attack"]:
                 self._sticky_attack_counter = self._sticky_attack
