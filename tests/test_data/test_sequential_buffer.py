@@ -135,7 +135,7 @@ def test_seq_replay_buffer_sample_not_full():
     buf_size = 10
     n_envs = 1
     rb = SequentialReplayBuffer(buf_size, n_envs)
-    rb._buf = TensorDict({"t": torch.ones(10, n_envs, 1) * 20}, batch_size=[10, n_envs])
+    rb._buffer = TensorDict({"t": torch.ones(10, n_envs, 1) * 20}, batch_size=[10, n_envs])
     t = TensorDict({"t": torch.arange(7).reshape(-1, 1, 1) * 1.0}, batch_size=[7, n_envs])
     rb.add(t)
     sample = rb.sample(2, sequence_length=5, n_samples=2)
