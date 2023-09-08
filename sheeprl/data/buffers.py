@@ -278,8 +278,20 @@ class TrajectoryReplayBuffer:
         if len(valid_trajectories) == 0:
             raise RuntimeError("No trajectories of length {} found".format(sequence_length))
 
-        trajectories = random.choices(valid_trajectories, k=batch_size)
-        positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
+        if "weights" not in valid_trajectories[0]:
+            trajectories = random.choices(valid_trajectories, k=batch_size)
+            positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
+
+        else:
+            weights = [t["weights"].mean() for t in valid_trajectories]
+            trajectories = random.choices(valid_trajectories, k=batch_size, weights=weights)
+            positions = [
+                random.choices(
+                    range(len(t) - sequence_length + 1), k=1, weights=t["weights"][: len(t) - sequence_length + 1]
+                )[0]
+                for t in trajectories
+            ]
+
         return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)], dim=1)
 
 

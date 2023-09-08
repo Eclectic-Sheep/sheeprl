@@ -11,7 +11,6 @@ from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from torch.optim import Adam
 from torchmetrics import MeanMetric
-from tqdm import tqdm
 
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
 from sheeprl.algos.muzero.args import MuzeroArgs
@@ -129,9 +128,10 @@ def main():
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = int(args.total_steps // args.num_players) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // args.num_players if not args.dry_run else 0
+    num_updates = int(args.total_steps // int(fabric.world_size)) if not args.dry_run else 1
+    args.learning_starts = args.learning_starts // int(fabric.world_size) if not args.dry_run else 0
 
+    env_steps = 0
     for update_step in range(1, num_updates + 1):
         with torch.no_grad():
             # reset the episode at every update
@@ -141,8 +141,7 @@ def main():
                 rew_sum = 0.0
 
             steps_data = None
-            print(f"Update {update_step} started")
-            for trajectory_step in tqdm(range(0, args.max_trajectory_len)):
+            for trajectory_step in range(0, args.max_trajectory_len):
                 node = Node(prior=0, image=obs, device=device)
 
                 # start MCTS
@@ -194,15 +193,17 @@ def main():
                     with device:
                         obs = torch.tensor(next_obs).reshape(1, -1)
 
-            fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
+            # fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
             aggregator.update("Rewards/rew_avg", rew_sum)
             aggregator.update("Game/ep_len_avg", trajectory_step)
-            print("Finished episode")
+            # print("Finished episode")
             if len(steps_data) >= args.chunk_sequence_len:
                 steps_data["returns"] = nstep_returns(
                     steps_data["rewards"], steps_data["values"], steps_data["dones"], args.nstep_horizon, args.gamma
                 )
+                steps_data["weights"] = torch.abs(steps_data["returns"] - steps_data["values"]) ** args.priority_alpha
                 rb.add(trajectory=steps_data)
+            env_steps += trajectory_step
 
         if len(rb) >= args.learning_starts:
             print("UPDATING")
@@ -255,7 +256,7 @@ def main():
                 aggregator.update("Info/policy_entropy", entropy.mean() / args.chunk_sequence_len)
 
         aggregator.update("Time/step_per_second", int(update_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(aggregator.compute(), update_step)
+        fabric.log_dict(aggregator.compute(), env_steps)
         aggregator.reset()
 
         if (

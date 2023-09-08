@@ -24,6 +24,7 @@ class MuzeroArgs(StandardArgs):
     nstep_horizon: int = Arg(default=50, help="The number of steps to use for computing the nstep return.")
     dirichlet_alpha: float = Arg(default=0.25, help="The alpha parameter of the Dirichlet distribution.")
     exploration_fraction: float = Arg(default=0.25, help="The fraction of the exploration phase.")
+    priority_alpha: float = Arg(default=0.5, help="The alpha parameter of the prioritized replay buffer.")
     checkpoint_every: int = Arg(default=-1, help="How often to make the checkpoint, -1 to deactivate the checkpoint.")
     # trainer
     lr: float = Arg(default=0.002, help="The learning rate of the optimizer.")
