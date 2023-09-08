@@ -4,6 +4,7 @@
 defaults:
   - _self_
   - algo: default.yaml
+  - checkpoint: default.yaml
   - env: default.yaml
   - exp: null
   - hydra: default.yaml
@@ -16,8 +17,6 @@ dry_run: False
 torch_deterministic: False
 root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
 run_name: ${env.id}_${exp_name}_${seed}
-checkpoint_every: 100
-checkpoint_path: null
 num_envs: 4
 clip_rewards: False
 cnn_keys:

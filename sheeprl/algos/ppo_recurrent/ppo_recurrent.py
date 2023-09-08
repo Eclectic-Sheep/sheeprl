@@ -344,7 +344,7 @@ def main(cfg: DictConfig):
             aggregator.reset()
 
         # Checkpoint model
-        if (cfg.checkpoint_every > 0 and update % cfg.checkpoint_every == 0) or cfg.dry_run or update == num_updates:
+        if (cfg.checkpoint.every > 0 and update % cfg.checkpoint.every == 0) or cfg.dry_run or update == num_updates:
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),

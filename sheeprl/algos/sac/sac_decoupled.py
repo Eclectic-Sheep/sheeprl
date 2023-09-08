@@ -201,7 +201,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             aggregator.reset()
 
         # Checkpoint model
-        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
+        if (cfg.checkpoint.every > 0 and global_step % cfg.checkpoint.every == 0) or cfg.dry_run:
             ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_player",
@@ -365,7 +365,7 @@ def trainer(
             )
 
         # Checkpoint model on rank-0: send it everything
-        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
+        if (cfg.checkpoint.every > 0 and global_step % cfg.checkpoint.every == 0) or cfg.dry_run:
             if global_rank == 1:
                 state = {
                     "agent": agent.state_dict(),

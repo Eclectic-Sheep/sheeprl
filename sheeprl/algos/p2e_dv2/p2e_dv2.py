@@ -478,13 +478,13 @@ def main(cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         root_dir = cfg.root_dir
         run_name = cfg.run_name
-        state = fabric.load(cfg.checkpoint_path)
-        ckpt_path = pathlib.Path(cfg.checkpoint_path)
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
         cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
-        cfg.checkpoint_path = str(ckpt_path)
+        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
         cfg.run_name = f"resume_from_checkpoint_{run_name}"
@@ -562,13 +562,13 @@ def main(cfg: DictConfig):
         is_continuous,
         cfg,
         observation_space,
-        state["world_model"] if cfg.checkpoint_path else None,
-        state["actor_task"] if cfg.checkpoint_path else None,
-        state["critic_task"] if cfg.checkpoint_path else None,
-        state["target_critic_task"] if cfg.checkpoint_path else None,
-        state["actor_exploration"] if cfg.checkpoint_path else None,
-        state["critic_exploration"] if cfg.checkpoint_path else None,
-        state["target_critic_exploration"] if cfg.checkpoint_path else None,
+        state["world_model"] if cfg.checkpoint.resume_from else None,
+        state["actor_task"] if cfg.checkpoint.resume_from else None,
+        state["critic_task"] if cfg.checkpoint.resume_from else None,
+        state["target_critic_task"] if cfg.checkpoint.resume_from else None,
+        state["actor_exploration"] if cfg.checkpoint.resume_from else None,
+        state["critic_exploration"] if cfg.checkpoint.resume_from else None,
+        state["target_critic_exploration"] if cfg.checkpoint.resume_from else None,
     )
 
     # initialize the ensembles with different seeds to be sure they have different weights
@@ -603,7 +603,7 @@ def main(cfg: DictConfig):
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         ensembles.load_state_dict(state["ensembles"])
     fabric.setup_module(ensembles)
     player = PlayerDV2(
@@ -631,7 +631,7 @@ def main(cfg: DictConfig):
     actor_task_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor_task.parameters())
     critic_task_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic_task.parameters())
     ensemble_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=ensembles.parameters())
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_task_optimizer.load_state_dict(state["actor_task_optimizer"])
         critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])
@@ -710,7 +710,7 @@ def main(cfg: DictConfig):
         )
     else:
         raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
-    if cfg.checkpoint_path and cfg.buffer.checkpoint:
+    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
         elif isinstance(state["rb"], AsyncReplayBuffer):
@@ -718,19 +718,19 @@ def main(cfg: DictConfig):
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
     step_data = TensorDict({}, batch_size=[cfg.num_envs], device="cpu")
-    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint_path else 0
+    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
     start_time = time.perf_counter()
-    start_step = state["global_step"] // fabric.world_size if cfg.checkpoint_path else 1
+    start_step = state["global_step"] // fabric.world_size if cfg.checkpoint.resume_from else 1
     single_global_step = int(cfg.num_envs * fabric.world_size)
     step_before_training = cfg.train_every // single_global_step if not cfg.dry_run else 0
     num_updates = cfg.total_steps // single_global_step if not cfg.dry_run else 1
     learning_starts = cfg.learning_starts // single_global_step if not cfg.dry_run else 0
-    if cfg.checkpoint_path and not cfg.buffer.checkpoint:
+    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
     max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.gradient_steps * fabric.world_size)
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.player.expl_amount,
@@ -776,7 +776,7 @@ def main(cfg: DictConfig):
                 test(copy.deepcopy(player), fabric, cfg, "zero-shot")
 
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.id:
+        if global_step <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -939,7 +939,7 @@ def main(cfg: DictConfig):
 
         # Checkpoint Model
         if (
-            (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0)
+            (cfg.checkpoint.every > 0 and global_step % cfg.checkpoint.every == 0)
             or cfg.dry_run
             or global_step == num_updates
         ):

@@ -213,7 +213,9 @@ def main(cfg: DictConfig):
     step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
 
     # Global variables
-    global_step = 0
+    last_log = 0
+    policy_step = 0
+    last_checkpoint = 0
     start_time = time.perf_counter()
     single_global_rollout = int(cfg.num_envs * cfg.rollout_steps * world_size)
     num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
@@ -237,11 +239,10 @@ def main(cfg: DictConfig):
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
     next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
-    last_log = 0
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.rollout_steps):
-            global_step += cfg.num_envs * world_size
+            policy_step += cfg.num_envs * world_size
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
@@ -294,7 +295,7 @@ def main(cfg: DictConfig):
                 for i, agent_final_info in enumerate(info["final_info"]):
                     if agent_final_info is not None and "episode" in agent_final_info:
                         fabric.print(
-                            f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                            f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                         )
                         aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                         aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -333,40 +334,45 @@ def main(cfg: DictConfig):
         train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
 
         if cfg.algo.anneal_lr:
-            fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], global_step)
+            fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], policy_step)
             scheduler.step()
         else:
-            fabric.log("Info/learning_rate", cfg.algo.optimizer.lr, global_step)
+            fabric.log("Info/learning_rate", cfg.algo.optimizer.lr, policy_step)
 
-        fabric.log("Info/clip_coef", cfg.algo.clip_coef, global_step)
+        fabric.log("Info/clip_coef", cfg.algo.clip_coef, policy_step)
         if cfg.algo.anneal_clip_coef:
             cfg.algo.clip_coef = polynomial_decay(
                 update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
-        fabric.log("Info/ent_coef", cfg.algo.ent_coef, global_step)
+        fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
         if cfg.algo.anneal_ent_coef:
             cfg.algo.ent_coef = polynomial_decay(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
         # Log metrics
-        if global_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = global_step
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
             metrics_dict = aggregator.compute()
-            fabric.log_dict(metrics_dict, global_step)
-            fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
+            fabric.log_dict(metrics_dict, policy_step)
+            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
             aggregator.reset()
 
         # Checkpoint model
-        if (cfg.checkpoint_every > 0 and update % cfg.checkpoint_every == 0) or cfg.dry_run or update == num_updates:
+        if (
+            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
+            or cfg.dry_run
+            or update == num_updates
+        ):
+            last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "update_step": update,
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt")
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()

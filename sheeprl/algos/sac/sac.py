@@ -271,7 +271,7 @@ def main(cfg: DictConfig):
 
         # Checkpoint model
         if (
-            (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0)
+            (cfg.checkpoint.every > 0 and global_step % cfg.checkpoint.every == 0)
             or cfg.dry_run
             or global_step == num_updates
         ):
