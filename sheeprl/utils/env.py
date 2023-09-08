@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import cv2
 import gymnasium as gym
@@ -27,8 +27,8 @@ def make_env(
     mask_velocities: bool = False,
     vector_env_idx: int = 0,
     action_repeat: int = 1,
-):
-    def thunk():
+) -> Callable[[], gym.Env]:
+    def thunk() -> gym.Env:
         env = gym.make(env_id, render_mode="rgb_array")
         if mask_velocities:
             env = MaskVelocityWrapper(env)
@@ -55,7 +55,7 @@ def make_dict_env(
     run_name: Optional[str] = None,
     prefix: str = "",
     vector_env_idx: int = 0,
-) -> gym.Env:
+) -> Callable[[], gym.Env]:
     """
     Create the callable function to createenvironment and
     force the environment to return only pixels observations.
@@ -74,7 +74,7 @@ def make_dict_env(
         The callable function that initializes the environment.
     """
 
-    def thunk():
+    def thunk() -> gym.Env:
         try:
             env_spec = gym.spec(cfg.env.id).entry_point
         except Exception:
@@ -110,6 +110,8 @@ def make_dict_env(
                         f"is allowed in {cfg.env.id}, "
                         f"only the first one is kept: {cfg.cnn_keys.encoder[0]}"
                     )
+                if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0:
+                    gym.wrappers.pixel_observation.STATE_KEY = cfg.mlp_keys.encoder[0]
                 env = gym.wrappers.PixelObservationWrapper(
                     env, pixels_only=len(cfg.mlp_keys.encoder) == 0, pixel_keys=(cfg.cnn_keys.encoder[0],)
                 )

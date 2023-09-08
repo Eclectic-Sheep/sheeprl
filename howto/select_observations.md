@@ -81,3 +81,37 @@ The algorithms which works with only vector observations are reported here:
 For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *PPO Recurrent* algorithm on the `LunarLander-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
 
 For these algorithms, you do not have to specify anything about the observations space, only to indicate the environment on which you want to train the agent.
+
+
+### Get Observation Space
+It is possible to retrieve the observation space of a specific environment to easily select the observation keys you want to use in your training.
+
+```bash
+python examples/observation_space.py env=... agent=dreamer_v3
+```
+
+or for *DIAMBRA* environments:
+
+```bash
+diambra run python examples/observation_space.py env=diambra agent=dreamer_v3
+```
+
+The env argument is the same you use for training your agent, so it refers to the config folder `sheeprl/configs/env`, more over you can override the environment id and modify its paranmeters, such as, the frame stack or whether or not to use grayscale observations.
+You can modify the parameters as usual by specifing them as cli arguments:
+
+```bash
+python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanNoFrameskip-v4 env.frame_stack=5 env.grayscale=True
+```
+
+> **Note**
+>
+> You can try to override some *cnn* or *mlp* keys by specifing the `cnn_keys.encoder` and the `mlp_keys.encoder` arguments. **Not all** environments allow it.
+> 
+> For instance, the `python examples/observation_space.py env=gym agent=dreamer_v3 env.id=LunarLander-v2 cnn_keys.encoder=[custom_cnn_key] mlp_keys.encoder=[custom_mlp_key]` command will return the following observation space: 
+>```
+>  Observation space of `LunarLander-v2` environment for `dreamer_v3` agent:
+>  Dict(
+>     'custom_mlp_key': Box([-1.5, -1.5, -5., -5., -3.1415927, -5., -0., -0.], [1.5, 1.5, 5., 5., 3.1415927, 5., 1., 1.], (8,), float32), 
+>     'custom_cnn_key': Box(0, 255, (3, 64, 64), uint8)
+>  )
+>```
