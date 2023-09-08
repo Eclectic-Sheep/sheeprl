@@ -186,6 +186,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
     next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
+    last_log = 0
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.rollout_steps):
@@ -274,8 +275,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
         # Gather metrics from the trainers to be plotted
-        metrics = [None]
-        player_trainer_collective.broadcast_object_list(metrics, src=1)
+        if global_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            metrics = [None]
+            player_trainer_collective.broadcast_object_list(metrics, src=1)
 
         # Wait the trainers to finish
         player_trainer_collective.broadcast(flattened_parameters, src=1)
@@ -285,9 +287,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
         # Log metrics
         aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(metrics[0], global_step)
-        fabric.log_dict(aggregator.compute(), global_step)
-        aggregator.reset()
+        if global_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = global_step
+            fabric.log_dict(metrics[0], global_step)
+            fabric.log_dict(aggregator.compute(), global_step)
+            aggregator.reset()
 
         # Checkpoint model
         if (cfg.checkpoint_every > 0 and update % cfg.checkpoint_every == 0) or cfg.dry_run:
@@ -377,9 +381,15 @@ def trainer(
     with fabric.device:
         aggregator = MetricAggregator(
             {
-                "Loss/value_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/policy_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/entropy_loss": MeanMetric(process_group=optimization_pg),
+                "Loss/value_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
+                "Loss/policy_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
+                "Loss/entropy_loss": MeanMetric(
+                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+                ),
             }
         )
 
@@ -387,6 +397,8 @@ def trainer(
     update = 0
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
+    last_log = 0
+    global_step = 0
     while True:
         # Wait for data
         data = [None]
@@ -405,6 +417,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
         update += 1
+        global_step += cfg.num_envs * cfg.rollout_steps
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
@@ -464,18 +477,21 @@ def trainer(
                     aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
         # Send updated weights to the player
-        metrics = aggregator.compute()
-        aggregator.reset()
+        if global_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = global_step
+            metrics = aggregator.compute()
+            aggregator.reset()
+            if global_rank == 1:
+                if cfg.algo.anneal_lr:
+                    metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+                else:
+                    metrics["Info/learning_rate"] = cfg.algo.optimizer.lr
+                metrics["Info/clip_coef"] = cfg.algo.clip_coef
+                metrics["Info/ent_coef"] = cfg.algo.ent_coef
+                player_trainer_collective.broadcast_object_list(
+                    [metrics], src=1
+                )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
         if global_rank == 1:
-            if cfg.algo.anneal_lr:
-                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
-            else:
-                metrics["Info/learning_rate"] = cfg.algo.optimizer.lr
-            metrics["Info/clip_coef"] = cfg.algo.clip_coef
-            metrics["Info/ent_coef"] = cfg.algo.ent_coef
-            player_trainer_collective.broadcast_object_list(
-                [metrics], src=1
-            )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
                 src=1,

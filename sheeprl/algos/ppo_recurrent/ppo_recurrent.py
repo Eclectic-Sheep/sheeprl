@@ -177,12 +177,12 @@ def main(cfg: DictConfig):
     with device:
         aggregator = MetricAggregator(
             {
-                "Rewards/rew_avg": MeanMetric(),
-                "Game/ep_len_avg": MeanMetric(),
-                "Time/step_per_second": MeanMetric(),
-                "Loss/value_loss": MeanMetric(),
-                "Loss/policy_loss": MeanMetric(),
-                "Loss/entropy_loss": MeanMetric(),
+                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             }
         )
 
@@ -201,6 +201,7 @@ def main(cfg: DictConfig):
     start_time = time.perf_counter()
     single_global_rollout = int(cfg.num_envs * cfg.rollout_steps * world_size)
     num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
+    last_log = 0
 
     # Linear learning rate scheduler
     if cfg.algo.anneal_lr:
@@ -335,10 +336,12 @@ def main(cfg: DictConfig):
             )
 
         # Log metrics
-        metrics_dict = aggregator.compute()
-        fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
-        fabric.log_dict(metrics_dict, global_step)
-        aggregator.reset()
+        if global_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = global_step
+            metrics_dict = aggregator.compute()
+            fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
+            fabric.log_dict(metrics_dict, global_step)
+            aggregator.reset()
 
         # Checkpoint model
         if (cfg.checkpoint_every > 0 and update % cfg.checkpoint_every == 0) or cfg.dry_run or update == num_updates:

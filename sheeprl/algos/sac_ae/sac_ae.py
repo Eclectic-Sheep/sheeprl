@@ -322,13 +322,13 @@ def main(cfg: DictConfig):
     with device:
         aggregator = MetricAggregator(
             {
-                "Rewards/rew_avg": MeanMetric(),
-                "Game/ep_len_avg": MeanMetric(),
-                "Time/step_per_second": MeanMetric(),
-                "Loss/value_loss": MeanMetric(),
-                "Loss/policy_loss": MeanMetric(),
-                "Loss/alpha_loss": MeanMetric(),
-                "Loss/reconstruction_loss": MeanMetric(),
+                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             }
         )
 
@@ -461,8 +461,9 @@ def main(cfg: DictConfig):
                         cfg,
                     )
         aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
-        fabric.log_dict(aggregator.compute(), global_step)
-        aggregator.reset()
+        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+            fabric.log_dict(aggregator.compute(), global_step)
+            aggregator.reset()
 
         # Checkpoint model
         if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
