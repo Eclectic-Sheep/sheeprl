@@ -218,6 +218,8 @@ class ReplayBuffer:
 
 
 class Trajectory(TensorDict):
+    """An extension of the TensorDict class with a sample method."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -231,6 +233,8 @@ class Trajectory(TensorDict):
 
 
 class TrajectoryReplayBuffer:
+    """A queue of `Trajectory` with FIFO logic."""
+
     def __init__(self, max_num_trajectories: int, device: Union[str, torch.device] = "cpu", memmap: bool = False):
         self._buffer = []
         self.max_num_trajectories = max_num_trajectories
@@ -253,6 +257,7 @@ class TrajectoryReplayBuffer:
         return sum(len(t) for t in self._buffer)
 
     def add(self, trajectory: Optional[Trajectory]):
+        """Implement FIFO logic after reaching the `max_num_trajectories`."""
         if trajectory is None:
             return
         if not isinstance(trajectory, TensorDict):
@@ -261,11 +266,12 @@ class TrajectoryReplayBuffer:
         if self._memmap:
             trajectory.memmap_()
         self._buffer.append(trajectory)  # convert to trajectory if tensordict
-        if len(self) > self.max_num_trajectories:
+        while len(self) > self.max_num_trajectories:
             self._buffer.pop(0)
 
     def sample(self, batch_size: int, sequence_length: int) -> LazyStackedTensorDict:
-        """Sample a batch of trajectories of length `sequence_length`.
+        """Sample a batch of trajectories of length `sequence_length`. If the trajectories have weights, the sampling
+        is done according to weights.
 
         Args:
             batch_size (int): Number of trajectories to sample
