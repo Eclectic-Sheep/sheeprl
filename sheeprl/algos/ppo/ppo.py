@@ -1,6 +1,7 @@
 import copy
 import os
 import time
+import warnings
 from typing import Union
 
 import gymnasium as gym
@@ -217,8 +218,24 @@ def main(cfg: DictConfig):
     policy_step = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    single_global_rollout = int(cfg.num_envs * cfg.rollout_steps * world_size)
-    num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
+    policy_steps_per_update = int(cfg.num_envs * cfg.rollout_steps * world_size)
+    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
 
     # Linear learning rate scheduler
     if cfg.algo.anneal_lr:

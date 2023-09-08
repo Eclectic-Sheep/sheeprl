@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import warnings
 
 import pytest
 
@@ -52,7 +53,9 @@ def test_resume_from_checkpoint():
         check=True,
     )
 
-    ckpt_path = os.path.join("logs", "runs", root_dir, run_name, "version_0", "checkpoint", "ckpt_1_0.ckpt")
+    ckpt_path = os.path.join("logs", "runs", root_dir, run_name, "version_0", "checkpoint")
+    ckpt_file_name = os.listdir(ckpt_path)[-1]
+    ckpt_path = os.path.join(ckpt_path, ckpt_file_name)
     subprocess.run(
         sys.executable
         + f" sheeprl.py dreamer_v3 exp=dreamer_v3 checkpoint.resume_from={ckpt_path} "
@@ -60,5 +63,14 @@ def test_resume_from_checkpoint():
         shell=True,
         check=True,
     )
-    shutil.rmtree(os.path.join("logs", "runs", "pytest_test_ckpt"))
-    shutil.rmtree(os.path.join("logs", "runs", "pytest_resume_ckpt"))
+
+    try:
+        path = os.path.join("logs", "runs", "pytest_test_ckpt")
+        shutil.rmtree(path)
+    except (OSError, WindowsError):
+        warnings.warn("Unable to delete folder {}.".format(path))
+    try:
+        path = os.path.join("logs", "runs", "pytest_resume_ckpt")
+        shutil.rmtree(path)
+    except (OSError, WindowsError):
+        warnings.warn("Unable to delete folder {}.".format(path))

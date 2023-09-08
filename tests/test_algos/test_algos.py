@@ -98,7 +98,7 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -131,7 +131,7 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
+    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -181,7 +181,7 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "alpha_optimizer",
         "encoder_optimizer",
         "decoder_optimizer",
-        "global_step",
+        "update",
         "batch_size",
     }
     if checkpoint_buffer:
@@ -233,7 +233,7 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "global_step"}
+        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -384,8 +384,10 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "actor_optimizer",
         "critic_optimizer",
         "expl_decay_steps",
-        "global_step",
+        "update",
         "batch_size",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
@@ -438,12 +440,14 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "critic_task_optimizer",
         "ensemble_optimizer",
         "expl_decay_steps",
-        "global_step",
+        "update",
         "batch_size",
         "actor_exploration",
         "critic_exploration",
         "actor_exploration_optimizer",
         "critic_exploration_optimizer",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
@@ -500,13 +504,15 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "critic_task_optimizer",
         "ensemble_optimizer",
         "expl_decay_steps",
-        "global_step",
+        "update",
         "batch_size",
         "actor_exploration",
         "critic_exploration",
         "target_critic_exploration",
         "actor_exploration_optimizer",
         "critic_exploration_optimizer",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
@@ -562,8 +568,10 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "actor_optimizer",
         "critic_optimizer",
         "expl_decay_steps",
-        "global_step",
+        "update",
         "batch_size",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
@@ -619,9 +627,11 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "actor_optimizer",
         "critic_optimizer",
         "expl_decay_steps",
-        "global_step",
+        "update",
         "batch_size",
         "moments",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
