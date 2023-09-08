@@ -278,7 +278,7 @@ class TrajectoryReplayBuffer:
         if len(valid_trajectories) == 0:
             raise RuntimeError("No trajectories of length {} found".format(sequence_length))
 
-        if "weights" not in valid_trajectories[0]:
+        if "weights" not in valid_trajectories[0].keys():
             trajectories = random.choices(valid_trajectories, k=batch_size)
             positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
 
