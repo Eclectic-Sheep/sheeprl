@@ -235,13 +235,29 @@ class Trajectory(TensorDict):
 class TrajectoryReplayBuffer:
     """A queue of `Trajectory` with FIFO logic."""
 
-    def __init__(self, max_num_trajectories: int, device: Union[str, torch.device] = "cpu", memmap: bool = False):
+    def __init__(
+        self,
+        max_num_trajectories: int,
+        device: Union[str, torch.device] = "cpu",
+        memmap: bool = False,
+        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+    ):
         self._buffer = []
         self.max_num_trajectories = max_num_trajectories
         if isinstance(device, str):
             device = torch.device(device=device)
         self._device = device
         self._memmap = memmap
+        self._memmap_dir = memmap_dir
+        if memmap_dir is None:
+            warnings.warn(
+                "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+                " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+                UserWarning,
+            )
+        else:
+            self._memmap_dir = Path(self._memmap_dir)
+            self._memmap_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def buffer(self):
@@ -264,10 +280,30 @@ class TrajectoryReplayBuffer:
             raise TypeError("Trajectory must be an instance of TensorDict")
         trajectory = Trajectory(trajectory)
         if self._memmap:
-            trajectory.memmap_()
+            episode_dir = None
+            if self._memmap_dir is not None:
+                episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
+                episode_dir.mkdir(parents=True, exist_ok=True)
+            for k, v in trajectory.items():
+                trajectory[k] = MemmapTensor.from_tensor(
+                    v,
+                    filename=None if episode_dir is None else episode_dir / f"{k}.memmap",
+                    transfer_ownership=False,
+                )
+            trajectory.memmap_(prefix=episode_dir)
+        trajectory.to(self._device)
         self._buffer.append(trajectory)  # convert to trajectory if tensordict
         while len(self) > self.max_num_trajectories:
-            self._buffer.pop(0)
+            if self._memmap and self._memmap_dir is not None:
+                filename = self._buffer[0][self._buffer[0].sorted_keys[0]].filename
+                for k in self._buffer[0].sorted_keys:
+                    f = self._buffer[0][k].file
+                    if f is not None:
+                        f.close()
+                del self._buffer[0]
+                shutil.rmtree(os.path.dirname(filename))
+            else:
+                self._buffer.pop(0)
 
     def sample(self, batch_size: int, sequence_length: int) -> LazyStackedTensorDict:
         """Sample a batch of trajectories of length `sequence_length`. If the trajectories have weights, the sampling

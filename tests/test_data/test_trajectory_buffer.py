@@ -83,3 +83,14 @@ def test_with_no_long_enough_trajectory():
     buffer.add(short_traj)
     with pytest.raises(RuntimeError):
         buffer.sample(batch_size=2, sequence_length=4)
+
+
+def test_with_memmap():
+    buffer = TrajectoryReplayBuffer(max_num_trajectories=5, memmap=True, memmap_dir="test_memmap")
+    long_traj = Trajectory({"obs": torch.rand(10, 3), "rew": torch.rand(10, 1)}, batch_size=10)
+    buffer.add(long_traj)
+    sample = buffer.sample(batch_size=2, sequence_length=4)
+    assert sample.shape == (4, 2)
+    assert sample.valid_keys == ["obs", "rew"]
+    assert sample["obs"].shape == (4, 2, 3)
+    assert sample["rew"].shape == (4, 2, 1)
