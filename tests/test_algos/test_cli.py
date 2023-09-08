@@ -55,7 +55,7 @@ def test_resume_from_checkpoint():
     ckpt_path = os.path.join("logs", "runs", root_dir, run_name, "version_0", "checkpoint", "ckpt_1_0.ckpt")
     subprocess.run(
         sys.executable
-        + f" sheeprl.py dreamer_v3 exp=dreamer_v3 checkpoint_path={ckpt_path} "
+        + f" sheeprl.py dreamer_v3 exp=dreamer_v3 checkpoint.resume_from={ckpt_path} "
         + "root_dir=pytest_resume_ckpt run_name=test_resume",
         shell=True,
         check=True,
