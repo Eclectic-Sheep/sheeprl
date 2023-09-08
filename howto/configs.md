@@ -22,10 +22,14 @@ configs
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
-│   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
-│   ├── sac_ae.yaml
-│   └── sac.yaml
+│   ├── ppo_recurrent.yaml
+│   ├── sac.yaml
+│   └── sac_ae.yaml
+├── buffer
+│   └── default.yaml
+├── checkpoint
+│   └── default.yaml
 ├── config.yaml
 ├── env
 │   ├── atari.yaml
@@ -37,24 +41,27 @@ configs
 │   ├── minecraft.yaml
 │   ├── minedojo.yaml
 │   └── minerl.yaml
+├── env_config.yaml
 ├── exp
 │   ├── default.yaml
 │   ├── dreamer_v1.yaml
-│   ├── dreamer_v2_ms_pacman.yaml
 │   ├── dreamer_v2.yaml
+│   ├── dreamer_v2_ms_pacman.yaml
+│   ├── dreamer_v3.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
 │   ├── dreamer_v3_L_doapp.yaml
-│   ├── dreamer_v3.yaml
+│   ├── dreamer_v3_L_navigate.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
-│   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
-│   ├── sac_ae.yaml
-│   └── sac.yaml
+│   ├── ppo_recurrent.yaml
+│   ├── sac.yaml
+│   └── sac_ae.yaml
 ├── hydra
 │   └── default.yaml
-├── __init__.py
+├── metric
+│   └── default.yaml
 └── optim
     ├── adam.yaml
     └── sgd.yaml
@@ -75,30 +82,30 @@ The `sheeprl/configs/config.yaml` is the main configuration, which is loaded by 
 defaults:
   - _self_
   - algo: default.yaml
+  - checkpoint: default.yaml
   - env: default.yaml
   - exp: null
   - hydra: default.yaml
+  - metric: default.yaml
 
 seed: 42
 num_threads: 1
+total_steps: ???
 exp_name: "default"
 dry_run: False
 torch_deterministic: False
 root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
 run_name: ${env.id}_${exp_name}_${seed}
-buffer: 
-  memmap: True
-checkpoint:
-  every: 100
-checkpoint_path: null
 num_envs: 4
 clip_rewards: False
 cnn_keys:
-  encoder: ["rgb"]
+  encoder: []
   decoder: ${cnn_keys.encoder}
 mlp_keys:
   encoder: []
   decoder: ${mlp_keys.encoder}
+buffer:
+  memmap: True
 ```
 
 ### Algorithms
@@ -107,7 +114,6 @@ In the `algo` folder one can find all the configurations for every algorithms im
 
 ```yaml
 # sheeprl/configs/algo/dreamer_v3.yaml
-
 defaults:
   - default
   - /optim@world_model.optimizer: adam
@@ -119,6 +125,12 @@ name: dreamer_v3
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
+
+# Training recipe
+learning_starts: 65536
+pretrain_steps: 1
+gradient_steps: 1
+train_every: 16
 
 # Model related parameters
 layer_norm: True
@@ -258,7 +270,7 @@ is:
 
 ### Environment
 
-The environment configs can be found under the `sheeprl/configs/env` folders. Sheeprl comes with default wrappers to the following environments:
+The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers to the following environments:
 
 * [Atari](https://gymnasium.farama.org/environments/atari/)
 * [Diambra](https://docs.diambra.ai/)
@@ -271,7 +283,7 @@ In this way one can easily try out the overall framework with standard RL enviro
 
 > **Warning**
 >
-> Every environment config **must** contain the field `env.id`, which specifies the id of the environment to be instantiated 
+> Every environment config **must** contain the field `env.id`, which specifies the id of the environment to be instantiated
 
 ### Experiment
 
@@ -286,8 +298,7 @@ defaults:
   - _self_
 
 env:
-  env:
-    id: MsPacmanNoFrameskip-v4
+  id: MsPacmanNoFrameskip-v4
   max_episode_steps: 27000
 
 seed: 5
@@ -295,12 +306,13 @@ num_envs: 1
 checkpoint:
   every: 2000
 total_steps: 100000
-train_every: 1
 buffer:
-  size: 200000
+  size: 100000
   checkpoint: True
 
 algo:
+  learning_starts: 1024
+  train_every: 1
   dense_units: 512
   mlp_layers: 2
   world_model:
