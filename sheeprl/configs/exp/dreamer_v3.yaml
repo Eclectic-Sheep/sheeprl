@@ -8,7 +8,8 @@ defaults:
 per_rank_batch_size: 16
 per_rank_sequence_length: 64
 total_steps: 5000000
-checkpoint_every: 100000
+checkpoint:
+  every: 100000
 buffer:
   size: 1000000
   checkpoint: False

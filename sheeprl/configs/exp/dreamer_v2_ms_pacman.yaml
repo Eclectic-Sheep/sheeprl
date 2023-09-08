@@ -11,7 +11,8 @@ env:
   max_episode_steps: 27000
 
 per_rank_batch_size: 32
-checkpoint_every: 200000
+checkpoint:
+  every: 200000
 total_steps: 200000000
 learning_starts: 200000
 pretrain_steps: 1

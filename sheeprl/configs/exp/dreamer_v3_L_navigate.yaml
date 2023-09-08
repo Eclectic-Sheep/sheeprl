@@ -13,7 +13,8 @@ env:
 
 seed: 5
 num_envs: 4
-checkpoint_every: 100000
+checkpoint:
+  every: 100000
 total_steps: 50000000
 train_every: 16
 learning_starts: 65536

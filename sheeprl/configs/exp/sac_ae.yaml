@@ -7,6 +7,5 @@ defaults:
 
 learning_starts: 1000
 per_rank_batch_size: 128
-
 env:
   frame_stack: 3

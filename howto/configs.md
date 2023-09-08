@@ -88,7 +88,8 @@ root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
 run_name: ${env.id}_${exp_name}_${seed}
 buffer: 
   memmap: True
-checkpoint_every: 100
+checkpoint:
+  every: 100
 checkpoint_path: null
 num_envs: 4
 clip_rewards: False
@@ -291,7 +292,8 @@ env:
 
 seed: 5
 num_envs: 1
-checkpoint_every: 2000
+checkpoint:
+  every: 2000
 total_steps: 100000
 train_every: 1
 buffer:
