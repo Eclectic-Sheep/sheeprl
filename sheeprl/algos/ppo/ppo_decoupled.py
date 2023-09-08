@@ -131,7 +131,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
     # Local data
     rb = ReplayBuffer(
-        cfg.rollout_steps,
+        cfg.algo.rollout_steps,
         cfg.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
@@ -144,7 +144,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     last_log = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * cfg.rollout_steps)
+    policy_steps_per_update = int(cfg.num_envs * cfg.algo.rollout_steps)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -192,7 +192,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
-        for _ in range(0, cfg.rollout_steps):
+        for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.num_envs
 
             with torch.no_grad():
@@ -259,7 +259,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             rb["dones"],
             next_values,
             next_done,
-            cfg.rollout_steps,
+            cfg.algo.rollout_steps,
             cfg.algo.gamma,
             cfg.algo.gae_lambda,
         )
@@ -422,7 +422,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
         update += 1
-        policy_step += cfg.num_envs * cfg.rollout_steps
+        policy_step += cfg.num_envs * cfg.algo.rollout_steps
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))

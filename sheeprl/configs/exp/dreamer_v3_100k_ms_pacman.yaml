@@ -14,12 +14,13 @@ num_envs: 1
 checkpoint:
   every: 2000
 total_steps: 100000
-train_every: 1
 buffer:
   size: 200000
   checkpoint: True
 
 algo:
+  learning_starts: 1024
+  train_every: 1
   dense_units: 512
   mlp_layers: 2
   world_model:

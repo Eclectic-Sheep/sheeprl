@@ -127,7 +127,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.num_envs)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = cfg.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -199,9 +199,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         if update >= learning_starts:
             training_steps = learning_starts if update == learning_starts else 1
             chunks = rb.sample(
-                training_steps * cfg.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
+                training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
                 sample_next_obs=cfg.buffer.sample_next_obs,
-            ).split(training_steps * cfg.gradient_steps * cfg.per_rank_batch_size)
+            ).split(training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
@@ -345,7 +345,7 @@ def trainer(
 
     # Start training
     policy_steps_per_update = cfg.num_envs
-    learning_starts = cfg.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     update = learning_starts
     policy_step = update * policy_steps_per_update
     last_log = (policy_step // cfg.metric.log_every - 1) * cfg.metric.log_every

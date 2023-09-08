@@ -14,10 +14,6 @@ per_rank_batch_size: 32
 checkpoint:
   every: 200000
 total_steps: 200000000
-learning_starts: 200000
-pretrain_steps: 1
-gradient_steps: 1
-train_every: 16
 clip_rewards: True
 buffer:
   size: 2000000
@@ -27,6 +23,10 @@ buffer:
 
 algo:
   gamma: 0.995
+  learning_starts: 200000
+  pretrain_steps: 1
+  gradient_steps: 1
+  train_every: 16
   world_model:
     use_continues: True
     kl_free_nats: 0.0

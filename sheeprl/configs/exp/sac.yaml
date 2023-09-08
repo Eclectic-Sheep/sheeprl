@@ -7,8 +7,6 @@ defaults:
 
 total_steps: 1000000
 per_rank_batch_size: 256
-learning_starts: 100
-gradient_steps: 1
 checkpoint:
   every: 50000
 

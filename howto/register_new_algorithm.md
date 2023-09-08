@@ -137,13 +137,13 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    rb = ReplayBuffer(cfg.rollout_steps, cfg.num_envs, device=device, memmap=cfg.buffer.memmap)
+    rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.num_envs, device=device, memmap=cfg.buffer.memmap)
     step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
 
     # Global variables
     global_step = 0
     start_time = time.perf_counter()
-    single_global_rollout = int(cfg.num_envs * cfg.rollout_steps * world_size)
+    single_global_rollout = int(cfg.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
 
     # Linear learning rate scheduler
@@ -166,7 +166,7 @@ def main(cfg: DictConfig):
     next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
-        for _ in range(0, cfg.rollout_steps):
+        for _ in range(0, cfg.algo.rollout_steps):
             global_step += cfg.num_envs * world_size
 
             with torch.no_grad():

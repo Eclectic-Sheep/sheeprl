@@ -530,12 +530,12 @@ def main(cfg: DictConfig):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
-    updates_before_training = cfg.train_every // policy_steps_per_update if not cfg.dry_run else 0
+    updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = (cfg.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
+    learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.gradient_steps * fabric.world_size)
+    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
@@ -670,7 +670,7 @@ def main(cfg: DictConfig):
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.gradient_steps,
+                n_samples=cfg.algo.gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
@@ -686,7 +686,7 @@ def main(cfg: DictConfig):
                     aggregator,
                     cfg,
                 )
-            updates_before_training = cfg.train_every // policy_steps_per_update
+            updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(

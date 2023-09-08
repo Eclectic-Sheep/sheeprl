@@ -16,8 +16,6 @@ num_envs: 4
 checkpoint:
   every: 100000
 total_steps: 50000000
-train_every: 16
-learning_starts: 65536
 buffer:
   checkpoint: True
 
@@ -39,6 +37,8 @@ mlp_keys:
     - compass
 
 algo:
+  train_every: 16
+  learning_starts: 65536
   dense_units: 768
   mlp_layers: 4
   world_model:

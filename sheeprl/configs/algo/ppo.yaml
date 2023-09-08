@@ -17,6 +17,7 @@ clip_vloss: False
 ent_coef: 0.0
 anneal_ent_coef: False
 vf_coef: 1.0
+rollout_steps: 128
 
 dense_units: 64
 mlp_layers: 2

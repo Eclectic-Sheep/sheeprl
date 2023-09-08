@@ -10,6 +10,12 @@ gamma: 0.99
 lmbda: 0.95
 horizon: 15
 
+# Training recipe
+learning_starts: 1000
+pretrain_steps: 100
+gradient_steps: 1
+train_every: 5
+
 # Model related parameters
 layer_norm: False
 dense_units: 400

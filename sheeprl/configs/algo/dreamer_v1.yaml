@@ -10,6 +10,11 @@ lmbda: 0.95
 horizon: 15
 name: dreamer_v1
 
+# Training recipe
+learning_starts: 5000
+gradient_steps: 100
+train_every: 1000
+
 # Model related parameters
 dense_units: 400
 mlp_layers: 4

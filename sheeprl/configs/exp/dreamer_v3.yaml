@@ -14,7 +14,3 @@ buffer:
   size: 1000000
   checkpoint: False
   memmap: True
-learning_starts: 65536
-pretrain_steps: 1
-gradient_steps: 1
-train_every: 16

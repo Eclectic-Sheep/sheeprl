@@ -183,7 +183,7 @@ def main(cfg: DictConfig):
     start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = cfg.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -256,7 +256,7 @@ def main(cfg: DictConfig):
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
-                    cfg.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+                    cfg.algo.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
                 )  # [G*B, 1]
                 gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
                 gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]

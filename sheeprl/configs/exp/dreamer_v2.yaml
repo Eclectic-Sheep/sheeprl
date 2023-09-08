@@ -16,7 +16,3 @@ buffer:
   prioritize_ends: False
   checkpoint: False
   memmap: True
-learning_starts: 1000
-pretrain_steps: 100
-gradient_steps: 1
-train_every: 5

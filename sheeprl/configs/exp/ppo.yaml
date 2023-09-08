@@ -9,4 +9,3 @@ per_rank_batch_size: 64
 total_steps: 65536
 buffer:
   share_data: False
-rollout_steps: 128

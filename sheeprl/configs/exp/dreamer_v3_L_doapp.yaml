@@ -16,7 +16,6 @@ num_envs: 8
 checkpoint:
   every: 200000
 total_steps: 5000000
-train_every: 8
 buffer:
   checkpoint: True
 
@@ -39,6 +38,8 @@ mlp_keys:
     - stage
 
 algo:
+  learning_starts: 65536
+  train_every: 8
   dense_units: 768
   mlp_layers: 4
   world_model:

@@ -6,6 +6,10 @@ defaults:
 
 name: sac_ae
 
+# Training recipe
+learning_starts: 1000
+
+# Model related parameters
 cnn_channels_multiplier: 16
 dense_units: 64
 mlp_layers: 2

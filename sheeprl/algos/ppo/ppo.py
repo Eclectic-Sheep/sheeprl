@@ -204,7 +204,7 @@ def main(cfg: DictConfig):
 
     # Local data
     rb = ReplayBuffer(
-        cfg.rollout_steps,
+        cfg.algo.rollout_steps,
         cfg.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
@@ -218,7 +218,7 @@ def main(cfg: DictConfig):
     policy_step = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * cfg.rollout_steps * world_size)
+    policy_steps_per_update = int(cfg.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
@@ -258,7 +258,7 @@ def main(cfg: DictConfig):
     next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
-        for _ in range(0, cfg.rollout_steps):
+        for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.num_envs * world_size
 
             with torch.no_grad():
@@ -329,7 +329,7 @@ def main(cfg: DictConfig):
                 rb["dones"],
                 next_values,
                 next_done,
-                cfg.rollout_steps,
+                cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )
