@@ -15,7 +15,7 @@ checkpoint:
   every: 2000
 total_steps: 100000
 buffer:
-  size: 200000
+  size: 100000
   checkpoint: True
 
 algo:
