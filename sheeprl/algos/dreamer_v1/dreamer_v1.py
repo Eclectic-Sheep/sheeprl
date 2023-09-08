@@ -2,6 +2,7 @@ import copy
 import os
 import pathlib
 import time
+import warnings
 from typing import Dict
 
 import gymnasium as gym
@@ -523,14 +524,17 @@ def main(cfg: DictConfig):
     expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
+    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    policy_step = state["update"] * cfg.num_envs if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
-    start_step = state["global_step"] // fabric.world_size if cfg.checkpoint.resume_from else 1
-    single_global_step = int(cfg.num_envs * fabric.world_size)
-    step_before_training = cfg.train_every // single_global_step if not cfg.dry_run else 0
-    num_updates = int(cfg.total_steps // single_global_step) if not cfg.dry_run else 1
-    learning_starts = (cfg.learning_starts // single_global_step) if not cfg.dry_run else 0
+    policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
+    updates_before_training = cfg.train_every // policy_steps_per_update if not cfg.dry_run else 0
+    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    learning_starts = (cfg.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts = start_step + cfg.learning_starts // single_global_step
+        learning_starts += start_step
     max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
@@ -538,6 +542,22 @@ def main(cfg: DictConfig):
             initial=cfg.algo.player.expl_amount,
             final=cfg.algo.player.expl_min,
             max_decay_steps=max_step_expl_decay,
+        )
+
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
         )
 
     # Get the first environment observation and start the optimization
@@ -555,9 +575,9 @@ def main(cfg: DictConfig):
     rb.add(step_data[None, ...])
     player.init_states()
 
-    for global_step in range(start_step, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
+        if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -587,11 +607,13 @@ def main(cfg: DictConfig):
         o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
 
+        policy_step += cfg.num_envs * fabric.world_size
+
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
                 if agent_final_info is not None and "episode" in agent_final_info:
                     fabric.print(
-                        f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
                     aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -640,10 +662,10 @@ def main(cfg: DictConfig):
             # Reset internal agent states
             player.init_states(dones_idxes)
 
-        step_before_training -= 1
+        updates_before_training -= 1
 
         # Train the agent
-        if global_step > learning_starts and step_before_training <= 0:
+        if update > learning_starts and updates_before_training <= 0:
             fabric.barrier()
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
@@ -664,7 +686,7 @@ def main(cfg: DictConfig):
                     aggregator,
                     cfg,
                 )
-            step_before_training = cfg.train_every // single_global_step
+            updates_before_training = cfg.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
@@ -674,17 +696,19 @@ def main(cfg: DictConfig):
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
-            fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.update("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)))
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
+            fabric.log_dict(aggregator.compute(), policy_step)
             aggregator.reset()
 
         # Checkpoint Model
         if (
-            (cfg.checkpoint.every > 0 and global_step % cfg.checkpoint.every == 0)
+            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or global_step == num_updates
+            or update == num_updates
         ):
+            last_checkpoint = policy_step
             state = {
                 "world_model": world_model.state_dict(),
                 "actor": actor.state_dict(),
@@ -693,10 +717,12 @@ def main(cfg: DictConfig):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
-                "global_step": global_step * fabric.world_size,
+                "update": update * fabric.world_size,
                 "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
-            ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_coupled",
                 fabric=fabric,
