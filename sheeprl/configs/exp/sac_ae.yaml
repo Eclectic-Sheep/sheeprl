@@ -5,6 +5,9 @@ defaults:
   - override /algo: sac_ae
   - _self_
 
+# Experiment
 per_rank_batch_size: 128
+
+# Environmment
 env:
   frame_stack: 3

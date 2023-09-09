@@ -21,6 +21,7 @@ mlp_layers: 4
 dense_act: torch.nn.ELU
 cnn_act: torch.nn.ReLU
 
+# World model
 world_model:
   stochastic_size: 30
   kl_free_nats: 3.0
@@ -30,6 +31,7 @@ world_model:
   continue_scale_factor: 1.0
   clip_gradients: 100.0
 
+  # Encoder
   encoder:
     cnn_channels_multiplier: 32
     cnn_act: ${algo.cnn_act}
@@ -37,18 +39,22 @@ world_model:
     mlp_layers: ${algo.mlp_layers}
     dense_units: ${algo.dense_units}
 
+  # Recurrent model
   recurrent_model:
     recurrent_state_size: 200
     dense_units: ${algo.dense_units}
 
+  # Prior
   transition_model:
     hidden_size: 200
     dense_act: ${algo.dense_act}
 
+  # Posterior
   representation_model:
     hidden_size: 200
     dense_act: ${algo.dense_act}
 
+  # Decoder
   observation_model:
     cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
     cnn_act: ${algo.cnn_act}
@@ -56,22 +62,26 @@ world_model:
     mlp_layers: ${algo.mlp_layers}
     dense_units: ${algo.dense_units}
 
+  # Reward model
   reward_model:
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
     dense_units: ${algo.dense_units}
 
+  # Discount model
   discount_model:
     learnable: True
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
     dense_units: ${algo.dense_units}
 
+  # World model optimizer
   optimizer:
     lr: 6e-4
     eps: 1e-5
     weight_decay: 0
 
+# Actor
 actor:
   cls: sheeprl.algos.dreamer_v1.agent.Actor
   min_std: 0.1
@@ -82,22 +92,26 @@ actor:
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
 
+  # Actor optimizer
   optimizer:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 0
 
+# Critic
 critic:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
 
+  # Critic optimizer
   optimizer:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 0
 
+# Player agent (it interacts with the environment)
 player:
   expl_min: 0.0
   expl_amount: 0.3

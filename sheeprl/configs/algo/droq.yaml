@@ -7,6 +7,6 @@ name: droq
 # Training recipe
 gradient_steps: 20
 
-# override
+# Override from `sac` config
 critic:
   dropout: 0.01

@@ -25,8 +25,8 @@ def standard_args():
     return [
         "hydra/job_logging=disabled",
         "hydra/hydra_logging=disabled",
-        "num_envs=1",
         "dry_run=True",
+        "env.num_envs=1",
         f"env.sync_env={_IS_WINDOWS}",
     ]
 

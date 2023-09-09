@@ -105,13 +105,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             ),
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
 
@@ -137,13 +137,13 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.num_envs, device=device, memmap=cfg.buffer.memmap)
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
+    rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.env.num_envs, device=device, memmap=cfg.buffer.memmap)
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     global_step = 0
     start_time = time.perf_counter()
-    single_global_rollout = int(cfg.num_envs * cfg.algo.rollout_steps * world_size)
+    single_global_rollout = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
 
     # Linear learning rate scheduler
@@ -158,16 +158,16 @@ def main(cfg: DictConfig):
         if k in obs_keys:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
-    next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
+    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            global_step += cfg.num_envs * world_size
+            global_step += cfg.env.num_envs * world_size
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
@@ -179,9 +179,9 @@ def main(cfg: DictConfig):
             o, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
-                rewards = torch.tensor(reward).view(cfg.num_envs, -1)  # [N_envs, 1]
+                rewards = torch.tensor(reward).view(cfg.env.num_envs, -1)  # [N_envs, 1]
                 done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
-                done = done.view(cfg.num_envs, -1).float()
+                done = done.view(cfg.env.num_envs, -1).float()
 
             # Update the step data
             step_data["dones"] = next_done
@@ -197,7 +197,7 @@ def main(cfg: DictConfig):
                 if k in obs_keys:
                     torch_obs = torch.from_numpy(o[k]).to(fabric.device)
                     if k in cfg.cnn_keys.encoder:
-                        torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                        torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
                     if k in cfg.mlp_keys.encoder:
                         torch_obs = torch_obs.float()
                     step_data[k] = torch_obs

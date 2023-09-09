@@ -5,19 +5,26 @@ defaults:
   - override /env: atari
   - _self_
 
-env:
-  id: MsPacmanNoFrameskip-v4
-  max_episode_steps: 27000
-
+# Experiment
 seed: 5
-num_envs: 1
+total_steps: 100000
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v4
+
+# Checkpoint
 checkpoint:
   every: 2000
-total_steps: 100000
+
+# Buffer
 buffer:
   size: 100000
   checkpoint: True
 
+# Algorithm
 algo:
   learning_starts: 1024
   train_every: 1

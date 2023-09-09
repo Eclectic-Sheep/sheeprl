@@ -15,6 +15,8 @@ dense_units: 64
 mlp_layers: 2
 dense_act: torch.nn.ReLU
 layer_norm: False
+
+# Encoder
 encoder:
   tau: 0.05
   features_dim: 64
@@ -23,11 +25,11 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
-
   optimizer:
     lr: 1e-3
     eps: 1e-08
 
+# Decoder
 decoder:
   l2_lambda: 1e-6
   update_freq: 1
@@ -36,24 +38,21 @@ decoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
-
   optimizer:
     lr: 1e-3
     weight_decay: 1e-7
     eps: 1e-08
 
-# override
+# Override from `sac` config
 tau: 0.01
 hidden_size: 1024
 actor:
   network_frequency: 2
-
   optimizer:
     lr: 1e-3
     eps: 1e-08
 critic:
   target_network_frequency: 2
-
   optimizer:
     lr: 1e-3
     eps: 1e-08

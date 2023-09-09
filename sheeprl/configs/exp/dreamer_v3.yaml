@@ -5,12 +5,17 @@ defaults:
   - override /env: atari
   - _self_
 
+# Experiment
+total_steps: 5000000
 per_rank_batch_size: 16
 per_rank_sequence_length: 64
-total_steps: 5000000
+
+# Checkpoint
 checkpoint:
   every: 100000
+
+# Buffer
 buffer:
+  memmap: True
   size: 1000000
   checkpoint: False
-  memmap: True

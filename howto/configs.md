@@ -13,7 +13,7 @@ This document explains how the configuration files and folders are structured. I
 ## Parent Folder Structure
 
 ```tree
-configs
+sheeprl/configs
 ├── algo
 │   ├── default.yaml
 │   ├── dreamer_v1.yaml
@@ -22,10 +22,10 @@ configs
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
-│   ├── ppo.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── sac.yaml
-│   └── sac_ae.yaml
+│   ├── ppo.yaml
+│   ├── sac_ae.yaml
+│   └── sac.yaml
 ├── buffer
 │   └── default.yaml
 ├── checkpoint
@@ -45,21 +45,22 @@ configs
 ├── exp
 │   ├── default.yaml
 │   ├── dreamer_v1.yaml
-│   ├── dreamer_v2.yaml
 │   ├── dreamer_v2_ms_pacman.yaml
-│   ├── dreamer_v3.yaml
+│   ├── dreamer_v2.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
 │   ├── dreamer_v3_L_doapp.yaml
 │   ├── dreamer_v3_L_navigate.yaml
+│   ├── dreamer_v3.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
-│   ├── ppo.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── sac.yaml
-│   └── sac_ae.yaml
+│   ├── ppo.yaml
+│   ├── sac_ae.yaml
+│   └── sac.yaml
 ├── hydra
 │   └── default.yaml
+├── __init__.py
 ├── metric
 │   └── default.yaml
 └── optim
@@ -78,7 +79,7 @@ The `sheeprl/configs/config.yaml` is the main configuration, which is loaded by 
 ```yaml
 # @package _global_
 
-# specify here default training configuration
+# Specify here the default training configuration
 defaults:
   - _self_
   - algo: default.yaml
@@ -88,22 +89,30 @@ defaults:
   - hydra: default.yaml
   - metric: default.yaml
 
-seed: 42
 num_threads: 1
 total_steps: ???
-exp_name: "default"
+
+# Set it to True to run a single optimization step
 dry_run: False
+
+# Reproducibility
+seed: 42
 torch_deterministic: False
-root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Output folders
+exp_name: "default"
 run_name: ${env.id}_${exp_name}_${seed}
-num_envs: 4
-clip_rewards: False
+root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Encoder and decoder keys
 cnn_keys:
   encoder: []
   decoder: ${cnn_keys.encoder}
 mlp_keys:
   encoder: []
   decoder: ${mlp_keys.encoder}
+
+# Buffer
 buffer:
   memmap: True
 ```
@@ -141,6 +150,7 @@ cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
 
+# World model
 world_model:
   discrete_size: 32
   stochastic_size: 32
@@ -151,6 +161,7 @@ world_model:
   continue_scale_factor: 1.0
   clip_gradients: 1000.0
 
+  # Encoder
   encoder:
     cnn_channels_multiplier: 96
     cnn_act: ${algo.cnn_act}
@@ -159,21 +170,25 @@ world_model:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
 
+  # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
     layer_norm: True
     dense_units: ${algo.dense_units}
 
+  # Prior
   transition_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.layer_norm}
 
+  # Posterior
   representation_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.layer_norm}
 
+  # Decoder
   observation_model:
     cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
     cnn_act: ${algo.cnn_act}
@@ -182,6 +197,7 @@ world_model:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
 
+  # Reward model
   reward_model:
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
@@ -189,6 +205,7 @@ world_model:
     dense_units: ${algo.dense_units}
     bins: 255
 
+  # Discount model
   discount_model:
     learnable: True
     dense_act: ${algo.dense_act}
@@ -196,11 +213,13 @@ world_model:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
 
+  # World model optimizer
   optimizer:
     lr: 1e-4
     eps: 1e-8
     weight_decay: 0
 
+# Actor
 actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
@@ -213,6 +232,8 @@ actor:
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  
+  # Disttributed percentile model (used to scale the values)
   moments:
     decay: 0.99
     max: 1.0
@@ -220,11 +241,13 @@ actor:
       low: 0.05
       high: 0.95
 
+  # Actor optimizer
   optimizer:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 0
 
+# Critic
 critic:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
@@ -235,11 +258,13 @@ critic:
   bins: 255
   clip_gradients: 100.0
 
+  # Critic optimizer
   optimizer:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 0
 
+# Player agent (it interacts with the environment)
 player:
   expl_min: 0.0
   expl_amount: 0.0
@@ -297,19 +322,26 @@ defaults:
   - override /env: atari
   - _self_
 
-env:
-  id: MsPacmanNoFrameskip-v4
-  max_episode_steps: 27000
-
+# Experiment
 seed: 5
-num_envs: 1
+total_steps: 100000
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v4
+
+# Checkpoint
 checkpoint:
   every: 2000
-total_steps: 100000
+
+# Buffer
 buffer:
   size: 100000
   checkpoint: True
 
+# Algorithm
 algo:
   learning_starts: 1024
   train_every: 1
@@ -340,6 +372,20 @@ These configuration file manages where and how to create folders or subfolders f
 run:
   dir: logs/runs/${root_dir}/${run_name}
 ```
+
+### Metric
+
+The metric config contains all the parameters related to the metrics collected by the algorithm. In sheeprl we make large use of [TorchMetrics](https://torchmetrics.readthedocs.io/en/stable/) metrics and this config we can find both the standard parameters that can be passed to every [Metric](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric) object and the logging frequency:
+
+```yaml
+log_every: 5000
+
+# Metric related parameters. Please have a look at
+# https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric
+# for more information
+sync_on_compute: False
+```
+
 
 ### Optimizer
 

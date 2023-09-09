@@ -416,13 +416,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     action_space = envs.single_action_space
@@ -433,7 +433,7 @@ def main(cfg: DictConfig):
     actions_dim = (
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
-    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.clip_rewards else r
+    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
@@ -480,7 +480,7 @@ def main(cfg: DictConfig):
         actor.module,
         actions_dim,
         cfg.algo.player.expl_amount,
-        cfg.num_envs,
+        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
@@ -525,12 +525,12 @@ def main(cfg: DictConfig):
     aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 2
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
         rb = AsyncReplayBuffer(
             buffer_size,
-            cfg.num_envs,
+            cfg.env.num_envs,
             device="cpu",
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
@@ -553,16 +553,16 @@ def main(cfg: DictConfig):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device="cpu")
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device="cpu")
     expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
     start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
-    policy_step = state["update"] * cfg.num_envs if cfg.checkpoint.resume_from else 0
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
@@ -594,20 +594,20 @@ def main(cfg: DictConfig):
         )
 
     # Get the first environment observation and start the optimization
-    episode_steps = [[] for _ in range(cfg.num_envs)]
+    episode_steps = [[] for _ in range(cfg.env.num_envs)]
     o = envs.reset(seed=cfg.seed)[0]
     obs = {}
     for k in o.keys():
         if k in obs_keys:
-            torch_obs = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
+            torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
             if k in cfg.mlp_keys.encoder:
                 # Images stay uint8 to save space
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             obs[k] = torch_obs
-    step_data["dones"] = torch.zeros(cfg.num_envs, 1)
-    step_data["actions"] = torch.zeros(cfg.num_envs, sum(actions_dim))
-    step_data["rewards"] = torch.zeros(cfg.num_envs, 1)
+    step_data["dones"] = torch.zeros(cfg.env.num_envs, 1)
+    step_data["actions"] = torch.zeros(cfg.env.num_envs, sum(actions_dim))
+    step_data["rewards"] = torch.zeros(cfg.env.num_envs, 1)
     step_data["is_first"] = torch.ones_like(step_data["dones"])
     if buffer_type == "sequential":
         rb.add(step_data[None, ...])
@@ -657,7 +657,7 @@ def main(cfg: DictConfig):
         if cfg.dry_run and buffer_type == "episode":
             dones = np.ones_like(dones)
 
-        policy_step += cfg.num_envs * fabric.world_size
+        policy_step += cfg.env.num_envs * fabric.world_size
 
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
@@ -679,14 +679,14 @@ def main(cfg: DictConfig):
         next_obs: Dict[str, Tensor] = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             if k in obs_keys:
-                next_obs[k] = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
-                step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.num_envs, *real_next_obs[k].shape[1:])
+                next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
+                step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.env.num_envs, *real_next_obs[k].shape[1:])
                 if k in cfg.mlp_keys.encoder:
                     next_obs[k] = next_obs[k].float()
                     step_data[k] = step_data[k].float()
-        actions = torch.from_numpy(actions).view(cfg.num_envs, -1).float()
-        rewards = torch.from_numpy(rewards).view(cfg.num_envs, -1).float()
-        dones = torch.from_numpy(dones).view(cfg.num_envs, -1).float()
+        actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(cfg.env.num_envs, -1).float()
 
         # Next_obs becomes the new obs
         obs = next_obs

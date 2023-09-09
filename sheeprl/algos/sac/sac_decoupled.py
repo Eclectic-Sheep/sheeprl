@@ -58,7 +58,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         [
             make_env(
                 cfg.env.id,
-                cfg.seed + rank * cfg.num_envs + i,
+                cfg.seed + rank * cfg.env.num_envs + i,
                 rank,
                 cfg.env.capture_video,
                 logger.log_dir,
@@ -66,7 +66,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
                 mask_velocities=False,
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
@@ -110,22 +110,22 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // cfg.num_envs if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // cfg.env.num_envs if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     policy_step = 0
     last_log = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs)
+    policy_steps_per_update = int(cfg.env.num_envs)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
 
@@ -160,7 +160,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
-        policy_step += cfg.num_envs
+        policy_step += cfg.env.num_envs
 
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
@@ -180,9 +180,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
         with device:
             next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.num_envs, -1)  # [N_envs, 1]
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.num_envs, -1)
+            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
+            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -344,7 +344,7 @@ def trainer(
         )
 
     # Start training
-    policy_steps_per_update = cfg.num_envs
+    policy_steps_per_update = cfg.env.num_envs
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     update = learning_starts
     policy_step = update * policy_steps_per_update

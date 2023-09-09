@@ -182,13 +182,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     observation_space = envs.single_observation_space
@@ -337,23 +337,23 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=fabric.device if cfg.buffer.memmap else "cpu",
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=cfg.cnn_keys.encoder + cfg.mlp_keys.encoder,
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
 
     # Global variables
     policy_step = 0
     last_log = 0
     last_checkpoint = 0
     start_time = time.time()
-    policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
 
@@ -380,7 +380,7 @@ def main(cfg: DictConfig):
         if k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
@@ -396,7 +396,7 @@ def main(cfg: DictConfig):
         o, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
-        policy_step += cfg.num_envs * fabric.world_size
+        policy_step += cfg.env.num_envs * fabric.world_size
 
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
@@ -419,7 +419,7 @@ def main(cfg: DictConfig):
         for k in real_next_obs.keys():
             next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                next_obs[k] = next_obs[k].view(cfg.num_envs, -1, *next_obs[k].shape[-2:])
+                next_obs[k] = next_obs[k].view(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
 
@@ -428,13 +428,13 @@ def main(cfg: DictConfig):
                 step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
                 if k in cfg.cnn_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
-                        cfg.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                        cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
                 if k in cfg.mlp_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
-        actions = torch.from_numpy(actions).view(cfg.num_envs, -1).float().to(fabric.device)
-        rewards = torch.from_numpy(rewards).view(cfg.num_envs, -1).float().to(fabric.device)
-        dones = torch.from_numpy(dones).view(cfg.num_envs, -1).float().to(fabric.device)
+        actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float().to(fabric.device)
+        rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float().to(fabric.device)
+        dones = torch.from_numpy(dones).view(cfg.env.num_envs, -1).float().to(fabric.device)
 
         step_data["dones"] = dones
         step_data["actions"] = actions

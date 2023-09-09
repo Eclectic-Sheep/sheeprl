@@ -3,6 +3,7 @@ defaults:
   - _self_
 
 name: ppo_recurrent
+reset_recurrent_state_on_done: False
 
 lstm:
   hidden_size: ${algo.dense_units}

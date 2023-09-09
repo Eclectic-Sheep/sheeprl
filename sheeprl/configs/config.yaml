@@ -1,6 +1,6 @@
 # @package _global_
 
-# specify here default training configuration
+# Specify here the default training configuration
 defaults:
   - _self_
   - algo: default.yaml
@@ -10,21 +10,29 @@ defaults:
   - hydra: default.yaml
   - metric: default.yaml
 
-seed: 42
 num_threads: 1
 total_steps: ???
-exp_name: "default"
+
+# Set it to True to run a single optimization step
 dry_run: False
+
+# Reproducibility
+seed: 42
 torch_deterministic: False
-root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Output folders
+exp_name: "default"
 run_name: ${env.id}_${exp_name}_${seed}
-num_envs: 4
-clip_rewards: False
+root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Encoder and decoder keys
 cnn_keys:
   encoder: []
   decoder: ${cnn_keys.encoder}
 mlp_keys:
   encoder: []
   decoder: ${mlp_keys.encoder}
+
+# Buffer
 buffer:
   memmap: True

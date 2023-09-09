@@ -1,9 +1,11 @@
+num_envs: 4
 sync_env: False
-screen_size: 64
 frame_stack: 1
-frame_stack_dilation: 1
-grayscale: False
+screen_size: 64
 action_repeat: 1
-max_episode_steps: null
+grayscale: False
+clip_rewards: True
 capture_video: True
+frame_stack_dilation: 1
+max_episode_steps: null
 reward_as_observation: False

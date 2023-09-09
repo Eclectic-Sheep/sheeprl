@@ -1,2 +1,6 @@
-sync_on_compute: False
 log_every: 5000
+
+# Metric related parameters. Please have a look at
+# https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric
+# for more information
+sync_on_compute: False
