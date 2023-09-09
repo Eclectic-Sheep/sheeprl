@@ -16,7 +16,7 @@ from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, RunningMean
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -25,7 +25,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
-from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.metric import MovingAverageMetric, RankIndependentMetricAggregator, MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
@@ -201,6 +201,12 @@ def main(cfg: DictConfig):
                 "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             }
         )
+        rank_aggregator = RankIndependentMetricAggregator(
+            {
+                f"Rewards/env_{rank * cfg.num_envs + i}": MovingAverageMetric(window=5, sync_on_compute=False)
+                for i in range(cfg.num_envs)
+            }
+        )
 
     # Local data
     rb = ReplayBuffer(
@@ -224,14 +230,14 @@ def main(cfg: DictConfig):
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the metrics will be logged at the nearest greater multiple of the "
             "policy_steps_per_update value."
         )
     if cfg.checkpoint.every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
             "policy_steps_per_update value."
@@ -266,7 +272,7 @@ def main(cfg: DictConfig):
                 normalized_obs = {
                     k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
                 }
-                actions, logprobs, _, value = agent(normalized_obs)
+                actions, logprobs, _, value = agent.module(normalized_obs)
                 if is_continuous:
                     real_actions = torch.cat(actions, -1).cpu().numpy()
                 else:
@@ -314,15 +320,19 @@ def main(cfg: DictConfig):
                         fabric.print(
                             f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                         )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"])
+                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"])
+                        rank_aggregator.update(
+                            f"Rewards/env_{fabric.global_rank * cfg.num_envs + i}",
+                            torch.from_numpy(agent_final_info["episode"]["r"]).to(device),
+                        )
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
             normalized_obs = {
                 k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
             }
-            next_values = agent.get_value(normalized_obs)
+            next_values = agent.module.get_value(normalized_obs)
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
@@ -373,8 +383,12 @@ def main(cfg: DictConfig):
             last_log = policy_step
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
-            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
             aggregator.reset()
+            rank_metrics = rank_aggregator.compute()
+            for rank_m in rank_metrics:
+                fabric.log_dict(rank_m, policy_step)
+            rank_aggregator.reset()
+            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
 
         # Checkpoint model
         if (
