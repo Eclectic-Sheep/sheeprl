@@ -1,6 +1,5 @@
 import copy
 import os
-import time
 import warnings
 from typing import Union
 
@@ -27,7 +26,8 @@ from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator, RankIndependentMetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, print_config
 
 
 def train(
@@ -108,6 +108,8 @@ def train(
 @register_algorithm()
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
+
     if "minedojo" in cfg.env.env._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO agent, since it does not take "
@@ -194,15 +196,16 @@ def main(cfg: DictConfig):
         {
             "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
         }
     ).to(device)
-    rank_metrics = {f"Rewards/rew_env_{rank * cfg.num_envs + i}": RunningMean(window=10) for i in range(cfg.num_envs)}
+    rank_metrics = {
+        f"Rewards/rew_env_{rank * cfg.env.num_envs + i}": RunningMean(window=10) for i in range(cfg.env.num_envs)
+    }
     rank_metrics.update(
-        {f"Game/ep_len_env_{rank * cfg.num_envs + i}": RunningMean(window=10) for i in range(cfg.num_envs)}
+        {f"Game/ep_len_env_{rank * cfg.env.num_envs + i}": RunningMean(window=10) for i in range(cfg.env.num_envs)}
     )
     rank_aggregator = RankIndependentMetricAggregator(rank_metrics).to(device)
 
@@ -224,9 +227,9 @@ def main(cfg: DictConfig):
 
     # Global variables
     last_log = 0
+    last_train = 0
     policy_step = 0
     last_checkpoint = 0
-    start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
@@ -270,21 +273,24 @@ def main(cfg: DictConfig):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs * world_size
 
-            with torch.no_grad():
-                # Sample an action given the observation received by the environment
-                normalized_obs = {
-                    k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-                }
-                actions, logprobs, _, value = agent.module(normalized_obs)
-                if is_continuous:
-                    real_actions = torch.cat(actions, -1).cpu().numpy()
-                else:
-                    real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
-                actions = torch.cat(actions, -1)
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/sps_env_interaction"):
+                with torch.no_grad():
+                    # Sample an action given the observation received by the environment
+                    normalized_obs = {
+                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
+                    }
+                    actions, logprobs, _, value = agent.module(normalized_obs)
+                    if is_continuous:
+                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                    else:
+                        real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
+                    actions = torch.cat(actions, -1)
 
-            # Single environment step
-            o, reward, done, truncated, info = envs.step(real_actions)
-            done = np.logical_or(done, truncated)
+                # Single environment step
+                o, reward, done, truncated, info = envs.step(real_actions)
+                done = np.logical_or(done, truncated)
 
             with device:
                 rewards = torch.tensor(reward, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
@@ -324,8 +330,8 @@ def main(cfg: DictConfig):
                         ep_len = agent_ep_info["episode"]["l"]
                         aggregator.update("Rewards/rew_avg", ep_rew)
                         aggregator.update("Game/ep_len_avg", ep_len)
-                        rank_aggregator.update(f"Rewards/rew_env_{rank * cfg.num_envs + i}", ep_rew)
-                        rank_aggregator.update(f"Game/ep_len_env_{rank * cfg.num_envs + i}", ep_len)
+                        rank_aggregator.update(f"Rewards/rew_env_{rank * cfg.env.num_envs + i}", ep_rew)
+                        rank_aggregator.update(f"Game/ep_len_env_{rank * cfg.env.num_envs + i}", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[0]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -359,7 +365,8 @@ def main(cfg: DictConfig):
         else:
             gathered_data = local_data
 
-        train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+        with timer("Time/sps_train"):
+            train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
 
         if cfg.algo.anneal_lr:
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], policy_step)
@@ -381,14 +388,34 @@ def main(cfg: DictConfig):
 
         # Log metrics
         if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
-            last_log = policy_step
+            # Sync distributed metrics
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
             aggregator.reset()
+
+            # Sync per-rank metrics
             rank_metrics = rank_aggregator.compute()
             for m in rank_metrics:
                 fabric.log_dict(m, policy_step)
-            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
+
+            # Sync distributed timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (update - last_train) / timer_metrics["Time/sps_train"],
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                / timer_metrics["Time/sps_env_interaction"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_train = update
+            last_log = policy_step
 
         # Checkpoint model
         if (

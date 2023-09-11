@@ -19,7 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, RunningMean
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -29,11 +29,15 @@ from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, print_config
 
 
 @torch.no_grad()
 def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+    print_config(cfg)
+
+    # Initialize logger
     root_dir = (
         os.path.join("logs", "runs", cfg.root_dir)
         if cfg.root_dir is not None
@@ -120,14 +124,17 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-                "Time/step_per_second": MeanMetric(sync_on_compute=False),
-            }
-        )
+    metrics = {
+        "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
+        "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
+    }
+    metrics.update(
+        {f"Rewards/rew_env_{i}": RunningMean(window=10, sync_on_compute=False) for i in range(cfg.env.num_envs)}
+    )
+    metrics.update(
+        {f"Game/ep_len_env_{i}": RunningMean(window=10, sync_on_compute=False) for i in range(cfg.env.num_envs)}
+    )
+    aggregator = MetricAggregator(metrics).to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -140,10 +147,10 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
-    policy_step = 0
     last_log = 0
+    last_train = 0
+    policy_step = 0
     last_checkpoint = 0
-    start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     # Warning for log and checkpoint every
@@ -195,21 +202,24 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs
 
-            with torch.no_grad():
-                # Sample an action given the observation received by the environment
-                normalized_obs = {
-                    k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-                }
-                actions, logprobs, _, value = agent(normalized_obs)
-                if is_continuous:
-                    real_actions = torch.cat(actions, -1).cpu().numpy()
-                else:
-                    real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
-                actions = torch.cat(actions, -1)
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/sps_env_interaction", sync_on_compute=False):
+                with torch.no_grad():
+                    # Sample an action given the observation received by the environment
+                    normalized_obs = {
+                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
+                    }
+                    actions, logprobs, _, value = agent(normalized_obs)
+                    if is_continuous:
+                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                    else:
+                        real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
+                    actions = torch.cat(actions, -1)
 
-            # Single environment step
-            o, reward, done, truncated, info = envs.step(real_actions)
-            done = np.logical_or(done, truncated)
+                # Single environment step
+                o, reward, done, truncated, info = envs.step(real_actions)
+                done = np.logical_or(done, truncated)
 
             with device:
                 rewards = torch.tensor(reward, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
@@ -242,13 +252,15 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             next_done = done
 
             if "final_info" in info:
-                for i, agent_final_info in enumerate(info["final_info"]):
-                    if agent_final_info is not None and "episode" in agent_final_info:
-                        fabric.print(
-                            f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                        )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                for i, agent_ep_info in enumerate(info["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
+                        aggregator.update(f"Rewards/rew_env_{i}", ep_rew)
+                        aggregator.update(f"Game/ep_len_env_{i}", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[0]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
@@ -277,11 +289,6 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         chunks = local_data[perm].split(chunks_sizes)
         world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
-        # Gather metrics from the trainers to be plotted
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            metrics = [None]
-            player_trainer_collective.broadcast_object_list(metrics, src=1)
-
         # Wait the trainers to finish
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
@@ -289,12 +296,35 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
         # Log metrics
-        aggregator.update("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)))
         if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = policy_step
-            fabric.log_dict(metrics[0], policy_step)
+            # Gather metrics from the trainers
+            metrics = [None]
+            player_trainer_collective.broadcast_object_list(metrics, src=1)
+            metrics = metrics[0]
+            sps_train = metrics.pop("Time/sps_train")
+
+            # Log metrics
+            fabric.log_dict(metrics, policy_step)
             fabric.log_dict(aggregator.compute(), policy_step)
             aggregator.reset()
+
+            # Sync timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (update - last_train) / sps_train,
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/sps_env_interaction"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_train = update
+            last_log = policy_step
 
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
@@ -399,11 +429,11 @@ def trainer(
 
     # Start training
     update = 0
+    last_log = 0
+    policy_step = 0
+    last_checkpoint = 0
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
-    policy_step = 0
-    last_log = 0
-    last_checkpoint = 0
     while True:
         # Wait for data
         data = [None]
@@ -424,68 +454,82 @@ def trainer(
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
-        # Prepare sampler
-        indexes = list(range(data.shape[0]))
-        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
+        with timer("Time/sps_train", process_group=optimization_pg):
+            # Prepare sampler
+            indexes = list(range(data.shape[0]))
+            sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
 
-        # The Join context is needed because there can be the possibility
-        # that some ranks receive less data
-        with Join([agent._forward_module]):
-            for _ in range(cfg.algo.update_epochs):
-                for batch_idxes in sampler:
-                    batch = data[batch_idxes]
-                    normalized_obs = {
-                        k: batch[k] / 255 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
-                        for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
-                    }
-                    _, logprobs, entropy, new_values = agent(
-                        normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
-                    )
+            # The Join context is needed because there can be the possibility
+            # that some ranks receive less data
+            with Join([agent._forward_module]):
+                for _ in range(cfg.algo.update_epochs):
+                    for batch_idxes in sampler:
+                        batch = data[batch_idxes]
+                        normalized_obs = {
+                            k: batch[k] / 255 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
+                            for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+                        }
+                        _, logprobs, entropy, new_values = agent(
+                            normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+                        )
 
-                    if cfg.algo.normalize_advantages:
-                        batch["advantages"] = normalize_tensor(batch["advantages"])
+                        if cfg.algo.normalize_advantages:
+                            batch["advantages"] = normalize_tensor(batch["advantages"])
 
-                    # Policy loss
-                    pg_loss = policy_loss(
-                        logprobs,
-                        batch["logprobs"],
-                        batch["advantages"],
-                        cfg.algo.clip_coef,
-                        cfg.algo.loss_reduction,
-                    )
+                        # Policy loss
+                        pg_loss = policy_loss(
+                            logprobs,
+                            batch["logprobs"],
+                            batch["advantages"],
+                            cfg.algo.clip_coef,
+                            cfg.algo.loss_reduction,
+                        )
 
-                    # Value loss
-                    v_loss = value_loss(
-                        new_values,
-                        batch["values"],
-                        batch["returns"],
-                        cfg.algo.clip_coef,
-                        cfg.algo.clip_vloss,
-                        cfg.algo.loss_reduction,
-                    )
+                        # Value loss
+                        v_loss = value_loss(
+                            new_values,
+                            batch["values"],
+                            batch["returns"],
+                            cfg.algo.clip_coef,
+                            cfg.algo.clip_vloss,
+                            cfg.algo.loss_reduction,
+                        )
 
-                    # Entropy loss
-                    ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
+                        # Entropy loss
+                        ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
 
-                    # Equation (9) in the paper
-                    loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+                        # Equation (9) in the paper
+                        loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
 
-                    optimizer.zero_grad(set_to_none=True)
-                    fabric.backward(loss)
-                    if cfg.algo.max_grad_norm > 0.0:
-                        fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-                    optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        fabric.backward(loss)
+                        if cfg.algo.max_grad_norm > 0.0:
+                            fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+                        optimizer.step()
 
-                    # Update metrics
-                    aggregator.update("Loss/policy_loss", pg_loss.detach())
-                    aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                        # Update metrics
+                        aggregator.update("Loss/policy_loss", pg_loss.detach())
+                        aggregator.update("Loss/value_loss", v_loss.detach())
+                        aggregator.update("Loss/entropy_loss", ent_loss.detach())
+
+        if global_rank == 1:
+            player_trainer_collective.broadcast(
+                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
+                src=1,
+            )
 
         # Send updated weights to the player
         if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = policy_step
+            # Sync distributed metrics
             metrics = aggregator.compute()
             aggregator.reset()
+
+            # Sync distributed timers
+            timers = timer.compute()
+            metrics.update(timers)
+            timer.reset()
+
+            # Send metrics to the player
             if global_rank == 1:
                 if cfg.algo.anneal_lr:
                     metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
@@ -496,11 +540,9 @@ def trainer(
                 player_trainer_collective.broadcast_object_list(
                     [metrics], src=1
                 )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
-        if global_rank == 1:
-            player_trainer_collective.broadcast(
-                torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
-                src=1,
-            )
+
+            # Reset counters
+            last_log = policy_step
 
         if cfg.algo.anneal_lr:
             scheduler.step()

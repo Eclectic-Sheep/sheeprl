@@ -139,7 +139,7 @@ def main():
     if devices is None or devices in ("1", "2"):
         raise RuntimeError(
             "Please run the script with the number of devices greater than 2: "
-            "`lightning run model --devices=3 sheeprl.py ...`"
+            "`lightning run model --devices=3 examples/architecture_template.py ...`"
         )
 
     world_collective = TorchCollective()
