@@ -18,6 +18,5 @@ checkpoint:
 buffer:
   size: 5000000
   type: sequential
-  memmap: True
   checkpoint: False
   prioritize_ends: False

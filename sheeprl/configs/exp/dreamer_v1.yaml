@@ -16,6 +16,5 @@ checkpoint:
 
 # Buffer
 buffer:
-  memmap: True
   size: 5000000
   checkpoint: False

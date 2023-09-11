@@ -4,6 +4,7 @@
 defaults:
   - _self_
   - algo: default.yaml
+  - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
   - exp: null
@@ -32,7 +33,3 @@ cnn_keys:
 mlp_keys:
   encoder: []
   decoder: ${mlp_keys.encoder}
-
-# Buffer
-buffer:
-  memmap: True

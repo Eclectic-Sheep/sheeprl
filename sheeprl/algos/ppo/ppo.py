@@ -203,8 +203,13 @@ def main(cfg: DictConfig):
         )
 
     # Local data
+    if cfg.buffer.size < cfg.algo.rollout_steps:
+        raise ValueError(
+            f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
+            f"than the rollout steps ({cfg.algo.rollout_steps})"
+        )
     rb = ReplayBuffer(
-        cfg.algo.rollout_steps,
+        cfg.buffer.size,
         cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,

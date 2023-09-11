@@ -12,3 +12,4 @@ per_rank_batch_size: 64
 # Buffer
 buffer:
   share_data: False
+  size: ${algo.rollout_steps}

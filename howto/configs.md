@@ -83,6 +83,7 @@ The `sheeprl/configs/config.yaml` is the main configuration, which is loaded by 
 defaults:
   - _self_
   - algo: default.yaml
+  - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
   - exp: null
