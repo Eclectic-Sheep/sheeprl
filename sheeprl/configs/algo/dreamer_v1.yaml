@@ -12,7 +12,7 @@ name: dreamer_v1
 
 # Training recipe
 learning_starts: 5000
-gradient_steps: 100
+per_rank_gradient_steps: 100
 train_every: 1000
 
 # Model related parameters

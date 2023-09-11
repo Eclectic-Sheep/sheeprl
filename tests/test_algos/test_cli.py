@@ -43,7 +43,7 @@ def test_resume_from_checkpoint():
         sys.executable
         + " sheeprl.py dreamer_v3 exp=dreamer_v3 env=dummy dry_run=True "
         + "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
-        + "algo.world_model.encoder.cnn_channels_multiplier=2 algo.gradient_steps=1 "
+        + "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
         + "algo.world_model.recurrent_model.recurrent_state_size=8 "
         + "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         + "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "

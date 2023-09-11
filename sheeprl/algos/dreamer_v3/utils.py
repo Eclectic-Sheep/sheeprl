@@ -102,7 +102,7 @@ def test(
             real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
         # Single environment step
-        next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
+        next_obs, reward, done, truncated, _ = env.step(int(real_actions.reshape(env.action_space.shape)))
         for k in next_obs.keys():
             next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
         done = done or truncated or cfg.dry_run
