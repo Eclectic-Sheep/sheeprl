@@ -16,7 +16,7 @@ from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, RunningMean
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -25,7 +25,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
-from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.metric import MetricAggregator, RankIndependentMetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
@@ -190,17 +190,21 @@ def main(cfg: DictConfig):
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Create a metric aggregator to log the metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+        }
+    ).to(device)
+    rank_metrics = {f"Rewards/rew_env_{rank * cfg.num_envs + i}": RunningMean(window=10) for i in range(cfg.num_envs)}
+    rank_metrics.update(
+        {f"Game/ep_len_env_{rank * cfg.num_envs + i}": RunningMean(window=10) for i in range(cfg.num_envs)}
+    )
+    rank_aggregator = RankIndependentMetricAggregator(rank_metrics).to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -266,7 +270,7 @@ def main(cfg: DictConfig):
                 normalized_obs = {
                     k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
                 }
-                actions, logprobs, _, value = agent(normalized_obs)
+                actions, logprobs, _, value = agent.module(normalized_obs)
                 if is_continuous:
                     real_actions = torch.cat(actions, -1).cpu().numpy()
                 else:
@@ -309,20 +313,22 @@ def main(cfg: DictConfig):
             next_done = done
 
             if "final_info" in info:
-                for i, agent_final_info in enumerate(info["final_info"]):
-                    if agent_final_info is not None and "episode" in agent_final_info:
-                        fabric.print(
-                            f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                        )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                for i, agent_ep_info in enumerate(info["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
+                        rank_aggregator.update(f"Rewards/rew_env_{rank * cfg.num_envs + i}", ep_rew)
+                        rank_aggregator.update(f"Game/ep_len_env_{rank * cfg.num_envs + i}", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[0]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
             normalized_obs = {
                 k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
             }
-            next_values = agent.get_value(normalized_obs)
+            next_values = agent.module.get_value(normalized_obs)
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
@@ -369,12 +375,15 @@ def main(cfg: DictConfig):
             )
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
             last_log = policy_step
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
-            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
             aggregator.reset()
+            rank_metrics = rank_aggregator.compute()
+            for m in rank_metrics:
+                fabric.log_dict(m, policy_step)
+            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
 
         # Checkpoint model
         if (
