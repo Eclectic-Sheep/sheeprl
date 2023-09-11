@@ -2,6 +2,7 @@ import copy
 import os
 import pathlib
 import time
+import warnings
 from typing import Dict
 
 import gymnasium as gym
@@ -371,13 +372,13 @@ def main(cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         root_dir = cfg.root_dir
         run_name = cfg.run_name
-        state = fabric.load(cfg.checkpoint_path)
-        ckpt_path = pathlib.Path(cfg.checkpoint_path)
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
         cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
-        cfg.checkpoint_path = str(ckpt_path)
+        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
         cfg.run_name = f"resume_from_checkpoint_{run_name}"
@@ -395,13 +396,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     action_space = envs.single_action_space
@@ -413,7 +414,7 @@ def main(cfg: DictConfig):
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # observation_shape = observation_space["rgb"].shape
-    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.clip_rewards else r
+    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
@@ -448,9 +449,9 @@ def main(cfg: DictConfig):
         is_continuous,
         cfg,
         observation_space,
-        state["world_model"] if cfg.checkpoint_path else None,
-        state["actor"] if cfg.checkpoint_path else None,
-        state["critic"] if cfg.checkpoint_path else None,
+        state["world_model"] if cfg.checkpoint.resume_from else None,
+        state["actor"] if cfg.checkpoint.resume_from else None,
+        state["critic"] if cfg.checkpoint.resume_from else None,
     )
     player = PlayerDV1(
         world_model.encoder.module,
@@ -459,7 +460,7 @@ def main(cfg: DictConfig):
         actor.module,
         actions_dim,
         cfg.algo.player.expl_amount,
-        cfg.num_envs,
+        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
@@ -469,7 +470,7 @@ def main(cfg: DictConfig):
     world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
     actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters())
     critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters())
-    if cfg.checkpoint_path:
+    if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
@@ -503,36 +504,39 @@ def main(cfg: DictConfig):
     aggregator.to(fabric.device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 2
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2
     rb = AsyncReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=fabric.device if cfg.buffer.memmap else "cpu",
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         sequential=True,
     )
-    if cfg.checkpoint_path and cfg.buffer.checkpoint:
+    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
         elif isinstance(state["rb"], AsyncReplayBuffer):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
-    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint_path else 0
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
+    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
+    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
-    start_step = state["global_step"] // fabric.world_size if cfg.checkpoint_path else 1
-    single_global_step = int(cfg.num_envs * fabric.world_size)
-    step_before_training = cfg.train_every // single_global_step if not cfg.dry_run else 0
-    num_updates = int(cfg.total_steps // single_global_step) if not cfg.dry_run else 1
-    learning_starts = (cfg.learning_starts // single_global_step) if not cfg.dry_run else 0
-    if cfg.checkpoint_path and not cfg.buffer.checkpoint:
-        learning_starts = start_step + cfg.learning_starts // single_global_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.gradient_steps * fabric.world_size)
-    if cfg.checkpoint_path:
+    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
+    updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
+    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
+    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
+        learning_starts += start_step
+    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.gradient_steps * fabric.world_size)
+    if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.player.expl_amount,
@@ -540,24 +544,40 @@ def main(cfg: DictConfig):
             max_decay_steps=max_step_expl_decay,
         )
 
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]
     obs = {}
     for k in obs_keys:
-        torch_obs = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
+        torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
         if k in cfg.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         obs[k] = torch_obs
-    step_data["dones"] = torch.zeros(cfg.num_envs, 1)
-    step_data["actions"] = torch.zeros(cfg.num_envs, sum(actions_dim))
-    step_data["rewards"] = torch.zeros(cfg.num_envs, 1)
+    step_data["dones"] = torch.zeros(cfg.env.num_envs, 1)
+    step_data["actions"] = torch.zeros(cfg.env.num_envs, sum(actions_dim))
+    step_data["rewards"] = torch.zeros(cfg.env.num_envs, 1)
     rb.add(step_data[None, ...])
     player.init_states()
 
-    for global_step in range(start_step, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
-        if global_step <= learning_starts and cfg.checkpoint_path is None and "minedojo" not in cfg.env.id:
+        if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
             real_actions = actions = np.array(envs.action_space.sample())
             if not is_continuous:
                 actions = np.concatenate(
@@ -587,11 +607,13 @@ def main(cfg: DictConfig):
         o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
         dones = np.logical_or(dones, truncated)
 
+        policy_step += cfg.env.num_envs * fabric.world_size
+
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
                 if agent_final_info is not None and "episode" in agent_final_info:
                     fabric.print(
-                        f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
                     aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -606,14 +628,14 @@ def main(cfg: DictConfig):
 
         next_obs = {}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
-            next_obs[k] = torch.from_numpy(o[k]).view(cfg.num_envs, *o[k].shape[1:])
-            step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.num_envs, *real_next_obs[k].shape[1:])
+            next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
+            step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.env.num_envs, *real_next_obs[k].shape[1:])
             if k in cfg.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
                 step_data[k] = step_data[k].float()
-        actions = torch.from_numpy(actions).view(cfg.num_envs, -1).float()
-        rewards = torch.from_numpy(rewards).view(cfg.num_envs, -1).float()
-        dones = torch.from_numpy(dones).view(cfg.num_envs, -1).float()
+        actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float()
+        rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float()
+        dones = torch.from_numpy(dones).view(cfg.env.num_envs, -1).float()
 
         # next_obs becomes the new obs
         obs = next_obs
@@ -640,15 +662,15 @@ def main(cfg: DictConfig):
             # Reset internal agent states
             player.init_states(dones_idxes)
 
-        step_before_training -= 1
+        updates_before_training -= 1
 
         # Train the agent
-        if global_step > learning_starts and step_before_training <= 0:
+        if update > learning_starts and updates_before_training <= 0:
             fabric.barrier()
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.gradient_steps,
+                n_samples=cfg.algo.gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
@@ -664,7 +686,7 @@ def main(cfg: DictConfig):
                     aggregator,
                     cfg,
                 )
-            step_before_training = cfg.train_every // single_global_step
+            updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
                 player.expl_amount = polynomial_decay(
@@ -674,17 +696,19 @@ def main(cfg: DictConfig):
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
-            fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.update("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)))
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
+            fabric.log_dict(aggregator.compute(), policy_step)
             aggregator.reset()
 
         # Checkpoint Model
         if (
-            (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0)
+            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or global_step == num_updates
+            or update == num_updates
         ):
+            last_checkpoint = policy_step
             state = {
                 "world_model": world_model.state_dict(),
                 "actor": actor.state_dict(),
@@ -693,10 +717,12 @@ def main(cfg: DictConfig):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
-                "global_step": global_step * fabric.world_size,
+                "update": update * fabric.world_size,
                 "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
-            ckpt_path = log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_coupled",
                 fabric=fabric,

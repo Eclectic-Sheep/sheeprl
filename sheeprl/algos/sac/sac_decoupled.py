@@ -1,5 +1,6 @@
 import os
 import time
+import warnings
 from datetime import datetime, timedelta
 from math import prod
 
@@ -57,7 +58,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         [
             make_env(
                 cfg.env.id,
-                cfg.seed + rank * cfg.num_envs + i,
+                cfg.seed + rank * cfg.env.num_envs + i,
                 rank,
                 cfg.env.capture_video,
                 logger.log_dir,
@@ -65,7 +66,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
                 mask_velocities=False,
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
@@ -109,27 +110,47 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // cfg.num_envs if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // cfg.env.num_envs if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
+    policy_step = 0
+    last_log = 0
+    last_checkpoint = 0
     start_time = time.perf_counter()
-    num_updates = int(cfg.total_steps // cfg.num_envs) if not cfg.dry_run else 1
-    learning_starts = cfg.learning_starts // cfg.num_envs if not cfg.dry_run else 0
+    policy_steps_per_update = int(cfg.env.num_envs)
+    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
 
     with device:
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
-    for global_step in range(1, num_updates + 1):
-        if global_step < learning_starts:
+    for update in range(1, num_updates + 1):
+        if update < learning_starts:
             actions = envs.action_space.sample()
         else:
             # Sample an action given the observation received by the environment
@@ -139,11 +160,13 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
+        policy_step += cfg.env.num_envs
+
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
                 if agent_final_info is not None and "episode" in agent_final_info:
                     fabric.print(
-                        f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
                     aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -157,9 +180,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
         with device:
             next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.num_envs, -1)  # [N_envs, 1]
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.num_envs, -1)
+            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
+            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -173,16 +196,16 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         obs = next_obs
 
         # Send data to the training agents
-        if global_step >= learning_starts - 1:
-            training_steps = learning_starts if global_step == learning_starts - 1 else 1
+        if update >= learning_starts:
+            training_steps = learning_starts if update == learning_starts else 1
             chunks = rb.sample(
-                training_steps * cfg.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
+                training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
                 sample_next_obs=cfg.buffer.sample_next_obs,
-            ).split(training_steps * cfg.gradient_steps * cfg.per_rank_batch_size)
+            ).split(training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted
-            if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+            if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
                 metrics = [None]
                 player_trainer_collective.broadcast_object_list(metrics, src=1)
 
@@ -192,17 +215,23 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             # Convert back the parameters
             torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
-            if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
-                fabric.log_dict(metrics[0], global_step)
+            if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+                fabric.log_dict(metrics[0], policy_step)
 
-        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
-            fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.update("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)))
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
+            fabric.log_dict(aggregator.compute(), policy_step)
             aggregator.reset()
 
         # Checkpoint model
-        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt"
+        if (
+            update >= learning_starts  # otherwise the processes end up deadlocked
+            and cfg.checkpoint.every > 0
+            and policy_step - last_checkpoint >= cfg.checkpoint.every
+        ) or cfg.dry_run:
+            last_checkpoint = policy_step
+            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_player",
                 fabric=fabric,
@@ -214,7 +243,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
 
     # Last Checkpoint
-    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{num_updates}_{fabric.global_rank}.ckpt"
+    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
     fabric.call(
         "on_checkpoint_player",
         fabric=fabric,
@@ -315,8 +344,12 @@ def trainer(
         )
 
     # Start training
-    learning_starts = cfg.learning_starts // cfg.num_envs if not cfg.dry_run else 0
-    global_step = learning_starts - 1
+    policy_steps_per_update = cfg.env.num_envs
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    update = learning_starts
+    policy_step = update * policy_steps_per_update
+    last_log = (policy_step // cfg.metric.log_every - 1) * cfg.metric.log_every
+    last_checkpoint = 0
     while True:
         # Wait for data
         data = [None]
@@ -330,7 +363,7 @@ def trainer(
                     "qf_optimizer": qf_optimizer.state_dict(),
                     "actor_optimizer": actor_optimizer.state_dict(),
                     "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "global_step": global_step,
+                    "update": update,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
@@ -345,13 +378,15 @@ def trainer(
                 alpha_optimizer,
                 data[batch_idxes],
                 aggregator,
-                global_step,
+                update,
                 cfg,
+                policy_steps_per_update,
                 group=optimization_pg,
             )
 
         # Send updated weights to the player
-        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
             metrics = aggregator.compute()
             aggregator.reset()
             if global_rank == 1:
@@ -365,17 +400,19 @@ def trainer(
             )
 
         # Checkpoint model on rank-0: send it everything
-        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
+            last_checkpoint = policy_step
             if global_rank == 1:
                 state = {
                     "agent": agent.state_dict(),
                     "qf_optimizer": qf_optimizer.state_dict(),
                     "actor_optimizer": actor_optimizer.state_dict(),
                     "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "global_step": global_step,
+                    "update": update,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
-        global_step += 1
+        update += 1
+        policy_step += policy_steps_per_update
 
 
 @register_algorithm(decoupled=True)

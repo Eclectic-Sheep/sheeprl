@@ -4,5 +4,3 @@ defaults:
   - sac
   - override /algo: droq
   - _self_
-
-gradient_steps: 20

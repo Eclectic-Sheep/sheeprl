@@ -57,10 +57,14 @@ def train(
     decoder_optimizer: Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    global_step: int,
+    update: int,
     cfg: DictConfig,
+    policy_steps_per_update: int,
     group: Optional[CollectibleGroup] = None,
 ):
+    critic_target_network_frequency = cfg.algo.critic.target_network_frequency // policy_steps_per_update + 1
+    actor_network_frequency = cfg.algo.actor.network_frequency // policy_steps_per_update + 1
+    decoder_update_freq = cfg.algo.decoder.update_freq // policy_steps_per_update + 1
     data = data.to(fabric.device)
     normalized_obs = {}
     normalized_next_obs = {}
@@ -84,12 +88,12 @@ def train(
     aggregator.update("Loss/value_loss", qf_loss)
 
     # Update the target networks with EMA
-    if global_step % cfg.algo.critic.target_network_frequency == 0:
+    if update % critic_target_network_frequency == 0:
         agent.critic_target_ema()
         agent.critic_encoder_target_ema()
 
     # Update the actor
-    if global_step % cfg.algo.actor.network_frequency == 0:
+    if update % actor_network_frequency == 0:
         actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
         qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
         min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
@@ -108,7 +112,7 @@ def train(
         aggregator.update("Loss/alpha_loss", alpha_loss)
 
     # Update the decoder
-    if global_step % cfg.algo.decoder.update_freq == 0:
+    if update % decoder_update_freq == 0:
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = 0
@@ -178,13 +182,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     observation_space = envs.single_observation_space
@@ -333,21 +337,41 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=fabric.device if cfg.buffer.memmap else "cpu",
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=cfg.cnn_keys.encoder + cfg.mlp_keys.encoder,
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
 
     # Global variables
+    policy_step = 0
+    last_log = 0
+    last_checkpoint = 0
     start_time = time.time()
-    num_updates = int(cfg.total_steps // (cfg.num_envs * fabric.world_size)) if not cfg.dry_run else 1
-    learning_starts = cfg.learning_starts // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 0
+    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
+    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
 
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
@@ -356,13 +380,13 @@ def main(cfg: DictConfig):
         if k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
-    for global_step in range(1, num_updates + 1):
-        if global_step < learning_starts:
+    for update in range(1, num_updates + 1):
+        if update < learning_starts:
             actions = envs.action_space.sample()
         else:
             with torch.no_grad():
@@ -372,11 +396,13 @@ def main(cfg: DictConfig):
         o, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
+        policy_step += cfg.env.num_envs * fabric.world_size
+
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
                 if agent_final_info is not None and "episode" in agent_final_info:
                     fabric.print(
-                        f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
                     )
                     aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
                     aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
@@ -393,7 +419,7 @@ def main(cfg: DictConfig):
         for k in real_next_obs.keys():
             next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                next_obs[k] = next_obs[k].view(cfg.num_envs, -1, *next_obs[k].shape[-2:])
+                next_obs[k] = next_obs[k].view(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
 
@@ -402,13 +428,13 @@ def main(cfg: DictConfig):
                 step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
                 if k in cfg.cnn_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
-                        cfg.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
+                        cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
                 if k in cfg.mlp_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
-        actions = torch.from_numpy(actions).view(cfg.num_envs, -1).float().to(fabric.device)
-        rewards = torch.from_numpy(rewards).view(cfg.num_envs, -1).float().to(fabric.device)
-        dones = torch.from_numpy(dones).view(cfg.num_envs, -1).float().to(fabric.device)
+        actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float().to(fabric.device)
+        rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float().to(fabric.device)
+        dones = torch.from_numpy(dones).view(cfg.env.num_envs, -1).float().to(fabric.device)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -419,12 +445,12 @@ def main(cfg: DictConfig):
         obs = next_obs
 
         # Train the agent
-        if global_step >= learning_starts - 1:
-            training_steps = learning_starts if global_step == learning_starts - 1 else 1
+        if update >= learning_starts - 1:
+            training_steps = learning_starts if update == learning_starts - 1 else 1
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
-                    cfg.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+                    cfg.algo.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
                 )  # [G*B, 1]
                 gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
                 gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
@@ -457,16 +483,19 @@ def main(cfg: DictConfig):
                         decoder_optimizer,
                         gathered_data[batch_idxes],
                         aggregator,
-                        global_step,
+                        update,
                         cfg,
+                        policy_steps_per_update,
                     )
-        aggregator.update("Time/step_per_second", int(global_step / (time.time() - start_time)))
-        if global_step % cfg.metric.log_every == 0 or cfg.dry_run:
-            fabric.log_dict(aggregator.compute(), global_step)
+        aggregator.update("Time/step_per_second", int(policy_step / (time.time() - start_time)))
+        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            last_log = policy_step
+            fabric.log_dict(aggregator.compute(), policy_step)
             aggregator.reset()
 
         # Checkpoint model
-        if (cfg.checkpoint_every > 0 and global_step % cfg.checkpoint_every == 0) or cfg.dry_run:
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
+            last_checkpoint >= policy_step
             state = {
                 "agent": agent.state_dict(),
                 "encoder": encoder.state_dict(),
@@ -476,10 +505,10 @@ def main(cfg: DictConfig):
                 "alpha_optimizer": alpha_optimizer.state_dict(),
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
-                "global_step": global_step * fabric.world_size,
+                "update": update * fabric.world_size,
                 "batch_size": cfg.per_rank_batch_size * fabric.world_size,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{global_step}_{fabric.global_rank}.ckpt")
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call(
                 "on_checkpoint_coupled",
                 fabric=fabric,

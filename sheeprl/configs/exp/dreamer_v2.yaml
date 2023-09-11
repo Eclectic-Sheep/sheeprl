@@ -5,17 +5,18 @@ defaults:
   - override /env: atari
   - _self_
 
+# Experiment
+total_steps: 5000000
 per_rank_batch_size: 16
 per_rank_sequence_length: 50
-total_steps: 5000000
-checkpoint_every: 100000
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
 buffer:
   size: 5000000
   type: sequential
-  prioritize_ends: False
   checkpoint: False
-  memmap: True
-learning_starts: 1000
-pretrain_steps: 100
-gradient_steps: 1
-train_every: 5
+  prioritize_ends: False

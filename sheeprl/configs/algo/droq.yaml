@@ -4,5 +4,9 @@ defaults:
 
 name: droq
 
+# Training recipe
+gradient_steps: 20
+
+# Override from `sac` config
 critic:
   dropout: 0.01
