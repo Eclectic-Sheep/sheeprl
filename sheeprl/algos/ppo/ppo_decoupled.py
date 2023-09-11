@@ -149,14 +149,14 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the metrics will be logged at the nearest greater multiple of the "
             "policy_steps_per_update value."
         )
     if cfg.checkpoint.every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
             "policy_steps_per_update value."

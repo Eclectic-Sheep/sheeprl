@@ -79,7 +79,7 @@ class MetricAggregator:
         return self
 
     @torch.no_grad()
-    def compute(self) -> Dict[str, torch.Tensor]:
+    def compute(self) -> Dict[str, List]:
         """Reduce the metrics to a single value
         Returns:
             Reduced metrics
@@ -114,10 +114,9 @@ class RankIndependentMetricAggregator:
         metrics: Union[Dict[str, Metric], MetricAggregator],
         process_group: Optional[ProcessGroup] = None,
     ) -> None:
-        """Collection of N independent mean metrics, where `N` is given by the
-        length of the `names` parameter. This metric is useful when one wants to
-        maintain averages of some quantities, while still being able to broadcast them
-        to all the processes in a `torch.distributed` group.
+        """Rank-independent MetricAggregator.
+        This metric is useful when one wants to maintain per-rank-independent metrics of some quantities,
+        while still being able to broadcast them to all the processes in a `torch.distributed` group.
 
         Args:
             metrics (Sequence[str]): the metrics.
@@ -143,7 +142,8 @@ class RankIndependentMetricAggregator:
         """Compute the means, one for every metric. The metrics are first broadcasted
 
         Returns:
-            Dict[str, Tensor]: _description_
+            List[Dict[str, List]]: the computed metrics, broadcasted from and to every processes.
+            The list of the data returned is equal to the number of processes in the process group.
         """
         computed_metrics = self._aggregator.compute()
         if not self._distributed_available:
