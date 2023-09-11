@@ -1,5 +1,5 @@
-from collections import deque
-from typing import Any, Dict, Optional, Sequence, Union
+import warnings
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -7,7 +7,6 @@ from lightning.fabric.utilities.distributed import _distributed_available
 from torch import Tensor
 from torch.distributed.distributed_c10d import ProcessGroup
 from torchmetrics import Metric
-from torchmetrics.aggregation import CatMetric
 
 
 class MetricAggregatorException(Exception):
@@ -69,7 +68,7 @@ class MetricAggregator:
         for metric in self.metrics.values():
             metric.reset()
 
-    def to(self, device: Union[str, torch.device] = "cpu") -> None:
+    def to(self, device: Union[str, torch.device] = "cpu") -> "MetricAggregator":
         """Move all metrics to the given device
         Args:
             device (Union[str, torch.device], optional): Device to move the metrics to. Defaults to "cpu".
@@ -77,6 +76,7 @@ class MetricAggregator:
         if self.metrics:
             for k, v in self.metrics.items():
                 self.metrics[k] = v.to(device)
+        return self
 
     @torch.no_grad()
     def compute(self) -> Dict[str, torch.Tensor]:
@@ -88,16 +88,30 @@ class MetricAggregator:
         if self.metrics:
             for k, v in self.metrics.items():
                 reduced = v.compute()
-                if v._update_called:
-                    reduced_metrics[k] = reduced.tolist()
+                is_tensor = torch.is_tensor(reduced)
+                if is_tensor and reduced.numel() == 1:
+                    reduced_metrics[k] = reduced.item()
+                else:
+                    if not is_tensor:
+                        warnings.warn(
+                            f"The reduced metric {k} is not a scalar tensor: type={type(reduced)}. "
+                            "This may create problems during the logging phase.",
+                            category=RuntimeWarning,
+                        )
+                    else:
+                        warnings.warn(
+                            f"The reduced metric {k} is not a scalar: size={v.size()}. "
+                            "This may create problems during the logging phase.",
+                            category=RuntimeWarning,
+                        )
+                    reduced_metrics[k] = reduced
         return reduced_metrics
 
 
-class IndependentMeanMetric:
+class RankIndependentMetricAggregator:
     def __init__(
         self,
-        names: Sequence[str],
-        device: Union[str, torch.device] = "cpu",
+        metrics: Union[Dict[str, Metric], MetricAggregator],
         process_group: Optional[ProcessGroup] = None,
     ) -> None:
         """Collection of N independent mean metrics, where `N` is given by the
@@ -106,110 +120,47 @@ class IndependentMeanMetric:
         to all the processes in a `torch.distributed` group.
 
         Args:
-            names (Sequence[str]): the names of the metrics.
-            device (Union[str, torch.device], optional): the device where the metrics reside.
-                Defaults to "cpu".
+            metrics (Sequence[str]): the metrics.
             process_group (Optional[ProcessGroup], optional): the distributed process group.
                 Defaults to None.
         """
         super().__init__()
-        if len(names) <= 0:
-            raise ValueError(f"`names` length must be greater than 0: got {len(names)}")
-        self._names = names
-        self._device = device
-        self._metrics: dict[str, Metric] = {}
-        for n in names:
-            m = CatMetric(sync_on_compute=False)
-            self._metrics[n] = m.to(self._device)
+        self._aggregator = metrics
+        if isinstance(metrics, dict):
+            self._aggregator = MetricAggregator(metrics)
+        for m in self._aggregator.metrics.values():
+            m._to_sync = False
+            m.sync_on_compute = False
         self._process_group = process_group if process_group is not None else torch.distributed.group.WORLD
+        self._distributed_available = _distributed_available()
+        self._world_size = dist.get_world_size(self._process_group) if self._distributed_available else 1
 
-    def update(self, value: float, name: str) -> None:
-        self._metrics[name].update(value)
+    def update(self, name: str, value: Union[float, Tensor]) -> None:
+        self._aggregator.update(name, value)
 
     @torch.no_grad()
-    def compute(self) -> Dict[str, Tensor]:
+    def compute(self) -> List[Dict[str, Tensor]]:
         """Compute the means, one for every metric. The metrics are first broadcasted
 
         Returns:
             Dict[str, Tensor]: _description_
         """
-        computed_metrics = {}
-        for k, v in self._metrics.items():
-            computed_v = v.compute()
-            if not isinstance(computed_v, Tensor):
-                computed_metrics[k] = torch.tensor(computed_v, device=self._device)
-            else:
-                computed_metrics[k] = computed_v
-        if not _distributed_available():
-            return computed_metrics
-        gathered_data = [None for _ in range(dist.get_world_size(self._process_group))]
+        computed_metrics = self._aggregator.compute()
+        if not self._distributed_available:
+            return [computed_metrics]
+        gathered_data = [None for _ in range(self._world_size)]
         dist.all_gather_object(gathered_data, computed_metrics, group=self._process_group)
-        return_data = gathered_data[0]
-        for rank in range(1, len(gathered_data)):
-            for k, rank_v in gathered_data[rank].items():
-                if isinstance(rank_v, Tensor):
-                    rank_v = torch.flatten(rank_v)
-                    return_data[k] = torch.cat((return_data[k], rank_v))
-        return {k: torch.mean(v) for k, v in return_data.items() if len(v)}
+        return gathered_data
 
-    def to(self, device: Union[str, torch.device] = "cpu") -> None:
+    def to(self, device: Union[str, torch.device] = "cpu") -> "RankIndependentMetricAggregator":
         """Move all metrics to the given device
 
         Args:
             device (Union[str, torch.device], optional): Device to move the metrics to. Defaults to "cpu".
         """
-        for k, v in self._metrics.items():
-            self._metrics[k] = v.to(device)
+        self._aggregator.to(device)
+        return self
 
     def reset(self) -> None:
         """Reset the internal state of the metrics"""
-        for v in self._metrics.values():
-            v.reset()
-
-
-class MovingAverageMetric(Metric):
-    """Metric for tracking moving average of a value.
-
-    Args:
-        name (str): Name of the metric
-        window_size (int): Window size for computing moving average
-        device (str): Device to store the metric
-    """
-
-    def __init__(self, name: str, window_size: int = 100, device: str = "cpu") -> None:
-        super().__init__(sync_on_compute=False)
-        self.window_size = window_size
-        self._values = deque(maxlen=window_size)
-        self._sum = torch.tensor(0.0, device=self._device)
-
-    def update(self, value: Union[torch.Tensor, float]) -> None:
-        """Update the moving average with a new value.
-
-        Args:
-            value (Union[torch.Tensor, float]): New value to update the moving average
-        """
-        if isinstance(value, torch.Tensor):
-            value = value.item()
-        if len(self._values) == self.window_size:
-            self._sum -= self._values.popleft()
-        self._sum += value
-        self._values.append(value)
-
-    def compute(self) -> Dict:
-        """Computes the moving average.
-
-        Returns:
-            Dict: Dictionary with the moving average
-        """
-        if len(self._values) == 0:
-            return None
-        average = self._sum / len(self._values)
-        std = torch.std(torch.tensor(self._values, device=self._device))
-        torch.max(torch.tensor(self._values, device=self._device))
-        torch.min(torch.tensor(self._values, device=self._device))
-        return average, std.item()
-
-    def reset(self) -> None:
-        """Resets the moving average."""
-        self._values.clear()
-        self._sum = torch.tensor(0.0, device=self._device)
+        self._aggregator.reset()
