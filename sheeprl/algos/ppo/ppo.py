@@ -142,13 +142,13 @@ def main(cfg: DictConfig):
         [
             make_dict_env(
                 cfg,
-                cfg.seed + rank * cfg.num_envs + i,
-                rank * cfg.num_envs,
+                cfg.seed + rank * cfg.env.num_envs + i,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     observation_space = envs.single_observation_space
@@ -207,22 +207,27 @@ def main(cfg: DictConfig):
     rank_aggregator = RankIndependentMetricAggregator(rank_metrics).to(device)
 
     # Local data
+    if cfg.buffer.size < cfg.algo.rollout_steps:
+        raise ValueError(
+            f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
+            f"than the rollout steps ({cfg.algo.rollout_steps})"
+        )
     rb = ReplayBuffer(
-        cfg.rollout_steps,
-        cfg.num_envs,
+        cfg.buffer.size,
+        cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=obs_keys,
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     last_log = 0
     policy_step = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * cfg.rollout_steps * world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
@@ -254,16 +259,16 @@ def main(cfg: DictConfig):
         if k in obs_keys:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
             if k in cfg.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
             if k in cfg.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
-    next_done = torch.zeros(cfg.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
+    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
-        for _ in range(0, cfg.rollout_steps):
-            policy_step += cfg.num_envs * world_size
+        for _ in range(0, cfg.algo.rollout_steps):
+            policy_step += cfg.env.num_envs * world_size
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
@@ -282,8 +287,8 @@ def main(cfg: DictConfig):
             done = np.logical_or(done, truncated)
 
             with device:
-                rewards = torch.tensor(reward, dtype=torch.float32).view(cfg.num_envs, -1)  # [N_envs, 1]
-                done = torch.tensor(done, dtype=torch.float32).view(cfg.num_envs, -1)  # [N_envs, 1]
+                rewards = torch.tensor(reward, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
+                done = torch.tensor(done, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
 
             # Update the step data
             step_data["dones"] = next_done
@@ -304,7 +309,7 @@ def main(cfg: DictConfig):
                 if k in obs_keys:
                     torch_obs = torch.from_numpy(o[k]).to(fabric.device)
                     if k in cfg.cnn_keys.encoder:
-                        torch_obs = torch_obs.view(cfg.num_envs, -1, *torch_obs.shape[-2:])
+                        torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
                     if k in cfg.mlp_keys.encoder:
                         torch_obs = torch_obs.float()
                     step_data[k] = torch_obs
@@ -335,7 +340,7 @@ def main(cfg: DictConfig):
                 rb["dones"],
                 next_values,
                 next_done,
-                cfg.rollout_steps,
+                cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )

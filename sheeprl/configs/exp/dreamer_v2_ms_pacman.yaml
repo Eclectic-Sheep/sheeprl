@@ -6,27 +6,34 @@ defaults:
   - _self_
 
 seed: 5
-env:
-  id: MsPacmanNoFrameskip-v0
-  max_episode_steps: 27000
 
+# Experiment
+total_steps: 200000000
 per_rank_batch_size: 32
+
+# Environment
+env:
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v0
+
+# Checkpoint
 checkpoint:
   every: 200000
-total_steps: 200000000
-learning_starts: 200000
-pretrain_steps: 1
-gradient_steps: 1
-train_every: 16
-clip_rewards: True
+
+# Buffer
 buffer:
   size: 2000000
   type: episode
-  prioritize_ends: True
   checkpoint: True
+  prioritize_ends: True
 
+# Algorithm
 algo:
   gamma: 0.995
+  train_every: 16
+  pretrain_steps: 1
+  gradient_steps: 1
+  learning_starts: 200000
   world_model:
     use_continues: True
     kl_free_nats: 0.0

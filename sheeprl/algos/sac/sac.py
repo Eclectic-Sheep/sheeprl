@@ -105,7 +105,7 @@ def main(cfg: DictConfig):
         [
             make_env(
                 cfg.env.id,
-                cfg.seed + rank * cfg.num_envs + i,
+                cfg.seed + rank * cfg.env.num_envs + i,
                 rank,
                 cfg.env.capture_video,
                 logger.log_dir if rank == 0 else None,
@@ -113,7 +113,7 @@ def main(cfg: DictConfig):
                 mask_velocities=False,
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
@@ -166,24 +166,24 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.num_envs * fabric.world_size) if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
-        cfg.num_envs,
+        cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
-    step_data = TensorDict({}, batch_size=[cfg.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     policy_step = 0
     last_log = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * fabric.world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = cfg.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -215,7 +215,7 @@ def main(cfg: DictConfig):
         next_obs, rewards, dones, truncated, infos = envs.step(actions)
         dones = np.logical_or(dones, truncated)
 
-        policy_step += cfg.num_envs * fabric.world_size
+        policy_step += cfg.env.num_envs * fabric.world_size
 
         if "final_info" in infos:
             for i, agent_final_info in enumerate(infos["final_info"]):
@@ -235,9 +235,9 @@ def main(cfg: DictConfig):
 
         with device:
             real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.num_envs, -1)
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.num_envs, -1)
+            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
+            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)
+            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
 
         step_data["dones"] = dones
         step_data["actions"] = actions
@@ -256,7 +256,7 @@ def main(cfg: DictConfig):
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
-                    cfg.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+                    cfg.algo.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
                 )  # [G*B, 1]
                 gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
                 gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]

@@ -19,7 +19,7 @@ def test_fsdp_strategy_fail():
 def test_run_decoupled_algo():
     subprocess.run(
         "lightning run model --strategy=ddp --devices=2 sheeprl.py ppo_decoupled "
-        "exp=ppo dry_run=True rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
+        "exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
         "env.capture_video=False",
         shell=True,
         check=True,
@@ -29,7 +29,7 @@ def test_run_decoupled_algo():
 def test_run_algo():
     subprocess.run(
         sys.executable
-        + " sheeprl.py ppo exp=ppo dry_run=True rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
+        + " sheeprl.py ppo exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
         "env.capture_video=False",
         shell=True,
         check=True,
@@ -43,12 +43,12 @@ def test_resume_from_checkpoint():
         sys.executable
         + " sheeprl.py dreamer_v3 exp=dreamer_v3 env=dummy dry_run=True "
         + "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
-        + "algo.world_model.encoder.cnn_channels_multiplier=2 gradient_steps=1 "
+        + "algo.world_model.encoder.cnn_channels_multiplier=2 algo.gradient_steps=1 "
         + "algo.world_model.recurrent_model.recurrent_state_size=8 "
-        + "algo.world_model.representation_model.hidden_size=8 learning_starts=0 "
+        + "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         + "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
         + "algo.layer_norm=True per_rank_batch_size=1 per_rank_sequence_length=1 "
-        + f"train_every=1 root_dir={root_dir} run_name={run_name}",
+        + f"algo.train_every=1 root_dir={root_dir} run_name={run_name}",
         shell=True,
         check=True,
     )

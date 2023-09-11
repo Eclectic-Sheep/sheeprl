@@ -138,7 +138,7 @@ def main(cfg: DictConfig):
         [
             make_env(
                 cfg.env.id,
-                cfg.seed + rank * cfg.num_envs + i,
+                cfg.seed + rank * cfg.env.num_envs + i,
                 rank,
                 cfg.env.capture_video,
                 logger.log_dir if rank == 0 else None,
@@ -146,7 +146,7 @@ def main(cfg: DictConfig):
                 mask_velocities="mask_velocities" in cfg.env and cfg.env.mask_velocities,
                 vector_env_idx=i,
             )
-            for i in range(cfg.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
     if not isinstance(envs.single_action_space, gym.spaces.Discrete):
@@ -168,7 +168,7 @@ def main(cfg: DictConfig):
             actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,
             critic_hidden_size=cfg.algo.critic.dense_units,
             critic_pre_lstm_hidden_size=cfg.algo.critic.pre_lstm_hidden_size,
-            num_envs=cfg.num_envs,
+            num_envs=cfg.env.num_envs,
         )
     )
     optimizer = fabric.setup_optimizers(hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters()))
@@ -188,20 +188,20 @@ def main(cfg: DictConfig):
 
     # Local data
     rb = ReplayBuffer(
-        cfg.rollout_steps,
-        cfg.num_envs,
+        cfg.algo.rollout_steps,
+        cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
-    step_data = TensorDict({}, batch_size=[1, cfg.num_envs], device=device)
+    step_data = TensorDict({}, batch_size=[1, cfg.env.num_envs], device=device)
 
     # Global variables
     policy_step = 0
     last_log = 0
     last_checkpoint = 0
     start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.num_envs * cfg.rollout_steps * world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     last_log = 0
 
@@ -230,12 +230,12 @@ def main(cfg: DictConfig):
     with device:
         # Get the first environment observation and start the optimization
         next_obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
-        next_done = torch.zeros(1, cfg.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
+        next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
     for update in range(1, num_updates + 1):
-        for _ in range(0, cfg.rollout_steps):
-            policy_step += cfg.num_envs * world_size
+        for _ in range(0, cfg.algo.rollout_steps):
+            policy_step += cfg.env.num_envs * world_size
 
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
@@ -250,8 +250,8 @@ def main(cfg: DictConfig):
 
             with device:
                 obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
-                done = torch.tensor(done, dtype=torch.float32).view(1, cfg.num_envs, -1)  # [1, N_envs, 1]
-                reward = torch.tensor(reward, dtype=torch.float32).view(1, cfg.num_envs, -1)  # [1, N_envs, 1]
+                done = torch.tensor(done, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
+                reward = torch.tensor(reward, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
 
             step_data["dones"] = next_done
             step_data["values"] = values
@@ -273,7 +273,7 @@ def main(cfg: DictConfig):
             # Update observation, done and recurrent state
             next_obs = obs
             next_done = done
-            if cfg.reset_recurrent_state_on_done:
+            if cfg.algo.reset_recurrent_state_on_done:
                 next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
             else:
                 next_state = state
@@ -296,7 +296,7 @@ def main(cfg: DictConfig):
                 rb["dones"],
                 next_value,
                 next_done,
-                cfg.rollout_steps,
+                cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )
@@ -313,11 +313,11 @@ def main(cfg: DictConfig):
         # Prepare data
         # 1. Split data into episodes (for every environment)
         episodes: List[TensorDictBase] = []
-        for env_id in range(cfg.num_envs):
+        for env_id in range(cfg.env.num_envs):
             env_data = local_data[:, env_id]  # [N_steps, *]
             episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
             episode_ends = episode_ends.tolist()
-            episode_ends.append(cfg.rollout_steps)
+            episode_ends.append(cfg.algo.rollout_steps)
             start = 0
             for ep_end_idx in episode_ends:
                 stop = ep_end_idx

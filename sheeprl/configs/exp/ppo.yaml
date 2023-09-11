@@ -5,8 +5,11 @@ defaults:
   - override /env: gym
   - _self_
 
-per_rank_batch_size: 64
+# Experiment
 total_steps: 65536
+per_rank_batch_size: 64
+
+# Buffer
 buffer:
   share_data: False
-rollout_steps: 128
+  size: ${algo.rollout_steps}
