@@ -8,11 +8,12 @@ defaults:
 # Experiment
 seed: 0
 total_steps: 10000000
+per_rank_batch_size: 8
 
 # Environment
 env:
   id: doapp
-  num_envs: 8
+  num_envs: 4
   grayscale: True
   frame_stack: 1
   screen_size: 128
