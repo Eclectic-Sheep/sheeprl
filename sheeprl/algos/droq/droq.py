@@ -27,6 +27,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import print_config
 
 
 def train(
@@ -126,6 +127,8 @@ def train(
 @register_algorithm()
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
+
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
