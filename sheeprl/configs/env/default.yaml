@@ -4,7 +4,7 @@ frame_stack: 1
 screen_size: 64
 action_repeat: 1
 grayscale: False
-clip_rewards: True
+clip_rewards: False
 capture_video: True
 frame_stack_dilation: 1
 max_episode_steps: null

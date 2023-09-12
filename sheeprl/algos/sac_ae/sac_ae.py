@@ -450,7 +450,8 @@ def main(cfg: DictConfig):
             for _ in range(training_steps):
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample(
-                    cfg.algo.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+                    cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
+                    sample_next_obs=cfg.buffer.sample_next_obs,
                 )  # [G*B, 1]
                 gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
                 gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]

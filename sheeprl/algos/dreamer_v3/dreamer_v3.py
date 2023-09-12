@@ -518,7 +518,7 @@ def main(cfg: DictConfig):
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.gradient_steps * fabric.world_size)
+    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
@@ -558,7 +558,7 @@ def main(cfg: DictConfig):
     step_data["is_first"] = torch.ones_like(step_data["dones"]).float()
     player.init_states()
 
-    gradient_steps = 0
+    per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         # Sample an action given the observation received by the environment
         if (
@@ -675,12 +675,14 @@ def main(cfg: DictConfig):
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.algo.pretrain_steps if update == learning_starts else cfg.algo.gradient_steps,
+                n_samples=cfg.algo.per_rank_pretrain_steps
+                if update == learning_starts
+                else cfg.algo.per_rank_gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             for i in distributed_sampler:
-                if gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                    tau = 1 if gradient_steps == 0 else cfg.algo.critic.tau
+                if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                    tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                     for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
                         tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                 train(
@@ -699,7 +701,7 @@ def main(cfg: DictConfig):
                     actions_dim,
                     moments,
                 )
-                gradient_steps += 1
+                per_rank_gradient_steps += 1
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1

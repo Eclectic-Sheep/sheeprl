@@ -263,7 +263,7 @@ def main(cfg: DictConfig):
 
             # We sample one time to reduce the communications between processes
             sample = rb.sample(
-                training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size,
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
             )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
