@@ -6,21 +6,26 @@ defaults:
   - _self_
 
 # Experiment
-seed: 5
-total_steps: 5000000
+seed: 0
+total_steps: 10000000
 
 # Environment
 env:
   id: doapp
   num_envs: 8
+  grayscale: True
   frame_stack: 1
+  screen_size: 128
+  reward_as_observation: True
   env:
+    attack_but_combination: True
     diambra_settings:
       characters: Kasumi
+      difficulty: 4
 
 # Checkpoint
 checkpoint:
-  every: 200000
+  every: 100000
 
 # Buffer
 buffer:
@@ -32,6 +37,19 @@ cnn_keys:
     - frame
 mlp_keys:
   encoder:
+    - reward
+    - P1_actions_attack
+    - P1_actions_move
+    - P1_oppChar
+    - P1_oppHealth
+    - P1_oppSide
+    - P1_oppWins
+    - P1_ownChar
+    - P1_ownHealth
+    - P1_ownSide
+    - P1_ownWins
+    - stage
+  decoder:
     - P1_actions_attack
     - P1_actions_move
     - P1_oppChar
@@ -59,3 +77,7 @@ algo:
       hidden_size: 768
     representation_model:
       hidden_size: 768
+
+# Metric
+metric:
+  log_every: 10000
