@@ -124,11 +124,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
-    metrics = {
-        "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-        "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-    }
-    aggregator = MetricAggregator(metrics).to(device)
+    aggregator = MetricAggregator(
+        {"Rewards/rew_avg": MeanMetric(sync_on_compute=False), "Game/ep_len_avg": MeanMetric(sync_on_compute=False)}
+    ).to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -396,20 +394,13 @@ def trainer(
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
 
     # Metrics
-    with fabric.device:
-        aggregator = MetricAggregator(
-            {
-                "Loss/value_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/policy_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/entropy_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+        }
+    ).to(device)
 
     # Start training
     update = 0
@@ -439,13 +430,14 @@ def trainer(
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
+        # Prepare sampler
+        indexes = list(range(data.shape[0]))
+        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
+
+        # Start training
         with timer(
             "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
         ):
-            # Prepare sampler
-            indexes = list(range(data.shape[0]))
-            sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
-
             # The Join context is needed because there can be the possibility
             # that some ranks receive less data
             with Join([agent._forward_module]):

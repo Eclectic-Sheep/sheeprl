@@ -106,10 +106,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
     # Metrics
     aggregator = MetricAggregator(
-        {
-            "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-            "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-        }
+        {"Rewards/rew_avg": MeanMetric(sync_on_compute=False), "Game/ep_len_avg": MeanMetric(sync_on_compute=False)}
     ).to(device)
 
     # Local data
@@ -352,20 +349,13 @@ def trainer(
         )
 
     # Metrics
-    with fabric.device:
-        aggregator = MetricAggregator(
-            {
-                "Loss/value_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/policy_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/alpha_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+        }
+    ).to(device)
 
     # Receive data from player reagrding the:
     # * update
@@ -401,10 +391,12 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
         sampler = BatchSampler(range(len(data)), batch_size=cfg.per_rank_batch_size, drop_last=False)
-        for batch_idxes in sampler:
-            with timer(
-                "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
-            ):
+
+        # Start training
+        with timer(
+            "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
+        ):
+            for batch_idxes in sampler:
                 train(
                     fabric,
                     agent,
