@@ -199,9 +199,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         if update >= learning_starts:
             training_steps = learning_starts if update == learning_starts else 1
             chunks = rb.sample(
-                training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size * (fabric.world_size - 1),
                 sample_next_obs=cfg.buffer.sample_next_obs,
-            ).split(training_steps * cfg.algo.gradient_steps * cfg.per_rank_batch_size)
+            ).split(training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size)
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Gather metrics from the trainers to be plotted

@@ -31,8 +31,8 @@ buffer:
 algo:
   gamma: 0.995
   train_every: 16
-  pretrain_steps: 1
-  gradient_steps: 1
+  per_rank_pretrain_steps: 1
+  per_rank_gradient_steps: 1
   learning_starts: 200000
   world_model:
     use_continues: True

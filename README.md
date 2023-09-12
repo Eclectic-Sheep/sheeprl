@@ -168,7 +168,14 @@ That's all it takes to train an agent with SheepRL! 🎉
 
 > **Note**
 >
-> You can find more information about the observation space by checking [the related howto section](./howto/select_observations.md).
+> Before you start using the SheepRL framework, it is **highly recommended** that you read the following instructional documents:
+> 
+> 1. How to [run experiments](./howto/run_experiments.md)
+> 2. How to [modify the default configs](./howto/configs.md)
+> 3. How to [work with steps](./howto/work_with_steps.md)
+> 4. How to [select observations](./howto/select_observations.md)
+>
+> Moreover, there are other useful documents in the [`howto` folder](./howto/), which containes some guidance on how to properly use the framework.
 
 ### :chart_with_upwards_trend: Check your results
 

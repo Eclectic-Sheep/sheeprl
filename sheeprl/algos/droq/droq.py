@@ -41,7 +41,9 @@ def train(
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
     # We sample one time to reduce the communications between processes
-    sample = rb.sample(cfg.algo.gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs)
+    sample = rb.sample(
+        cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+    )
     gathered_data = fabric.all_gather(sample.to_dict())
     gathered_data = make_tensordict(gathered_data).view(-1)
     if fabric.world_size > 1:
