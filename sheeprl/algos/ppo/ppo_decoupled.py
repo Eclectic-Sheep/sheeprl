@@ -19,7 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -142,11 +142,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
     # Global variables
     last_log = 0
-    last_train = 0
     policy_step = 0
     last_checkpoint = 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -198,7 +198,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/sps_env_interaction", sync_on_compute=False):
+            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
@@ -287,13 +287,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
-        # Log metrics
         if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
             # Gather metrics from the trainers
             metrics = [None]
             player_trainer_collective.broadcast_object_list(metrics, src=1)
             metrics = metrics[0]
-            sps_train = metrics.pop("Time/sps_train")
 
             # Log metrics
             fabric.log_dict(metrics, policy_step)
@@ -303,19 +301,13 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             # Sync timers
             timer_metrics = timer.compute()
             fabric.log(
-                "Time/sps_train",
-                (update - last_train) / sps_train,
-                policy_step,
-            )
-            fabric.log(
                 "Time/sps_env_interaction",
-                ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/sps_env_interaction"],
+                ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
                 policy_step,
             )
             timer.reset()
 
             # Reset counters
-            last_train = update
             last_log = policy_step
 
         # Checkpoint model
@@ -422,6 +414,7 @@ def trainer(
     # Start training
     update = 0
     last_log = 0
+    last_train = 0
     policy_step = 0
     last_checkpoint = 0
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
@@ -446,7 +439,9 @@ def trainer(
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
-        with timer("Time/sps_train", process_group=optimization_pg):
+        with timer(
+            "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
+        ):
             # Prepare sampler
             indexes = list(range(data.shape[0]))
             sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
@@ -510,7 +505,6 @@ def trainer(
                 src=1,
             )
 
-        # Send updated weights to the player
         if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
             # Sync distributed metrics
             metrics = aggregator.compute()
@@ -518,7 +512,7 @@ def trainer(
 
             # Sync distributed timers
             timers = timer.compute()
-            metrics.update(timers)
+            metrics.update({"Time/sps_train": (update - last_train) / timers["Time/train_time"]})
             timer.reset()
 
             # Send metrics to the player
@@ -534,6 +528,7 @@ def trainer(
                 )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
 
             # Reset counters
+            last_train = update
             last_log = policy_step
 
         if cfg.algo.anneal_lr:

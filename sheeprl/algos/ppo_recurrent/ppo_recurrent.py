@@ -18,7 +18,7 @@ from tensordict.tensordict import TensorDictBase, pad_sequence
 from torch.distributed.algorithms.join import Join
 from torch.distributions import Categorical
 from torch.utils.data.sampler import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
@@ -237,7 +237,7 @@ def main(cfg: DictConfig):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/sps_env_interaction"):
+            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     action_logits, values, state = agent.module(next_obs, state=next_state)
@@ -333,7 +333,7 @@ def main(cfg: DictConfig):
             sequences = episodes
         padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
 
-        with timer("Time/sps_train"):
+        with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
             train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
 
         if cfg.algo.anneal_lr:
@@ -365,13 +365,13 @@ def main(cfg: DictConfig):
             timer_metrics = timer.compute()
             fabric.log(
                 "Time/sps_train",
-                (update - last_train) / timer_metrics["Time/sps_train"],
+                (update - last_train) / timer_metrics["Time/train_time"],
                 policy_step,
             )
             fabric.log(
                 "Time/sps_env_interaction",
                 ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/sps_env_interaction"],
+                / timer_metrics["Time/env_interaction_time"],
                 policy_step,
             )
             timer.reset()

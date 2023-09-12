@@ -5,7 +5,7 @@ from contextlib import ContextDecorator
 from typing import Dict, Optional, Union
 
 import torch
-from torchmetrics import MeanMetric
+from torchmetrics import Metric, SumMetric
 
 
 class TimerError(Exception):
@@ -16,14 +16,14 @@ class timer(ContextDecorator):
     """A timer class to measure the time of a code block."""
 
     disabled: bool = False
-    timers: Dict[str, MeanMetric] = {}
+    timers: Dict[str, Metric] = {}
     _start_time: Optional[float] = None
 
-    def __init__(self, name: str, **metric_kwargs) -> None:
+    def __init__(self, name: str, metric: Optional[Metric] = None) -> None:
         """Add timer to dict of timers after initialization"""
         self.name = name
         if not timer.disabled and self.name is not None and self.name not in self.timers.keys():
-            self.timers.setdefault(self.name, MeanMetric(**metric_kwargs))
+            self.timers.setdefault(self.name, metric if metric is not None else SumMetric())
 
     def start(self) -> None:
         """Start a new timer"""
