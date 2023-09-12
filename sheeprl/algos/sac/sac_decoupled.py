@@ -124,6 +124,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     last_log = 0
     policy_step = 0
     last_checkpoint = 0
+    first_info_sent = False
     policy_steps_per_update = int(cfg.env.num_envs)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
@@ -200,10 +201,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         # Send data to the training agents
         if update >= learning_starts:
             # Send local info to the trainers
-            if update == learning_starts:
+            if not first_info_sent:
                 world_collective.broadcast_object_list(
                     [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
                 )
+                first_info_sent = True
 
             # Sample data to be sent to the trainers
             training_steps = learning_starts if update == learning_starts else 1

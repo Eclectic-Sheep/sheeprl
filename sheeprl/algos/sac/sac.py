@@ -240,6 +240,7 @@ def main(cfg: DictConfig):
                     real_next_obs[idx] = final_obs
 
         with device:
+            next_obs = torch.tensor(next_obs, dtype=torch.float32)
             real_next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
             actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
             rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)
@@ -254,7 +255,7 @@ def main(cfg: DictConfig):
         rb.add(step_data.unsqueeze(0))
 
         # next_obs becomes the new obs
-        obs = torch.tensor(next_obs, device=device)
+        obs = next_obs
 
         # Train the agent
         if update >= learning_starts:
