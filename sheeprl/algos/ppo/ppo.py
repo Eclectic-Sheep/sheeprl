@@ -15,7 +15,7 @@ from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import MeanMetric, RunningMean
+from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -24,7 +24,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
-from sheeprl.utils.metric import MetricAggregator, RankIndependentMetricAggregator
+from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, print_config
@@ -201,13 +201,6 @@ def main(cfg: DictConfig):
             "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
         }
     ).to(device)
-    rank_metrics = {
-        f"Rewards/rew_env_{rank * cfg.env.num_envs + i}": RunningMean(window=10) for i in range(cfg.env.num_envs)
-    }
-    rank_metrics.update(
-        {f"Game/ep_len_env_{rank * cfg.env.num_envs + i}": RunningMean(window=10) for i in range(cfg.env.num_envs)}
-    )
-    rank_aggregator = RankIndependentMetricAggregator(rank_metrics).to(device)
 
     # Local data
     if cfg.buffer.size < cfg.algo.rollout_steps:
@@ -330,9 +323,7 @@ def main(cfg: DictConfig):
                         ep_len = agent_ep_info["episode"]["l"]
                         aggregator.update("Rewards/rew_avg", ep_rew)
                         aggregator.update("Game/ep_len_avg", ep_len)
-                        rank_aggregator.update(f"Rewards/rew_env_{rank * cfg.env.num_envs + i}", ep_rew)
-                        rank_aggregator.update(f"Game/ep_len_env_{rank * cfg.env.num_envs + i}", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[0]}")
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
@@ -392,11 +383,6 @@ def main(cfg: DictConfig):
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
             aggregator.reset()
-
-            # Sync per-rank metrics
-            rank_metrics = rank_aggregator.compute()
-            for m in rank_metrics:
-                fabric.log_dict(m, policy_step)
 
             # Sync distributed timers
             timer_metrics = timer.compute()

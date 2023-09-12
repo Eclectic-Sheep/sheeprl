@@ -1,7 +1,6 @@
 import copy
 import itertools
 import os
-import time
 import warnings
 from contextlib import nullcontext
 from math import prod
@@ -30,7 +29,8 @@ from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, print_config
 
 
 def train(
@@ -109,6 +109,7 @@ def train(
 @register_algorithm(decoupled=True)
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
 
@@ -173,18 +174,16 @@ def main(cfg: DictConfig):
     )
     optimizer = fabric.setup_optimizers(hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters()))
 
-    # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
-        )
+    # Create a metric aggregator to log the metrics
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+        }
+    ).to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -197,13 +196,12 @@ def main(cfg: DictConfig):
     step_data = TensorDict({}, batch_size=[1, cfg.env.num_envs], device=device)
 
     # Global variables
-    policy_step = 0
     last_log = 0
+    last_train = 0
+    policy_step = 0
     last_checkpoint = 0
-    start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
-    last_log = 0
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -229,24 +227,27 @@ def main(cfg: DictConfig):
 
     with device:
         # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
-        next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
         next_state = agent.initial_states
+        next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
+        next_obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs * world_size
 
-            with torch.no_grad():
-                # Sample an action given the observation received by the environment
-                action_logits, values, state = agent.module(next_obs, state=next_state)
-                dist = Categorical(logits=action_logits.unsqueeze(-2))
-                action = dist.sample()
-                logprob = dist.log_prob(action)
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/sps_env_interaction"):
+                with torch.no_grad():
+                    # Sample an action given the observation received by the environment
+                    action_logits, values, state = agent.module(next_obs, state=next_state)
+                    dist = Categorical(logits=action_logits.unsqueeze(-2))
+                    action = dist.sample()
+                    logprob = dist.log_prob(action)
 
-            # Single environment step
-            obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
-            done = np.logical_or(done, truncated)
+                # Single environment step
+                obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+                done = np.logical_or(done, truncated)
 
             with device:
                 obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
@@ -279,13 +280,13 @@ def main(cfg: DictConfig):
                 next_state = state
 
             if "final_info" in info:
-                for i, agent_final_info in enumerate(info["final_info"]):
-                    if agent_final_info is not None and "episode" in agent_final_info:
-                        fabric.print(
-                            f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                        )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                for i, agent_ep_info in enumerate(info["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
@@ -309,8 +310,6 @@ def main(cfg: DictConfig):
         local_data = rb.buffer
 
         # Train the agent
-
-        # Prepare data
         # 1. Split data into episodes (for every environment)
         episodes: List[TensorDictBase] = []
         for env_id in range(cfg.env.num_envs):
@@ -333,7 +332,9 @@ def main(cfg: DictConfig):
         else:
             sequences = episodes
         padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
-        train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
+
+        with timer("Time/sps_train"):
+            train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
 
         if cfg.algo.anneal_lr:
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], policy_step)
@@ -354,12 +355,30 @@ def main(cfg: DictConfig):
             )
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = policy_step
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+            # Sync distributed metrics
             metrics_dict = aggregator.compute()
-            fabric.log("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)), policy_step)
             fabric.log_dict(metrics_dict, policy_step)
             aggregator.reset()
+
+            # Sync distributed timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (update - last_train) / timer_metrics["Time/sps_train"],
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                / timer_metrics["Time/sps_env_interaction"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_train = update
+            last_log = policy_step
 
         # Checkpoint model
         if (

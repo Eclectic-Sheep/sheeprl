@@ -19,7 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric, RunningMean
+from torchmetrics import MeanMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -128,12 +128,6 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
         "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
     }
-    metrics.update(
-        {f"Rewards/rew_env_{i}": RunningMean(window=10, sync_on_compute=False) for i in range(cfg.env.num_envs)}
-    )
-    metrics.update(
-        {f"Game/ep_len_env_{i}": RunningMean(window=10, sync_on_compute=False) for i in range(cfg.env.num_envs)}
-    )
     aggregator = MetricAggregator(metrics).to(device)
 
     # Local data
@@ -258,9 +252,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
                         ep_len = agent_ep_info["episode"]["l"]
                         aggregator.update("Rewards/rew_avg", ep_rew)
                         aggregator.update("Game/ep_len_avg", ep_len)
-                        aggregator.update(f"Rewards/rew_env_{i}", ep_rew)
-                        aggregator.update(f"Game/ep_len_env_{i}", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[0]}")
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}

@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, Union
 
 import rich.syntax
 import rich.tree
@@ -143,6 +143,7 @@ def print_config(
     config: DictConfig,
     fields: Sequence[str] = ("algo", "buffer", "checkpoint", "env", "exp", "hydra", "metric", "optim"),
     resolve: bool = True,
+    cfg_save_path: Optional[Union[str, os.PathLike]] = None,
 ) -> None:
     """Prints content of DictConfig using Rich library and its tree structure.
 
@@ -164,5 +165,6 @@ def print_config(
         branch.add(rich.syntax.Syntax(branch_content, "yaml"))
 
     rich.print(tree)
-    with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
-        rich.print(tree, file=fp)
+    if cfg_save_path is not None:
+        with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
+            rich.print(tree, file=fp)
