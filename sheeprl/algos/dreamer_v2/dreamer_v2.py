@@ -5,7 +5,6 @@ Adapted from the original implementation from https://github.com/danijar/dreamer
 import copy
 import os
 import pathlib
-import time
 import warnings
 from typing import Dict, Sequence
 
@@ -562,7 +561,6 @@ def main(cfg: DictConfig):
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
