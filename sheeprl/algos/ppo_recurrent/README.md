@@ -15,7 +15,7 @@ Optimization](https://arxiv.org/abs/2205.11104) paper. In particular, the steps 
 4. Split collected data into multiple episodes, where a new episode starts when the `done` or `terminated` flag is true
 5. Split every episode into chunks of length at most `per_rank_batch_size`
 6. Zero-pad every sequence to be all of the same length
-7. Optimize PPO loss for `update_epochs` epochs, creating `per_rank_num_batches` random mini-batches of sequences
+7. Optimize PPO loss for `algo.update_epochs` epochs, creating `per_rank_num_batches` random mini-batches of sequences
 8. Repeat from 2. until convergence
 ## Agent
 

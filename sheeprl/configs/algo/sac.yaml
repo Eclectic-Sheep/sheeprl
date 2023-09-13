@@ -1,0 +1,39 @@
+defaults:
+  - default
+  - /optim@actor.optimizer: adam
+  - /optim@critic.optimizer: adam
+  - /optim@alpha.optimizer: adam
+  - _self_
+
+name: sac
+tau: 0.005
+gamma: 0.99
+hidden_size: 256
+
+# Training recipe
+learning_starts: 100
+per_rank_gradient_steps: 1
+
+# Model related parameters
+# Actor
+actor:
+  hidden_size: ${algo.hidden_size}
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4
+
+# Critic
+critic:
+  n: 2
+  hidden_size: ${algo.hidden_size}
+  target_network_frequency: 1
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4
+
+# Entropy coefficient
+alpha:
+  alpha: 1.0
+  optimizer:
+    lr: 3e-4
+    eps: 1e-4

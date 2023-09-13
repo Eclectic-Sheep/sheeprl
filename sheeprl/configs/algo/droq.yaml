@@ -1,0 +1,12 @@
+defaults:
+  - sac
+  - _self_
+
+name: droq
+
+# Training recipe
+per_rank_gradient_steps: 20
+
+# Override from `sac` config
+critic:
+  dropout: 0.01
