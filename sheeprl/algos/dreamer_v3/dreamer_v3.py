@@ -335,8 +335,9 @@ def main(cfg: DictConfig):
     print_config(cfg)
 
     # These arguments cannot be changed
-    cfg.env.screen_size = 64
     cfg.env.frame_stack = -1
+    if 2 ** int(np.log2(cfg.env.screen_size)) != cfg.env.screen_size:
+        raise ValueError(f"The screen size must be a power of 2, got: {cfg.env.screen_size}")
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
