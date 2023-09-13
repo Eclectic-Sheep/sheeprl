@@ -1,5 +1,6 @@
 import copy
 import os
+import pathlib
 import time
 import warnings
 from datetime import datetime, timedelta
@@ -34,6 +35,26 @@ from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 @torch.no_grad()
 def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
+    # Initialize Fabric object
+    fabric = Fabric(callbacks=[CheckpointCallback()])
+    if not _is_using_cli():
+        fabric.launch()
+    device = fabric.device
+    fabric.seed_everything(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
+
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
+        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg.checkpoint.resume_from = str(ckpt_path)
+        cfg.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
+        cfg.root_dir = root_dir
+        cfg.run_name = f"resume_from_checkpoint_{run_name}"
+
     root_dir = (
         os.path.join("logs", "runs", cfg.root_dir)
         if cfg.root_dir is not None
@@ -43,15 +64,8 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
     )
     logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+    fabric._loggers = [logger]
     logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
-
-    # Initialize Fabric object
-    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
-    device = fabric.device
-    fabric.seed_everything(cfg.seed)
-    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -120,14 +134,14 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-                "Time/step_per_second": MeanMetric(sync_on_compute=False),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
+            "Time/step_per_second": MeanMetric(sync_on_compute=False),
+        }
+    )
+    aggregator.to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -140,9 +154,10 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
-    policy_step = 0
-    last_log = 0
-    last_checkpoint = 0
+    start_step = state["update"] if cfg.checkpoint.resume_from else 1
+    policy_step = (state["update"] - 1) * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
@@ -191,7 +206,9 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
             next_obs[k] = torch_obs
     next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
 
-    for update in range(1, num_updates + 1):
+    params = {"update": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
+    world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
+    for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs
 
@@ -351,15 +368,24 @@ def trainer(
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        state = fabric.load(cfg.checkpoint.resume_from)
+
     # Environment setup
     agent_args = [None]
     world_collective.broadcast_object_list(agent_args, src=0)
 
-    # Create the actor and critic models
+    # Define the agent and the optimizer
     agent = PPOAgent(**agent_args[0])
-
-    # Define the agent and the optimizer and setup them with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+
+    # Load the state from the checkpoint
+    if cfg.checkpoint.resume_from:
+        agent.load_state_dict(state["agent"])
+        optimizer.load_state_dict(state["optimizer"])
+
+    # Setup agent and optimizer with Fabric
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
@@ -380,30 +406,30 @@ def trainer(
         from torch.optim.lr_scheduler import PolynomialLR
 
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        if cfg.checkpoint.resume_from:
+            scheduler.load_state_dict(state["scheduler"])
 
     # Metrics
-    with fabric.device:
-        aggregator = MetricAggregator(
-            {
-                "Loss/value_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/policy_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-                "Loss/entropy_loss": MeanMetric(
-                    sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
-                ),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
+        }
+    )
+    aggregator.to(device)
 
     # Start training
-    update = 0
+    policy_steps_per_update = cfg.env.num_envs * cfg.algo.rollout_steps
+    params = [None]
+    world_collective.scatter_object_list(params, [None for _ in range(world_collective.world_size)], src=0)
+    params = params[0]
+    update = params["update"]
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
-    policy_step = 0
-    last_log = 0
-    last_checkpoint = 0
+    policy_step = update * policy_steps_per_update
+    last_log = params["last_log"]
+    last_checkpoint = params["last_checkpoint"]
     while True:
         # Wait for data
         data = [None]
@@ -415,14 +441,15 @@ def trainer(
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
-                    "update_step": update,
                     "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                    "update": update,
+                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                    "last_log": last_log,
+                    "last_checkpoint": last_checkpoint,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
             return
         data = make_tensordict(data, device=device)
-        update += 1
-        policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
@@ -522,10 +549,15 @@ def trainer(
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
-                    "update_step": update,
                     "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                    "update": update,
+                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                    "last_log": last_log,
+                    "last_checkpoint": last_checkpoint,
                 }
                 fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+        update += 1
+        policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
 
 @register_algorithm(decoupled=True)

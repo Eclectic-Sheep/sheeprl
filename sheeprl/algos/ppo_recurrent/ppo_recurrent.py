@@ -1,6 +1,7 @@
 import copy
 import itertools
 import os
+import pathlib
 import time
 import warnings
 from contextlib import nullcontext
@@ -125,6 +126,18 @@ def main(cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
+        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg.checkpoint.resume_from = str(ckpt_path)
+        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.root_dir = root_dir
+        cfg.run_name = f"resume_from_checkpoint_{run_name}"
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg, "ppo_recurrent")
@@ -157,34 +170,41 @@ def main(cfg: DictConfig):
             f"Provided environment: {cfg.env.id}"
         )
 
-    # Define the agent and the optimizer and setup them with Fabric
+    # Define the agent and the optimizer
     obs_dim = prod(envs.single_observation_space.shape)
-    agent = fabric.setup_module(
-        RecurrentPPOAgent(
-            observation_dim=obs_dim,
-            action_dim=envs.single_action_space.n,
-            lstm_hidden_size=cfg.algo.lstm.hidden_size,
-            actor_hidden_size=cfg.algo.actor.dense_units,
-            actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,
-            critic_hidden_size=cfg.algo.critic.dense_units,
-            critic_pre_lstm_hidden_size=cfg.algo.critic.pre_lstm_hidden_size,
-            num_envs=cfg.env.num_envs,
-        )
+    agent = RecurrentPPOAgent(
+        observation_dim=obs_dim,
+        action_dim=envs.single_action_space.n,
+        lstm_hidden_size=cfg.algo.lstm.hidden_size,
+        actor_hidden_size=cfg.algo.actor.dense_units,
+        actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,
+        critic_hidden_size=cfg.algo.critic.dense_units,
+        critic_pre_lstm_hidden_size=cfg.algo.critic.pre_lstm_hidden_size,
+        num_envs=cfg.env.num_envs,
     )
-    optimizer = fabric.setup_optimizers(hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters()))
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+
+    # Load the state from the checkpoint
+    if cfg.checkpoint.resume_from:
+        agent.load_state_dict(state["agent"])
+        optimizer.load_state_dict(state["optimizer"])
+
+    # Setup agent and optimizer with Fabric
+    agent = fabric.setup_module(agent)
+    optimizer = fabric.setup_optimizers(optimizer)
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+        }
+    )
+    aggregator.to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -197,9 +217,10 @@ def main(cfg: DictConfig):
     step_data = TensorDict({}, batch_size=[1, cfg.env.num_envs], device=device)
 
     # Global variables
-    policy_step = 0
-    last_log = 0
-    last_checkpoint = 0
+    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     start_time = time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
@@ -226,6 +247,8 @@ def main(cfg: DictConfig):
         from torch.optim.lr_scheduler import PolynomialLR
 
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        if cfg.checkpoint.resume_from:
+            scheduler.load_state_dict(state["scheduler"])
 
     with device:
         # Get the first environment observation and start the optimization
@@ -233,7 +256,7 @@ def main(cfg: DictConfig):
         next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
         next_state = agent.initial_states
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs * world_size
 
@@ -371,8 +394,11 @@ def main(cfg: DictConfig):
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "update_step": update,
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                "update": update * world_size,
+                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)

@@ -83,7 +83,22 @@ class DROQAgent(nn.Module):
 
         # Actor and critics
         self._num_critics = len(critics)
-        self._actor = actor
+        self.actor = actor
+        self.critics = critics
+
+        # Automatic entropy tuning
+        self._target_entropy = torch.tensor(target_entropy, device=device)
+        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=device)), requires_grad=True)
+
+        # EMA tau
+        self._tau = tau
+
+    @property
+    def critics(self) -> nn.ModuleList:
+        return self.qfs
+
+    @critics.setter
+    def critics(self, critics: Sequence[Union[DROQCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
         # Create target critic unwrapping the DDP module from the critics to prevent
@@ -93,7 +108,7 @@ class DROQAgent(nn.Module):
         # This happens when we're using the decoupled version of SAC for example
         qfs_unwrapped_modules = []
         for critic in critics:
-            if getattr(critic, "module"):
+            if hasattr(critic, "module"):
                 critic_module = critic.module
             else:
                 critic_module = critic
@@ -102,13 +117,6 @@ class DROQAgent(nn.Module):
         self._qfs_target = copy.deepcopy(self._qfs_unwrapped)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
-
-        # Automatic entropy tuning
-        self._target_entropy = torch.tensor(target_entropy, device=device)
-        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=device)), requires_grad=True)
-
-        # EMA tau
-        self._tau = tau
 
     @property
     def num_critics(self) -> int:
@@ -125,6 +133,11 @@ class DROQAgent(nn.Module):
     @property
     def actor(self) -> Union[SACActor, _FabricModule]:
         return self._actor
+
+    @actor.setter
+    def actor(self, actor: Union[SACActor, _FabricModule]) -> None:
+        self._actor = actor
+        return
 
     @property
     def qfs_target(self) -> nn.ModuleList:
