@@ -1,0 +1,23 @@
+defaults:
+  - default
+  - /optim@optimizer: adam
+  - _self_
+
+# Training receipe
+name: muzero
+gamma: 0.99
+
+support_size: 10
+
+num_simulations: 50
+nstep_horizon: 50
+dirichlet_alpha: 0.25
+exploration_fraction: 0.25
+priority_alpha: 0.5
+
+
+# Single optimizer for muzero agent
+optimizer:
+  lr: 1e-3
+  eps: 1e-4
+  weight_decay: 1e-4

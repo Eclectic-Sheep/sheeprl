@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - override /algo: muzero
+  - override /env: gym
+  - _self_
+
+# Experiment
+total_steps: 50000
+learning_starts: 128
+update_epochs: 10
+chunk_sequence_len: 10
+chunks_per_batch: 128
+
+# Buffer
+buffer:
+  size: 5000
+  share_data: False
+  max_trajectory_len: 500

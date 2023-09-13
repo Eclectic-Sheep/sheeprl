@@ -1,27 +1,25 @@
 import os
 import time
-from dataclasses import asdict
-from datetime import datetime
 
 import gymnasium as gym
+import hydra
 import torch
 from lightning import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
-from torch.optim import Adam
+from omegaconf import DictConfig, OmegaConf
+from tensordict import TensorDict
 from torchmetrics import MeanMetric
 
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
-from sheeprl.algos.muzero.args import MuzeroArgs
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
 from sheeprl.algos.muzero.utils import Node, test, visit_softmax_temperature
-from sheeprl.data.buffers import Trajectory, TrajectoryReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer  # Trajectory, TrajectoryReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import nstep_returns
 
@@ -38,18 +36,16 @@ def apply_temperature(logits, temperature):
 
 
 @register_algorithm()
-def main():
-    parser = HfArgumentParser(MuzeroArgs)
-    args: MuzeroArgs = parser.parse_args_into_dataclasses()[0]
-
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+def main(cfg: DictConfig):
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
     rank = fabric.global_rank
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    fabric.seed_everything(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
@@ -59,36 +55,20 @@ def main():
     if fabric.world_size > 1:
         world_collective.setup()
         world_collective.create_group()
-    if rank == 0:
-        root_dir = (
-            args.root_dir
-            if args.root_dir is not None
-            else os.path.join("logs", "muzero", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            args.run_name
-            if args.run_name is not None
-            else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-        )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+
+    logger, log_dir = create_tensorboard_logger(fabric, cfg, "muzero")
+    if fabric.is_global_zero:
         fabric._loggers = [logger]
-        log_dir = logger.log_dir
-        fabric.logger.log_hyperparams(asdict(args))
-        if fabric.world_size > 1:
-            world_collective.broadcast_object_list([log_dir], src=0)
-    else:
-        data = [""]
-        world_collective.broadcast_object_list(data, src=0)
-        log_dir = data[0]
-        os.makedirs(log_dir, exist_ok=True)
+        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     # Environment setup
-    env = make_env(args.env_id, seed=args.seed + rank, idx=rank, capture_video=False)()
+    env = make_env(cfg.env.id, seed=cfg.seed + rank, idx=rank, capture_video=False)()
     assert isinstance(env.action_space, gym.spaces.Discrete), "Only discrete action space is supported"
 
     # Create the model
     embedding_size = 8
-    full_support_size = 2 * args.support_size + 1
+    full_support_size = 2 * cfg.algo.support_size + 1
+    # TODO hydralize everything
     agent = MuzeroAgent(
         representation=MLP(
             input_dims=env.observation_space.shape,
@@ -103,7 +83,8 @@ def main():
             embedding_size=embedding_size, num_actions=env.action_space.n, full_support_size=full_support_size
         ),
     )
-    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4, weight_decay=args.weight_decay)
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Metrics
@@ -123,41 +104,45 @@ def main():
         )
 
     # Local data
-    buffer_size = args.buffer_capacity // int(fabric.world_size) if not args.dry_run else 1
-    rb = TrajectoryReplayBuffer(max_num_trajectories=buffer_size, device=device, memmap=args.memmap_buffer)
+    buffer_size = cfg.buffer.size // int(fabric.world_size) if not cfg.dry_run else 1
+    rb = EpisodeBuffer(
+        buffer_size=buffer_size, sequence_length=cfg.chunk_sequence_len, device=device, memmap=cfg.buffer.memmap
+    )
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = int(args.total_steps // int(fabric.world_size)) if not args.dry_run else 1
-    args.learning_starts = args.learning_starts // int(fabric.world_size) if not args.dry_run else 0
+    num_updates = int(cfg.total_steps // int(fabric.world_size)) if not cfg.dry_run else 1
+    cfg.learning_starts = cfg.learning_starts // int(fabric.world_size) if not cfg.dry_run else 0
 
     env_steps = 0
-    for update_step in range(1, num_updates + 1):
+    num_collected_trajectories = 1
+    update_steps = 1
+    while num_collected_trajectories <= num_updates:
         with torch.no_grad():
             # reset the episode at every update
             with device:
                 # Get the first environment observation and start the optimization
-                obs: torch.Tensor = torch.tensor(env.reset(seed=args.seed)[0], device=device).reshape(1, -1)
+                obs: torch.Tensor = torch.tensor(env.reset(seed=cfg.seed)[0], device=device).reshape(1, -1)
                 rew_sum = 0.0
 
             steps_data = None
-            for trajectory_step in range(0, args.max_trajectory_len):
+            for trajectory_step in range(0, cfg.buffer.max_trajectory_len):
                 node = Node(prior=0, image=obs, device=device)
 
                 # start MCTS
                 node.mcts(
                     agent,
-                    args.num_simulations,
-                    args.gamma,
-                    args.dirichlet_alpha,
-                    args.exploration_fraction,
-                    support_size=args.support_size,
+                    cfg.algo.num_simulations,
+                    cfg.algo.gamma,
+                    cfg.algo.dirichlet_alpha,
+                    cfg.algo.exploration_fraction,
+                    support_size=cfg.algo.support_size,
                 )
 
                 # Select action based on the visit count distribution and the temperature
                 visits_count = torch.tensor([child.visit_count for child in node.children.values()])
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
-                visit_probs = visits_count / args.num_simulations
+                visit_probs = visits_count / cfg.algo.num_simulations
                 visit_probs = torch.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])
                 tiny = torch.finfo(visit_probs.dtype).tiny
                 visit_logits = torch.log(torch.maximum(visit_probs, torch.tensor(tiny, device=device)))
@@ -169,7 +154,7 @@ def main():
                 rew_sum += reward
 
                 # Store the current step data
-                trajectory_step_data = Trajectory(
+                trajectory_step_data = TensorDict(
                     {
                         "policies": visit_probs.reshape(1, 1, -1),
                         "actions": action.reshape(1, 1, -1),
@@ -177,7 +162,6 @@ def main():
                         "rewards": torch.tensor([reward]).reshape(1, 1, -1),
                         "values": node.value().reshape(1, 1, -1),
                         "dones": torch.tensor([done]).reshape(1, 1, -1),
-                        "trajectory_steps": torch.tensor([update_step, trajectory_step]).reshape(1, 1, -1),
                     },
                     batch_size=(1, 1),
                     device=device,
@@ -193,29 +177,38 @@ def main():
                     with device:
                         obs = torch.tensor(next_obs).reshape(1, -1)
 
-            # fabric.print(f"Rank-{rank}: update_step={update_step}, reward={rew_sum}")
             aggregator.update("Rewards/rew_avg", rew_sum)
             aggregator.update("Game/ep_len_avg", trajectory_step)
             # print("Finished episode")
-            if len(steps_data) >= args.chunk_sequence_len:
+            if len(steps_data) >= cfg.chunk_sequence_len:
                 steps_data["returns"] = nstep_returns(
-                    steps_data["rewards"], steps_data["values"], steps_data["dones"], args.nstep_horizon, args.gamma
+                    steps_data["rewards"],
+                    steps_data["values"],
+                    steps_data["dones"],
+                    cfg.algo.nstep_horizon,
+                    cfg.algo.gamma,
                 )
-                steps_data["weights"] = torch.abs(steps_data["returns"] - steps_data["values"]) ** args.priority_alpha
-                rb.add(trajectory=steps_data)
+                steps_data["weights"] = (
+                    torch.abs(steps_data["returns"] - steps_data["values"]) ** cfg.algo.priority_alpha
+                )
+                rb.add(episode=steps_data)
+                # update counter only if trajectory is long enough
+                num_collected_trajectories += 1
             env_steps += trajectory_step
 
-        if len(rb) >= args.learning_starts:
+        if len(rb.buffer) >= cfg.learning_starts:
             print("UPDATING")
-            for _ in range(args.update_epochs):
-                # We sample one time to reduce the communications between processes
-                data = rb.sample(args.chunks_per_batch, args.chunk_sequence_len)
+            all_data = rb.sample(batch_size=cfg.chunks_per_batch, n_samples=cfg.update_epochs, shuffle=True)
 
-                target_rewards = data["rewards"].squeeze(-1)
-                target_values = data["returns"].squeeze(-1)
-                target_policies = data["policies"].squeeze()
-                observations: torch.Tensor = data["observations"].squeeze(2)  # shape should be (L, N, C, H, W)
-                actions = data["actions"].squeeze(2)
+            for epoch_idx in range(cfg.update_epochs):
+                # We sample one time to reduce the communications between processes
+                data = all_data[epoch_idx]
+
+                target_rewards = data["rewards"]
+                target_values = data["returns"]
+                target_policies = data["policies"]
+                observations: torch.Tensor = data["observations"]  # shape should be (L, N, C, H, W)
+                actions = data["actions"]
 
                 hidden_states, policy_0, value_0 = agent.initial_inference(
                     observations[0]
@@ -228,7 +221,7 @@ def main():
                 r_loss = torch.tensor(0.0, device=device)
                 entropy = torch.distributions.Categorical(logits=policy_0.detach()).entropy().unsqueeze(0)
 
-                for sequence_idx in range(1, args.chunk_sequence_len):
+                for sequence_idx in range(1, cfg.chunk_sequence_len):
                     hidden_states, rewards, policies, values = agent.recurrent_inference(
                         actions[sequence_idx : sequence_idx + 1].to(dtype=torch.float32), hidden_states
                     )  # action should be (1, N, 1)
@@ -241,7 +234,7 @@ def main():
                     entropy += torch.distributions.Categorical(logits=policies.detach()).entropy()
 
                 # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
-                loss = (pg_loss + v_loss + r_loss) / args.chunk_sequence_len
+                loss = (pg_loss + v_loss + r_loss) / cfg.chunk_sequence_len
 
                 optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
@@ -253,31 +246,30 @@ def main():
                 aggregator.update("Loss/reward_loss", r_loss.detach())
                 aggregator.update("Loss/total_loss", loss.detach())
                 aggregator.update("Gradient/gradient_norm", agent.gradient_norm())
-                aggregator.update("Info/policy_entropy", entropy.mean() / args.chunk_sequence_len)
-
-        aggregator.update("Time/step_per_second", int(update_step / (time.perf_counter() - start_time)))
+                aggregator.update("Info/policy_entropy", entropy.mean() / cfg.chunk_sequence_len)
+            update_steps += 1
+        aggregator.update("Time/step_per_second", int(update_steps / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), env_steps)
         aggregator.reset()
 
         if (
-            (args.checkpoint_every > 0 and update_step % args.checkpoint_every == 0)
-            or args.dry_run
-            or update_step == num_updates
+            (cfg.checkpoint.every > 0 and update_steps % cfg.checkpoint.every == 0)
+            or cfg.dry_run
+            or update_steps == num_updates
         ):
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "args": asdict(args),
-                "update_step": update_step,
+                "update_steps": update_steps,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update_step}_{fabric.global_rank}.ckpt")
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update_steps}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     env.close()
 
     if fabric.is_global_zero:
         test_env = make_env(
-            args.env_id,
+            cfg.env.id,
             None,
             0,
             True,
@@ -285,7 +277,7 @@ def main():
             "test",
             vector_env_idx=0,
         )()
-        test(agent, test_env, fabric, args)
+        test(agent, test_env, fabric, cfg)
 
 
 if __name__ == "__main__":

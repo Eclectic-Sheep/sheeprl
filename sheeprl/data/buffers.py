@@ -1,5 +1,4 @@
 import os
-import random
 import shutil
 import typing
 import uuid
@@ -9,7 +8,7 @@ from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import torch
-from tensordict import LazyStackedTensorDict, MemmapTensor, TensorDict
+from tensordict import MemmapTensor, TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Size, Tensor, device
 
@@ -215,84 +214,6 @@ class ReplayBuffer:
         if self._buffer is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         self._buffer.set(key, t, inplace=True)
-
-
-class Trajectory(TensorDict):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def __len__(self):
-        return self.shape[0]
-
-    def sample(self, position: int, chunk_len: int) -> Optional[TensorDictBase]:
-        if len(self) < position + chunk_len:
-            return
-        return self[position : position + chunk_len]
-
-
-class TrajectoryReplayBuffer:
-    def __init__(self, max_num_trajectories: int, device: Union[str, torch.device] = "cpu", memmap: bool = False):
-        self._buffer = []
-        self.max_num_trajectories = max_num_trajectories
-        if isinstance(device, str):
-            device = torch.device(device=device)
-        self._device = device
-        self._memmap = memmap
-
-    @property
-    def buffer(self):
-        return self._buffer
-
-    def __len__(self):
-        return len(self._buffer)
-
-    def __getitem__(self, index: int):
-        return self._buffer[index]
-
-    def num_samples(self):
-        return sum(len(t) for t in self._buffer)
-
-    def add(self, trajectory: Optional[Trajectory]):
-        if trajectory is None:
-            return
-        if not isinstance(trajectory, TensorDict):
-            raise TypeError("Trajectory must be an instance of TensorDict")
-        trajectory = Trajectory(trajectory)
-        if self._memmap:
-            trajectory.memmap_()
-        self._buffer.append(trajectory)  # convert to trajectory if tensordict
-        if len(self) > self.max_num_trajectories:
-            self._buffer.pop(0)
-
-    def sample(self, batch_size: int, sequence_length: int) -> LazyStackedTensorDict:
-        """Sample a batch of trajectories of length `sequence_length`.
-
-        Args:
-            batch_size (int): Number of trajectories to sample
-            sequence_length (int): Length of the trajectories to sample
-
-        Returns:
-            LazyStackedTensorDict: the sampled trajectories with shape [batch_size, sequence_length, ...]
-        """
-        valid_trajectories = [t for t in self.buffer if len(t) >= sequence_length]
-        if len(valid_trajectories) == 0:
-            raise RuntimeError("No trajectories of length {} found".format(sequence_length))
-
-        if "weights" not in valid_trajectories[0].keys():
-            trajectories = random.choices(valid_trajectories, k=batch_size)
-            positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
-
-        else:
-            weights = [t["weights"].mean() for t in valid_trajectories]
-            trajectories = random.choices(valid_trajectories, k=batch_size, weights=weights)
-            positions = [
-                random.choices(
-                    range(len(t) - sequence_length + 1), k=1, weights=t["weights"][: len(t) - sequence_length + 1]
-                )[0]
-                for t in trajectories
-            ]
-
-        return torch.stack([t.sample(p, sequence_length) for t, p in zip(trajectories, positions)], dim=1)
 
 
 class SequentialReplayBuffer(ReplayBuffer):
@@ -519,12 +440,7 @@ class EpisodeBuffer:
                 - The length of the episode must be at least sequence lenght.
                 - The length of the episode cannot be greater than the buffer size.
         """
-        if len(torch.nonzero(episode["dones"])) != 1:
-            raise RuntimeError(
-                f"The episode must contain exactly one done, got: {len(torch.nonzero(episode['dones']))}"
-            )
-        if episode["dones"][-1] != 1:
-            raise RuntimeError(f"The last step must contain a done, got: {episode['dones'][-1]}")
+
         if episode.shape[0] < self._sequence_length:
             raise RuntimeError(
                 f"Episode too short (at least {self._sequence_length} steps), got: {episode.shape[0]} steps"
@@ -572,6 +488,7 @@ class EpisodeBuffer:
         batch_size: int,
         n_samples: int = 1,
         prioritize_ends: bool = False,
+        shuffle: bool = False,
         clone: bool = False,
     ) -> TensorDictBase:
         """Sample trajectories from the replay buffer.
@@ -594,20 +511,34 @@ class EpisodeBuffer:
             raise RuntimeError(
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
+        if "weights" in self._buffer[0].keys():
+            weights = torch.tensor([t["weights"].mean() for t in self._buffer], device=self.device)
+            idxes = torch.multinomial(weights, batch_size * n_samples, replacement=True)
+        else:
+            idxes = torch.randint(0, len(self._buffer), (batch_size * n_samples,))
 
-        nsample_per_eps = torch.bincount(torch.randint(0, len(self._buffer), (batch_size * n_samples,)))
+        nsample_per_eps = torch.bincount(idxes)
         samples = []
         for i, n in enumerate(nsample_per_eps):
             ep_len = self._buffer[i].shape[0]
             upper = ep_len - self._sequence_length + 1
             if prioritize_ends:
                 upper += self._sequence_length
-            start_idxes = torch.min(
-                torch.randint(0, upper, size=(n,)).reshape(-1, 1), torch.tensor(ep_len - self._sequence_length)
-            )
+
+            if "weights" in self._buffer[i].keys():
+                weights = self._buffer[i]["weights"][:upper]
+                weights = weights + torch.min(weights)
+                start_idxes = torch.multinomial(weights.view(1, -1), n, replacement=True).permute(1, 0)
+            else:
+                start_idxes = torch.min(
+                    torch.randint(0, upper, size=(n,)).reshape(-1, 1), torch.tensor(ep_len - self._sequence_length)
+                )
             indices = start_idxes + self._chunk_length
             samples.append(self._buffer[i][indices])
-        samples = torch.cat(samples, 0).reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
+        samples = torch.cat(samples, 0)
+        if shuffle:
+            samples = samples[torch.randperm(samples.shape[0])]
+        samples = samples.reshape(n_samples, batch_size, self._sequence_length).permute(0, -1, -2)
         if clone:
             return samples.clone()
         return samples

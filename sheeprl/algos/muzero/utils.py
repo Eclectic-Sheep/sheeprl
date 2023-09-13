@@ -7,9 +7,9 @@ import numpy as np
 import torch
 from gymnasium.wrappers import AtariPreprocessing
 from lightning import Fabric
+from omegaconf import DictConfig
 
 from sheeprl.algos.muzero.agent import MuzeroAgent
-from sheeprl.algos.muzero.args import MuzeroArgs
 from sheeprl.utils.utils import inverse_symsqrt, two_hot_decoder
 
 
@@ -238,19 +238,19 @@ def ucb_score(parent: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base:
 
 
 @torch.no_grad()
-def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, args: MuzeroArgs):
+def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     agent.eval()
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(
-        np.array(env.reset(seed=args.seed)[0]), device=fabric.device, dtype=torch.float32
-    ).unsqueeze(0)
+    next_obs = torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(
+        0
+    )
     while not done:
         # Act greedly through the environment
         node = Node(prior=0, image=next_obs)
 
         # start MCTS
-        node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
+        node.mcts(agent, cfg.num_simulations, cfg.gamma, cfg.dirichlet_alpha, cfg.exploration_fraction)
 
         # Select action based on the visit count distribution and the temperature
         visits_count = torch.tensor([child.visit_count for child in node.children.values()])
@@ -261,7 +261,7 @@ def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, args: MuzeroArgs):
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
         cumulative_rew += reward
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
