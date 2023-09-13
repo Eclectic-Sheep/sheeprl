@@ -212,7 +212,6 @@ def main(cfg: DictConfig):
         {
             "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
