@@ -221,7 +221,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
         # Send data to the training agents
         if update >= learning_starts:
-            if update == learning_starts:
+            if update == learning_starts or cfg.dry_run:
                 params = {"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}
                 world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
             training_steps = learning_starts if update == learning_starts else 1
