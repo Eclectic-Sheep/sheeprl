@@ -105,7 +105,7 @@ class DiambraWrapper(core.Env):
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, infos = self._env.step(action)
         infos["env_domain"] = "DIAMBRA"
-        return self._convert_obs(obs), reward, done, False, infos
+        return self._convert_obs(obs), reward, done or infos.get("env_done", False), False, infos
 
     def render(self, mode: str = "rgb_array", **kwargs) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
         return self._env.render("rgb_array")
