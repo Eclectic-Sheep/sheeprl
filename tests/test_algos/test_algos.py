@@ -98,7 +98,16 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+    keys = {
+        "agent",
+        "qf_optimizer",
+        "actor_optimizer",
+        "alpha_optimizer",
+        "update",
+        "last_log",
+        "last_checkpoint",
+        "batch_size",
+    }
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -131,7 +140,16 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+    keys = {
+        "agent",
+        "qf_optimizer",
+        "actor_optimizer",
+        "alpha_optimizer",
+        "update",
+        "last_log",
+        "last_checkpoint",
+        "batch_size",
+    }
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -233,7 +251,16 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
                     torchrun.main(torchrun_args)
 
     if os.environ["LT_DEVICES"] != "1":
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+        keys = {
+            "agent",
+            "qf_optimizer",
+            "actor_optimizer",
+            "alpha_optimizer",
+            "update",
+            "last_log",
+            "last_checkpoint",
+            "batch_size",
+        }
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -264,7 +291,10 @@ def test_ppo(standard_args, start_time, env_id):
             if command == "main":
                 task.__dict__[command]()
 
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    check_checkpoint(
+        Path(os.path.join("logs", "runs", ckpt_path)),
+        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
+    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -312,7 +342,8 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
 
     if os.environ["LT_DEVICES"] != "1":
         check_checkpoint(
-            Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"}
+            Path(os.path.join("logs", "runs", ckpt_path)),
+            {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
         )
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
@@ -338,7 +369,10 @@ def test_ppo_recurrent(standard_args, start_time):
             if command == "main":
                 task.__dict__[command]()
 
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    check_checkpoint(
+        Path(os.path.join("logs", "runs", ckpt_path)),
+        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
+    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
