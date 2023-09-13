@@ -35,7 +35,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, print_config
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -379,6 +379,8 @@ def train(
 @register_algorithm()
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
+
     # These arguments cannot be changed
     cfg.env.screen_size = 64
     cfg.env.frame_stack = 1
