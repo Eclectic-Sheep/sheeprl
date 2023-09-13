@@ -192,7 +192,7 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    aggregator.update("Loss/reconstruction_loss", rec_loss.detach())
+    aggregator.update("Loss/world_model_loss", rec_loss.detach())
     aggregator.update("Loss/observation_loss", observation_loss.detach())
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
@@ -662,7 +662,7 @@ def main(cfg: DictConfig):
                 "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/policy_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/value_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
