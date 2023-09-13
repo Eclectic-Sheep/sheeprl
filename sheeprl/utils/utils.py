@@ -197,7 +197,7 @@ def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optio
     right_idxs = torch.bucketize(tensor, buckets)
     left_idxs = (right_idxs - 1).clip(min=0)
 
-    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device)
+    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device, dtype=tensor.dtype)
     left_value = torch.abs(buckets[right_idxs] - tensor) / bucket_size
     right_value = 1 - left_value
     two_hot.scatter_add_(-1, left_idxs, left_value)
