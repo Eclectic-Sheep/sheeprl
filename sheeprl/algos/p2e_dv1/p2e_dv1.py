@@ -684,13 +684,13 @@ def main(cfg: DictConfig):
             dones = np.logical_or(dones, truncated)
 
         if "final_info" in infos:
-            for i, agent_final_info in enumerate(infos["final_info"]):
-                if agent_final_info is not None and "episode" in agent_final_info:
-                    fabric.print(
-                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                    )
-                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+            for i, agent_ep_info in enumerate(infos["final_info"]):
+                if agent_ep_info is not None:
+                    ep_rew = agent_ep_info["episode"]["r"]
+                    ep_len = agent_ep_info["episode"]["l"]
+                    aggregator.update("Rewards/rew_avg", ep_rew)
+                    aggregator.update("Game/ep_len_avg", ep_len)
+                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
         real_next_obs = copy.deepcopy(o)
