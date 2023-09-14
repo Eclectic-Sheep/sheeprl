@@ -201,6 +201,8 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "decoder_optimizer",
         "update",
         "batch_size",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")

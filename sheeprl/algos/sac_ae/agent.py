@@ -337,22 +337,8 @@ class SACAEAgent(nn.Module):
 
         # Actor and critics
         self._num_critics = len(critic.qfs)
-        self._actor = actor
-        self._critic = critic
-
-        # Create target critic unwrapping the DDP module from the critics to prevent
-        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group
-        # argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SACAE for example
-        if hasattr(critic, "module"):
-            critic_module = critic.module
-        else:
-            critic_module = critic
-        self._critic_unwrapped = critic_module
-        self._critic_target = copy.deepcopy(self._critic_unwrapped)
-        for p in self._critic_target.parameters():
-            p.requires_grad = False
+        self.actor = actor
+        self.critic = critic
 
         # Automatic entropy tuning
         self._target_entropy = torch.tensor(target_entropy, device=device)
@@ -370,6 +356,31 @@ class SACAEAgent(nn.Module):
     def critic(self) -> Union[SACAECritic, _FabricModule]:
         return self._critic
 
+    def __setattr__(self, name, value):
+        if name in vars(type(self)) and isinstance(vars(type(self))[name], property):
+            object.__setattr__(self, name, value)
+        else:
+            super().__setattr__(name, value)
+
+    @critic.setter
+    def critic(self, critic: Union[SACAECritic, _FabricModule]) -> None:
+        self._critic = critic
+
+        # Create target critic unwrapping the DDP module from the critics to prevent
+        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
+        # That is, when you have called init_process_group and have not passed process_group
+        # argument to DDP constructor`.
+        # This happens when we're using the decoupled version of SACAE for example
+        if hasattr(critic, "module"):
+            critic_module = critic.module
+        else:
+            critic_module = critic
+        self._critic_unwrapped = critic_module
+        self._critic_target = copy.deepcopy(self._critic_unwrapped)
+        for p in self._critic_target.parameters():
+            p.requires_grad = False
+        return
+
     @property
     def critic_unwrapped(self) -> SACAECritic:
         return self._critic_unwrapped
@@ -377,6 +388,11 @@ class SACAEAgent(nn.Module):
     @property
     def actor(self) -> Union[SACAEContinuousActor, _FabricModule]:
         return self._actor
+
+    @actor.setter
+    def actor(self, actor: Union[SACAEContinuousActor, _FabricModule]) -> None:
+        self._actor = actor
+        return
 
     @property
     def critic_target(self) -> SACAECritic:
