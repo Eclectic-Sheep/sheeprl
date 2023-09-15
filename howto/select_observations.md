@@ -57,7 +57,7 @@ There can be three possible scenarios:
 1. You do **not** want to **use** the **image** observations: you don't have to specify any `cnn_keys` while you have to select the `mlp_keys`:
    1. if the environment provides more than one vector observation, then you have to choose between them;
    2. if the environment provides only one vector observation, you can choose the name of the *mlp key* or use the default one (`state`, used when you do not specify any *mlp keys*).
-2. You want to **use only** the **image** observation: you don't have to specify any `mlp_keys` while **you must specify the name of the *cnn key*** (if the image observation has to be created from the the vector one, the `make_dict_env` function will automatically bind the observation with the specified key, otherwise you must choose a valid one).
+2. You want to **use only** the **image** observation: you don't have to specify any `mlp_keys` while **you must specify the name of the *cnn key*** (if the image observation has to be created from the the vector one, the `make_env` function will automatically bind the observation with the specified key, otherwise you must choose a valid one).
 3. You want to **use both** the **vector** and **image** observations: You must specify the *cnn key* (as point 2). Instead, for the vector observations, you have two possibilities:
    1. if the environment provides more than one vector observation, then you **must choose between them**; 
    2. if the environment provides only one vector observation, you **must specify** the default vector observation key, i.e., **`state`**.

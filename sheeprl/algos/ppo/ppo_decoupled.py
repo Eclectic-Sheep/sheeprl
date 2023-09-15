@@ -27,7 +27,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -75,7 +75,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + i,
                 0,
@@ -107,7 +107,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
-    # Send (possibly updated, by the make_dict_env method for example) cfg to the trainers
+    # Send (possibly updated, by the make_env method for example) cfg to the trainers
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Create the actor and critic models
@@ -349,7 +349,7 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_dict_env(
+        test_env = make_env(
             cfg,
             None,
             0,
@@ -368,7 +368,7 @@ def trainer(
     global_rank = world_collective.rank
     group_world_size = world_collective.world_size - 1
 
-    # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
     cfg: DictConfig = data[0]

@@ -2,7 +2,7 @@ import gymnasium as gym
 import hydra
 from omegaconf import DictConfig
 
-from sheeprl.utils.env import make_dict_env, make_env
+from sheeprl.utils.env import make_env
 
 
 @hydra.main(version_base=None, config_path="../sheeprl/configs", config_name="env_config")
@@ -18,7 +18,7 @@ def main(cfg: DictConfig) -> None:
         "ppo",
         "ppo_decoupled",
     }:
-        env: gym.Env = make_dict_env(cfg, cfg.seed, 0)()
+        env: gym.Env = make_env(cfg, cfg.seed, 0)()
     elif cfg.agent in {"sac", "sac_decoupled", "droq", "ppo_recurrent"}:
         env: gym.Env = make_env(
             cfg.env.id,

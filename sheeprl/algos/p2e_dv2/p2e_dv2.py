@@ -28,7 +28,7 @@ from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -468,10 +468,6 @@ def train(
 def main(cfg: DictConfig):
     print_config(cfg)
 
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-    cfg.env.frame_stack = 1
-
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
@@ -493,6 +489,10 @@ def main(cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    # These arguments cannot be changed
+    cfg.env.screen_size = 64
+    cfg.env.frame_stack = 1
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg, "p2e_dv2")
@@ -504,7 +504,7 @@ def main(cfg: DictConfig):
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,

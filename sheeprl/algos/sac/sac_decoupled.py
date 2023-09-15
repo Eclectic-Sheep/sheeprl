@@ -1,3 +1,4 @@
+import copy
 import os
 import pathlib
 import time
@@ -58,6 +59,10 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    if len(cfg.cnn_keys.encoder) > 0:
+        warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
+        cfg.cnn_keys.encoder = []
+
     # Initialize logger
     root_dir = (
         os.path.join("logs", "runs", cfg.root_dir)
@@ -76,13 +81,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     envs = vectorized_env(
         [
             make_env(
-                cfg.env.id,
+                cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
-                rank,
-                cfg.env.capture_video,
-                logger.log_dir,
+                rank * cfg.env.num_envs,
+                logger.log_dir if rank == 0 else None,
                 "train",
-                mask_velocities=False,
                 vector_env_idx=i,
             )
             for i in range(cfg.env.num_envs)
@@ -90,18 +93,19 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     )
     if not isinstance(envs.single_action_space, gym.spaces.Box):
         raise ValueError("Only continuous action space is supported for the SAC agent")
-    if len(envs.single_observation_space.shape) > 1:
-        raise ValueError(
-            "Only environments with vector-only observations are supported by the SAC agent. "
-            f"Provided environment: {cfg.env.id}"
-        )
+    for k in cfg.mlp_keys.encoder:
+        if len(envs.single_observation_space[k].shape) > 1:
+            raise ValueError(
+                "Only environments with vector-only observations are supported by the SAC agent. "
+                f"Provided environment: {cfg.env.id}"
+            )
 
-    # Send (possibly updated, by the make_dict_env method for example) cfg to the trainers
+    # Send (possibly updated, by the make_env method for example) cfg to the trainers
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
-    obs_dim = prod(envs.single_observation_space.shape)
+    obs_dim = sum([prod(envs.single_observation_space[k].shape) for k in cfg.mlp_keys.encoder])
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
@@ -172,7 +176,10 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
 
     with device:
         # Get the first environment observation and start the optimization
-        obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
+        o = envs.reset(seed=cfg.seed)[0]
+        obs = torch.cat(
+            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+        )  # [N_envs, N_obs]
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs
@@ -200,14 +207,20 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
-        real_next_obs = next_obs.copy()
+        real_next_obs = copy.deepcopy(next_obs)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = final_obs
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
 
         with device:
-            next_obs = torch.tensor(real_next_obs, dtype=torch.float32)
+            next_obs = torch.cat(
+                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+            )  # [N_envs, N_obs]
+            real_next_obs = torch.cat(
+                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+            )  # [N_envs, N_obs]
             actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
             rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
             dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
@@ -303,13 +316,11 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     envs.close()
     if fabric.is_global_zero:
         test_env = make_env(
-            cfg.env.id,
+            cfg,
             None,
             0,
-            cfg.env.capture_video,
-            fabric.logger.log_dir,
+            logger.log_dir,
             "test",
-            mask_velocities=False,
             vector_env_idx=0,
         )()
         test(actor, test_env, fabric, cfg)
@@ -323,7 +334,7 @@ def trainer(
     global_rank = world_collective.rank
     group_world_size = world_collective.world_size - 1
 
-    # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
     cfg: DictConfig = data[0]
@@ -346,12 +357,12 @@ def trainer(
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
-    envs = vectorized_env([make_env(cfg.env.id, 0, 0, False, None, mask_velocities=False)])
+    envs = vectorized_env([make_env(cfg, 0, 0, None)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
-    obs_dim = prod(envs.single_observation_space.shape)
+    obs_dim = sum([prod(envs.single_observation_space[k].shape) for k in cfg.mlp_keys.encoder])
 
     actor = SACActor(
         observation_dim=obs_dim,
@@ -507,6 +518,14 @@ def trainer(
 @register_algorithm(decoupled=True)
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    if "minedojo" in cfg.env.env._target_.lower():
+        raise ValueError(
+            "MineDojo is not currently supported by SAC agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
     world_collective = TorchCollective()
     player_trainer_collective = TorchCollective()
     world_collective.setup(
