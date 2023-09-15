@@ -93,11 +93,13 @@ class DROQAgent(nn.Module):
         # EMA tau
         self._tau = tau
 
-    def __setattr__(self, name, value):
-        if name in vars(type(self)) and isinstance(vars(type(self))[name], property):
-            object.__setattr__(self, name, value)
-        else:
-            super().__setattr__(name, value)
+    def __setattr__(self, name: str, value: Union[Tensor, nn.Module]) -> None:
+        # Taken from https://github.com/pytorch/pytorch/pull/92044
+        # Check if a property setter exists. If it does, use it.
+        class_attr = getattr(self.__class__, name, None)
+        if isinstance(class_attr, property) and class_attr.fset is not None:
+            return class_attr.fset(self, value)
+        super().__setattr__(name, value)
 
     @property
     def critics(self) -> nn.ModuleList:

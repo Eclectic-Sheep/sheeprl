@@ -531,7 +531,7 @@ def main(cfg: DictConfig):
 
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
-            last_checkpoint >= policy_step
+            last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "encoder": encoder.state_dict(),
