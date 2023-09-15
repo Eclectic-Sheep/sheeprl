@@ -12,7 +12,7 @@ We start from the concept of *policy step*: a policy step is the particular step
 Now that we have introduced the concept of policy step, it is necessary to clarify some aspects:
 
 1. When there are multiple parallel environments, the policy step is proportional to the number of parallel environments. E.g., if there are $m$ environments, then the actor has to choose $m$ actions and each environment performs an environment step: this means that $\bold{m}$ **policy steps** are performed.
-2. When there are multiple parallel processes (i.e. the script has been run with `lightning run model --devices>=2 ...`), the policy step it is proportional to the number of parallel processes. E.g., let us assume that there are $n$ processes each one containing one single environment: the $n$ actors select an action and a (per-process) step in the environment is performed. In this case $\bold{n}$ **policy steps** are performed.
+2. When there are multiple parallel processes (i.e. the script has been run with `lpython sheeprl fabric.devices>=2 ...`), the policy step it is proportional to the number of parallel processes. E.g., let us assume that there are $n$ processes each one containing one single environment: the $n$ actors select an action and a (per-process) step in the environment is performed. In this case $\bold{n}$ **policy steps** are performed.
 
 In general, if we have $n$ parallel processes, each one with $m$ independent environments, the policy step increases **globally** by $n \cdot m$ at each iteration.
 

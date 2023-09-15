@@ -22,9 +22,11 @@ sheeprl/configs
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
+│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── buffer
 │   └── default.yaml
@@ -47,17 +49,26 @@ sheeprl/configs
 │   ├── dreamer_v1.yaml
 │   ├── dreamer_v2_ms_pacman.yaml
 │   ├── dreamer_v2.yaml
+│   ├── dreamer_v3_100k_boxing.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
+│   ├── dreamer_v3_dmc_walker_walk.yaml
+│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_doapp.yaml
 │   ├── dreamer_v3_L_navigate.yaml
 │   ├── dreamer_v3.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
+│   ├── sac_decoupled.yaml
 │   └── sac.yaml
+├── fabric
+│   ├── ddp-cpu.yaml
+│   ├── ddp-cuda.yaml
+│   └── default.yaml
 ├── hydra
 │   └── default.yaml
 ├── __init__.py
@@ -86,7 +97,8 @@ defaults:
   - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
-  - exp: null
+  - exp: ???
+  - fabric: default.yaml
   - hydra: default.yaml
   - metric: default.yaml
 
@@ -362,8 +374,12 @@ algo:
 Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
 
 ```bash
-lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3_100k_ms_pacman
+python sheeprl.py dreamer_v3 exp=dreamer_v3_100k_ms_pacman
 ```
+
+### Fabric
+
+These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with thich precision. For more information please have a look to the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
 
 ### Hydra
 
@@ -386,7 +402,6 @@ log_every: 5000
 # for more information
 sync_on_compute: False
 ```
-
 
 ### Optimizer
 

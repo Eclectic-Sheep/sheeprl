@@ -54,5 +54,5 @@ Finally we added sticky action for the `jump` and `attack` actions. You can set 
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run lightning run model --devices=1 sheeprl.py dreamer_v3 exp=dreamer_v3 env=minerl env.id=custom_navigate cnn_keys.encoder=[rgb]`.
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=dreamer_v3 fabric.devices=1 env=minerl env.id=custom_navigate cnn_keys.encoder=[rgb]`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

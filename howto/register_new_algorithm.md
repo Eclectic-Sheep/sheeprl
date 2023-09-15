@@ -1,5 +1,5 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py sota exp=... env=... env.id=...` or accelerated by fabric with `lightning run model sheeprl.py sota exp=... env=... env.id=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py exp=... env=... env.id=...`.  
 
 We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 

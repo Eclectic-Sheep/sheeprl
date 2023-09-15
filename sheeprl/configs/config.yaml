@@ -7,10 +7,10 @@ defaults:
   - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
+  - exp: ???
   - fabric: default.yaml
-  - metric: default.yaml
-  - exp: null
   - hydra: default.yaml
+  - metric: default.yaml
 
 num_threads: 1
 total_steps: ???

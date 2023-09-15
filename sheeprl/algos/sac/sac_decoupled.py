@@ -469,7 +469,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     if world_collective.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 sheeprl.py ...`"
+            "`python sheeprl.py exp=sac_decoupled fabric.devices=2`"
         )
 
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
