@@ -753,7 +753,3 @@ def main(fabric: Fabric, cfg: DictConfig):
     envs.close()
     if fabric.is_global_zero:
         test(player, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()

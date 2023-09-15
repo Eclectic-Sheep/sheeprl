@@ -403,7 +403,3 @@ def main(fabric: Fabric, cfg: DictConfig):
             vector_env_idx=0,
         )()
         test(agent.module, test_env, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()

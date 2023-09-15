@@ -486,7 +486,3 @@ def main(fabric: Fabric, cfg: DictConfig):
         player(fabric, cfg, world_collective, player_trainer_collective)
     else:
         trainer(world_collective, player_trainer_collective, optimization_pg)
-
-
-if __name__ == "__main__":
-    main()

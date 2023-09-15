@@ -525,7 +525,3 @@ def main(fabric: Fabric, cfg: DictConfig):
     if fabric.is_global_zero:
         test_env = make_dict_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
         test_sac_ae(actor.module, test_env, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()
