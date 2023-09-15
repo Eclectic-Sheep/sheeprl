@@ -114,3 +114,6 @@ class DiambraWrapper(core.Env):
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
         return self._convert_obs(self._env.reset()), {"env_domain": "DIAMBRA"}
+
+    def close(self) -> None:
+        self._env.close()
