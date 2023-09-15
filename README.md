@@ -155,13 +155,13 @@ Now you can use one of the already available algorithms, or create your own.
 For example, to train a PPO agent on the CartPole environment with only vector-like observations, just run
 
 ```bash
-python sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1
+python sheeprl.py exp=ppo env=gym env.id=CartPole-v1
 ```
 
 You check all the available algorithms with
 
 ```bash
-python sheeprl.py --sheeprl_help
+python sheeprl.py --help
 ```
 
 That's all it takes to train an agent with SheepRL! 🎉
@@ -194,17 +194,17 @@ What you run is the PPO algorithm with the default configuration. But you can al
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 
 ```bash
-python sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1 num_envs=8
+python sheeprl.py exp=ppo env=gym env.id=CartPole-v1 env.num_envs=8
 ```
 
 All the available arguments, with their descriptions, are listed in the `sheeprl/config` directory. You can find more information about the hierarchy of configs [here](./howto/run_experiments.md).
 
 ### Running with Lightning Fabric
 
-To run the algorithm with Lightning Fabric, you need to call Lightning with its parameters. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
+To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 
 ```bash
-lightning run model --accelerator=cpu --strategy=ddp --devices=2 sheeprl.py ppo exp=ppo env=gym env.id=CartPole-v1
+python sheeprl.py fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 exp=ppo env=gym env.id=CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
