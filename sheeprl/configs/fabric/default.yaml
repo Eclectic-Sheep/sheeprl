@@ -1,0 +1,5 @@
+devices: 1
+num_nodes: 1
+strategy: "auto"
+accelerator: "cpu"
+precision: "32-true"

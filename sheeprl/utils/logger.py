@@ -9,9 +9,7 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from omegaconf import DictConfig
 
 
-def create_tensorboard_logger(
-    fabric: Fabric, cfg: DictConfig, algo_name: str
-) -> Tuple[Optional[TensorBoardLogger], str]:
+def create_tensorboard_logger(fabric: Fabric, cfg: DictConfig) -> Tuple[Optional[TensorBoardLogger], str]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.
@@ -24,7 +22,7 @@ def create_tensorboard_logger(
         root_dir = (
             os.path.join("logs", "runs", cfg.root_dir)
             if cfg.root_dir is not None
-            else os.path.join("logs", "runs", algo_name, datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+            else os.path.join("logs", "runs", cfg.algo.name, datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
         )
         run_name = (
             cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"

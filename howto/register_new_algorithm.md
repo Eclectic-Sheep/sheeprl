@@ -81,12 +81,8 @@ def train(
 
 
 @register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    # Initialize Fabric
-    fabric = Fabric()
-    if not _is_using_cli():
-        fabric.launch()
+
+def main(fabric: Fabric, cfg: DictConfig):
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -94,7 +90,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "sota")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -366,31 +362,4 @@ except ModuleNotFoundError:
     pass
 
 load_dotenv()
-```
-
-After doing that, when we run `python sheeprl.py` we should see `sota` under the `Commands` section:
-
-```bash
-(sheeprl) ➜  sheeprl git:(main) ✗ python sheeprl.py
-Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
-
-  SheepRL zero-code command line utility.
-
-Options:
-  --sheeprl_help  Show this message and exit.
-
-Commands:
-  dreamer_v1
-  dreamer_v2
-  dreamer_v3
-  droq
-  p2e_dv1
-  p2e_dv2
-  ppo
-  ppo_decoupled
-  ppo_recurrent
-  sac
-  sac_ae
-  sac_decoupled
-  sota
 ```

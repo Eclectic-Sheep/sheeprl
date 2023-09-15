@@ -14,7 +14,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.wrappers import _FabricModule
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
@@ -29,13 +28,12 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, print_config
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -377,18 +375,11 @@ def train(
 
 
 @register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    print_config(cfg)
-
+def main(fabric: Fabric, cfg: DictConfig):
     # These arguments cannot be changed
     cfg.env.screen_size = 64
     cfg.env.frame_stack = 1
 
-    # Initialize Fabric
-    fabric = Fabric(callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -408,7 +399,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "dreamer_v2")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))

@@ -7,6 +7,7 @@ defaults:
   - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
+  - fabric: default.yaml
   - metric: default.yaml
   - exp: null
   - hydra: default.yaml
