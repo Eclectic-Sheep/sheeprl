@@ -14,7 +14,7 @@ from torchmetrics import MeanMetric
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
 from sheeprl.algos.muzero.utils import Node, test, visit_softmax_temperature
-from sheeprl.data.buffers import EpisodeBuffer  # Trajectory, TrajectoryReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
@@ -127,7 +127,7 @@ def main(cfg: DictConfig):
 
             steps_data = None
             for trajectory_step in range(0, cfg.buffer.max_trajectory_len):
-                node = Node(prior=0, image=obs, device=device)
+                node = Node(prior=torch.tensor([0], device=device, dtype=torch.float32), image=obs)
 
                 # start MCTS
                 node.mcts(
@@ -196,7 +196,7 @@ def main(cfg: DictConfig):
                 num_collected_trajectories += 1
             env_steps += trajectory_step
 
-        if len(rb.buffer) >= cfg.learning_starts:
+        if len(rb) >= cfg.learning_starts:
             print("UPDATING")
             all_data = rb.sample(batch_size=cfg.chunks_per_batch, n_samples=cfg.update_epochs, shuffle=True)
 

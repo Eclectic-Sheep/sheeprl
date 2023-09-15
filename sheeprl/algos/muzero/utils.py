@@ -1,4 +1,3 @@
-import math
 import os
 from typing import Optional
 
@@ -69,7 +68,7 @@ class MinMaxStats:
         self.maximum = max(self.maximum, value)
         self.minimum = min(self.minimum, value)
 
-    def normalize(self, value: float) -> float:
+    def normalize(self, value: torch.Tensor) -> torch.Tensor:
         if self.maximum > self.minimum != -float("inf") and self.maximum != float("inf"):
             # We normalize only when we have set the maximum and minimum values.
             return (value - self.minimum) / (self.maximum - self.minimum)
@@ -107,23 +106,33 @@ class Node:
             as integers running from 0 to num_actions - 1.
     """
 
-    def __init__(self, prior: float, image: torch.Tensor = None, device=torch.device):
+    def __init__(self, prior: torch.Tensor, image: torch.Tensor = None):
         """A Node in the MCTS tree.
 
         Args:
-            prior (float): The prior probability of the node.
+            prior (torch.Tensor): The prior probability of the node.
             image (torch.Tensor): The image of the node.
                 The image is used to create the initial hidden state for the network in MCTS.
                 Hence, it is needed only for the starting node of every MCTS search.
         """
-        self.prior: float = prior
+        self.prior: torch.Tensor = prior
         self.image: torch.Tensor = image
+        self._device = prior.device
+        self._dtype = prior.dtype
 
         self.hidden_state: Optional[torch.Tensor] = None
-        self.reward: torch.tensor = torch.tensor(0.0, device=device)
-        self.value_sum: torch.tensor = torch.tensor(0.0, device=device)
-        self.visit_count: int = 0
+        self.reward: torch.tensor = torch.tensor(0.0, dtype=self._dtype, device=self._device)
+        self.value_sum: torch.tensor = torch.tensor(0.0, dtype=self._dtype, device=self._device)
+        self.visit_count: torch.tensor = torch.tensor(0.0, dtype=self._dtype, device=self._device)
         self.children: dict[int, Node] = {}
+
+    @property
+    def device(self):
+        return self._device
+
+    @property
+    def dtype(self):
+        return self._dtype
 
     def expanded(self) -> bool:
         """Returns True if the node is already expanded, False otherwise.
@@ -143,7 +152,7 @@ class Node:
     def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
         """Add exploration noise to the prior probabilities."""
         actions = list(self.children.keys())
-        noise = np.random.dirichlet([dirichlet_alpha] * len(actions))
+        noise = torch.distributions.dirichlet.Dirichlet(torch.tensor([dirichlet_alpha] * len(actions))).rsample()
         frac = exploration_fraction
         for a, n in zip(actions, noise):
             self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
@@ -162,11 +171,14 @@ class Node:
         hidden_state, policy_logits, _ = agent.initial_inference(self.image)
         self.hidden_state = hidden_state
 
+        device = hidden_state.device
+        dtype = hidden_state.dtype
+
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
         normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
         for action in range(normalized_policy.numel()):
-            self.children[action] = Node(normalized_policy[:, action].item(), device=hidden_state.device)
+            self.children[action] = Node(normalized_policy[:, action])
         self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
@@ -197,9 +209,7 @@ class Node:
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             parent = search_path[-2]
             hidden_state, reward, policy_logits, value = agent.recurrent_inference(
-                torch.tensor([imagined_action])
-                .view(1, 1, -1)
-                .to(device=parent.hidden_state.device, dtype=torch.float32),
+                imagined_action.view(1, 1, -1).to(device=device, dtype=dtype),
                 parent.hidden_state,
             )
             value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size)
@@ -207,33 +217,46 @@ class Node:
             node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), support_size)
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             for action in range(normalized_policy.numel()):
-                node.children[action] = Node(
-                    normalized_policy.squeeze()[action].item(), device=normalized_policy.device
-                )
+                node.children[action] = Node(normalized_policy.squeeze()[action])
 
             # Backpropagate the search path to update the nodes' statistics
             for visited_node in reversed(search_path):
                 visited_node.value_sum += value.squeeze()
                 visited_node.visit_count += 1
-                min_max_stats.update(visited_node.value())
+                min_max_stats.update(visited_node.value().item())
                 value = visited_node.reward + gamma * value
 
 
-def ucb_score(parent: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float) -> float:
+def ucb_score(
+    parent: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float
+) -> torch.Tensor:
     """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
     normalize the node value."""
-    children_visit_counts = torch.tensor([child.visit_count for child in parent.children.values()], dtype=torch.float32)
-    children_values = torch.tensor([child.value() for child in parent.children.values()], dtype=torch.float32)
-    children_priors = torch.tensor([child.prior for child in parent.children.values()], dtype=torch.float32)
-    children_rewards = torch.tensor([child.reward for child in parent.children.values()], dtype=torch.float32)
-    pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
-    pb_c *= math.sqrt(parent.visit_count) / (children_visit_counts + 1)
+    device = parent.device
+    dtype = parent.dtype
+    num_children = len(parent.children)
+    children_visit_counts = torch.empty(num_children, dtype=dtype, device=device)
+    children_values = torch.empty(num_children, dtype=dtype, device=device)
+    children_priors = torch.empty(num_children, dtype=dtype, device=device)
+    children_rewards = torch.empty(num_children, dtype=dtype, device=device)
+
+    pb_c = torch.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
+
+    for i, child in enumerate(parent.children.values()):
+        children_visit_counts[i] = child.visit_count
+        children_values[i] = child.value()
+        children_priors[i] = child.prior
+        children_rewards[i] = child.reward
+
+    pb_c = pb_c * torch.div(torch.sqrt(parent.visit_count), (children_visit_counts + 1))
 
     prior_score = pb_c * children_priors
-    value_score = children_rewards + gamma * min_max_stats.normalize(children_values)
-    min_value = torch.min(value_score)
-    max_value = torch.max(value_score) + 1e-7  # TODO add parent score and epsilon
-    value_score = (value_score - min_value) / (max_value - min_value)  # Normalize to be in [0, 1] range
+
+    min_max_normalized = min_max_stats.normalize(children_values)
+    min_value = torch.min(children_rewards + gamma * min_max_normalized)
+    max_value = torch.max(children_rewards + gamma * min_max_normalized) + 1e-7
+    value_score = (children_rewards + gamma * min_max_normalized - min_value) / (max_value - min_value)
+
     return prior_score + value_score
 
 
