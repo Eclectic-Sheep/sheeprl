@@ -389,7 +389,7 @@ def main(cfg: DictConfig):
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // world_size
         cfg.root_dir = root_dir
-        cfg.run_name = f"resume_from_checkpoint_{run_name}"
+        cfg.run_name = run_name
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
