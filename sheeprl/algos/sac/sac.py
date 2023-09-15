@@ -250,7 +250,7 @@ def main(cfg: DictConfig):
             else:
                 # Sample an action given the observation received by the environment
                 with torch.no_grad():
-                    actions, _ = actor.module(obs)
+                    actions, _ = agent.actor.module(obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             dones = np.logical_or(dones, truncated)

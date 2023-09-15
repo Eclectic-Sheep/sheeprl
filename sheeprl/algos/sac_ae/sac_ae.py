@@ -436,7 +436,7 @@ def main(cfg: DictConfig):
             else:
                 with torch.no_grad():
                     normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
-                    actions, _ = actor.module(normalized_obs)
+                    actions, _ = agent.actor.module(normalized_obs)
                     actions = actions.cpu().numpy()
             o, rewards, dones, truncated, infos = envs.step(actions)
             dones = np.logical_or(dones, truncated)
