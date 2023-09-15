@@ -212,7 +212,7 @@ def main(cfg: DictConfig):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             if update <= learning_starts:
                 actions = envs.action_space.sample()
             else:
@@ -300,7 +300,7 @@ def main(cfg: DictConfig):
                         cfg,
                         policy_steps_per_update,
                     )
-                train_step += 1
+                train_step += world_size
 
         # Log metrics
         if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:

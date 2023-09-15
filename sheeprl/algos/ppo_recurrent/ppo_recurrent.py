@@ -198,6 +198,7 @@ def main(cfg: DictConfig):
     # Global variables
     last_log = 0
     last_train = 0
+    train_step = 0
     policy_step = 0
     last_checkpoint = 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
@@ -237,7 +238,7 @@ def main(cfg: DictConfig):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     action_logits, values, state = agent.module(next_obs, state=next_state)
@@ -335,6 +336,7 @@ def main(cfg: DictConfig):
 
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
             train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
+        train_step += world_size
 
         if cfg.algo.anneal_lr:
             fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], policy_step)
@@ -365,7 +367,7 @@ def main(cfg: DictConfig):
             timer_metrics = timer.compute()
             fabric.log(
                 "Time/sps_train",
-                (update - last_train) / timer_metrics["Time/train_time"],
+                (train_step - last_train) / timer_metrics["Time/train_time"],
                 policy_step,
             )
             fabric.log(
@@ -377,8 +379,8 @@ def main(cfg: DictConfig):
             timer.reset()
 
             # Reset counters
-            last_train = update
             last_log = policy_step
+            last_train = train_step
 
         # Checkpoint model
         if (

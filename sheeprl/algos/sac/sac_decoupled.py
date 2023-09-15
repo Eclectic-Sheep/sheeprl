@@ -296,7 +296,7 @@ def trainer(
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
-    global_rank - 1
+    group_world_size = world_collective.world_size - 1
 
     # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
     data = [None]
@@ -412,7 +412,7 @@ def trainer(
                     policy_steps_per_update,
                     group=optimization_pg,
                 )
-            train_step += 1
+            train_step += group_world_size
 
         if global_rank == 1:
             player_trainer_collective.broadcast(

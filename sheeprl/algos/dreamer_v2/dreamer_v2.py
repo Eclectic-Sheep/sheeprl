@@ -623,7 +623,7 @@ def main(cfg: DictConfig):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             # Sample an action given the observation received by the environment
             if (
                 update <= learning_starts
@@ -770,7 +770,7 @@ def main(cfg: DictConfig):
                         actions_dim,
                     )
                     per_rank_gradient_steps += 1
-                train_step += 1
+                train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1

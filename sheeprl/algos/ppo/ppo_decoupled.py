@@ -349,6 +349,7 @@ def trainer(
     optimization_pg: CollectibleGroup,
 ):
     global_rank = world_collective.rank
+    group_world_size = world_collective.world_size - 1
 
     # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
     data = [None]
@@ -406,6 +407,7 @@ def trainer(
     update = 0
     last_log = 0
     last_train = 0
+    train_step = 0
     policy_step = 0
     last_checkpoint = 0
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
@@ -428,6 +430,7 @@ def trainer(
             return
         data = make_tensordict(data, device=device)
         update += 1
+        train_step += group_world_size
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
         # Prepare sampler
@@ -504,7 +507,7 @@ def trainer(
 
             # Sync distributed timers
             timers = timer.compute()
-            metrics.update({"Time/sps_train": (update - last_train) / timers["Time/train_time"]})
+            metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
             timer.reset()
 
             # Send metrics to the player
@@ -520,8 +523,8 @@ def trainer(
                 )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
 
             # Reset counters
-            last_train = update
             last_log = policy_step
+            last_train = train_step
 
         if cfg.algo.anneal_lr:
             scheduler.step()
