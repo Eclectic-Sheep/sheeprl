@@ -34,12 +34,12 @@ def run(cfg: DictConfig):
     decoupled = False
     entrypoint = None
     algo_name = cfg.algo.name
-    for m, module_tasks in tasks.items():
-        for t in module_tasks:
-            if algo_name in t:
-                module = m
-                entrypoint = t[algo_name]
-                decoupled = t["decoupled"]
+    for _module, _algos in tasks.items():
+        for _algo in _algos:
+            if algo_name == _algo["name"]:
+                module = _module
+                entrypoint = _algo["entrypoint"]
+                decoupled = _algo["decoupled"]
                 break
     if module is None:
         raise RuntimeError(f"Given the algorithm named `{algo_name}`, no module has been found to be imported.")
