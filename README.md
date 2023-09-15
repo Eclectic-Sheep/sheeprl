@@ -161,7 +161,7 @@ python sheeprl.py exp=ppo env=gym env.id=CartPole-v1
 You check all the available algorithms with
 
 ```bash
-python sheeprl.py --help
+python sheeprl/available_agents.py
 ```
 
 That's all it takes to train an agent with SheepRL! 🎉
