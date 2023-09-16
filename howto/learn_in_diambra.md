@@ -94,7 +94,7 @@ env:
 
 Now, to run your experiment, you have to execute the following command:
 ```bash
-diambra run -s=4 python sheeprl.py dreamer_v3 exp=custom_exp env.num_envs=4
+diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 ```
 
 > **Note**

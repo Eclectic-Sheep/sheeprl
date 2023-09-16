@@ -45,7 +45,7 @@ It is important to know the observations the environment provides, for instance,
 For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-python sheeprl.py --env_id=dmc_walker_walk "cnn_keys.encoder=[rgb]" env.frame_stack=3
+python sheeprl.py exp=... env=dmc "cnn_keys.encoder=[rgb]" env.frame_stack=3
 ```
 
 #### How to choose the correct keys

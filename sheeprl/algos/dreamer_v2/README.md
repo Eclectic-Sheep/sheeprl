@@ -156,7 +156,7 @@ The standard hyperparameters used for the DMC environment are the following:
 ```bash
 PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa python sheeprl.py \
 exp=dreamer_v2 \
-fabricdevices=1 \
+fabric.devices=1 \
 env=dmc \
 env.env.id=dmc_walker_walk \
 env.capture_video=True \

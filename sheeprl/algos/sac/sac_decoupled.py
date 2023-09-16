@@ -466,12 +466,6 @@ def main(fabric: Fabric, cfg: DictConfig):
     world_collective.create_group(timeout=timedelta(days=1))
     global_rank = world_collective.rank
 
-    if world_collective.world_size == 1:
-        raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`python sheeprl.py exp=sac_decoupled fabric.devices=2`"
-        )
-
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
     player_trainer_collective.create_group(ranks=[0, 1], timeout=timedelta(days=1))

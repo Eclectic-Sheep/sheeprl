@@ -374,7 +374,7 @@ algo:
 Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
 
 ```bash
-python sheeprl.py dreamer_v3 exp=dreamer_v3_100k_ms_pacman
+python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 ```
 
 ### Fabric

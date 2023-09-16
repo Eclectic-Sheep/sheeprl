@@ -541,7 +541,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`python sheeprl.py exp=sac_decoupled fabric.devices=2 ...`"
+            "`python sheeprl.py exp=ppo_decoupled fabric.devices=2 ...`"
         )
 
     if "minedojo" in cfg.env.env._target_.lower():
