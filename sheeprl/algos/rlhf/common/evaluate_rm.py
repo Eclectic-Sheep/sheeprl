@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from sheeprl.algos.rlhf.args import EvaluateArgs, EvaluateRewardArgs, ModelArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import RMCollate
+from sheeprl.algos.rlhf.collate import CompareCollate
 from sheeprl.algos.rlhf.loss import load_reward_loss
 from sheeprl.algos.rlhf.models import CriticModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json, prepare_tokenizer
@@ -102,7 +102,7 @@ def main():
     fabric.print("Model loaded")
 
     # Setup Dataloaders
-    collator = RMCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
+    collator = CompareCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
 
     for split in ["train", "test"]:
         fabric.print(f"\nEvaluating on {split} split")

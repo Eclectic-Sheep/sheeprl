@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, GenerationConfig
 
 from sheeprl.algos.rlhf.args import EvaluateArgs, GenerationArgs, ModelArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import EvaluateCollate
+from sheeprl.algos.rlhf.collate import EvaluateCollate
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json
 from sheeprl.utils.parser import HfArgumentParser

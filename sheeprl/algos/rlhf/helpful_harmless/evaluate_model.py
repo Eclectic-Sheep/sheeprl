@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from sheeprl.algos.rlhf.args import EvaluateArgs, EvaluatePerplexityArgs, ModelArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import SFTCollate
+from sheeprl.algos.rlhf.collate import SFTCollate
 from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.models import CasualModel
 from sheeprl.algos.rlhf.utils import get_last_checkpoint_path, load_args_from_json, prepare_tokenizer
