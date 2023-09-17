@@ -56,11 +56,11 @@ def trainable_parameter_summary(
     print_fn(f"Trainable {trainable}")
     print_fn(f"Non-Trainable {non_trainable}")
     total_params = sum([sum(v.values()) for v in param_count.values()])
-    sum([v for k, v in param_count["trainable"].items()])
+    total_trainable_params = sum([v for _, v in param_count["trainable"].items()])
     print_fn(
         f"Total: {total_params}, "
-        "Trainable: {total_trainable_params}, "
-        "Percentage: {total_trainable_params/total_params:.2%}"
+        f"Trainable: {total_trainable_params}, "
+        f"Percentage: {total_trainable_params/total_params:.2%}"
     )
 
 
@@ -187,3 +187,14 @@ def prepare_generation_config(
     generation_config.eos_token_id = tokenizer.eos_token_id
     generation_config.bos_token_id = tokenizer.bos_token_id
     return generation_config
+
+
+def compute_masked_logprobs(
+    logprobs: torch.Tensor, targets: torch.Tensor, ignore_index: int, average: bool = False
+) -> torch.Tensor:
+    targets = targets[:, 1:].clone()
+    loss_mask = targets != ignore_index
+    if average:
+        return (logprobs * loss_mask).sum(-1) / loss_mask.sum(-1)
+    else:
+        return (logprobs * loss_mask).sum(-1)

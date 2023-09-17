@@ -2,7 +2,7 @@ import math
 
 
 class CosineSchedulerWithWarmup:
-    def __init__(self, learning_rate: float, warmup_steps: int, lr_decay_steps: int, min_lr: float = 1e-6):
+    def __init__(self, learning_rate: float, warmup_steps: int, lr_decay_steps: int, min_lr: float = 1e-8):
         self.learning_rate = learning_rate
         self.warmup_steps = warmup_steps
         self.lr_decay_steps = lr_decay_steps

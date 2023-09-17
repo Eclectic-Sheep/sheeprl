@@ -111,6 +111,14 @@ class MetricManager:
             fabric.log(formatted_metric_name, metric_value, step=step)
 
 
+@torch.inference_mode()
+def reward_accuracy(chosen_rewards: torch.Tensor, rejected_rewards: torch.Tensor):
+    tp = torch.count_nonzero(chosen_rewards > rejected_rewards)
+    total = chosen_rewards.shape[0]
+    acc = tp / total
+    return acc
+
+
 # TODO: Replace some of them with RunningMean when the bug is fixed in `torchmetrics`
 # in this way, we will have less noisy data in the logs
 
@@ -132,8 +140,22 @@ class RMMetricManager(MetricManager):
     val_acc: LastValueMetric
     info_lr: LastValueMetric
     info_time: LastValueMetric
+    info_reward_margin: LastValueMetric
     info_choosen_reward: LastValueMetric
     info_rejected_reward: LastValueMetric
+    info_grad_norm: LastValueMetric
+
+
+class DPOMetricManager(MetricManager):
+    train_loss: LastValueMetric
+    train_acc: LastValueMetric
+    val_loss: LastValueMetric
+    val_acc: LastValueMetric
+    info_lr: LastValueMetric
+    info_time: LastValueMetric
+    info_choosen_reward: LastValueMetric
+    info_rejected_reward: LastValueMetric
+    info_reward_margin: LastValueMetric
     info_grad_norm: LastValueMetric
 
 

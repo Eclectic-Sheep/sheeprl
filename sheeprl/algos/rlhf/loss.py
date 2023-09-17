@@ -3,6 +3,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from sheeprl.algos.rlhf.utils import compute_masked_logprobs
+
 
 def reward_loss_last_token(
     chosen: torch.Tensor,
@@ -168,6 +170,38 @@ def finetune_loss(
         outputs.view(-1, outputs.size(-1)), targets.view(-1), ignore_index=ignore_index, label_smoothing=label_smoothing
     )
     return loss
+
+
+def dpo_loss(
+    actor_chosen_logps: torch.Tensor,
+    actor_rejected_logps: torch.Tensor,
+    reference_chosen_logps: torch.Tensor,
+    reference_rejected_logps: torch.Tensor,
+    chosen_targets: torch.Tensor,
+    rejected_targets: torch.Tensor,
+    beta: float,
+    ignore_index: int,
+    reference_free: bool = False,
+) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    """Adapted from https://github.com/eric-mitchell/direct-preference-optimization/blob/main/trainers.py#L45C1-L50C110"""
+
+    masked_actor_chosen_logps = compute_masked_logprobs(actor_chosen_logps, chosen_targets, ignore_index)
+    masked_actor_rejected_logps = compute_masked_logprobs(actor_rejected_logps, rejected_targets, ignore_index)
+    masked_reference_chosen_logps = compute_masked_logprobs(reference_chosen_logps, chosen_targets, ignore_index)
+    masked_reference_rejected_logps = compute_masked_logprobs(reference_rejected_logps, rejected_targets, ignore_index)
+
+    actor_logratios = masked_actor_chosen_logps - masked_actor_rejected_logps
+    ref_logratios = masked_reference_chosen_logps - masked_reference_rejected_logps
+
+    if reference_free:
+        ref_logratios = 0
+
+    logits = actor_logratios - ref_logratios
+
+    losses = -F.logsigmoid(beta * logits)
+    chosen_rewards = beta * (masked_actor_chosen_logps - masked_reference_chosen_logps).detach()
+    rejected_rewards = beta * (masked_actor_rejected_logps - masked_reference_rejected_logps).detach()
+    return losses.mean(), chosen_rewards, rejected_rewards
 
 
 def policy_loss(

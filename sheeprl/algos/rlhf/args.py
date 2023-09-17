@@ -76,7 +76,7 @@ class SFTArgs(TrainArgs):
         help="Label smoothing value for cross entropy loss. When it is bigger than 0.0, it will be applied. "
         "Label smoothing helps when the model is overconfident according to Hugginface documentation.",
     )
-    use_targets: bool = Arg(
+    use_masked_targets: bool = Arg(
         default=False,
         help="Whether to use masked targets for training. Using masked targets may lead to overfitting. "
         "If targets are used model will only compute the loss based on the masked targets such as answer "
@@ -85,6 +85,35 @@ class SFTArgs(TrainArgs):
     learning_rate: float = Arg(default=1e-4, help="Learning rate for optimizer")
     lr_warmup_steps: int = Arg(
         default=100, help="Number of warmup steps for learning rate scheduler. Default scheduler has linear warmup."
+    )
+
+
+@dataclass
+class DPOArgs(TrainArgs):
+    experiment_name: str = Arg(default="rlhf-direct-preference", help="Name of the experiment")
+    sft_experiment_dir: Optional[str] = Arg(
+        default=None,
+        help="Path to supervised finetuning experiment directory to load model from. It will be both used to "
+        "initialize the actor model and the reference.",
+    )
+    use_masked_targets: bool = Arg(
+        default=True,
+        help="Whether to use masked targets updating the policy. For this algorithm the default is True.",
+    )
+    learning_rate: float = Arg(default=1e-6, help="Learning rate for optimizer")
+    lr_warmup_steps: int = Arg(
+        default=150, help="Number of warmup steps for learning rate scheduler. Default scheduler has linear warmup."
+    )
+    reference_free: bool = Arg(
+        default=False,
+        help="Whether to use the reference model or not when computing the DPO loss. If True, "
+        "we ignore reference model and implicitly use a reference model"
+        "that assigns equal probability to all responses.",
+    )
+    beta: float = Arg(
+        default=0.1,
+        help="Temperature parameter for the DPO loss, typically something in the range of 0.1 to 0.5. "
+        "We ignore the reference model when the beta is 0.0",
     )
 
 
@@ -186,7 +215,7 @@ class EvaluatePerplexityArgs(EvaluateArgs):
         default=0.0,
         help="Label smoothing value for cross entropy loss. For evaluation, it is better to use 0.0",
     )
-    use_targets: bool = Arg(
+    use_masked_targets: bool = Arg(
         default=True,
         help="Whether to use masked targets for training. We would like to evaluate models on "
         "possible generated responses.",
@@ -312,17 +341,11 @@ class Pythia(ModelArgs):
 class TextDataArgs:
     destination_dir: str = Arg(help="Path to the directory where the dataset will be created.")
     tokenizer_name: str = Arg(help="Name of the tokenizer. It will be used to load huggingface tokenizer.")
-    stage: str = Arg(
-        default="finetune",
-        metadata={"choices": ["finetune", "preference"]},
-        help="Stage of the experiment. It can be `finetune` or `preference`.",
-    )
     max_length: int = Arg(default=512, help="Maximum length of the input sequence.")
     max_prompt_length: int = Arg(default=256, help="Maximum length of the prompt sequence.")
     num_samples: Optional[int] = Arg(
         default=None, help="Number of samples to use from the dataset. If None, all samples will be used."
     )
-    mask_prompt: bool = Arg(default=True, help="Whether to mask prompt tokens.")
     ignore_index: int = Arg(
         default=-1,
         help="Ignore index for loss calculation. This value will be used for masking targets in cross-entropy loss "
@@ -338,7 +361,8 @@ class TextDataArgs:
     )
     shuffle: bool = Arg(default=True, help="Whether to shuffle the dataset.")
     seed: int = Arg(default=42, help="Seed for reproducibility")
-    validation_percentage: float = Arg(default=0.1, help="Validation split percentage for the dataset")
+    validation_split: float = Arg(default=0.1, help="Validation split percentage for the dataset")
+    reward_model_split: float = Arg(default=0.5, help="Reward model training split percentage for the dataset")
 
     def to_dict(self) -> dict:
         return {"data_args": asdict(self)}
