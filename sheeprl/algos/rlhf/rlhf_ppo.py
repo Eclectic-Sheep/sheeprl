@@ -10,7 +10,7 @@ from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from sheeprl.algos.rlhf.data import LeftPadCollate
+from sheeprl.algos.rlhf.collate import LeftPadCollate
 from sheeprl.algos.rlhf.metrics import PPOMetricManager
 from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, ppo_step
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE

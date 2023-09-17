@@ -17,7 +17,7 @@ if not _IS_TRANSFORMERS_AVAILABLE:
 from transformers import GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, SFTArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import SFTCollate
+from sheeprl.algos.rlhf.collate import SFTCollate
 from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.metrics import SFTMetricManager
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel
@@ -51,7 +51,7 @@ def evaluate(
     eval_iters = train_args.eval_iters
     for batch in val_dataloader:
         outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-        targets = batch["targets"] if train_args.use_targets else batch["input_ids"].detach().clone()
+        targets = batch["targets"] if train_args.use_masked_targets else batch["input_ids"].detach().clone()
         loss = finetune_loss(
             outputs=outputs,
             targets=targets,
@@ -215,7 +215,9 @@ def main():
         batch = next(data_iterator)
         input_ids = batch["input_ids"]  # type: ignore[index]
         attention_mask = batch["attention_mask"]  # type: ignore[index]
-        targets = batch["targets"] if train_args.use_targets else input_ids.detach().clone()  # type: ignore[index]
+        targets = (
+            batch["masked_targets"] if train_args.use_masked_targets else input_ids.detach().clone()
+        )  # type: ignore[index]
 
         num_tokens = input_ids.numel()
         padding_pct = 100 * (attention_mask == 0).sum().item() / num_tokens

@@ -11,7 +11,7 @@ from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from sheeprl.algos.rlhf.metrics import RMMetricManager
+from sheeprl.algos.rlhf.metrics import RMMetricManager, reward_accuracy
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
@@ -19,7 +19,7 @@ if not _IS_TRANSFORMERS_AVAILABLE:
 
 
 from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, RMArgs, TextDataArgs
-from sheeprl.algos.rlhf.data import RMCollate
+from sheeprl.algos.rlhf.collate import CompareCollate
 from sheeprl.algos.rlhf.loss import load_reward_loss
 from sheeprl.algos.rlhf.models import CriticModel, RewardModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
@@ -40,14 +40,6 @@ __all__ = ["main"]
 
 
 @torch.inference_mode()
-def accuracy(chosen_rewards: torch.Tensor, rejected_rewards: torch.Tensor):
-    tp = torch.count_nonzero(chosen_rewards > rejected_rewards)
-    total = chosen_rewards.shape[0]
-    acc = tp / total
-    return acc
-
-
-@torch.inference_mode()
 def evaluate(model: RewardModel, val_dataloader: DataLoader, loss: Callable, pad_token_id: int, eval_iters: int):
     model.eval()
     eval_counter = 0
@@ -64,7 +56,7 @@ def evaluate(model: RewardModel, val_dataloader: DataLoader, loss: Callable, pad
             pad_token_id=pad_token_id,
         )
         average_loss += val_loss.detach()
-        acc = accuracy(choosen_last_rewards, rejected_last_rewards)
+        acc = reward_accuracy(choosen_last_rewards, rejected_last_rewards)
         average_acc += acc
         eval_counter += 1
         if eval_iters is not None and eval_counter >= eval_iters:
@@ -140,7 +132,7 @@ def main():
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
 
     # Setup Dataloaders
-    collator = RMCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
+    collator = CompareCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
     train_data = torch.load(Path(train_args.data_dir) / "preference_train.pt")
     train_dataloader = DataLoader(
         train_data,
@@ -228,7 +220,7 @@ def main():
             metrics.info_choosen_reward.update(choosen_last_rewards.mean())
             metrics.info_rejected_reward.update(rejected_last_rewards.mean())
 
-            train_acc = accuracy(choosen_last_rewards, rejected_last_rewards)
+            train_acc = reward_accuracy(choosen_last_rewards, rejected_last_rewards)
             metrics.train_acc.update(train_acc)
 
         if k > 0 and (k % train_args.eval_interval == 0 or last_step):
