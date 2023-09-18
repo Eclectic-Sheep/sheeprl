@@ -201,7 +201,9 @@ class RewardAsObservationWrapper(gym.Wrapper):
     def __init__(self, env: Env) -> None:
         super().__init__(env)
         self._env = env
-        reward_range = self._env.reward_range if hasattr(self._env, "reward_range") else (-np.inf, np.inf)
+        reward_range = (
+            self._env.reward_range or (-np.inf, np.inf) if hasattr(self._env, "reward_range") else (-np.inf, np.inf)
+        )
         # The reward is assumed to be a scalar
         if isinstance(self._env.observation_space, gym.spaces.Dict):
             self.observation_space = gym.spaces.Dict(

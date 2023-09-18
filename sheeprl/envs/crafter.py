@@ -1,3 +1,8 @@
+from sheeprl.utils.imports import _IS_CRAFTER_AVAILABLE
+
+if not _IS_CRAFTER_AVAILABLE:
+    raise ModuleNotFoundError(_IS_CRAFTER_AVAILABLE)
+
 from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
 
 import crafter
@@ -14,7 +19,6 @@ class CrafterWrapper(core.Env):
             screen_size = (screen_size,) * 2
 
         self._env = crafter.Env(size=screen_size, seed=seed, reward=(id == "reward"))
-
         self.observation_space = spaces.Dict(
             {
                 "rgb": spaces.Box(
@@ -26,6 +30,7 @@ class CrafterWrapper(core.Env):
             }
         )
         self.action_space = spaces.Discrete(self._env.action_space.n)
+        self.reward_range = self._env.reward_range or (-np.inf, np.inf)
         self.observation_space.seed(seed)
         self.action_space.seed(seed)
 
@@ -36,7 +41,9 @@ class CrafterWrapper(core.Env):
         obs, reward, done, info = self._env.step(action)
         return self._convert_obs(obs), reward, done, False, info
 
-    def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any, Dict[str, Any]]:
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Dict[str, Any]]:
         obs = self._env.reset()
         return self._convert_obs(obs), {}
 
@@ -44,5 +51,4 @@ class CrafterWrapper(core.Env):
         return self._env.render()
 
     def close(self) -> None:
-        self._env.close()
         return super().close()
