@@ -8,7 +8,7 @@ frame_stack: 4
 sync_env: True
 
 env:
-  _target_: sheeprl.envs.diambra_wrapper.DiambraWrapper
+  _target_: sheeprl.envs.diambra.DiambraWrapper
   id: ${env.id}
   action_space: discrete
   screen_size: ${env.screen_size}

@@ -12,7 +12,7 @@ from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper,
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
 
 if _IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE:
-    from sheeprl.envs.diambra_wrapper import DiambraWrapper
+    from sheeprl.envs.diambra import DiambraWrapper
 if _IS_DMC_AVAILABLE:
     pass
 
