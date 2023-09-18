@@ -307,7 +307,7 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-# @pytest.mark.timeout(60)
+@pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
