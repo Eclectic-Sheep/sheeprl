@@ -12,8 +12,8 @@ horizon: 15
 
 # Training recipe
 learning_starts: 65536
-pretrain_steps: 1
-gradient_steps: 1
+per_rank_pretrain_steps: 1
+per_rank_gradient_steps: 1
 train_every: 16
 
 # Model related parameters

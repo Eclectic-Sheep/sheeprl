@@ -1,7 +1,6 @@
 import copy
 import os
 import pathlib
-import time
 import warnings
 from typing import Dict
 
@@ -18,7 +17,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
 from torch.utils.data import BatchSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
@@ -29,7 +28,8 @@ from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import compute_lambda_values, polynomial_decay, print_config
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -212,7 +212,7 @@ def train(
         )
     world_optimizer.step()
     aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-    aggregator.update("Loss/reconstruction_loss", rec_loss.detach())
+    aggregator.update("Loss/world_model_loss", rec_loss.detach())
     aggregator.update("Loss/observation_loss", observation_loss.detach())
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
@@ -359,6 +359,8 @@ def train(
 @register_algorithm()
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
+
     # These arguments cannot be changed
     cfg.env.screen_size = 64
     cfg.env.frame_stack = 1
@@ -367,8 +369,9 @@ def main(cfg: DictConfig):
     fabric = Fabric(callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
-    rank = fabric.global_rank
     device = fabric.device
+    rank = fabric.global_rank
+    world_size = fabric.world_size
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
@@ -379,7 +382,7 @@ def main(cfg: DictConfig):
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
         cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
         cfg.checkpoint.resume_from = str(ckpt_path)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.per_rank_batch_size = state["batch_size"] // world_size
         cfg.root_dir = root_dir
         cfg.run_name = f"resume_from_checkpoint_{run_name}"
 
@@ -479,32 +482,29 @@ def main(cfg: DictConfig):
     )
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/actor": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/critic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
-        )
-    aggregator.to(fabric.device)
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/actor": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/critic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+        }
+    ).to(fabric.device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2
+    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2
     rb = AsyncReplayBuffer(
         buffer_size,
         cfg.env.num_envs,
@@ -514,28 +514,29 @@ def main(cfg: DictConfig):
         sequential=True,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
-        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
+        if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
         elif isinstance(state["rb"], AsyncReplayBuffer):
             rb = state["rb"]
         else:
-            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
+            raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
     expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
-    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    train_step = 0
+    last_train = 0
+    start_step = state["update"] // world_size if cfg.checkpoint.resume_from else 1
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    start_time = time.perf_counter()
-    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
+    policy_steps_per_update = int(cfg.env.num_envs * world_size)
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.gradient_steps * fabric.world_size)
+    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
     if cfg.checkpoint.resume_from:
         player.expl_amount = polynomial_decay(
             expl_decay_steps,
@@ -547,14 +548,14 @@ def main(cfg: DictConfig):
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the metrics will be logged at the nearest greater multiple of the "
             "policy_steps_per_update value."
         )
     if cfg.checkpoint.every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
             "policy_steps_per_update value."
@@ -576,47 +577,50 @@ def main(cfg: DictConfig):
     player.init_states()
 
     for update in range(start_step, num_updates + 1):
-        # Sample an action given the observation received by the environment
-        if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
-            real_actions = actions = np.array(envs.action_space.sample())
-            if not is_continuous:
-                actions = np.concatenate(
-                    [
-                        F.one_hot(torch.tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                    ],
-                    axis=-1,
-                )
-        else:
-            with torch.no_grad():
-                preprocessed_obs = {}
-                for k, v in obs.items():
-                    if k in cfg.cnn_keys.encoder:
-                        preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
-                    else:
-                        preprocessed_obs[k] = v[None, ...].to(device)
-                mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
-                if len(mask) == 0:
-                    mask = None
-                real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
-                actions = torch.cat(actions, -1).cpu().numpy()
-                if is_continuous:
-                    real_actions = torch.cat(real_actions, -1).cpu().numpy()
-                else:
-                    real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
-        o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-        dones = np.logical_or(dones, truncated)
+        policy_step += cfg.env.num_envs * world_size
 
-        policy_step += cfg.env.num_envs * fabric.world_size
+        # Measure environment interaction time: this considers both the model forward
+        # to get the action given the observation and the time taken into the environment
+        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            # Sample an action given the observation received by the environment
+            if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
+                real_actions = actions = np.array(envs.action_space.sample())
+                if not is_continuous:
+                    actions = np.concatenate(
+                        [
+                            F.one_hot(torch.tensor(act), act_dim).numpy()
+                            for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
+                        ],
+                        axis=-1,
+                    )
+            else:
+                with torch.no_grad():
+                    preprocessed_obs = {}
+                    for k, v in obs.items():
+                        if k in cfg.cnn_keys.encoder:
+                            preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
+                        else:
+                            preprocessed_obs[k] = v[None, ...].to(device)
+                    mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+                    if len(mask) == 0:
+                        mask = None
+                    real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
+                    actions = torch.cat(actions, -1).cpu().numpy()
+                    if is_continuous:
+                        real_actions = torch.cat(real_actions, -1).cpu().numpy()
+                    else:
+                        real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
+            o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
+            dones = np.logical_or(dones, truncated)
 
         if "final_info" in infos:
-            for i, agent_final_info in enumerate(infos["final_info"]):
-                if agent_final_info is not None and "episode" in agent_final_info:
-                    fabric.print(
-                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                    )
-                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+            for i, agent_ep_info in enumerate(infos["final_info"]):
+                if agent_ep_info is not None:
+                    ep_rew = agent_ep_info["episode"]["r"]
+                    ep_len = agent_ep_info["episode"]["l"]
+                    aggregator.update("Rewards/rew_avg", ep_rew)
+                    aggregator.update("Game/ep_len_avg", ep_len)
+                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
         real_next_obs = copy.deepcopy(o)
@@ -670,22 +674,25 @@ def main(cfg: DictConfig):
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.algo.gradient_steps,
+                n_samples=cfg.algo.per_rank_gradient_steps,
             ).to(device)
             distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
-            for i in distributed_sampler:
-                train(
-                    fabric,
-                    world_model,
-                    actor,
-                    critic,
-                    world_optimizer,
-                    actor_optimizer,
-                    critic_optimizer,
-                    local_data[i].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
-                    aggregator,
-                    cfg,
-                )
+            # Start training
+            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+                for i in distributed_sampler:
+                    train(
+                        fabric,
+                        world_model,
+                        actor,
+                        critic,
+                        world_optimizer,
+                        actor_optimizer,
+                        critic_optimizer,
+                        local_data[i].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
+                        aggregator,
+                        cfg,
+                    )
+                train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
@@ -696,11 +703,32 @@ def main(cfg: DictConfig):
                     max_decay_steps=max_step_expl_decay,
                 )
             aggregator.update("Params/exploration_amout", player.expl_amount)
-        aggregator.update("Time/step_per_second", int(policy_step / (time.perf_counter() - start_time)))
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = policy_step
-            fabric.log_dict(aggregator.compute(), policy_step)
+
+        # Log metrics
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+            # Sync distributed metrics
+            metrics_dict = aggregator.compute()
+            fabric.log_dict(metrics_dict, policy_step)
             aggregator.reset()
+
+            # Sync distributed timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (train_step - last_train) / timer_metrics["Time/train_time"],
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                / timer_metrics["Time/env_interaction_time"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_log = policy_step
+            last_train = train_step
 
         # Checkpoint Model
         if (
@@ -717,8 +745,8 @@ def main(cfg: DictConfig):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
-                "update": update * fabric.world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "update": update * world_size,
+                "batch_size": cfg.per_rank_batch_size * world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }

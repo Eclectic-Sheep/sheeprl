@@ -46,6 +46,7 @@ class CNNEncoder(nn.Module):
             Defaults to True.
         activation (ModuleType, optional): the activation function.
             Defaults to nn.SiLU.
+        stages (int, optional): how many stages for the CNN.
     """
 
     def __init__(
@@ -56,6 +57,7 @@ class CNNEncoder(nn.Module):
         channels_multiplier: int,
         layer_norm: bool = True,
         activation: ModuleType = nn.SiLU,
+        stages: int = 4,
     ) -> None:
         super().__init__()
         self.keys = keys
@@ -63,12 +65,12 @@ class CNNEncoder(nn.Module):
         self.model = nn.Sequential(
             CNN(
                 input_channels=self.input_dim[0],
-                hidden_channels=(torch.tensor([1, 2, 4, 8]) * channels_multiplier).tolist(),
+                hidden_channels=(torch.tensor([2**i for i in range(stages)]) * channels_multiplier).tolist(),
                 cnn_layer=nn.Conv2d,
                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
                 activation=activation,
-                norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                norm_args=[{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(4)]
+                norm_layer=[LayerNormChannelLast for _ in range(stages)] if layer_norm else None,
+                norm_args=[{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(stages)]
                 if layer_norm
                 else None,
             ),
@@ -156,6 +158,7 @@ class CNNDecoder(nn.Module):
             Defaults to nn.SiLU.
         layer_norm (bool, optional): whether to apply the layer normalization.
             Defaults to True.
+        stages (int): how many stages in the CNN decoder.
     """
 
     def __init__(
@@ -168,6 +171,7 @@ class CNNDecoder(nn.Module):
         image_size: Tuple[int, int],
         activation: nn.Module = nn.SiLU,
         layer_norm: bool = True,
+        stages: int = 4,
     ) -> None:
         super().__init__()
         self.keys = keys
@@ -179,19 +183,21 @@ class CNNDecoder(nn.Module):
             nn.Linear(latent_state_size, cnn_encoder_output_dim),
             nn.Unflatten(1, (-1, 4, 4)),
             DeCNN(
-                input_channels=8 * channels_multiplier,
-                hidden_channels=(torch.tensor([4, 2, 1]) * channels_multiplier).tolist() + [self.output_dim[0]],
+                input_channels=(2 ** (stages - 1)) * channels_multiplier,
+                hidden_channels=(
+                    torch.tensor([2**i for i in reversed(range(stages - 1))]) * channels_multiplier
+                ).tolist()
+                + [self.output_dim[0]],
                 cnn_layer=nn.ConvTranspose2d,
                 layer_args=[
-                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
-                    {"kernel_size": 4, "stride": 2, "padding": 1},
-                ],
-                activation=[activation, activation, activation, None],
-                norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm} for _ in range(stages - 1)
+                ]
+                + [{"kernel_size": 4, "stride": 2, "padding": 1}],
+                activation=[activation for _ in range(stages - 1)] + [None],
+                norm_layer=[LayerNormChannelLast for _ in range(stages - 1)] + [None] if layer_norm else None,
                 norm_args=[
-                    {"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier, "eps": 1e-3} for i in range(3)
+                    {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, "eps": 1e-3}
+                    for i in range(stages - 1)
                 ]
                 + [None]
                 if layer_norm
@@ -850,6 +856,7 @@ def build_models(
     latent_state_size = stochastic_size + recurrent_state_size
 
     # Define models
+    cnn_stages = int(np.log2(cfg.env.screen_size) - np.log2(4))
     cnn_encoder = (
         CNNEncoder(
             keys=cfg.cnn_keys.encoder,
@@ -858,6 +865,7 @@ def build_models(
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=world_model_cfg.encoder.layer_norm,
             activation=eval(world_model_cfg.encoder.cnn_act),
+            stages=cnn_stages,
         )
         if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
         else None
@@ -918,6 +926,7 @@ def build_models(
             image_size=obs_space[cfg.cnn_keys.decoder[0]].shape[-2:],
             activation=eval(world_model_cfg.observation_model.cnn_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
+            stages=cnn_stages,
         )
         if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
         else None
