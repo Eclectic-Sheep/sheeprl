@@ -5,6 +5,10 @@ defaults:
   - _self_
   - env: default.yaml
 
+hydra:
+  run:
+    dir: logs/envs/${env.id}/${agent}
+
 seed: 42
 exp_name: "default"
 root_dir: $env_logs
