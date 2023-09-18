@@ -1,4 +1,5 @@
 import os
+import pathlib
 import warnings
 from math import prod
 
@@ -129,6 +130,18 @@ def main(fabric: Fabric, cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
+        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg.checkpoint.resume_from = str(ckpt_path)
+        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.root_dir = root_dir
+        cfg.run_name = run_name
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -165,23 +178,19 @@ def main(fabric: Fabric, cfg: DictConfig):
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
     obs_dim = prod(envs.single_observation_space.shape)
-    actor = fabric.setup_module(
-        SACActor(
-            observation_dim=obs_dim,
-            action_dim=act_dim,
-            hidden_size=cfg.algo.actor.hidden_size,
-            action_low=envs.single_action_space.low,
-            action_high=envs.single_action_space.high,
-        )
+    actor = SACActor(
+        observation_dim=obs_dim,
+        action_dim=act_dim,
+        hidden_size=cfg.algo.actor.hidden_size,
+        action_low=envs.single_action_space.low,
+        action_high=envs.single_action_space.high,
     )
     critics = [
-        fabric.setup_module(
-            DROQCritic(
-                observation_dim=obs_dim + act_dim,
-                hidden_size=cfg.algo.critic.hidden_size,
-                num_critics=1,
-                dropout=cfg.algo.critic.dropout,
-            )
+        DROQCritic(
+            observation_dim=obs_dim + act_dim,
+            hidden_size=cfg.algo.critic.hidden_size,
+            num_critics=1,
+            dropout=cfg.algo.critic.dropout,
         )
         for _ in range(cfg.algo.critic.n)
     ]
@@ -189,12 +198,21 @@ def main(fabric: Fabric, cfg: DictConfig):
     agent = DROQAgent(
         actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
     )
+    if cfg.checkpoint.resume_from:
+        agent.load_state_dict(state["agent"])
+    agent.actor = fabric.setup_module(agent.actor)
+    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
 
     # Optimizers
+    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters())
+    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters())
+    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha])
+    if cfg.checkpoint.resume_from:
+        qf_optimizer.load_state_dict(state["qf_optimizer"])
+        actor_optimizer.load_state_dict(state["actor_optimizer"])
+        alpha_optimizer.load_state_dict(state["alpha_optimizer"])
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
-        hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters()),
-        hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters()),
-        hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha]),
+        qf_optimizer, actor_optimizer, alpha_optimizer
     )
 
     # Metrics
@@ -217,17 +235,27 @@ def main(fabric: Fabric, cfg: DictConfig):
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
+    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
+        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
+            rb = state["rb"][fabric.global_rank]
+        elif isinstance(state["rb"], ReplayBuffer):
+            rb = state["rb"]
+        else:
+            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
-    last_log = 0
     last_train = 0
     train_step = 0
-    policy_step = 0
-    last_checkpoint = 0
+    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
+        learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -249,14 +277,15 @@ def main(fabric: Fabric, cfg: DictConfig):
         # Get the first environment observation and start the optimization
         obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32)  # [N_envs, N_obs]
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             with torch.no_grad():
-                actions, _ = actor.module(obs)
+                # Sample an action given the observation received by the environment
+                actions, _ = agent.actor.module(obs)
                 actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             dones = np.logical_or(dones, truncated)
@@ -332,12 +361,16 @@ def main(fabric: Fabric, cfg: DictConfig):
             or cfg.dry_run
             or update == num_updates
         ):
+            last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
-                "update": update,
+                "update": update * fabric.world_size,
+                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call(
@@ -360,4 +393,4 @@ def main(fabric: Fabric, cfg: DictConfig):
             mask_velocities=False,
             vector_env_idx=0,
         )()
-        test(actor.module, test_env, fabric, cfg)
+        test(agent.actor.module, test_env, fabric, cfg)

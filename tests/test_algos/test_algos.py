@@ -98,7 +98,16 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
     with mock.patch.object(sys, "argv", args):
         run()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+    keys = {
+        "agent",
+        "qf_optimizer",
+        "actor_optimizer",
+        "alpha_optimizer",
+        "update",
+        "last_log",
+        "last_checkpoint",
+        "batch_size",
+    }
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -128,7 +137,16 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
     with mock.patch.object(sys, "argv", args):
         run()
 
-    keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+    keys = {
+        "agent",
+        "qf_optimizer",
+        "actor_optimizer",
+        "alpha_optimizer",
+        "update",
+        "last_log",
+        "last_checkpoint",
+        "batch_size",
+    }
     if checkpoint_buffer:
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -177,6 +195,8 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "decoder_optimizer",
         "update",
         "batch_size",
+        "last_log",
+        "last_checkpoint",
     }
     if checkpoint_buffer:
         keys.add("rb")
@@ -209,7 +229,16 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
             run()
 
     if os.environ["LT_DEVICES"] != "1":
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "update"}
+        keys = {
+            "agent",
+            "qf_optimizer",
+            "actor_optimizer",
+            "alpha_optimizer",
+            "update",
+            "last_log",
+            "last_checkpoint",
+            "batch_size",
+        }
         if checkpoint_buffer:
             keys.add("rb")
         check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
@@ -238,7 +267,10 @@ def test_ppo(standard_args, start_time, env_id):
     with mock.patch.object(sys, "argv", args):
         run()
 
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    check_checkpoint(
+        Path(os.path.join("logs", "runs", ckpt_path)),
+        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
+    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -269,12 +301,13 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
 
     if os.environ["LT_DEVICES"] != "1":
         check_checkpoint(
-            Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"}
+            Path(os.path.join("logs", "runs", ckpt_path)),
+            {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
         )
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-# @pytest.mark.timeout(60)
+@pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
@@ -293,7 +326,10 @@ def test_ppo_recurrent(standard_args, start_time):
     with mock.patch.object(sys, "argv", args):
         run()
 
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), {"agent", "optimizer", "update_step", "scheduler"})
+    check_checkpoint(
+        Path(os.path.join("logs", "runs", ckpt_path)),
+        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
+    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 

@@ -1,5 +1,7 @@
 import copy
 import os
+import pathlib
+import time
 import warnings
 from math import prod
 from typing import Optional, Union
@@ -145,6 +147,18 @@ def main(fabric: Fabric, cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        root_dir = cfg.root_dir
+        run_name = cfg.run_name
+        state = fabric.load(cfg.checkpoint.resume_from)
+        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
+        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg.checkpoint.resume_from = str(ckpt_path)
+        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.root_dir = root_dir
+        cfg.run_name = run_name
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -255,13 +269,11 @@ def main(fabric: Fabric, cfg: DictConfig):
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-    encoder = fabric.setup_module(encoder)
-    decoder = fabric.setup_module(decoder)
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
     actor = SACAEContinuousActor(
-        encoder=copy.deepcopy(encoder.module),
+        encoder=copy.deepcopy(encoder),
         action_dim=act_dim,
         hidden_size=cfg.algo.actor.hidden_size,
         action_low=envs.single_action_space.low,
@@ -273,9 +285,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         )
         for _ in range(cfg.algo.critic.n)
     ]
-    critic = SACAECritic(encoder=encoder.module, qfs=qfs)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+    critic = SACAECritic(encoder=encoder, qfs=qfs)
 
     # The agent will tied convolutional and linear weights between the encoder actor and critic
     agent = SACAEAgent(
@@ -289,13 +299,29 @@ def main(fabric: Fabric, cfg: DictConfig):
     )
 
     # Optimizers
+    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters())
+    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters())
+    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha])
+    encoder_optimizer = hydra.utils.instantiate(cfg.algo.encoder.optimizer, params=encoder.parameters())
+    decoder_optimizer = hydra.utils.instantiate(cfg.algo.decoder.optimizer, params=decoder.parameters())
+
+    if cfg.checkpoint.resume_from:
+        agent.load_state_dict(state["agent"])
+        encoder.load_state_dict(state["encoder"])
+        decoder.load_state_dict(state["decoder"])
+        qf_optimizer.load_state_dict(state["qf_optimizer"])
+        actor_optimizer.load_state_dict(state["actor_optimizer"])
+        alpha_optimizer.load_state_dict(state["alpha_optimizer"])
+        encoder_optimizer.load_state_dict(state["encoder_optimizer"])
+        decoder_optimizer.load_state_dict(state["decoder_optimizer"])
+
+    encoder = fabric.setup_module(encoder)
+    decoder = fabric.setup_module(decoder)
+    agent.actor = fabric.setup_module(agent.actor)
+    agent.critic = fabric.setup_module(agent.critic)
 
     qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
-        hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters()),
-        hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters()),
-        hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha]),
-        hydra.utils.instantiate(cfg.algo.encoder.optimizer, params=encoder.parameters()),
-        hydra.utils.instantiate(cfg.algo.decoder.optimizer, params=decoder.parameters()),
+        qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer
     )
 
     # Metrics
@@ -320,17 +346,28 @@ def main(fabric: Fabric, cfg: DictConfig):
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=cfg.cnn_keys.encoder + cfg.mlp_keys.encoder,
     )
+    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
+        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
+            rb = state["rb"][fabric.global_rank]
+        elif isinstance(state["rb"], ReplayBuffer):
+            rb = state["rb"]
+        else:
+            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
 
     # Global variables
-    last_log = 0
     last_train = 0
     train_step = 0
-    policy_step = 0
-    last_checkpoint = 0
+    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
+    time.time()
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
+        learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -360,7 +397,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
 
         # Measure environment interaction time: this considers both the model forward
@@ -371,7 +408,7 @@ def main(fabric: Fabric, cfg: DictConfig):
             else:
                 with torch.no_grad():
                     normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
-                    actions, _ = actor.module(normalized_obs)
+                    actions, _ = agent.actor.module(normalized_obs)
                     actions = actions.cpu().numpy()
             o, rewards, dones, truncated, infos = envs.step(actions)
             dones = np.logical_or(dones, truncated)
@@ -499,7 +536,7 @@ def main(fabric: Fabric, cfg: DictConfig):
 
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
-            last_checkpoint >= policy_step
+            last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "encoder": encoder.state_dict(),
@@ -511,6 +548,8 @@ def main(fabric: Fabric, cfg: DictConfig):
                 "decoder_optimizer": decoder_optimizer.state_dict(),
                 "update": update * fabric.world_size,
                 "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call(
@@ -524,4 +563,4 @@ def main(fabric: Fabric, cfg: DictConfig):
     envs.close()
     if fabric.is_global_zero:
         test_env = make_dict_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
-        test_sac_ae(actor.module, test_env, fabric, cfg)
+        test_sac_ae(agent.actor.module, test_env, fabric, cfg)
