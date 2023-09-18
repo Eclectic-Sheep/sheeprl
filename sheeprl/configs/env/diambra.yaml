@@ -2,12 +2,14 @@ defaults:
   - default
   - _self_
 
+# Override from `default` config
 id: doapp
-action_repeat: 1
 frame_stack: 4
 sync_env: True
+action_repeat: 1
 
-env:
+# Wrapper to be instantiated
+wrapper:
   _target_: sheeprl.envs.diambra.DiambraWrapper
   id: ${env.id}
   action_space: discrete

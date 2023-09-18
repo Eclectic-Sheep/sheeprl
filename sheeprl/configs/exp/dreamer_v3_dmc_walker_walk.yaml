@@ -20,7 +20,7 @@ env:
   num_envs: 1
   max_episode_steps: 1000
   id: walker_walk
-  env:
+  wrapper:
     from_vectors: True
     from_pixels: True
 

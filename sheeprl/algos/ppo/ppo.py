@@ -8,7 +8,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.wrappers import _FabricModule
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict, make_tensordict
@@ -21,13 +20,12 @@ from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, print_config
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -106,11 +104,8 @@ def train(
 
 
 @register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    print_config(cfg)
-
-    if "minedojo" in cfg.env.env._target_.lower():
+def main(fabric: Fabric, cfg: DictConfig):
+    if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO agent, since it does not take "
             "into consideration the action masks provided by the environment, but needed "
@@ -122,9 +117,6 @@ def main(cfg: DictConfig):
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
 
     # Initialize Fabric
-    fabric = Fabric(callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -133,7 +125,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "ppo")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -432,7 +424,3 @@ def main(cfg: DictConfig):
             vector_env_idx=0,
         )()
         test(agent.module, test_env, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()
