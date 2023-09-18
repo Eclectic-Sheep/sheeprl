@@ -446,7 +446,7 @@ def main(fabric: Fabric, cfg: DictConfig):
             "`python sheeprl.py exp=sac_decoupled fabric.devices=2 ...`"
         )
 
-    if "minedojo" in cfg.env.env._target_.lower():
+    if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO agent, since it does not take "
             "into consideration the action masks provided by the environment, but needed "

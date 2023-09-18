@@ -81,11 +81,11 @@ def make_dict_env(
             env_spec = ""
 
         instantiate_kwargs = {}
-        if "seed" in cfg.env.env:
+        if "seed" in cfg.env.wrapper:
             instantiate_kwargs["seed"] = seed
-        if "rank" in cfg.env.env:
+        if "rank" in cfg.env.wrapper:
             instantiate_kwargs["rank"] = rank + vector_env_idx
-        env = hydra.utils.instantiate(cfg.env.env, **instantiate_kwargs)
+        env = hydra.utils.instantiate(cfg.env.wrapper, **instantiate_kwargs)
 
         # action repeat
         if (

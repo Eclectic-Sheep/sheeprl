@@ -14,7 +14,7 @@ env:
   id: doapp
   num_envs: 8
   frame_stack: 1
-  env:
+  wrapper:
     diambra_settings:
       characters: Kasumi
 
