@@ -123,7 +123,9 @@ def main(cfg: DictConfig):
         )
 
     if cfg.buffer.share_data:
-        warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
+        warnings.warn(
+            "The script has been called with `buffer.share_data=True`: with recurrent PPO only gradients are shared"
+        )
 
     # Initialize Fabric
     fabric = Fabric(callbacks=[CheckpointCallback()])
@@ -175,10 +177,16 @@ def main(cfg: DictConfig):
             for i in range(cfg.env.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported by the PPO recurrent agent")
+    action_space = envs.single_action_space
+    observation_space = envs.single_observation_space
+    if not isinstance(action_space, gym.spaces.Box):
+        raise ValueError("Only continuous action space is supported for the PPO Recurrent agent")
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if len(cfg.mlp_keys.encoder):
+        raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
     for k in cfg.mlp_keys.encoder:
-        if len(envs.single_observation_space[k].shape) > 1:
+        if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the PPO "
                 "Recurrent agent. "
@@ -186,10 +194,10 @@ def main(cfg: DictConfig):
             )
 
     # Define the agent and the optimizer
-    obs_dim = sum([prod(envs.single_observation_space[k].shape) for k in cfg.mlp_keys.encoder])
+    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
     agent = RecurrentPPOAgent(
         observation_dim=obs_dim,
-        action_dim=envs.single_action_space.n,
+        action_dim=action_space.n,
         lstm_hidden_size=cfg.algo.lstm.hidden_size,
         actor_hidden_size=cfg.algo.actor.dense_units,
         actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,

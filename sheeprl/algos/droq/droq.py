@@ -187,24 +187,30 @@ def main(cfg: DictConfig):
             for i in range(cfg.env.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Box):
+    action_space = envs.single_action_space
+    observation_space = envs.single_observation_space
+    if not isinstance(action_space, gym.spaces.Box):
         raise ValueError("Only continuous action space is supported for the DroQ agent")
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if len(cfg.mlp_keys.encoder):
+        raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
     for k in cfg.mlp_keys.encoder:
-        if len(envs.single_observation_space[k].shape) > 1:
+        if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the DroQ agent. "
                 f"Provided environment: {cfg.env.id}"
             )
 
     # Define the agent and the optimizer and setup them with Fabric
-    act_dim = prod(envs.single_action_space.shape)
-    obs_dim = sum([prod(envs.single_observation_space[k].shape) for k in cfg.mlp_keys.encoder])
+    act_dim = prod(action_space.shape)
+    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
         hidden_size=cfg.algo.actor.hidden_size,
-        action_low=envs.single_action_space.low,
-        action_high=envs.single_action_space.high,
+        action_low=action_space.low,
+        action_high=action_space.high,
     )
     critics = [
         DROQCritic(

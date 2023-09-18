@@ -45,7 +45,7 @@ It is important to know the observations the environment provides, for instance,
 For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-lightning run model sheeprl.py ppo --env_id=dmc_walker_walk "cnn_keys.encoder=[rgb]" env.frame_stack=3
+lightning run model sheeprl.py ppo exp=ppo env.id=walker_walk cnn_keys.encoder=[rgb] env.frame_stack=3
 ```
 
 #### How to choose the correct keys

@@ -422,8 +422,8 @@ def main(cfg: DictConfig):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
         raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` "
-            "or `--mlp_keys state` "
+            "You should specify at least one CNN keys or MLP keys from the cli: `cnn_keys.encoder=[rgb]` "
+            "or `mlp_keys.encoder=[state]` "
         )
     if (
         len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
