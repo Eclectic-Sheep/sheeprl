@@ -148,7 +148,7 @@ def main(cfg: DictConfig):
         raise ValueError("Only continuous action space is supported for the SAC agent")
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if len(cfg.mlp_keys.encoder):
+    if len(cfg.mlp_keys.encoder) == 0:
         raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
     for k in cfg.mlp_keys.encoder:
         if len(observation_space[k].shape) > 1:
