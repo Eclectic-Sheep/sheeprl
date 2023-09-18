@@ -12,9 +12,9 @@ from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper,
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
 
 if _IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE:
-    from sheeprl.envs.diambra_wrapper import DiambraWrapper
+    from sheeprl.envs.diambra import DiambraWrapper
 if _IS_DMC_AVAILABLE:
-    from sheeprl.envs.dmc import DMCWrapper
+    pass
 
 
 def make_env(
@@ -55,14 +55,11 @@ def make_env(
         if "rank" in cfg.env.env:
             instantiate_kwargs["rank"] = rank + vector_env_idx
         env = hydra.utils.instantiate(cfg.env.env, **instantiate_kwargs)
-        if "mujoco" in env_spec:
-            env.frame_skip = 0
 
         # action repeat
         if (
             cfg.env.action_repeat > 1
             and "atari" not in env_spec
-            and (not _IS_DMC_AVAILABLE or not isinstance(env, DMCWrapper))
             and (not (_IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE) or not isinstance(env, DiambraWrapper))
         ):
             env = ActionRepeat(env, cfg.env.action_repeat)
@@ -123,41 +120,38 @@ def make_env(
 
         def transform_obs(obs: Dict[str, Any]):
             for k in cnn_keys:
-                shape = obs[k].shape
+                current_obs = obs[k]
+                shape = current_obs.shape
                 is_3d = len(shape) == 3
                 is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
                 channel_first = not is_3d or shape[0] in (1, 3)
 
                 # to 3D image
                 if not is_3d:
-                    obs.update({k: np.expand_dims(obs[k], axis=0)})
+                    current_obs = np.expand_dims(current_obs, axis=0)
 
                 # channel last (opencv needs it)
                 if channel_first:
-                    obs.update({k: obs[k].transpose(1, 2, 0)})
+                    current_obs = np.transpose(current_obs, (1, 2, 0))
 
                 # resize
-                if obs[k].shape[:-1] != (cfg.env.screen_size, cfg.env.screen_size):
-                    obs.update(
-                        {
-                            k: cv2.resize(
-                                obs[k], (cfg.env.screen_size, cfg.env.screen_size), interpolation=cv2.INTER_AREA
-                            )
-                        }
+                if current_obs.shape[:-1] != (cfg.env.screen_size, cfg.env.screen_size):
+                    current_obs = cv2.resize(
+                        current_obs, (cfg.env.screen_size, cfg.env.screen_size), interpolation=cv2.INTER_AREA
                     )
 
                 # to grayscale
                 if cfg.env.grayscale and not is_grayscale:
-                    obs.update({k: cv2.cvtColor(obs[k], cv2.COLOR_RGB2GRAY)})
+                    current_obs = cv2.cvtColor(current_obs, cv2.COLOR_RGB2GRAY)
 
                 # back to 3D
-                if len(obs[k].shape) == 2:
-                    obs.update({k: np.expand_dims(obs[k], axis=-1)})
+                if len(current_obs.shape) == 2:
+                    current_obs = np.expand_dims(current_obs, axis=-1)
                     if not cfg.env.grayscale:
-                        obs.update({k: np.repeat(obs[k], 3, axis=-1)})
+                        current_obs = np.repeat(current_obs, 3, axis=-1)
 
                 # channel first (PyTorch default)
-                obs.update({k: obs[k].transpose(2, 0, 1)})
+                obs[k] = current_obs.transpose(2, 0, 1)
 
             return obs
 
