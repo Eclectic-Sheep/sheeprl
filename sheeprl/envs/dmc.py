@@ -5,7 +5,7 @@ from sheeprl.utils.imports import _IS_DMC_AVAILABLE
 if not _IS_DMC_AVAILABLE:
     raise ModuleNotFoundError(_IS_DMC_AVAILABLE)
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 
 import numpy as np
 from dm_control import suite
@@ -13,7 +13,7 @@ from dm_env import specs
 from gymnasium import core, spaces
 
 
-def _spec_to_box(spec, dtype) -> spaces.Space:
+def _spec_to_box(spec, dtype) -> spaces.Box:
     def extract_min_max(s):
         assert s.dtype == np.float64 or s.dtype == np.float32
         dim = int(np.prod(s.shape))
@@ -54,7 +54,6 @@ class DMCWrapper(core.Env):
         height: int = 84,
         width: int = 84,
         camera_id: int = 0,
-        frame_skip: int = 1,
         task_kwargs: Optional[Dict[Any, Any]] = None,
         environment_kwargs: Optional[Dict[Any, Any]] = None,
         channels_first: bool = True,
@@ -93,9 +92,6 @@ class DMCWrapper(core.Env):
                 Defaults to 84.
             camera_id (int, optional): the id of the camera from where to take the image observation.
                 Defaults to 0.
-            frame_skip (int, optional): action repeat value. Given an action, `frame_skip` steps will be performed
-                in the environment with the given action.
-                Defaults to 1.
             task_kwargs (Optional[Dict[Any, Any]], optional): Optional dict of keyword arguments for the task.
                 Defaults to None.
             environment_kwargs (Optional[Dict[Any, Any]], optional): Optional dict specifying
@@ -121,7 +117,6 @@ class DMCWrapper(core.Env):
         self._height = height
         self._width = width
         self._camera_id = camera_id
-        self._frame_skip = frame_skip
         self._channels_first = channels_first
 
         # create task
@@ -136,6 +131,10 @@ class DMCWrapper(core.Env):
         # true and normalized action spaces
         self._true_action_space = _spec_to_box([self._env.action_spec()], np.float32)
         self._norm_action_space = spaces.Box(low=-1.0, high=1.0, shape=self._true_action_space.shape, dtype=np.float32)
+
+        # set the reward range
+        reward_space = _spec_to_box([self._env.reward_spec()], np.float32)
+        self._reward_range = (reward_space.low.item(), reward_space.high.item())
 
         # create observation space
         if from_pixels:
@@ -163,7 +162,7 @@ class DMCWrapper(core.Env):
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-    def _get_obs(self, time_step):
+    def _get_obs(self, time_step) -> Union[Dict[str, np.ndarray], np.ndarray]:
         if self._from_pixels:
             rgb_obs = self.render(camera_id=self._camera_id)
             if self._channels_first:
@@ -177,7 +176,7 @@ class DMCWrapper(core.Env):
         else:
             return rgb_obs
 
-    def _convert_action(self, action):
+    def _convert_action(self, action) -> np.ndarray:
         action = action.astype(np.float64)
         true_delta = self._true_action_space.high - self._true_action_space.low
         norm_delta = self._norm_action_space.high - self._norm_action_space.low
@@ -187,20 +186,20 @@ class DMCWrapper(core.Env):
         return action
 
     @property
-    def observation_space(self):
+    def observation_space(self) -> Union[spaces.Dict, spaces.Box]:
         return self._observation_space
 
     @property
-    def state_space(self):
+    def state_space(self) -> spaces.Box:
         return self._state_space
 
     @property
-    def action_space(self):
+    def action_space(self) -> spaces.Box:
         return self._norm_action_space
 
     @property
-    def reward_range(self):
-        return 0, self._frame_skip
+    def reward_range(self) -> Tuple[float, float]:
+        return self._reward_range
 
     @property
     def render_mode(self) -> str:
@@ -211,33 +210,31 @@ class DMCWrapper(core.Env):
         self._norm_action_space.seed(seed)
         self._observation_space.seed(seed)
 
-    def step(self, action):
+    def step(
+        self, action: Any
+    ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], SupportsFloat, bool, bool, Dict[str, Any]]:
         assert self._norm_action_space.contains(action)
         action = self._convert_action(action)
         assert self._true_action_space.contains(action)
-        reward = 0
-        extra = {"internal_state": self._env.physics.get_state().copy()}
-
-        for _ in range(self._frame_skip):
-            time_step = self._env.step(action)
-            reward += time_step.reward or 0
-            done = time_step.last()
-            if done:
-                break
+        time_step = self._env.step(action)
+        reward = time_step.reward or 0.0
+        done = time_step.last()
         obs = self._get_obs(time_step)
         self.current_state = _flatten_obs(time_step.observation)
+        extra = {}
         extra["discount"] = time_step.discount
+        extra["internal_state"] = self._env.physics.get_state().copy()
         return obs, reward, done, False, extra
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], Dict[str, Any]]:
         time_step = self._env.reset()
         self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step)
         return obs, {}
 
-    def render(self, camera_id: Optional[int] = None):
+    def render(self, camera_id: Optional[int] = None) -> np.ndarray:
         return self._env.physics.render(height=self._height, width=self._width, camera_id=camera_id or self._camera_id)
 
     def close(self):

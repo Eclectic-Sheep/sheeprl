@@ -1,6 +1,5 @@
 import copy
 import os
-import time
 import warnings
 from math import prod
 from typing import Optional, Union
@@ -22,7 +21,7 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import (
@@ -43,6 +42,8 @@ from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import print_config
 
 
 def train(
@@ -133,6 +134,8 @@ def train(
 @register_algorithm()
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    print_config(cfg)
+
     if "minedojo" in cfg.env.env._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by SAC-AE agent, since it does not take "
@@ -164,8 +167,9 @@ def main(cfg: DictConfig):
     fabric = Fabric(strategy=strategy, callbacks=[CheckpointCallback()])
     if not _is_using_cli():
         fabric.launch()
-    rank = fabric.global_rank
     device = fabric.device
+    rank = fabric.global_rank
+    world_size = fabric.world_size
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
@@ -323,18 +327,16 @@ def main(cfg: DictConfig):
     )
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Time/step_per_second": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
-        )
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/reconstruction_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+        }
+    ).to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
@@ -349,10 +351,11 @@ def main(cfg: DictConfig):
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=fabric.device if cfg.buffer.memmap else "cpu")
 
     # Global variables
-    policy_step = 0
     last_log = 0
+    last_train = 0
+    train_step = 0
+    policy_step = 0
     last_checkpoint = 0
-    start_time = time.time()
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
@@ -360,14 +363,14 @@ def main(cfg: DictConfig):
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The log every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the metrics will be logged at the nearest greater multiple of the "
             "policy_steps_per_update value."
         )
     if cfg.checkpoint.every % policy_steps_per_update != 0:
         warnings.warn(
-            f"The checkpoint every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
             "policy_steps_per_update value."
@@ -386,26 +389,29 @@ def main(cfg: DictConfig):
             obs[k] = torch_obs
 
     for update in range(1, num_updates + 1):
-        if update < learning_starts:
-            actions = envs.action_space.sample()
-        else:
-            with torch.no_grad():
-                normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
-                actions, _ = actor.module(normalized_obs)
-                actions = actions.cpu().numpy()
-        o, rewards, dones, truncated, infos = envs.step(actions)
-        dones = np.logical_or(dones, truncated)
-
         policy_step += cfg.env.num_envs * fabric.world_size
 
+        # Measure environment interaction time: this considers both the model forward
+        # to get the action given the observation and the time taken into the environment
+        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            if update < learning_starts:
+                actions = envs.action_space.sample()
+            else:
+                with torch.no_grad():
+                    normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
+                    actions, _ = actor.module(normalized_obs)
+                    actions = actions.cpu().numpy()
+            o, rewards, dones, truncated, infos = envs.step(actions)
+            dones = np.logical_or(dones, truncated)
+
         if "final_info" in infos:
-            for i, agent_final_info in enumerate(infos["final_info"]):
-                if agent_final_info is not None and "episode" in agent_final_info:
-                    fabric.print(
-                        f"Rank-0: policy_step={policy_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                    )
-                    aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                    aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+            for i, agent_ep_info in enumerate(infos["final_info"]):
+                if agent_ep_info is not None:
+                    ep_rew = agent_ep_info["episode"]["r"]
+                    ep_len = agent_ep_info["episode"]["l"]
+                    aggregator.update("Rewards/rew_avg", ep_rew)
+                    aggregator.update("Game/ep_len_avg", ep_len)
+                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
         real_next_obs = copy.deepcopy(o)
@@ -447,30 +453,33 @@ def main(cfg: DictConfig):
         # Train the agent
         if update >= learning_starts - 1:
             training_steps = learning_starts if update == learning_starts - 1 else 1
-            for _ in range(training_steps):
-                # We sample one time to reduce the communications between processes
-                sample = rb.sample(
-                    cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
-                    sample_next_obs=cfg.buffer.sample_next_obs,
-                )  # [G*B, 1]
-                gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
-                gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
-                if fabric.world_size > 1:
-                    dist_sampler: DistributedSampler = DistributedSampler(
-                        range(len(gathered_data)),
-                        num_replicas=fabric.world_size,
-                        rank=fabric.global_rank,
-                        shuffle=True,
-                        seed=cfg.seed,
-                        drop_last=False,
-                    )
-                    sampler: BatchSampler = BatchSampler(
-                        sampler=dist_sampler, batch_size=cfg.per_rank_batch_size, drop_last=False
-                    )
-                else:
-                    sampler = BatchSampler(
-                        sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
-                    )
+
+            # We sample one time to reduce the communications between processes
+            sample = rb.sample(
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
+                sample_next_obs=cfg.buffer.sample_next_obs,
+            )  # [G*B, 1]
+            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
+            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+            if fabric.world_size > 1:
+                dist_sampler: DistributedSampler = DistributedSampler(
+                    range(len(gathered_data)),
+                    num_replicas=fabric.world_size,
+                    rank=fabric.global_rank,
+                    shuffle=True,
+                    seed=cfg.seed,
+                    drop_last=False,
+                )
+                sampler: BatchSampler = BatchSampler(
+                    sampler=dist_sampler, batch_size=cfg.per_rank_batch_size, drop_last=False
+                )
+            else:
+                sampler = BatchSampler(
+                    sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
+                )
+
+            # Start training
+            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for batch_idxes in sampler:
                     train(
                         fabric,
@@ -488,11 +497,33 @@ def main(cfg: DictConfig):
                         cfg,
                         policy_steps_per_update,
                     )
-        aggregator.update("Time/step_per_second", int(policy_step / (time.time() - start_time)))
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
-            last_log = policy_step
-            fabric.log_dict(aggregator.compute(), policy_step)
+                train_step += world_size
+
+        # Log metrics
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+            # Sync distributed metrics
+            metrics_dict = aggregator.compute()
+            fabric.log_dict(metrics_dict, policy_step)
             aggregator.reset()
+
+            # Sync distributed timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (train_step - last_train) / timer_metrics["Time/train_time"],
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                / timer_metrics["Time/env_interaction_time"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_log = policy_step
+            last_train = train_step
 
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:

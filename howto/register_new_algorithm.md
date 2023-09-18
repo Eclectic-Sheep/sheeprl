@@ -129,7 +129,6 @@ def main(cfg: DictConfig):
             {
                 "Rewards/rew_avg": MeanMetric(),
                 "Game/ep_len_avg": MeanMetric(),
-                "Time/step_per_second": MeanMetric(),
                 "Loss/value_loss": MeanMetric(),
                 "Loss/policy_loss": MeanMetric(),
                 "Loss/entropy_loss": MeanMetric(),
@@ -222,7 +221,6 @@ def main(cfg: DictConfig):
 
         # Log metrics
         metrics_dict = aggregator.compute()
-        fabric.log("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)), global_step)
         fabric.log_dict(metrics_dict, global_step)
         aggregator.reset()
 

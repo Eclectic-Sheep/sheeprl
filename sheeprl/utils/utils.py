@@ -1,7 +1,12 @@
-from typing import Optional, Tuple
+import os
+from typing import Optional, Sequence, Tuple, Union
 
+import rich.syntax
+import rich.tree
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
 
 
@@ -131,3 +136,35 @@ def symlog(x: Tensor) -> Tensor:
 
 def symexp(x: Tensor) -> Tensor:
     return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
+
+
+@rank_zero_only
+def print_config(
+    config: DictConfig,
+    fields: Sequence[str] = ("algo", "buffer", "checkpoint", "env", "exp", "hydra", "metric", "optim"),
+    resolve: bool = True,
+    cfg_save_path: Optional[Union[str, os.PathLike]] = None,
+) -> None:
+    """Prints content of DictConfig using Rich library and its tree structure.
+
+    Args:
+        config: Configuration composed by Hydra.
+        fields: Determines which main fields from config will
+            be printed and in what order.
+        resolve: Whether to resolve reference fields of DictConfig.
+    """
+    style = "dim"
+    tree = rich.tree.Tree("CONFIG", style=style, guide_style=style)
+
+    for field in fields:
+        branch = tree.add(field, style=style, guide_style=style)
+        config_section = config.get(field)
+        branch_content = str(config_section)
+        if isinstance(config_section, DictConfig):
+            branch_content = OmegaConf.to_yaml(config_section, resolve=resolve)
+        branch.add(rich.syntax.Syntax(branch_content, "yaml"))
+
+    rich.print(tree)
+    if cfg_save_path is not None:
+        with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
+            rich.print(tree, file=fp)
