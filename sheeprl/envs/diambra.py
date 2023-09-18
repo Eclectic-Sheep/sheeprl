@@ -117,3 +117,4 @@ class DiambraWrapper(core.Env):
 
     def close(self) -> None:
         self._env.close()
+        super().close()
