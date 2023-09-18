@@ -17,17 +17,12 @@ def main(cfg: DictConfig) -> None:
         "sac_ae",
         "ppo",
         "ppo_decoupled",
+        "sac",
+        "sac_decoupled",
+        "droq",
+        "ppo_recurrent",
     }:
         env: gym.Env = make_env(cfg, cfg.seed, 0)()
-    elif cfg.agent in {"sac", "sac_decoupled", "droq", "ppo_recurrent"}:
-        env: gym.Env = make_env(
-            cfg.env.id,
-            cfg.seed,
-            0,
-            False,
-            mask_velocities="mask_velocities" in cfg.env and cfg.mask_velocities,
-            action_repeat=cfg.env.action_repeat,
-        )()
     else:
         raise ValueError(
             "Invalid selected agent: check the available agents with the command `python sheeprl.py --sheeprl_help`"

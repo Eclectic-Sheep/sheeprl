@@ -2,11 +2,11 @@
 There are two types of algorithms in this repository:
 
 1. the ones that can work with both image and vector observations.
-2. The ones that can work with either image or vector observations.
+2. The ones that can work with only vector observations.
 
 In the first case the observations are returned in form of python dictionary, whereas in the second case the observations are returned as 1-dimensional arrays or 3/4-dimensional arrays for grayscale/rgb or stacked images, respectively.
 
-### Dict observations
+### Both observations
 The algorithms that can work with both image and vector observations are specified in [Table 1](../README.md) in the README, and are reported here:
 * PPO
 * SAC-AE
@@ -26,9 +26,9 @@ You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decod
 >
 > We recommend to read [this](./work_with_multi-encoder_multi-decoder.md) to know how the encoder and decoder work with more observations.
 
-For instance, to train the ppo algorithm on the *walker walk* task provided by *DMC* using image observations and only the `orientations` and `velocity` as vector observation, you have to run the following command:
+For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `P1_oppHealth` and `P1_ownHealth` as vector observation, you have to run the following command:
 ```bash
-lightning run model sheeprl.py ppo exp=ppo env=dmc env.id=walker_walk cnn_keys.encoder=[rgb] mlp_keys.encoder=[orientations,velocity]
+lightning run model sheeprl.py ppo exp=ppo env=diambra env.id=doapp cnn_keys.encoder=[frame] mlp_keys.encoder=[P1_oppHealth,P1_ownHealth]
 ```
 
 > **Note**
@@ -80,20 +80,25 @@ The algorithms which works with only vector observations are reported here:
 
 For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *PPO Recurrent* algorithm on the `LunarLander-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
 
-For these algorithms, you do not have to specify anything about the observations space, only to indicate the environment on which you want to train the agent.
+For these algorithms, you have to specify the *mlp* keys you want to encode. As usual you have to specify them through the `mlp_keys.encoder` and `mlp_keys.decoder` arguments (in the command or in the configs).
+
+For instance, you can train a SAC agent on the `LunarLander-v2` with the following command:
+```bash
+lightning run model sheeprl.py exp=sac env=gym env.id=LunarLander-v2 mlp_keys.encoder=[state]
+```
 
 
 ### Get Observation Space
 It is possible to retrieve the observation space of a specific environment to easily select the observation keys you want to use in your training.
 
 ```bash
-python examples/observation_space.py env=... agent=dreamer_v3
+python examples/observation_space.py env=... env.id=... agent=dreamer_v3
 ```
 
 or for *DIAMBRA* environments:
 
 ```bash
-diambra run python examples/observation_space.py env=diambra agent=dreamer_v3
+diambra run python examples/observation_space.py env=diambra agent=dreamer_v3 env.id=doapp
 ```
 
 The env argument is the same you use for training your agent, so it refers to the config folder `sheeprl/configs/env`, more over you can override the environment id and modify its paranmeters, such as, the frame stack or whether or not to use grayscale observations.
