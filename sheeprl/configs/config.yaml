@@ -10,7 +10,7 @@ defaults:
   - fabric: default.yaml
   - metric: default.yaml
   - hydra: default.yaml
-  - exp: ppo.yaml
+  - exp: ???
 
 num_threads: 1
 total_steps: ???
