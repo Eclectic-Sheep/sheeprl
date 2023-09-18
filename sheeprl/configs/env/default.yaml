@@ -1,6 +1,7 @@
+id: ???
 num_envs: 4
-sync_env: False
 frame_stack: 1
+sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False

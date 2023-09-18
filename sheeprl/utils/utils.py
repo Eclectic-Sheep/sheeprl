@@ -141,7 +141,7 @@ def symexp(x: Tensor) -> Tensor:
 @rank_zero_only
 def print_config(
     config: DictConfig,
-    fields: Sequence[str] = ("algo", "buffer", "checkpoint", "env", "exp", "hydra", "metric", "optim"),
+    fields: Sequence[str] = ("algo", "buffer", "checkpoint", "env", "fabric", "metric"),
     resolve: bool = True,
     cfg_save_path: Optional[Union[str, os.PathLike]] = None,
 ) -> None:

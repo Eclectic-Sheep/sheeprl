@@ -2,10 +2,12 @@ defaults:
   - minecraft
   - _self_
 
+# Override from `minecraft` config
 id: custom_navigate
 action_repeat: 1
 
-env:
+# Wrapper to be instantiated
+wrapper:
   _target_: sheeprl.envs.minerl.MineRLWrapper
   id: ${env.id}
   height: ${env.screen_size}

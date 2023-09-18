@@ -111,8 +111,9 @@ For more information see the official documentation of [Gymnasium Atari environm
 The standard hyperparameters to learn in the Atari environments are:
 
 ```bash
-lightning run model --devices=1 sheeprl.py dreamer_v2 \
+python sheeprl.py \
 exp=dreamer_v2 \
+fabric.devices=1 \
 env=atari \
 env.id=AssaultNoFrameskip-v0 \
 env.capture_video=True \
@@ -146,15 +147,16 @@ buffer.prioritize_ends=True
 ## DMC environments
 It is possible to use the environments provided by the [DeepMind Control suite](https://www.deepmind.com/open-source/deepmind-control-suite). To use such environments it is necessary to specify "dmc" and the name of the environment in the `env` and `env.id` hyper-parameters respectively, e.g., `env=dmc env.id=walker_walk` will create an instance of the walker walk environment. For more information about all the environments, check their [paper](https://arxiv.org/abs/1801.00690).
 
-When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to runthe following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="2,3" lightning run model --devices=2 --accelerator=gpu sheeprl.py dreamer_v2 exp=dreamer_v2 env=dmc env.id=walker_walk env.action_repeat=2 env.capture_video=True checkpoint.every=80000 cnn_keys.encoder=[rgb]`. 
+When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to runthe following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="2,3" python sheeprl.py exp=dreamer_v2 fabric.devices=2 fabric.accelerator=gpu env=dmc env.id=walker_walk env.action_repeat=2 env.capture_video=True checkpoint.every=80000 cnn_keys.encoder=[rgb]`. 
 Other possibitities for the variable `MUJOCO_GL` are: `GLFW` for rendering to an X11 window or and `EGL` for hardware accelerated headless. (For more information, click [here](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)).
 Moreover, it could be necessary to decomment two rows in the `sheeprl.algos.dreamer_v1.dreamer_v1.py` file.
 
 The standard hyperparameters used for the DMC environment are the following:
 
 ```bash
-PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa lightning run model --devices=1 sheeprl.py dreamer_v2 \
+PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa python sheeprl.py \
 exp=dreamer_v2 \
+fabric.devices=1 \
 env=dmc \
 env.env.id=dmc_walker_walk \
 env.capture_video=True \

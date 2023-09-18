@@ -10,7 +10,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict, make_tensordict
@@ -24,13 +23,11 @@ from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import print_config
 
 
 def train(
@@ -81,14 +78,7 @@ def train(
 
 
 @register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    print_config(cfg)
-
-    # Initialize Fabric
-    fabric = Fabric(callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
+def main(fabric: Fabric, cfg: DictConfig):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -109,7 +99,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "sac")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -399,7 +389,3 @@ def main(cfg: DictConfig):
             vector_env_idx=0,
         )()
         test(agent.actor.module, test_env, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()

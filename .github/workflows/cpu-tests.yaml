@@ -41,7 +41,7 @@ jobs:
       - name: Install packages
         run: |
           python -m pip install -U pip
-          python -m pip install .[atari,test,dev]
+          python -m pip install -e .[atari,test,dev]
 
       - name: Run tests
         run: |

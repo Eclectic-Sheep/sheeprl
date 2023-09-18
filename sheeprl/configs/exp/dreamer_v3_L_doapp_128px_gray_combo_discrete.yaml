@@ -18,7 +18,7 @@ env:
   frame_stack: 1
   screen_size: 128
   reward_as_observation: True
-  env:
+  wrapper:
     attack_but_combination: True
     diambra_settings:
       characters: Kasumi

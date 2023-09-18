@@ -1,5 +1,5 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py sota exp=... env=... env.id=...` or accelerated by fabric with `lightning run model sheeprl.py sota exp=... env=... env.id=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
 
 We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
@@ -47,7 +47,7 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.sota.loss import loss1, loss2
 from sheeprl.algos.sota.utils import test
@@ -57,6 +57,7 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_dict_env
 from sheeprl.utils.logger import create_tensorboard_logger
+from sheeprl.utils.timer import timer
 
 
 def train(
@@ -80,13 +81,8 @@ def train(
     aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    # Initialize Fabric
-    fabric = Fabric()
-    if not _is_using_cli():
-        fabric.launch()
+@register_algorithm(decoupled=False)
+def sota_main(fabric: Fabric, cfg: DictConfig):
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -94,7 +90,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "sota")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -116,6 +112,9 @@ def main(cfg: DictConfig):
     )
 
     # Create the agent model: this should be a torch.nn.Module to be acceleratesd with Fabric
+    # Given that the environment has been created with the `make_dict_env` method, the agent
+    # forward method must accept as input a dictionary like {"obs1_name": obs1, "obs2_name": obs2, ...}.
+    # The agent should be able to process both image and vector-like observations.
     agent = ...
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -140,17 +139,31 @@ def main(cfg: DictConfig):
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
-    global_step = 0
-    start_time = time.perf_counter()
-    single_global_rollout = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.total_steps // single_global_rollout if not cfg.dry_run else 1
+    last_log = 0
+    last_train = 0
+    train_step = 0
+    policy_step = 0
+    last_checkpoint = 0
+    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
+    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
-    # Linear learning rate scheduler
-    if cfg.algo.anneal_lr:
-        from torch.optim.lr_scheduler import PolynomialLR
+    # Warning for log and checkpoint every
+    if cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
 
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
-
+    # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     next_obs = {}
     for k in o.keys():
@@ -162,20 +175,23 @@ def main(cfg: DictConfig):
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
-    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32)  # [N_envs, 1]
+    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            global_step += cfg.env.num_envs * world_size
+            policy_step += cfg.env.num_envs * world_size
 
-            with torch.no_grad():
-                # Sample an action given the observation received by the environment
-                # This calls the `forward` method of the PyTorch module, escaping from Fabric
-                # because we don't want this to be a synchronization point
-                action = agent.module(next_obs)
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+                with torch.no_grad():
+                    # Sample an action given the observation received by the environment
+                    # This calls the `forward` method of the PyTorch module, escaping from Fabric
+                    # because we don't want this to be a synchronization point
+                    action = agent.module(next_obs)
 
-            # Single environment step
-            o, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
+                # Single environment step
+                o, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
                 rewards = torch.tensor(reward).view(cfg.env.num_envs, -1)  # [N_envs, 1]
@@ -205,13 +221,13 @@ def main(cfg: DictConfig):
             next_done = done
 
             if "final_info" in info:
-                for i, agent_final_info in enumerate(info["final_info"]):
-                    if agent_final_info is not None and "episode" in agent_final_info:
-                        fabric.print(
-                            f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
-                        )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                for i, agent_ep_info in enumerate(info["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
@@ -220,17 +236,49 @@ def main(cfg: DictConfig):
         train(fabric, agent, optimizer, local_data, aggregator, cfg)
 
         # Log metrics
-        metrics_dict = aggregator.compute()
-        fabric.log_dict(metrics_dict, global_step)
-        aggregator.reset()
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+            # Sync distributed metrics
+            metrics_dict = aggregator.compute()
+            fabric.log_dict(metrics_dict, policy_step)
+            aggregator.reset()
+
+            # Sync distributed timers
+            timer_metrics = timer.compute()
+            fabric.log(
+                "Time/sps_train",
+                (train_step - last_train) / timer_metrics["Time/train_time"],
+                policy_step,
+            )
+            fabric.log(
+                "Time/sps_env_interaction",
+                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                / timer_metrics["Time/env_interaction_time"],
+                policy_step,
+            )
+            timer.reset()
+
+            # Reset counters
+            last_log = policy_step
+            last_train = train_step
+
+        # Checkpoint model
+        if (
+            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
+            or cfg.dry_run
+            or update == num_updates
+        ):
+            last_checkpoint = policy_step
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "update_step": update,
+            }
+            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
+            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero:
         test(actor.module, envs, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## Config files
@@ -265,26 +313,19 @@ defaults:
   - /optim@optimizer: adam
   - _self_
 
-name: sota
+name: sota  # This must be set!
 
-anneal_lr: False
-gamma: 0.99
-gae_lambda: 0.95
-update_epochs: 10
-loss_reduction: mean
-normalize_advantages: False
-clip_coef: 0.2
-anneal_clip_coef: False
-clip_vloss: False
-ent_coef: 0.0
-anneal_ent_coef: False
-vf_coef: 1.0
+# Algorithm-related paramters
+...
 
-dense_units: 64
+# Agent model parameters 
+# This is just an example where we suppose we have an Actor-Critic agent
+# with both an MLP and a CNN encoder
 mlp_layers: 2
-dense_act: torch.nn.Tanh
+dense_units: 64
 layer_norm: False
 max_grad_norm: 0.0
+dense_act: torch.nn.Tanh
 encoder:
   cnn_features_dim: 512
   mlp_features_dim: 64
@@ -303,6 +344,7 @@ critic:
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
 
+# Override parameters coming from `adam.yaml` config
 optimizer:
   lr: 1e-3
   eps: 1e-4
@@ -319,7 +361,11 @@ defaults:
   - /optim@encoder.optimizer: adam
   - /optim@actor.optimizer: adam
 ```
-Will add two optimizers, one accesible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
+will add two optimizers, one accesible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
+
+> **Note**
+>
+> The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `sheeprl/algos/sota` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `sheeprl/algos/sota/my_sota.py`, then `algo.name="my_sota"` 
 
 #### Experiment config
 In the second file you have to specify all the elements you want in your experiment and you can override all the parameters you want.
@@ -333,11 +379,10 @@ defaults:
   - override /env: atari
   - _self_
 
-per_rank_batch_size: 64
 total_steps: 65536
+per_rank_batch_size: 64
 buffer:
   share_data: False
-rollout_steps: 128
 
 # override environment id
 env:
@@ -352,45 +397,62 @@ With `override /algo: sota` in `defaults` you are specifing you want to use the 
 To let the `register_algorithm` decorator add our new `sota` algorithm to the available algorithms registry we need to import it in `./sheeprl/__init__.py`: 
 
 ```diff
+import os
+
+ROOT_DIR = os.path.dirname(__file__)
+
 from dotenv import load_dotenv
 
-from sheeprl.algos.ppo import ppo, ppo_decoupled
-from sheeprl.algos.ppo_recurrent import ppo_recurrent
-from sheeprl.algos.sac import sac, sac_decoupled
-from sheeprl.algos.sac_ae import sac_ae
-+from sheeprl.algos.sota import sota
-
-try:
-    from sheeprl.algos.ppo import ppo_atari
-except ModuleNotFoundError:
-    pass
-
 load_dotenv()
+
+from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
+
+if not _IS_TORCH_GREATER_EQUAL_2_0:
+    raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
+
+# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
+import numpy as np
+
+from sheeprl.algos.dreamer_v1 import dreamer_v1 as dreamer_v1
+from sheeprl.algos.dreamer_v2 import dreamer_v2 as dreamer_v2
+from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
+from sheeprl.algos.droq import droq as droq
+from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
+from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
+from sheeprl.algos.ppo import ppo as ppo
+from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
+from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
+from sheeprl.algos.sac import sac as sac
+from sheeprl.algos.sac import sac_decoupled as sac_decoupled
+from sheeprl.algos.sac_ae import sac_ae as sac_ae
++from sheeprl.algos.sota import sota as sota
+
+np.float = np.float32
+np.int = np.int64
+np.bool = bool
+
+__version__ = "0.3.2"
 ```
 
-After doing that, when we run `python sheeprl.py` we should see `sota` under the `Commands` section:
+Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:
 
 ```bash
-(sheeprl) ➜  sheeprl git:(main) ✗ python sheeprl.py
-Usage: sheeprl.py [OPTIONS] COMMAND [ARGS]...
-
-  SheepRL zero-code command line utility.
-
-Options:
-  --sheeprl_help  Show this message and exit.
-
-Commands:
-  dreamer_v1
-  dreamer_v2
-  dreamer_v3
-  droq
-  p2e_dv1
-  p2e_dv2
-  ppo
-  ppo_decoupled
-  ppo_recurrent
-  sac
-  sac_ae
-  sac_decoupled
-  sota
+SheepRL Agents                             
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃ Decoupled ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │ False     │
+│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │ False     │
+│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │ False     │
+│ sheeprl.algos.sac           │ sac           │ main       │ False     │
+│ sheeprl.algos.sac           │ sac_decoupled │ main       │ True      │
+│ sheeprl.algos.droq          │ droq          │ main       │ False     │
+│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
+│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
+│ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
+│ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
+│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
+│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │ False     │
+│ sheeprl.algos.sota          │ sota          │ sota_main  │ False     │
+└─────────────────────────────┴───────────────┴────────────┴───────────┘
 ```

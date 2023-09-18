@@ -2,11 +2,14 @@ defaults:
   - default
   - _self_
 
-id: PongNoFrameskip-v4
+# Override from `default` config
 action_repeat: 4
+id: PongNoFrameskip-v4
 max_episode_steps: 27000
-env:
-  _target_: gymnasium.wrappers.AtariPreprocessing
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: gymnasium.wrappers.AtariPreprocessing # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
   env:
     _target_: gymnasium.make
     id: ${env.id}
