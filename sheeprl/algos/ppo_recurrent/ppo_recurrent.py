@@ -110,7 +110,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
 
-    if "minedojo" in cfg.env.env._target_.lower():
+    if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO Recurrent agent, since it does not take "
             "into consideration the action masks provided by the environment, but needed "
