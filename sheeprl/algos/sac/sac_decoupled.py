@@ -3,7 +3,7 @@ import os
 import pathlib
 import time
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 from math import prod
 
 import gymnasium as gym
@@ -12,7 +12,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
@@ -31,17 +30,13 @@ from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import print_config
 
 
 @torch.no_grad()
-def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    print_config(cfg)
-
-    # Initialize Fabric
-    fabric = Fabric(callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
+def player(
+    fabric: Fabric, cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective
+):
+    logger = fabric.logger
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(cfg.seed)
@@ -62,19 +57,6 @@ def player(cfg: DictConfig, world_collective: TorchCollective, player_trainer_co
     if len(cfg.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
         cfg.cnn_keys.encoder = []
-
-    # Initialize logger
-    root_dir = (
-        os.path.join("logs", "runs", cfg.root_dir)
-        if cfg.root_dir is not None
-        else os.path.join("logs", "runs", "sac_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-    )
-    run_name = (
-        cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
-    )
-    logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-    fabric._loggers = [logger]
-    logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -522,9 +504,14 @@ def trainer(
 
 
 @register_algorithm(decoupled=True)
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    if "minedojo" in cfg.env.env._target_.lower():
+def main(fabric: Fabric, cfg: DictConfig):
+    if fabric.world_size == 1:
+        raise RuntimeError(
+            "Please run the script with the number of devices greater than 1: "
+            "`python sheeprl.py exp=sac_decoupled fabric.devices=2 ...`"
+        )
+
+    if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by SAC agent, since it does not take "
             "into consideration the action masks provided by the environment, but needed "
@@ -544,12 +531,6 @@ def main(cfg: DictConfig):
     world_collective.create_group(timeout=timedelta(days=1))
     global_rank = world_collective.rank
 
-    if world_collective.world_size == 1:
-        raise RuntimeError(
-            "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 sheeprl.py ...`"
-        )
-
     # Create a group between rank-0 (player) and rank-1 (trainer), assigning it to the collective:
     # used by rank-1 to send metrics to be tracked by the rank-0 at the end of a training episode
     player_trainer_collective.create_group(ranks=[0, 1], timeout=timedelta(days=1))
@@ -561,10 +542,6 @@ def main(cfg: DictConfig):
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(cfg, world_collective, player_trainer_collective)
+        player(fabric, cfg, world_collective, player_trainer_collective)
     else:
         trainer(world_collective, player_trainer_collective, optimization_pg)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,10 +1,9 @@
-import importlib
 import os
 import shutil
 import sys
 import time
 import warnings
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +11,8 @@ import pytest
 import torch.distributed as dist
 from lightning import Fabric
 
+from sheeprl import ROOT_DIR
+from sheeprl.cli import run
 from sheeprl.utils.imports import _IS_WINDOWS
 
 
@@ -23,10 +24,12 @@ def devices(request):
 @pytest.fixture()
 def standard_args():
     return [
+        os.path.join(ROOT_DIR, "__main__.py"),
         "hydra/job_logging=disabled",
         "hydra/hydra_logging=disabled",
         "dry_run=True",
         "env.num_envs=1",
+        "fabric.devices=auto",
         f"env.sync_env={_IS_WINDOWS}",
     ]
 
@@ -75,7 +78,6 @@ def remove_test_dir(path: str) -> None:
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_droq(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.droq.droq")
     root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -93,10 +95,8 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "agent",
@@ -117,7 +117,6 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac.sac")
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -135,10 +134,8 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "agent",
@@ -159,7 +156,6 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac_ae(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac_ae.sac_ae")
     root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -185,10 +181,8 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "agent",
@@ -213,44 +207,26 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
     root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "exp=sac",
+        "exp=sac_decoupled",
         "per_rank_batch_size=1",
         "algo.learning_starts=0",
         "algo.per_rank_gradient_steps=1",
+        f"fabric.devices={os.environ['LT_DEVICES']}",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"buffer.checkpoint={checkpoint_buffer}",
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
-
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
+            run()
 
     if os.environ["LT_DEVICES"] != "1":
         keys = {
@@ -272,7 +248,6 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_ppo(standard_args, start_time, env_id):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo")
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -288,10 +263,9 @@ def test_ppo(standard_args, start_time, env_id):
         f"env.id={env_id}",
         "env.capture_video=False",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     check_checkpoint(
         Path(os.path.join("logs", "runs", ckpt_path)),
@@ -303,15 +277,15 @@ def test_ppo(standard_args, start_time, env_id):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_ppo_decoupled(standard_args, start_time, env_id):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_ppo_decoupled"
     ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "exp=ppo",
+        "exp=ppo_decoupled",
         "env=dummy",
+        f"fabric.devices={os.environ['LT_DEVICES']}",
         f"algo.rollout_steps={os.environ['LT_DEVICES']}",
         "per_rank_batch_size=1",
         "algo.update_epochs=1",
@@ -320,27 +294,10 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"env.id={env_id}",
         "env.capture_video=False",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
 
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
+            run()
 
     if os.environ["LT_DEVICES"] != "1":
         check_checkpoint(
@@ -352,7 +309,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
 
 @pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -366,10 +322,9 @@ def test_ppo_recurrent(standard_args, start_time):
         f"run_name={run_name}",
         "env.capture_video=False",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     check_checkpoint(
         Path(os.path.join("logs", "runs", ckpt_path)),
@@ -382,7 +337,6 @@ def test_ppo_recurrent(standard_args, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.dreamer_v1.dreamer_v1")
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -407,10 +361,8 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "world_model",
@@ -429,14 +381,13 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         keys.add("rb")
 
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
-    # shutil.rmtree(f"logs/runs/pytest_{start_time}")
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.p2e_dv1.p2e_dv1")
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -461,10 +412,8 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "world_model",
@@ -495,7 +444,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.p2e_dv2.p2e_dv2")
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -524,10 +472,8 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "world_model",
@@ -560,7 +506,6 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.dreamer_v2.dreamer_v2")
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -590,10 +535,8 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "world_model",
@@ -619,7 +562,6 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.dreamer_v3.dreamer_v3")
     root_dir = os.path.join("pytest_" + start_time, "dreamer_v3", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -649,10 +591,8 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "env.capture_video=False",
     ]
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
+    with mock.patch.object(sys, "argv", args):
+        run()
 
     keys = {
         "world_model",

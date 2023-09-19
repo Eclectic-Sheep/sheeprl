@@ -22,9 +22,11 @@ sheeprl/configs
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
+│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── buffer
 │   └── default.yaml
@@ -47,17 +49,26 @@ sheeprl/configs
 │   ├── dreamer_v1.yaml
 │   ├── dreamer_v2_ms_pacman.yaml
 │   ├── dreamer_v2.yaml
+│   ├── dreamer_v3_100k_boxing.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
+│   ├── dreamer_v3_dmc_walker_walk.yaml
+│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_doapp.yaml
 │   ├── dreamer_v3_L_navigate.yaml
 │   ├── dreamer_v3.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
+│   ├── sac_decoupled.yaml
 │   └── sac.yaml
+├── fabric
+│   ├── ddp-cpu.yaml
+│   ├── ddp-cuda.yaml
+│   └── default.yaml
 ├── hydra
 │   └── default.yaml
 ├── __init__.py
@@ -86,9 +97,10 @@ defaults:
   - buffer: default.yaml
   - checkpoint: default.yaml
   - env: default.yaml
-  - exp: null
-  - hydra: default.yaml
+  - fabric: default.yaml
   - metric: default.yaml
+  - hydra: default.yaml
+  - exp: ???
 
 num_threads: 1
 total_steps: ???
@@ -112,10 +124,6 @@ cnn_keys:
 mlp_keys:
   encoder: []
   decoder: ${mlp_keys.encoder}
-
-# Buffer
-buffer:
-  memmap: True
 ```
 
 ### Algorithms
@@ -305,7 +313,50 @@ The environment configs can be found under the `sheeprl/configs/env` folders. Sh
 * [MineRL (v0.4.4)](https://minerl.readthedocs.io/en/v0.4.4/)
 * [MineDojo (v0.1.0)](https://docs.minedojo.org/)
 
-In this way one can easily try out the overall framework with standard RL environments.
+In this way one can easily try out the overall framework with standard RL environments. The `default.yaml` config contains all the environment parameters shared by (possibly) all the environments:
+
+```yaml
+id: ???
+num_envs: 4
+frame_stack: 1
+sync_env: False
+screen_size: 64
+action_repeat: 1
+grayscale: False
+clip_rewards: False
+capture_video: True
+frame_stack_dilation: 1
+max_episode_steps: null
+reward_as_observation: False
+```
+
+Every custom environment must then "inherit" from this default config, override the particular parameters and define the the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
+
+```yaml
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+action_repeat: 4
+id: PongNoFrameskip-v4
+max_episode_steps: 27000
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: gymnasium.wrappers.AtariPreprocessing  # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
+  env:
+    _target_: gymnasium.make
+    id: ${env.id}
+    render_mode: rgb_array
+  noop_max: 30
+  terminal_on_life_loss: False
+  frame_skip: ${env.action_repeat}
+  screen_size: ${env.screen_size}
+  grayscale_obs: ${env.grayscale}
+  scale_obs: False
+  grayscale_newaxis: True
+```
 
 > **Warning**
 >
@@ -362,8 +413,12 @@ algo:
 Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
 
 ```bash
-lightning run model sheeprl.py dreamer_v3 exp=dreamer_v3_100k_ms_pacman
+python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 ```
+
+### Fabric
+
+These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with thich precision. For more information please have a look to the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
 
 ### Hydra
 
@@ -386,7 +441,6 @@ log_every: 5000
 # for more information
 sync_on_compute: False
 ```
-
 
 ### Optimizer
 

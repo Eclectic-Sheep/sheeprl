@@ -12,10 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.accelerators import CUDAAccelerator, TPUAccelerator
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from lightning.fabric.strategies import DDPStrategy, SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict, make_tensordict
@@ -39,13 +36,11 @@ from sheeprl.algos.sac_ae.agent import (
 from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import print_config
 
 
 def train(
@@ -134,11 +129,8 @@ def train(
 
 
 @register_algorithm()
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    print_config(cfg)
-
-    if "minedojo" in cfg.env.env._target_.lower():
+def main(fabric: Fabric, cfg: DictConfig):
+    if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by SAC-AE agent, since it does not take "
             "into consideration the action masks provided by the environment, but needed "
@@ -146,26 +138,6 @@ def main(cfg: DictConfig):
             "As an alternative you can use one of the Dreamers' agents."
         )
 
-    # Initialize Fabric
-    devices = os.environ.get("LT_DEVICES", None)
-    strategy = os.environ.get("LT_STRATEGY", None)
-    is_tpu_available = TPUAccelerator.is_available()
-    if strategy is not None:
-        warnings.warn(
-            "You are running the SAC-AE algorithm through the Lightning CLI and you have specified a strategy: "
-            f"`lightning run model --strategy={strategy}`. This algorithm is run with the "
-            "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
-        )
-        os.environ.pop("LT_STRATEGY")
-    if is_tpu_available:
-        strategy = "auto"
-    else:
-        strategy = DDPStrategy(find_unused_parameters=True)
-        if devices == "1":
-            strategy = SingleDeviceStrategy(device="cuda:0" if CUDAAccelerator.is_available() else "cpu")
-    fabric = Fabric(strategy=strategy, callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -189,7 +161,7 @@ def main(cfg: DictConfig):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg, "sac_ae")
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
@@ -592,7 +564,3 @@ def main(cfg: DictConfig):
     if fabric.is_global_zero:
         test_env = make_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
         test_sac_ae(agent.actor.module, test_env, fabric, cfg)
-
-
-if __name__ == "__main__":
-    main()

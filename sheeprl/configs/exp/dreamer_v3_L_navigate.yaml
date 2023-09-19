@@ -14,7 +14,7 @@ env:
   num_envs: 4
   id: custom_navigate
   reward_as_observation: True
-  env:
+  wrapper:
     multihot_inventory: False
 
 # Checkpoint

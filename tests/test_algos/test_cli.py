@@ -10,7 +10,7 @@ import pytest
 def test_fsdp_strategy_fail():
     with pytest.raises(subprocess.CalledProcessError):
         subprocess.run(
-            "lightning run model --strategy=fsdp --devices=1 sheeprl.py ppo",
+            sys.executable + " sheeprl.py exp=ppo fabric.strategy=fsdp",
             shell=True,
             check=True,
         )
@@ -18,7 +18,7 @@ def test_fsdp_strategy_fail():
 
 def test_run_decoupled_algo():
     subprocess.run(
-        "lightning run model --strategy=ddp --devices=2 sheeprl.py ppo_decoupled "
+        sys.executable + " sheeprl.py exp=ppo_decoupled fabric.strategy=ddp fabric.devices=2 "
         "exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
         "env.capture_video=False",
         shell=True,
@@ -29,7 +29,7 @@ def test_run_decoupled_algo():
 def test_run_algo():
     subprocess.run(
         sys.executable
-        + " sheeprl.py ppo exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
+        + " sheeprl.py exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
         "env.capture_video=False",
         shell=True,
         check=True,
@@ -41,7 +41,7 @@ def test_resume_from_checkpoint():
     run_name = "test_ckpt"
     subprocess.run(
         sys.executable
-        + " sheeprl.py dreamer_v3 exp=dreamer_v3 env=dummy dry_run=True "
+        + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
         + "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
         + "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
         + "algo.world_model.recurrent_model.recurrent_state_size=8 "
@@ -58,7 +58,7 @@ def test_resume_from_checkpoint():
     ckpt_path = os.path.join(ckpt_path, ckpt_file_name)
     subprocess.run(
         sys.executable
-        + f" sheeprl.py dreamer_v3 exp=dreamer_v3 checkpoint.resume_from={ckpt_path} "
+        + f" sheeprl.py exp=dreamer_v3 checkpoint.resume_from={ckpt_path} "
         + "root_dir=pytest_resume_ckpt run_name=test_resume",
         shell=True,
         check=True,

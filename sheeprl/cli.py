@@ -1,93 +1,84 @@
-"""Adapted from https://github.com/Lightning-Universe/lightning-flash/blob/master/src/flash/__main__.py"""
-
-import functools
+import datetime
 import importlib
 import os
+import time
 import warnings
-from contextlib import closing
-from typing import Optional
-from unittest.mock import patch
 
-import click
-from lightning.fabric.fabric import _is_using_cli
+import hydra
+from lightning import Fabric
+from lightning.fabric.accelerators.tpu import TPUAccelerator
+from lightning.fabric.loggers.tensorboard import TensorBoardLogger
+from lightning.fabric.strategies.ddp import DDPStrategy
+from omegaconf import DictConfig, OmegaConf, open_dict
 
-from sheeprl.utils.registry import decoupled_tasks, tasks
+from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.registry import tasks
+from sheeprl.utils.utils import print_config
 
-CONTEXT_SETTINGS = dict(help_option_names=["--sheeprl_help"])
 
-
-@click.group(no_args_is_help=True, add_help_option=True, context_settings=CONTEXT_SETTINGS)
-def run():
+@hydra.main(version_base=None, config_path="configs", config_name="config")
+def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
-    if not _is_using_cli():
-        warnings.warn(
-            "This script was launched without the Lightning CLI. Consider to launch the script with "
-            "`lightning run model ...` to scale it with Fabric"
+    if cfg.fabric.strategy == "fsdp":
+        raise ValueError(
+            "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
+            "`python sheeprl.py fabric.strategy=...`"
         )
+    print_config(cfg)
 
-
-def register_command(command, task, name: Optional[str] = None):
-    @run.command(
-        name if name is not None else command.__name__,
-        context_settings=dict(
-            help_option_names=[],
-            ignore_unknown_options=True,
-        ),
-    )
-    @click.argument("cli_args", nargs=-1, type=click.UNPROCESSED)
-    @functools.wraps(command)
-    def wrapper(cli_args):
-        additional_args = [f"algo.name={name}"]
-        if len(list(cli_args)) == 0:
-            additional_args.append(f"exp={name}")
-        with patch("sys.argv", [task.__file__] + list(cli_args) + additional_args) as sys_argv_mock:
-            devices = os.environ.get("LT_DEVICES", None)
-            strategy = os.environ.get("LT_STRATEGY", None)
-            if strategy == "fsdp":
-                raise ValueError(
-                    "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
-                    "`lightning run model --strategy=... sheeprl.py ...`"
-                )
-            if name in decoupled_tasks and strategy is not None:
+    # Given the algorithm's name, retrieve the module where
+    # 'cfg.algo.name'.py is contained; from there retrieve the
+    # `register_algorithm`-decorated entrypoint;
+    # the entrypoint will be launched by Fabric with `fabric.launch(entrypoint)`
+    module = None
+    decoupled = False
+    entrypoint = None
+    algo_name = cfg.algo.name
+    for _module, _algos in tasks.items():
+        for _algo in _algos:
+            if algo_name == _algo["name"]:
+                module = _module
+                entrypoint = _algo["entrypoint"]
+                decoupled = _algo["decoupled"]
+                break
+    if module is None:
+        raise RuntimeError(f"Given the algorithm named `{algo_name}`, no module has been found to be imported.")
+    if entrypoint is None:
+        raise RuntimeError(
+            f"Given the module and algorithm named `{module}` and `{algo_name}` respectively, "
+            "no entrypoint has been found to be imported."
+        )
+    task = importlib.import_module(f"{module}.{algo_name}")
+    command = task.__dict__[entrypoint]
+    if decoupled:
+        root_dir = (
+            os.path.join("logs", "runs", cfg.root_dir)
+            if cfg.root_dir is not None
+            else os.path.join("logs", "runs", algo_name, datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
+        )
+        run_name = (
+            cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
+        )
+        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+        logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric = Fabric(**cfg.fabric, loggers=logger, callbacks=[CheckpointCallback()])
+    else:
+        if "sac_ae" in module:
+            strategy = cfg.fabric.strategy
+            is_tpu_available = TPUAccelerator.is_available()
+            if strategy is not None:
                 warnings.warn(
-                    "You are running a decoupled algorithm through the Lightning CLI "
-                    "and you have specified a strategy: "
-                    f"`lightning run model --strategy={strategy}`. "
-                    "When a decoupled algorithm is run the default strategy will be "
-                    "a `lightning.fabric.strategies.DDPStrategy`."
+                    "You are running the SAC-AE algorithm you have specified a strategy different than `ddp`: "
+                    f"`python sheeprl.py fabric.strategy={strategy}`. This algorithm is run with the "
+                    "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
                 )
-                os.environ.pop("LT_STRATEGY")
-            if name in decoupled_tasks and not _is_using_cli():
-                import torch.distributed.run as torchrun
-                from torch.distributed.elastic.utils import get_socket_with_port
-
-                sock = get_socket_with_port()
-                with closing(sock):
-                    master_port = sock.getsockname()[1]
-                nproc_per_node = "2" if devices is None else devices
-                torchrun_args = [
-                    f"--nproc_per_node={nproc_per_node}",
-                    "--nnodes=1",
-                    "--node-rank=0",
-                    "--start-method=spawn",
-                    "--master-addr=localhost",
-                    f"--master-port={master_port}",
-                ] + sys_argv_mock
-                torchrun.main(torchrun_args)
+            if is_tpu_available:
+                strategy = "auto"
             else:
-                if not _is_using_cli() and devices is None:
-                    os.environ["LT_DEVICES"] = "1"
-                command()
-
-
-for module, algos in tasks.items():
-    for algo in algos:
-        try:
-            algo_name = algo
-            task = importlib.import_module(f"{module}.{algo_name}")
-
-            for command in task.__all__:
-                command = task.__dict__[command]
-                register_command(command, task, name=algo_name)
-        except ImportError:
-            pass
+                strategy = DDPStrategy(find_unused_parameters=True)
+            with open_dict(cfg):
+                cfg.fabric.pop("strategy", None)
+            fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
+        else:
+            fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
+    fabric.launch(command, cfg)
