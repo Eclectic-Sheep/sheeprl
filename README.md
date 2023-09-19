@@ -54,6 +54,7 @@ The environments supported by sheeprl are:
 | MineRL             | `pip install -e .[minerl]`   | [how_to/minerl](./howto/learn_in_minerl.md)     | :heavy_check_mark: |
 | MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
 | DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
+| Crafter            | `pip install -e .[crafter]`  | https://github.com/danijar/crafter              | :heavy_check_mark: |
 
 
 ## Why
