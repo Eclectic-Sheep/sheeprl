@@ -139,7 +139,6 @@ def player(
     policy_step = (state["update"] - 1) * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    time.perf_counter()
     policy_steps_per_update = int(cfg.env.num_envs)
     num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
