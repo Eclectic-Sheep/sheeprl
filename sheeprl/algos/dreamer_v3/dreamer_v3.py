@@ -31,7 +31,7 @@ from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import MSEDistribution, SymlogDistribution, TwoHotEncodingDistribution
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -329,11 +329,6 @@ def train(
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: DictConfig):
-    # These arguments cannot be changed
-    cfg.env.frame_stack = -1
-    if 2 ** int(np.log2(cfg.env.screen_size)) != cfg.env.screen_size:
-        raise ValueError(f"The screen size must be a power of 2, got: {cfg.env.screen_size}")
-
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -351,6 +346,11 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    # These arguments cannot be changed
+    cfg.env.frame_stack = -1
+    if 2 ** int(np.log2(cfg.env.screen_size)) != cfg.env.screen_size:
+        raise ValueError(f"The screen size must be a power of 2, got: {cfg.env.screen_size}")
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -364,7 +364,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         [
             partial(
                 RestartOnException,
-                make_dict_env(
+                make_env(
                     cfg,
                     cfg.seed + rank * cfg.env.num_envs + i,
                     rank * cfg.env.num_envs,

@@ -55,7 +55,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.timer import timer
 
@@ -99,7 +99,7 @@ def sota_main(fabric: Fabric, cfg: DictConfig):
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,

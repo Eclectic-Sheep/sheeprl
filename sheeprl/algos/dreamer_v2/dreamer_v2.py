@@ -28,7 +28,7 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -376,10 +376,6 @@ def train(
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: DictConfig):
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-    cfg.env.frame_stack = 1
-
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -397,6 +393,10 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    # These arguments cannot be changed
+    cfg.env.screen_size = 64
+    cfg.env.frame_stack = 1
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -408,7 +408,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,

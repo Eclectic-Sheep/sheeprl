@@ -18,37 +18,6 @@ if _IS_DMC_AVAILABLE:
 
 
 def make_env(
-    env_id: str,
-    seed: Optional[int],
-    idx: int,
-    capture_video: bool,
-    run_name: Optional[str] = None,
-    prefix: str = "",
-    mask_velocities: bool = False,
-    vector_env_idx: int = 0,
-    action_repeat: int = 1,
-) -> Callable[[], gym.Env]:
-    def thunk() -> gym.Env:
-        env = gym.make(env_id, render_mode="rgb_array")
-        if mask_velocities:
-            env = MaskVelocityWrapper(env)
-        env = ActionRepeat(env, action_repeat)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if vector_env_idx == 0 and idx == 0 and run_name is not None:
-                env = gym.experimental.wrappers.RecordVideoV0(
-                    env,
-                    os.path.join(run_name, prefix + "_videos" if prefix else "videos"),
-                    disable_logger=True,
-                )
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
-
-    return thunk
-
-
-def make_dict_env(
     cfg: DictConfig,
     seed: int,
     rank: int,

@@ -2,7 +2,7 @@ import gymnasium as gym
 import hydra
 from omegaconf import DictConfig
 
-from sheeprl.utils.env import make_dict_env, make_env
+from sheeprl.utils.env import make_env
 
 
 @hydra.main(version_base=None, config_path="../sheeprl/configs", config_name="env_config")
@@ -17,17 +17,12 @@ def main(cfg: DictConfig) -> None:
         "sac_ae",
         "ppo",
         "ppo_decoupled",
+        "sac",
+        "sac_decoupled",
+        "droq",
+        "ppo_recurrent",
     }:
-        env: gym.Env = make_dict_env(cfg, cfg.seed, 0)()
-    elif cfg.agent in {"sac", "sac_decoupled", "droq", "ppo_recurrent"}:
-        env: gym.Env = make_env(
-            cfg.env.id,
-            cfg.seed,
-            0,
-            False,
-            mask_velocities="mask_velocities" in cfg.env and cfg.mask_velocities,
-            action_repeat=cfg.env.action_repeat,
-        )()
+        env: gym.Env = make_env(cfg, cfg.seed, 0)()
     else:
         raise ValueError(
             "Invalid selected agent: check the available agents with the command `python sheeprl.py --sheeprl_help`"

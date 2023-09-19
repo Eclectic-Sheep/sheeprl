@@ -21,7 +21,7 @@ from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -147,7 +147,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,
@@ -441,12 +441,4 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_dict_env(
-            cfg,
-            None,
-            0,
-            fabric.logger.log_dir,
-            "test",
-            vector_env_idx=0,
-        )()
-        test(agent.module, test_env, fabric, cfg)
+        test(agent.module, fabric, cfg)
