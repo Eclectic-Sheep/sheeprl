@@ -1,13 +1,14 @@
-import gymnasium as gym
 import torch
 from lightning import Fabric
 from omegaconf import DictConfig
 
 from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.utils.env import make_env
 
 
 @torch.no_grad()
-def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
+def test(agent: PPOAgent, fabric: Fabric, cfg: DictConfig):
+    env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
     cumulative_rew = 0

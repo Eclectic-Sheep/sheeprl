@@ -158,7 +158,7 @@ PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa python sheeprl.py \
 exp=dreamer_v2 \
 fabric.devices=1 \
 env=dmc \
-env.env.id=dmc_walker_walk \
+env.id=dmc_walker_walk \
 env.capture_video=True \
 env.action_repeat=2 \
 clip_rewards=False \

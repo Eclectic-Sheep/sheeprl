@@ -25,7 +25,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -58,7 +58,7 @@ def player(
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + i,
                 0,
@@ -75,8 +75,8 @@ def player(
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
         raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` "
-            "or `--mlp_keys state` "
+            "You should specify at least one CNN keys or MLP keys from the cli: `cnn_keys.encoder=[rgb]` "
+            "or `mlp_keys.encoder=[state]` "
         )
     fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
     fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
@@ -90,7 +90,7 @@ def player(
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
-    # Send (possibly updated, by the make_dict_env method for example) cfg to the trainers
+    # Send (possibly updated, by the make_env method for example) cfg to the trainers
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Create the actor and critic models
@@ -332,15 +332,7 @@ def player(
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_dict_env(
-            cfg,
-            None,
-            0,
-            fabric.logger.log_dir,
-            "test",
-            vector_env_idx=0,
-        )()
-        test(agent, test_env, fabric, cfg)
+        test(agent, fabric, cfg)
 
 
 def trainer(
@@ -351,7 +343,7 @@ def trainer(
     global_rank = world_collective.rank
     group_world_size = world_collective.world_size - 1
 
-    # Receive (possibly updated, by the make_dict_env method for example) cfg from the player
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
     cfg: DictConfig = data[0]
@@ -593,7 +585,7 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     if cfg.buffer.share_data:
         warnings.warn(
-            "You have called the script with `--share_data=True`: "
+            "You have called the script with `buffer.share_data=True`: "
             "decoupled scripts splits collected data in an almost-even way between the number of trainers"
         )
 

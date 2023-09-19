@@ -67,7 +67,7 @@ diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.n
 Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
 
 DIAMBRA enables to customize the environment with several [settings](https://docs.diambra.ai/envs/#general-environment-settings) and [wrappers](https://docs.diambra.ai/wrappers/).
-To modify the default settings or add other wrappers, you have to add the settings or wrappers you want in `env.env.diambra_settings` or `env.env.diambra_wrappers`, respectively.
+To modify the default settings or add other wrappers, you have to add the settings or wrappers you want in `env.wrapper.diambra_settings` or `env.wrapper.diambra_wrappers`, respectively.
 
 For insance, in the following example, we create the `custom_exp.yaml` file in the `sheeprl/configs/exp` folder where the we select the diambra environment, in addition, the player one is selected and a step ratio of $5$ is choosen. Moreover, the rewards are normalized by a factor of $0.3$.
 
@@ -101,8 +101,8 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 >
 > Some settings and wrappers are included in the cli arguments when the command is launched. These settings/wrappers cannot be specified in the `diambra_settings` and `diambra_wrappers` parameters, respectively.
 > The settings/wrappers you cannot specify in the `diambra_settings` and `diambra_wrappers` parameters are the following:
-> * `action_space` (settings): you can set it with the `env.env.action_space` argument.
-> * `attack_but_combination` (settings): you can set it with the `env.env.attack_but_combination` argument.
+> * `action_space` (settings): you can set it with the `env.wrapper.action_space` argument.
+> * `attack_but_combination` (settings): you can set it with the `env.wrapper.attack_but_combination` argument.
 > * `frame_shape` (settings): you can set it with the `env.screen_size` argument.
 > * `flatten` (wrappers): you cannot set it, since it is always `True`.
 > * `sticky_actions` (wrappers): you can set it with the `env.action_repeat` argument.

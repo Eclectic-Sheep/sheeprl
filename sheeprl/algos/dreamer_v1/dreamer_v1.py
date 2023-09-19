@@ -22,7 +22,7 @@ from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -356,10 +356,6 @@ def train(
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: DictConfig):
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-    cfg.env.frame_stack = 1
-
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -377,6 +373,10 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    # These arguments cannot be changed
+    cfg.env.screen_size = 64
+    cfg.env.frame_stack = 1
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -388,7 +388,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
         [
-            make_dict_env(
+            make_env(
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,
@@ -413,8 +413,8 @@ def main(fabric: Fabric, cfg: DictConfig):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
         raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` "
-            "or `--mlp_keys state` "
+            "You should specify at least one CNN keys or MLP keys from the cli: `cnn_keys.encoder=[rgb]` "
+            "or `mlp_keys.encoder=[state]` "
         )
     if (
         len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0

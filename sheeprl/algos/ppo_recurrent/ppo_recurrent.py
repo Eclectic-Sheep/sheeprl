@@ -110,8 +110,18 @@ def main(fabric: Fabric, cfg: DictConfig):
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
 
+    if "minedojo" in cfg.env.wrapper._target_.lower():
+        raise ValueError(
+            "MineDojo is not currently supported by PPO Recurrent agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
+
     if cfg.buffer.share_data:
-        warnings.warn("The script has been called with --share-data: with recurrent PPO only gradients are shared")
+        warnings.warn(
+            "The script has been called with `buffer.share_data=True`: with recurrent PPO only gradients are shared"
+        )
 
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -131,6 +141,12 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
+    if len(cfg.cnn_keys.encoder) > 0:
+        warnings.warn(
+            "PPO recurrent algorithm cannot allow to use images as observations, the CNN keys will be ignored"
+        )
+        cfg.cnn_keys.encoder = []
+
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -143,31 +159,37 @@ def main(fabric: Fabric, cfg: DictConfig):
     envs = vectorized_env(
         [
             make_env(
-                cfg.env.id,
+                cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
-                rank,
-                cfg.env.capture_video,
+                rank * cfg.env.num_envs,
                 logger.log_dir if rank == 0 else None,
                 "train",
-                mask_velocities="mask_velocities" in cfg.env and cfg.env.mask_velocities,
                 vector_env_idx=i,
             )
             for i in range(cfg.env.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported by the PPO recurrent agent")
-    if len(envs.single_observation_space.shape) > 1:
-        raise ValueError(
-            "Only environments with vector-only observations are supported by the PPO recurrent agent. "
-            f"Provided environment: {cfg.env.id}"
-        )
+    action_space = envs.single_action_space
+    observation_space = envs.single_observation_space
+    if not isinstance(action_space, gym.spaces.Discrete):
+        raise ValueError("Only discrete action space is supported by the PPO Recurrent agent")
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if len(cfg.mlp_keys.encoder) == 0:
+        raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
+    for k in cfg.mlp_keys.encoder:
+        if len(observation_space[k].shape) > 1:
+            raise ValueError(
+                "Only environments with vector-only observations are supported by the PPO "
+                "Recurrent agent. "
+                f"Provided environment: {cfg.env.id}"
+            )
 
     # Define the agent and the optimizer
-    obs_dim = prod(envs.single_observation_space.shape)
+    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
     agent = RecurrentPPOAgent(
         observation_dim=obs_dim,
-        action_dim=envs.single_action_space.n,
+        action_dim=action_space.n,
         lstm_hidden_size=cfg.algo.lstm.hidden_size,
         actor_hidden_size=cfg.algo.actor.dense_units,
         actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,
@@ -245,7 +267,10 @@ def main(fabric: Fabric, cfg: DictConfig):
         # Get the first environment observation and start the optimization
         next_state = agent.initial_states
         next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
-        next_obs = torch.tensor(envs.reset(seed=cfg.seed)[0], dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+        o = envs.reset(seed=cfg.seed)[0]
+        next_obs = torch.cat([torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1).unsqueeze(
+            0
+        )
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
@@ -266,7 +291,9 @@ def main(fabric: Fabric, cfg: DictConfig):
                 done = np.logical_or(done, truncated)
 
             with device:
-                obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # [1, N_envs, N_obs]
+                obs = torch.cat(
+                    [torch.tensor(obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+                ).unsqueeze(0)
                 done = torch.tensor(done, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
                 reward = torch.tensor(reward, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
 
@@ -418,14 +445,4 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
-            cfg.env.id,
-            None,
-            0,
-            cfg.env.capture_video,
-            fabric.logger.log_dir,
-            "test",
-            mask_velocities="mask_velocities" in cfg.env and cfg.env.mask_velocities,
-            vector_env_idx=0,
-        )()
-        test(agent.module, test_env, fabric, cfg)
+        test(agent.module, fabric, cfg)

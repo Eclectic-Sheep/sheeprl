@@ -8,7 +8,7 @@ from lightning import Fabric
 from omegaconf import DictConfig
 from torch import Tensor
 
-from sheeprl.utils.env import make_dict_env
+from sheeprl.utils.env import make_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v3.agent import PlayerDV3
@@ -76,7 +76,7 @@ def test(
             Default to False.
     """
     log_dir = fabric.logger.log_dir if len(fabric.loggers) > 0 else os.getcwd()
-    env: gym.Env = make_dict_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
+    env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
     device = fabric.device

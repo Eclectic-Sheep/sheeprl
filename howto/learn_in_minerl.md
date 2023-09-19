@@ -26,9 +26,9 @@ We have modified the MineRL environments to have a custom action and observation
 > **Note**
 > If you want to use a *MineRL* environment, you must specify it, for example, by setting `env=minerl` in the cli arguments or by creating your custom config file.
 >
-> In all these environments, it is possible to have or not a dense reward, you can set the type of the reward by setting the `env.env.dense` argument to `True` if you want a dense reward, to `False` otherwise.
+> In all these environments, it is possible to have or not a dense reward, you can set the type of the reward by setting the `env.wrapper.dense` argument to `True` if you want a dense reward, to `False` otherwise.
 >
-> In the Navigate task, it is also possible to choose wheter or not to train the agent on an extreme environment (for more info, check [here](https://minerl.readthedocs.io/en/v0.4.4/environments/index.html#minerlnavigateextreme-v0)). To choose wheter or not to train the agent on an extreme environment, you need to set the `env.env.extreme` argument to `True` or `False`.
+> In the Navigate task, it is also possible to choose wheter or not to train the agent on an extreme environment (for more info, check [here](https://minerl.readthedocs.io/en/v0.4.4/environments/index.html#minerlnavigateextreme-v0)). To choose wheter or not to train the agent on an extreme environment, you need to set the `env.wrapper.extreme` argument to `True` or `False`.
 >
 > In addition, in all the environments, it is possible to set the break speed multiplier through the `env.break_speed_multiplier` argument.
 
