@@ -408,12 +408,4 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     envs.close()
     if fabric.is_global_zero:
-        test_env = make_env(
-            cfg,
-            None,
-            0,
-            logger.log_dir,
-            "test",
-            vector_env_idx=0,
-        )()
-        test(agent.actor.module, test_env, fabric, cfg)
+        test(agent.actor.module, fabric, cfg)

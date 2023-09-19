@@ -1,13 +1,14 @@
-import gymnasium as gym
 import torch
 from lightning import Fabric
 from omegaconf import DictConfig
 
 from sheeprl.algos.sac.agent import SACActor
+from sheeprl.utils.env import make_env
 
 
 @torch.no_grad()
-def test(actor: SACActor, env: gym.Env, fabric: Fabric, cfg: DictConfig):
+def test(actor: SACActor, fabric: Fabric, cfg: DictConfig):
+    env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
     cumulative_rew = 0
