@@ -13,7 +13,6 @@ from gymnasium.core import RenderFrame
 
 class CrafterWrapper(core.Env):
     def __init__(self, id: str, screen_size: Union[int, Tuple[int, int]] = 64, seed: Optional[int] = None) -> None:
-        super().__init__()
         assert id in {"reward", "nonreward"}
         if isinstance(screen_size, int):
             screen_size = (screen_size,) * 2
@@ -33,6 +32,13 @@ class CrafterWrapper(core.Env):
         self.reward_range = self._env.reward_range or (-np.inf, np.inf)
         self.observation_space.seed(seed)
         self.action_space.seed(seed)
+
+        # render
+        self._render_mode: str = "rgb_array"
+
+    @property
+    def render_mode(self) -> str:
+        return self._render_mode
 
     def _convert_obs(self, obs: np.ndarray) -> Dict[str, np.ndarray]:
         return {"rgb": obs}

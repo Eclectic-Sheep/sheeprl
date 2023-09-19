@@ -75,8 +75,8 @@ def player(
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
         raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: `--cnn_keys rgb` "
-            "or `--mlp_keys state` "
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
     fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
     fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
