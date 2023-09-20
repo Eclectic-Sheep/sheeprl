@@ -265,18 +265,16 @@ def main(fabric: Fabric, cfg: DictConfig):
             scheduler.load_state_dict(state["scheduler"])
 
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     next_obs = {}
-    for k in o.keys():
-        if k in obs_keys:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.mlp_keys.encoder:
-                torch_obs = torch_obs.float()
-            step_data[k] = torch_obs
-            next_obs[k] = torch_obs
-    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
+    for k in obs_keys:
+        torch_obs = torch.as_tensor(obs[k]).to(fabric.device)
+        if k in cfg.cnn_keys.encoder:
+            torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
+        elif k in cfg.mlp_keys.encoder:
+            torch_obs = torch_obs.float()
+        step_data[k] = torch_obs
+        next_obs[k] = torch_obs
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
@@ -290,7 +288,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                     normalized_obs = {
                         k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
                     }
-                    actions, logprobs, _, value = agent.module(normalized_obs)
+                    actions, logprobs, _, values = agent.module(normalized_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
@@ -298,16 +296,27 @@ def main(fabric: Fabric, cfg: DictConfig):
                     actions = torch.cat(actions, -1)
 
                 # Single environment step
-                o, reward, done, truncated, info = envs.step(real_actions)
-                done = np.logical_or(done, truncated)
-
-            with device:
-                rewards = torch.tensor(reward, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
-                done = torch.tensor(done, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
+                obs, rewards, dones, truncated, info = envs.step(real_actions)
+                truncated_envs = np.nonzero(truncated)[0]
+                if len(truncated_envs) > 0:
+                    real_next_obs = {}
+                    for final_obs in info["final_observation"]:
+                        if final_obs is not None:
+                            for k, v in final_obs.items():
+                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                                if k in cfg.cnn_keys.encoder:
+                                    torch_v = torch_v / 255.0 - 0.5
+                                real_next_obs[k] = torch_v
+                    with torch.no_grad():
+                        vals = agent.module.get_value(real_next_obs).cpu().numpy()
+                        rewards[truncated_envs] += vals
+                dones = np.logical_or(dones, truncated)
+                dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
+                rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
 
             # Update the step data
-            step_data["dones"] = next_done
-            step_data["values"] = value
+            step_data["dones"] = dones
+            step_data["values"] = values
             step_data["actions"] = actions
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
@@ -318,19 +327,16 @@ def main(fabric: Fabric, cfg: DictConfig):
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
 
-            # Update the observation and done
-            obs = {}
-            for k in o.keys():
-                if k in obs_keys:
-                    torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-                    if k in cfg.cnn_keys.encoder:
-                        torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                    if k in cfg.mlp_keys.encoder:
-                        torch_obs = torch_obs.float()
-                    step_data[k] = torch_obs
-                    obs[k] = torch_obs
-            next_obs = obs
-            next_done = done
+            # Update the observation and dones
+            next_obs = {}
+            for k in obs_keys:
+                if k in cfg.cnn_keys.encoder:
+                    torch_obs = torch.as_tensor(obs[k], device=device)
+                    torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
+                elif k in cfg.mlp_keys.encoder:
+                    torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
+                step_data[k] = torch_obs
+                next_obs[k] = torch_obs
 
             if "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
@@ -352,7 +358,6 @@ def main(fabric: Fabric, cfg: DictConfig):
                 rb["values"],
                 rb["dones"],
                 next_values,
-                next_done,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,

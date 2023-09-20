@@ -16,7 +16,6 @@ def gae(
     values: Tensor,
     dones: Tensor,
     next_value: Tensor,
-    next_done: Tensor,
     num_steps: int,
     gamma: float,
     gae_lambda: float,
@@ -27,8 +26,7 @@ def gae(
         rewards (Tensor): all rewards collected from the last rollout
         values (Tensor): all values collected from the last rollout
         dones (Tensor): all dones collected from the last rollout
-        next_value (Tensor): next observation
-        next_done (Tensor): next done
+        next_values (Tensor): estimated values for the next observations
         num_steps (int): the number of steps played
         gamma (float): discout factor
         gae_lambda (float): lambda for GAE estimation
@@ -37,58 +35,19 @@ def gae(
         estimated returns
         estimated advantages
     """
-    advantages = torch.zeros_like(rewards)
     lastgaelam = 0
-    not_done = torch.logical_not(dones)
+    nextvalues = next_value
+    not_dones = torch.logical_not(dones)
+    nextnonterminal = not_dones[-1]
+    advantages = torch.zeros_like(rewards)
     for t in reversed(range(num_steps)):
-        if t == num_steps - 1:
-            nextnonterminal = torch.logical_not(next_done)
-            nextvalues = next_value
-        else:
-            nextnonterminal = not_done[t + 1]
+        if t < num_steps - 1:
+            nextnonterminal = not_dones[t]
             nextvalues = values[t + 1]
         delta = rewards[t] + nextvalues * nextnonterminal * gamma - values[t]
         advantages[t] = lastgaelam = delta + nextnonterminal * lastgaelam * gamma * gae_lambda
     returns = advantages + values
     return returns, advantages
-
-
-def compute_lambda_values(
-    rewards: Tensor,
-    values: Tensor,
-    done_mask: Tensor,
-    last_values: Tensor,
-    horizon: int = 15,
-    lmbda: float = 0.95,
-) -> Tensor:
-    """
-    Compute the lambda values by keeping the gradients of the variables.
-
-    Args:
-        rewards (Tensor): the estimated rewards in the latent space.
-        values (Tensor): the estimated values in the latent space.
-        done_mask (Tensor): 1s for the entries that are relative to a terminal step, 0s otherwise.
-        last_values (Tensor): the next values for the last state in the horzon.
-        horizon: (int, optional): the horizon of imagination.
-            Default to 15.
-        lmbda (float, optional): the discout lmbda factor for the lambda values computation.
-            Default to 0.95.
-
-    Returns:
-        The tensor of the computed lambda values.
-    """
-    last_values = torch.clone(last_values)
-    last_lambda_values = 0
-    lambda_targets = []
-    for step in reversed(range(horizon - 1)):
-        if step == horizon - 2:
-            next_values = last_values
-        else:
-            next_values = values[step + 1] * (1 - lmbda)
-        delta = rewards[step] + next_values * done_mask[step]
-        last_lambda_values = delta + lmbda * done_mask[step] * last_lambda_values
-        lambda_targets.append(last_lambda_values)
-    return torch.stack(list(reversed(lambda_targets)), dim=0)
 
 
 def init_weights(m: nn.Module):
