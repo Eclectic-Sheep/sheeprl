@@ -1,7 +1,6 @@
 import copy
 import os
 import pathlib
-import time
 import warnings
 from math import prod
 from typing import Optional
