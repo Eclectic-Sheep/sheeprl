@@ -41,10 +41,15 @@ def train(
             new_logprobs = []
             sequence = data[idxes, :]
             state = sequence["prev_states"][:1]
+            for k in cfg.cnn_keys.encoder:
+                sequence[k] = sequence[k] / 255.0 - 0.5
             for step in sequence:
                 step = step.unsqueeze(0)
                 _, logprobs, values, state = agent(
-                    {"state": step["state"]}, prev_actions=step["prev_actions"], prev_hx=state, actions=step["actions"]
+                    {k: step[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
+                    prev_actions=step["prev_actions"],
+                    prev_hx=state,
+                    actions=step["actions"],
                 )
                 state = (1 - step["dones"]) * state
                 new_values.append(values)
@@ -254,7 +259,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     obs = {}
     for k in obs_keys:
-        torch_obs = torch.as_tensor(o[k]).to(fabric.device)
+        torch_obs = torch.as_tensor(o[k], device=fabric.device)
         if k in cfg.cnn_keys.encoder:
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
         elif k in cfg.mlp_keys.encoder:
@@ -264,7 +269,7 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     # Get the resetted recurrent states from the agent
     prev_states = agent.initial_states
-    prev_actions = torch.zeros(1, cfg.env.num_envs, sum(actions_dim))
+    prev_actions = torch.zeros(1, cfg.env.num_envs, sum(actions_dim), device=fabric.device)
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
