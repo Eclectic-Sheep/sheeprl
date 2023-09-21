@@ -297,11 +297,6 @@ class SequentialReplayBuffer(ReplayBuffer):
                 list(range(0, first_range_end)) + list(range(self._pos, second_range_end)),
                 device=self.device,
             )
-            if len(valid_idxes) < batch_dim:
-                raise ValueError(
-                    f"n_samples * batch size ({batch_dim}) is larger than sampleable items ({len(valid_idxes)}), "
-                    "check also sequence_length"
-                )
             # start_idxes are the indices of the first elements of the sequences
             start_idxes = valid_idxes[torch.randint(0, len(valid_idxes), size=(batch_dim,), device=self.device)]
         else:

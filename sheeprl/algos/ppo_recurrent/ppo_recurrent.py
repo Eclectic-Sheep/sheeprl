@@ -11,13 +11,12 @@ from lightning.fabric import Fabric
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
-from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
-from sheeprl.algos.ppo.loss import policy_loss, value_loss
+from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.utils import test
-from sheeprl.data import ReplayBuffer
+from sheeprl.data.buffers import SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -34,62 +33,64 @@ def train(
     aggregator: MetricAggregator,
     cfg: DictConfig,
 ):
-    for _ in range(cfg.algo.update_epochs):
-        sampler = BatchSampler(range(cfg.algo.rollout_steps), batch_size=cfg.per_rank_sequence_length, drop_last=False)
-        for idxes in sampler:
-            new_values = []
-            new_logprobs = []
-            sequence = data[idxes, :]
-            state = sequence["prev_states"][:1]
-            for k in cfg.cnn_keys.encoder:
-                sequence[k] = sequence[k] / 255.0 - 0.5
-            for step in sequence:
-                step = step.unsqueeze(0)
-                _, logprobs, values, state = agent(
-                    {k: step[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
-                    prev_actions=step["prev_actions"],
-                    prev_hx=state,
-                    actions=step["actions"],
-                )
-                state = (1 - step["dones"]) * state
-                new_values.append(values)
-                new_logprobs.append(logprobs)
-
-            normalized_advantages = sequence["advantages"]
-            if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
-                normalized_advantages = normalize_tensor(normalized_advantages)
-
-            # Policy loss
-            pg_loss = policy_loss(
-                torch.cat(new_logprobs, dim=0),
-                sequence["logprobs"],
-                normalized_advantages,
-                cfg.algo.clip_coef,
-                "mean",
+    for i in range(cfg.algo.update_epochs):
+        entropies = []
+        new_values = []
+        new_logprobs = []
+        sequence = data[i]
+        for k in cfg.cnn_keys.encoder:
+            sequence[k] = sequence[k] / 255.0 - 0.5
+        for step in sequence:
+            step = step.unsqueeze(0)
+            _, logprobs, entropy, values, _ = agent(
+                {k: step[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
+                prev_actions=step["prev_actions"],
+                prev_hx=step["prev_states"],
+                actions=step["actions"],
             )
+            entropies.append(entropy)
+            new_values.append(values)
+            new_logprobs.append(logprobs)
 
-            # Value loss
-            v_loss = value_loss(
-                torch.cat(new_values, dim=0),
-                sequence["values"],
-                sequence["returns"],
-                cfg.algo.clip_coef,
-                cfg.algo.clip_vloss,
-                "mean",
-            )
+        normalized_advantages = sequence["advantages"]
+        if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
+            normalized_advantages = normalize_tensor(normalized_advantages)
 
-            # Equation (9) in the paper
-            loss = pg_loss + cfg.algo.vf_coef * v_loss
+        # Policy loss
+        pg_loss = policy_loss(
+            torch.cat(new_logprobs, dim=0),
+            sequence["logprobs"],
+            normalized_advantages,
+            cfg.algo.clip_coef,
+            "mean",
+        )
 
-            optimizer.zero_grad(set_to_none=True)
-            fabric.backward(loss)
-            if cfg.algo.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-            optimizer.step()
+        # Value loss
+        v_loss = value_loss(
+            torch.cat(new_values, dim=0),
+            sequence["values"],
+            sequence["returns"],
+            cfg.algo.clip_coef,
+            cfg.algo.clip_vloss,
+            "mean",
+        )
 
-            # Update metrics
-            aggregator.update("Loss/policy_loss", pg_loss.detach())
-            aggregator.update("Loss/value_loss", v_loss.detach())
+        # Entropy loss
+        ent_loss = entropy_loss(torch.cat(entropies, dim=0), cfg.algo.loss_reduction)
+
+        # Equation (9) in the paper
+        loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+
+        optimizer.zero_grad(set_to_none=True)
+        fabric.backward(loss)
+        if cfg.algo.max_grad_norm > 0.0:
+            fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+        optimizer.step()
+
+        # Update metrics
+        aggregator.update("Loss/policy_loss", pg_loss.detach())
+        aggregator.update("Loss/value_loss", v_loss.detach())
+        aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
 @register_algorithm()
@@ -204,11 +205,12 @@ def main(fabric: Fabric, cfg: DictConfig):
             "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
         }
     ).to(device)
 
     # Local data
-    rb = ReplayBuffer(
+    rb = SequentialReplayBuffer(
         cfg.algo.rollout_steps,
         cfg.env.num_envs,
         device=device,
@@ -283,7 +285,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                     normalized_obs = {
                         k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
                     }
-                    actions, logprobs, values, states = agent.module(
+                    actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_hx=prev_states
                     )
                     if is_continuous:
@@ -380,7 +382,11 @@ def main(fabric: Fabric, cfg: DictConfig):
             rb["advantages"] = advantages.float()
 
         # Get the training data as a TensorDict
-        local_data = rb.buffer
+        local_data = rb.sample(
+            batch_size=cfg.per_rank_batch_size,
+            sequence_length=cfg.per_rank_sequence_length,
+            n_samples=cfg.algo.update_epochs,
+        )
 
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
             train(fabric, agent, optimizer, local_data, aggregator, cfg)

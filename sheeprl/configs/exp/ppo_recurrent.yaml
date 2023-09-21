@@ -7,10 +7,11 @@ defaults:
 
 algo:
   rollout_steps: 256
+  update_epochs: 16
 
 # Experiment
-per_rank_batch_size: 32
-per_rank_sequence_length: 32
+per_rank_batch_size: 16
+per_rank_sequence_length: 64
 
 # Environment
 env:

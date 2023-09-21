@@ -171,9 +171,10 @@ class RecurrentPPOAgent(nn.Module):
 
     def get_sampled_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
-    ) -> Tuple[Tuple[Tensor, ...], Tensor]:
+    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor]:
         logprobs = []
         sampled_actions = []
+        entropies = []
         if self.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
             if actions is None:
@@ -182,8 +183,9 @@ class RecurrentPPOAgent(nn.Module):
                 # always composed by a tuple of one element containing all the
                 # continuous actions
                 actions = actions[0]
-            logprobs.append(dist.log_prob(actions))
             sampled_actions.append(actions)
+            entropies.append(dist.entropy())
+            logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)
@@ -191,8 +193,13 @@ class RecurrentPPOAgent(nn.Module):
                     sampled_actions.append(dist.sample())
                 else:
                     sampled_actions.append(actions[i])
+                entropies.append(dist.entropy())
                 logprobs.append(dist.log_prob(sampled_actions[-1]))
-        return tuple(sampled_actions), torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True)
+        return (
+            tuple(sampled_actions),
+            torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
+            torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
+        )
 
     def get_pre_dist(self, hx: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
         actor_features = self.actor_backbone(hx)
@@ -209,7 +216,7 @@ class RecurrentPPOAgent(nn.Module):
 
     def forward(
         self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor, actions: Optional[List[Tensor]] = None
-    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tensor]:
         """Compute actor logits and critic values.
 
         Args:
@@ -218,13 +225,15 @@ class RecurrentPPOAgent(nn.Module):
             prev_hx (Tensor): the previous state of the GRU.
 
         Returns:
-            actor logits
-            critic values
-            the next state of the GRU.
+            actions (Tuple[Tensor, ...]): the sampled actions
+            logprobs (Tensor): the log probabilities of the actions w.r.t. their distributions.
+            entropies (Tensor): the entropies of the actions distributions.
+            values (Tensor): the state values.
+            hx (Tensor): the new recurrent state.
         """
         embedded_obs = self.feature_extractor(obs)
         hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
         values = self.get_values(hx)
         pre_dist = self.get_pre_dist(hx)
-        actions, logprobs = self.get_sampled_actions(pre_dist, actions)
-        return actions, logprobs, values, hx
+        actions, logprobs, entropies = self.get_sampled_actions(pre_dist, actions)
+        return actions, logprobs, entropies, values, hx
