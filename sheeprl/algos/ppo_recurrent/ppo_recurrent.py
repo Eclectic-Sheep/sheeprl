@@ -362,10 +362,10 @@ def main(fabric: Fabric, cfg: DictConfig):
                 stop = ep_end_idx
                 # Do not include the done, since when we encounter a done it means that
                 # the episode has started
-                episode = env_data[start:stop]
+                episode = env_data[start : stop + 1]
                 if len(episode) > 0:
                     episodes.append(episode)
-                start = stop
+                start = stop + 1
         # 2. Split every episode into sequences of length `per_rank_batch_size`
         if cfg.per_rank_batch_size is not None and cfg.per_rank_batch_size > 0:
             sequences = list(itertools.chain.from_iterable([ep.split(cfg.per_rank_batch_size) for ep in episodes]))
