@@ -6,7 +6,8 @@ defaults:
   - _self_
 
 # Experiment
-per_rank_num_batches: 4
+per_rank_batch_size: 32
+per_rank_sequence_length: 32
 
 # Environment
 env:
