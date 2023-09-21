@@ -45,8 +45,8 @@ class CompareCollate:
             "rejected_input_ids": input_ids[len(batch) :],
             "chosen_attention_mask": attention_mask[: len(batch)],
             "rejected_attention_mask": attention_mask[len(batch) :],
-            "chosen_targets": targets[: len(batch)],
-            "rejected_targets": targets[len(batch) :],
+            "chosen_masked_targets": targets[: len(batch)],
+            "rejected_masked_targets": targets[len(batch) :],
         }
 
 
