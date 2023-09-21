@@ -22,6 +22,7 @@ from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
+from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_models
 from sheeprl.data.buffers import AsyncReplayBuffer
@@ -31,7 +32,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import compute_lambda_values, init_weights, polynomial_decay
+from sheeprl.utils.utils import init_weights, polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"

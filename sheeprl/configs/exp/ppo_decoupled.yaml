@@ -5,3 +5,6 @@ defaults:
   - override /algo: ppo_decoupled
   - override /env: gym
   - _self_
+
+fabric:
+  devices: 2

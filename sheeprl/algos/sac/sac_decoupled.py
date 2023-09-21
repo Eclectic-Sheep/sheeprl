@@ -10,7 +10,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
@@ -318,9 +317,11 @@ def trainer(
     cfg: DictConfig = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
+    fabric = Fabric(
+        strategy=DDPStrategy(process_group=optimization_pg),
+        devices=cfg.fabric.devices,
+        callbacks=[CheckpointCallback()],
+    )
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic

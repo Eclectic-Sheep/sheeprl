@@ -20,6 +20,7 @@ from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
+from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.env import make_env
@@ -27,7 +28,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import compute_lambda_values, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
