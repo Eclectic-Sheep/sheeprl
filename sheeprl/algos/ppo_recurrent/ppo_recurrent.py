@@ -1,11 +1,7 @@
 import copy
-import itertools
 import os
 import pathlib
 import warnings
-from contextlib import nullcontext
-from math import prod
-from typing import List
 
 import gymnasium as gym
 import hydra
@@ -14,13 +10,11 @@ import torch
 from lightning.fabric import Fabric
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
-from tensordict.tensordict import TensorDictBase, pad_sequence
-from torch.distributed.algorithms.join import Join
-from torch.distributions import Categorical
-from torch.utils.data.sampler import BatchSampler, RandomSampler
+from tensordict.tensordict import TensorDictBase
+from torch.utils.data.sampler import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
-from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
+from sheeprl.algos.ppo.loss import policy_loss, value_loss
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data import ReplayBuffer
@@ -40,69 +34,57 @@ def train(
     aggregator: MetricAggregator,
     cfg: DictConfig,
 ):
-    num_sequences = data.shape[1]
-    if cfg.per_rank_num_batches > 0:
-        batch_size = num_sequences // cfg.per_rank_num_batches
-        batch_size = batch_size if batch_size > 0 else num_sequences
-    else:
-        batch_size = 1
-    with Join([agent._forward_module]) if fabric.world_size > 1 else nullcontext():
-        for _ in range(cfg.algo.update_epochs):
-            states = ((data["actor_hxs"], data["actor_cxs"]), (data["critic_hxs"], data["critic_cxs"]))
-            sampler = BatchSampler(
-                RandomSampler(range(num_sequences)),
-                batch_size=batch_size,
-                drop_last=False,
-            )  # Random sampling sequences
-            for idxes in sampler:
-                batch = data[:, idxes]
-                mask = batch["mask"].unsqueeze(-1)
-                action_logits, new_values, _ = agent(
-                    batch["observations"],
-                    state=tuple([tuple([s[:1, idxes] for s in state]) for state in states]),
-                    mask=mask,
+    for _ in range(cfg.algo.update_epochs):
+        sampler = BatchSampler(range(cfg.algo.rollout_steps), batch_size=cfg.per_rank_sequence_length, drop_last=False)
+        for idxes in sampler:
+            new_values = []
+            new_logprobs = []
+            sequence = data[idxes, :]
+            state = sequence["prev_states"][:1]
+            for step in sequence:
+                step = step.unsqueeze(0)
+                _, logprobs, values, state = agent(
+                    {"state": step["state"]}, prev_actions=step["prev_actions"], prev_hx=state, actions=step["actions"]
                 )
-                dist = Categorical(logits=action_logits.unsqueeze(-2))
+                state = (1 - step["dones"]) * state
+                new_values.append(values)
+                new_logprobs.append(logprobs)
 
-                normalized_advantages = batch["advantages"][mask]
-                if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
-                    normalized_advantages = normalize_tensor(normalized_advantages)
+            normalized_advantages = sequence["advantages"]
+            if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
+                normalized_advantages = normalize_tensor(normalized_advantages)
 
-                # Policy loss
-                pg_loss = policy_loss(
-                    dist.log_prob(batch["actions"])[mask],
-                    batch["logprobs"][mask],
-                    normalized_advantages,
-                    cfg.algo.clip_coef,
-                    "mean",
-                )
+            # Policy loss
+            pg_loss = policy_loss(
+                torch.cat(new_logprobs, dim=0),
+                sequence["logprobs"],
+                normalized_advantages,
+                cfg.algo.clip_coef,
+                "mean",
+            )
 
-                # Value loss
-                v_loss = value_loss(
-                    new_values[mask],
-                    batch["values"][mask],
-                    batch["returns"][mask],
-                    cfg.algo.clip_coef,
-                    cfg.algo.clip_vloss,
-                    "mean",
-                )
+            # Value loss
+            v_loss = value_loss(
+                torch.cat(new_values, dim=0),
+                sequence["values"],
+                sequence["returns"],
+                cfg.algo.clip_coef,
+                cfg.algo.clip_vloss,
+                "mean",
+            )
 
-                # Entropy loss
-                ent_loss = entropy_loss(dist.entropy()[mask], "mean")
+            # Equation (9) in the paper
+            loss = pg_loss + cfg.algo.vf_coef * v_loss
 
-                # Equation (9) in the paper
-                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+            optimizer.zero_grad(set_to_none=True)
+            fabric.backward(loss)
+            if cfg.algo.max_grad_norm > 0.0:
+                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+            optimizer.step()
 
-                optimizer.zero_grad(set_to_none=True)
-                fabric.backward(loss)
-                if cfg.algo.max_grad_norm > 0.0:
-                    fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-                optimizer.step()
-
-                # Update metrics
-                aggregator.update("Loss/policy_loss", pg_loss.detach())
-                aggregator.update("Loss/value_loss", v_loss.detach())
-                aggregator.update("Loss/entropy_loss", ent_loss.detach())
+            # Update metrics
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
 
 
 @register_algorithm()
@@ -141,12 +123,6 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.root_dir = root_dir
         cfg.run_name = run_name
 
-    if len(cfg.cnn_keys.encoder) > 0:
-        warnings.warn(
-            "PPO recurrent algorithm cannot allow to use images as observations, the CNN keys will be ignored"
-        )
-        cfg.cnn_keys.encoder = []
-
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
@@ -169,33 +145,41 @@ def main(fabric: Fabric, cfg: DictConfig):
             for i in range(cfg.env.num_envs)
         ]
     )
-    action_space = envs.single_action_space
     observation_space = envs.single_observation_space
-    if not isinstance(action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported by the PPO Recurrent agent")
+
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if len(cfg.mlp_keys.encoder) == 0:
-        raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
-    for k in cfg.mlp_keys.encoder:
-        if len(observation_space[k].shape) > 1:
-            raise ValueError(
-                "Only environments with vector-only observations are supported by the PPO "
-                "Recurrent agent. "
-                f"Provided environment: {cfg.env.id}"
-            )
+    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
+    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
+    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+
+    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+    actions_dim = (
+        envs.single_action_space.shape
+        if is_continuous
+        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
+    )
 
     # Define the agent and the optimizer
-    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
     agent = RecurrentPPOAgent(
-        observation_dim=obs_dim,
-        action_dim=action_space.n,
-        lstm_hidden_size=cfg.algo.lstm.hidden_size,
-        actor_hidden_size=cfg.algo.actor.dense_units,
-        actor_pre_lstm_hidden_size=cfg.algo.actor.pre_lstm_hidden_size,
-        critic_hidden_size=cfg.algo.critic.dense_units,
-        critic_pre_lstm_hidden_size=cfg.algo.critic.pre_lstm_hidden_size,
+        actions_dim=actions_dim,
+        obs_space=observation_space,
+        encoder_cfg=cfg.algo.encoder,
+        rnn_cfg=cfg.algo.rnn,
+        actor_cfg=cfg.algo.actor,
+        critic_cfg=cfg.algo.critic,
+        cnn_keys=cfg.cnn_keys.encoder,
+        mlp_keys=cfg.mlp_keys.encoder,
+        is_continuous=is_continuous,
         num_envs=cfg.env.num_envs,
+        screen_size=cfg.env.screen_size,
+        device=device,
     )
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
@@ -215,7 +199,6 @@ def main(fabric: Fabric, cfg: DictConfig):
             "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
         }
     ).to(device)
 
@@ -228,6 +211,10 @@ def main(fabric: Fabric, cfg: DictConfig):
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     step_data = TensorDict({}, batch_size=[1, cfg.env.num_envs], device=device)
+
+    # Check that `rollout_steps` = k * `per_rank_sequence_length`
+    if cfg.algo.rollout_steps % cfg.per_rank_sequence_length != 0:
+        pass
 
     # Global variables
     last_train = 0
@@ -263,13 +250,21 @@ def main(fabric: Fabric, cfg: DictConfig):
         if cfg.checkpoint.resume_from:
             scheduler.load_state_dict(state["scheduler"])
 
-    with device:
-        # Get the first environment observation and start the optimization
-        next_state = agent.initial_states
-        obs = envs.reset(seed=cfg.seed)[0]
-        next_obs = torch.cat(
-            [torch.tensor(obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
-        ).unsqueeze(0)
+    # Get the first environment observation and start the optimization
+    o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    obs = {}
+    for k in obs_keys:
+        torch_obs = torch.as_tensor(o[k]).to(fabric.device)
+        if k in cfg.cnn_keys.encoder:
+            torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
+        elif k in cfg.mlp_keys.encoder:
+            torch_obs = torch_obs.float()
+        step_data[k] = torch_obs[None]
+        obs[k] = torch_obs
+
+    # Get the resetted recurrent states from the agent
+    prev_states = agent.initial_states
+    prev_actions = torch.zeros(1, cfg.env.num_envs, sum(actions_dim))
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
@@ -280,32 +275,47 @@ def main(fabric: Fabric, cfg: DictConfig):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    action_logits, values, state = agent.module(next_obs, state=next_state)
-                    dist = Categorical(logits=action_logits.unsqueeze(-2))
-                    actions = dist.sample()
-                    logprobs = dist.log_prob(actions)
+                    normalized_obs = {
+                        k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+                    }
+                    actions, logprobs, values, states = agent.module(
+                        normalized_obs, prev_actions=prev_actions, prev_hx=prev_states
+                    )
+                    if is_continuous:
+                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                    else:
+                        real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
+                    actions = torch.cat(actions, -1)
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(actions.cpu().numpy().reshape(envs.action_space.shape))
+                next_obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                truncated_envs = np.nonzero(truncated)[0]
+                if len(truncated_envs) > 0:
+                    real_next_obs = {}
+                    for final_obs in info["final_observation"]:
+                        if final_obs is not None:
+                            for k, v in final_obs.items():
+                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                                if k in cfg.cnn_keys.encoder:
+                                    torch_v = torch_v / 255.0 - 0.5
+                                real_next_obs[k] = torch_v[None]
+                    with torch.no_grad():
+                        feat = agent.module.feature_extractor(real_next_obs)
+                        real_states = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
+                        vals = agent.module.get_values(real_states).cpu().numpy()
+                        rewards[truncated_envs] += vals
                 dones = np.logical_or(dones, truncated)
-
-            with device:
-                obs = torch.cat(
-                    [torch.tensor(obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
-                ).unsqueeze(0)
-                dones = torch.tensor(dones, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
-                rewards = torch.tensor(rewards, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
+                dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(1, cfg.env.num_envs, -1)
+                rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(1, cfg.env.num_envs, -1)
 
             step_data["dones"] = dones
             step_data["values"] = values
+            step_data["states"] = states
             step_data["actions"] = actions
             step_data["rewards"] = rewards
             step_data["logprobs"] = logprobs
-            step_data["observations"] = next_obs
-            step_data["actor_hxs"] = next_state[0][0]
-            step_data["actor_cxs"] = next_state[0][1]
-            step_data["critic_hxs"] = next_state[1][0]
-            step_data["critic_cxs"] = next_state[1][1]
+            step_data["prev_states"] = prev_states
+            step_data["prev_actions"] = prev_actions
             if cfg.buffer.memmap:
                 step_data["returns"] = torch.zeros_like(rewards)
                 step_data["advantages"] = torch.zeros_like(rewards)
@@ -313,12 +323,25 @@ def main(fabric: Fabric, cfg: DictConfig):
             # Append data to buffer
             rb.add(step_data)
 
-            # Update observation, done and recurrent state
-            next_obs = obs
+            # Update actions
+            prev_actions = actions
+
+            # Update the observation
+            for k in obs_keys:
+                if k in cfg.cnn_keys.encoder:
+                    torch_obs = torch.as_tensor(obs[k], device=device)
+                    torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
+                elif k in cfg.mlp_keys.encoder:
+                    torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
+                step_data[k] = torch_obs[None]
+                next_obs[k] = torch_obs
+            obs = next_obs
+
+            # Reset the states if the episode is done
             if cfg.algo.reset_recurrent_state_on_done:
-                next_state = tuple([tuple([(1 - dones) * e for e in s]) for s in state])
+                prev_states = (1 - dones) * states
             else:
-                next_state = state
+                prev_states = states
 
             if "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
@@ -331,7 +354,12 @@ def main(fabric: Fabric, cfg: DictConfig):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            next_values, _ = agent.module.get_values(next_obs, critic_state=next_state[1])
+            normalized_obs = {
+                k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+            }
+            feat = agent.module.feature_extractor(normalized_obs)
+            next_states = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
+            next_values = agent.module.get_values(next_states)
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
@@ -349,32 +377,8 @@ def main(fabric: Fabric, cfg: DictConfig):
         # Get the training data as a TensorDict
         local_data = rb.buffer
 
-        # Train the agent
-        # 1. Split data into episodes (for every environment)
-        episodes: List[TensorDictBase] = []
-        for env_id in range(cfg.env.num_envs):
-            env_data = local_data[:, env_id]  # [N_steps, *]
-            episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
-            episode_ends = episode_ends.tolist()
-            episode_ends.append(cfg.algo.rollout_steps)
-            start = 0
-            for ep_end_idx in episode_ends:
-                stop = ep_end_idx
-                # Do not include the done, since when we encounter a done it means that
-                # the episode has started
-                episode = env_data[start : stop + 1]
-                if len(episode) > 0:
-                    episodes.append(episode)
-                start = stop + 1
-        # 2. Split every episode into sequences of length `per_rank_batch_size`
-        if cfg.per_rank_batch_size is not None and cfg.per_rank_batch_size > 0:
-            sequences = list(itertools.chain.from_iterable([ep.split(cfg.per_rank_batch_size) for ep in episodes]))
-        else:
-            sequences = episodes
-        padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
-
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-            train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
+            train(fabric, agent, optimizer, local_data, aggregator, cfg)
         train_step += world_size
 
         if cfg.algo.anneal_lr:

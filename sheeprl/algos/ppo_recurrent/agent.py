@@ -1,5 +1,5 @@
 from math import prod
-from typing import Any, Dict, List, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -169,19 +169,30 @@ class RecurrentPPOAgent(nn.Module):
                 actions.append(dist.mode)
         return tuple(actions)
 
-    def get_sampled_actions(self, pre_dist: Tuple[Tensor, ...]) -> Tuple[Tuple[Tensor, ...], Tensor]:
-        actions = []
+    def get_sampled_actions(
+        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
+    ) -> Tuple[Tuple[Tensor, ...], Tensor]:
         logprobs = []
+        sampled_actions = []
         if self.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
-            actions.append(dist.sample())
+            if actions is None:
+                actions = dist.sample()
+            else:
+                # always composed by a tuple of one element containing all the
+                # continuous actions
+                actions = actions[0]
             logprobs.append(dist.log_prob(actions))
+            sampled_actions.append(actions)
         else:
-            for logits in pre_dist:
+            for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)
-                actions.append(dist.sample())
-                logprobs.append(dist.log_prob(actions[-1]))
-        return tuple(actions), torch.stack(logprobs, dim=-1).sum(dim=-1)
+                if actions is None:
+                    sampled_actions.append(dist.sample())
+                else:
+                    sampled_actions.append(actions[i])
+                logprobs.append(dist.log_prob(sampled_actions[-1]))
+        return tuple(sampled_actions), torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True)
 
     def get_pre_dist(self, hx: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
         actor_features = self.actor_backbone(hx)
@@ -197,7 +208,7 @@ class RecurrentPPOAgent(nn.Module):
         return self.critic(hx)
 
     def forward(
-        self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor
+        self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor, actions: Optional[List[Tensor]] = None
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor]:
         """Compute actor logits and critic values.
 
@@ -215,5 +226,5 @@ class RecurrentPPOAgent(nn.Module):
         hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
         values = self.get_values(hx)
         pre_dist = self.get_pre_dist(hx)
-        actions, logprobs = self.get_sampled_actions(pre_dist)
+        actions, logprobs = self.get_sampled_actions(pre_dist, actions)
         return actions, logprobs, values, hx

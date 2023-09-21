@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 name: ppo_recurrent
-reset_recurrent_state_on_done: False
+reset_recurrent_state_on_done: True
 
 bias: True
 rnn:
