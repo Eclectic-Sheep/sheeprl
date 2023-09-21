@@ -196,7 +196,9 @@ class RecurrentPPOAgent(nn.Module):
     def get_values(self, hx: Tensor) -> Tensor:
         return self.critic(hx)
 
-    def forward(self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor
+    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor]:
         """Compute actor logits and critic values.
 
         Args:
@@ -211,6 +213,7 @@ class RecurrentPPOAgent(nn.Module):
         """
         embedded_obs = self.feature_extractor(obs)
         hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
+        values = self.get_values(hx)
         pre_dist = self.get_pre_dist(hx)
-        actions = self.get_sampled_actions(pre_dist)
-        return actions, hx
+        actions, logprobs = self.get_sampled_actions(pre_dist)
+        return actions, logprobs, values, hx
