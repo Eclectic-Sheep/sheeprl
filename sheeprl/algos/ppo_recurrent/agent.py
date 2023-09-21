@@ -54,7 +54,7 @@ class RecurrentModel(nn.Module):
 class RecurrentPPOAgent(nn.Module):
     def __init__(
         self,
-        actions_dim: int,
+        actions_dim: Sequence[int],
         obs_space: Dict[str, Any],
         encoder_cfg: DictConfig,
         rnn_cfg: DictConfig,
@@ -96,7 +96,7 @@ class RecurrentPPOAgent(nn.Module):
         features_dim = self.feature_extractor.output_dim
 
         self.rnn = RecurrentModel(
-            input_size=features_dim + actions_dim,
+            input_size=int(features_dim + sum(actions_dim)),
             gru_hidden_size=rnn_cfg.gru.hidden_size,
             mlp_dense_units=rnn_cfg.mlp.dense_units,
             mlp_activation=eval(rnn_cfg.mlp.activation),
@@ -133,7 +133,7 @@ class RecurrentPPOAgent(nn.Module):
             ),
         )
         if is_continuous:
-            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
+            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, int(sum(actions_dim)) * 2)])
         else:
             self.actor_heads = nn.ModuleList(
                 [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
