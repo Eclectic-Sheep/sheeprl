@@ -5,11 +5,15 @@ defaults:
 name: ppo_recurrent
 reset_recurrent_state_on_done: False
 
-lstm:
-  hidden_size: ${algo.dense_units}
-
-actor:
-  pre_lstm_hidden_size: ${algo.dense_units}
-
-critic:
-  pre_lstm_hidden_size: ${algo.dense_units}
+bias: True
+rnn:
+  mlp_pre_rnn: True
+  gru:
+    bias: ${algo.bias}
+    layer_norm: ${algo.layer_norm}
+    hidden_size: 64
+  mlp:
+    bias: ${algo.bias}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.dense_units}
+    activation: ${algo.dense_act}
