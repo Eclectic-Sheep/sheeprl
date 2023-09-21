@@ -266,11 +266,10 @@ def main(fabric: Fabric, cfg: DictConfig):
     with device:
         # Get the first environment observation and start the optimization
         next_state = agent.initial_states
-        next_done = torch.zeros(1, cfg.env.num_envs, 1, dtype=torch.float32)  # [1, N_envs, 1]
-        o = envs.reset(seed=cfg.seed)[0]
-        next_obs = torch.cat([torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1).unsqueeze(
-            0
-        )
+        obs = envs.reset(seed=cfg.seed)[0]
+        next_obs = torch.cat(
+            [torch.tensor(obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+        ).unsqueeze(0)
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
@@ -283,42 +282,41 @@ def main(fabric: Fabric, cfg: DictConfig):
                     # Sample an action given the observation received by the environment
                     action_logits, values, state = agent.module(next_obs, state=next_state)
                     dist = Categorical(logits=action_logits.unsqueeze(-2))
-                    action = dist.sample()
-                    logprob = dist.log_prob(action)
+                    actions = dist.sample()
+                    logprobs = dist.log_prob(actions)
 
                 # Single environment step
-                obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
-                done = np.logical_or(done, truncated)
+                obs, rewards, dones, truncated, info = envs.step(actions.cpu().numpy().reshape(envs.action_space.shape))
+                dones = np.logical_or(dones, truncated)
 
             with device:
                 obs = torch.cat(
                     [torch.tensor(obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
                 ).unsqueeze(0)
-                done = torch.tensor(done, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
-                reward = torch.tensor(reward, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
+                dones = torch.tensor(dones, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
+                rewards = torch.tensor(rewards, dtype=torch.float32).view(1, cfg.env.num_envs, -1)  # [1, N_envs, 1]
 
-            step_data["dones"] = next_done
+            step_data["dones"] = dones
             step_data["values"] = values
-            step_data["actions"] = action
-            step_data["rewards"] = reward
-            step_data["logprobs"] = logprob
+            step_data["actions"] = actions
+            step_data["rewards"] = rewards
+            step_data["logprobs"] = logprobs
             step_data["observations"] = next_obs
             step_data["actor_hxs"] = next_state[0][0]
             step_data["actor_cxs"] = next_state[0][1]
             step_data["critic_hxs"] = next_state[1][0]
             step_data["critic_cxs"] = next_state[1][1]
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(reward)
-                step_data["advantages"] = torch.zeros_like(reward)
+                step_data["returns"] = torch.zeros_like(rewards)
+                step_data["advantages"] = torch.zeros_like(rewards)
 
             # Append data to buffer
             rb.add(step_data)
 
             # Update observation, done and recurrent state
             next_obs = obs
-            next_done = done
             if cfg.algo.reset_recurrent_state_on_done:
-                next_state = tuple([tuple([(1 - done) * e for e in s]) for s in state])
+                next_state = tuple([tuple([(1 - dones) * e for e in s]) for s in state])
             else:
                 next_state = state
 
@@ -333,13 +331,12 @@ def main(fabric: Fabric, cfg: DictConfig):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            next_value, _ = agent.module.get_values(next_obs, critic_state=next_state[1])
+            next_values, _ = agent.module.get_values(next_obs, critic_state=next_state[1])
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
                 rb["dones"],
-                next_value,
-                next_done,
+                next_values,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
@@ -365,10 +362,10 @@ def main(fabric: Fabric, cfg: DictConfig):
                 stop = ep_end_idx
                 # Do not include the done, since when we encounter a done it means that
                 # the episode has started
-                episode = env_data[start:stop]
+                episode = env_data[start : stop + 1]
                 if len(episode) > 0:
                     episodes.append(episode)
-                start = stop
+                start = stop + 1
         # 2. Split every episode into sequences of length `per_rank_batch_size`
         if cfg.per_rank_batch_size is not None and cfg.per_rank_batch_size > 0:
             sequences = list(itertools.chain.from_iterable([ep.split(cfg.per_rank_batch_size) for ep in episodes]))
@@ -431,7 +428,7 @@ def main(fabric: Fabric, cfg: DictConfig):
             or update == num_updates
         ):
             last_checkpoint = policy_step
-            state = {
+            ckpt_state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
@@ -441,7 +438,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                 "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
+            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=ckpt_state)
 
     envs.close()
     if fabric.is_global_zero:
