@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - ppo
+  - override /algo: ppo_recurrent
+  - _self_
+
+# Experiment
+per_rank_num_batches: 4
+
+# Environment
+env:
+  id: CartPole-v1

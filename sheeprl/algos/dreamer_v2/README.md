@@ -47,7 +47,7 @@ def reconstruction_loss(
     kl_regularizer: float = 1.0,
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
-    continue_scale_factor: float = 1.0,
+    discount_scale_factor: float = 1.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     device = observations.device
     observation_loss = -po.log_prob(observations).mean()
@@ -71,11 +71,11 @@ def reconstruction_loss(
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     continue_loss = torch.tensor(0, device=device)
     if pc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * -pc.log_prob(continue_targets).mean()
+        continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
 ```
-Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `continue_scale_factor`, the parameter to scale the *continue loss*.
+Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `discount_scale_factor`, the parameter to scale the *continue loss*.
 
 Another difference between Dreamer-V1 and Dreamer-V2 is in the *actor loss*, which mixes standard on-policy Reinforce with Dynamic backprop, while adding the policy entropy to favor the exploration of the environment:
 
@@ -105,78 +105,86 @@ In order to use a broader set of environments of provided by [Gymnasium](https:/
 For DreamerV2, we decided to fix the number of environments to `1`, in order to have a clearer and more understandable management of the environment interaction. In addition, we would like to recommend the value of the `per_rank_batch_size` hyper-parameter to the users: the recommended batch size for the DreamerV2 agent is 50 for single-process training, if you want to use distributed training, we recommend to divide the batch size by the number of processes and to set the `per_rank_batch_size` hyper-parameter accordingly.
 
 ## Atari environments
-There are two versions for most Atari environments: one version uses the *frame skip* property by default, whereas the second does not implement it. If the first version is selected, then the value of the `action_repeat` hyper-parameter must be `1`; instead, to select an environment without *frame skip*, it is necessary to insert `NoFrameskip` in the environment id and remove the prefix `ALE/` from it. For instance, the environment `ALE/AirRaid-v5` must be instantiated with `action_repeat=1`, whereas its version without *frame skip* is `AirRaidNoFrameskip-v4` and can be istanziated with any value of `action_repeat` greater than zero.
+There are two versions for most Atari environments: one version uses the *frame skip* property by default, whereas the second does not implement it. If the first version is selected, then the value of the `env.action_repeat` hyper-parameter must be `1`; instead, to select an environment without *frame skip*, it is necessary to insert `NoFrameskip` in the environment id and remove the prefix `ALE/` from it. For instance, the environment `ALE/AirRaid-v5` must be instantiated with `env.action_repeat=1`, whereas its version without *frame skip* is `AirRaidNoFrameskip-v4` and can be istanziated with any value of `env.action_repeat` greater than zero.
 For more information see the official documentation of [Gymnasium Atari environments](https://gymnasium.farama.org/environments/atari/).
 
 The standard hyperparameters to learn in the Atari environments are:
 
 ```bash
-lightning run model --devices=1 sheeprl.py dreamer_v2 \
---env_id=AssaultNoFrameskip-v0 \
---capture_video \
---action_repeat=4 \
---clip_rewards=True \
---total_steps=200000000 \
---learning_starts=200000 \
---pretrain_steps=1 \
---train_every=4 \
---gamma=0.995 \
---kl_regularizer=0.1 \
---continue_scale_factor=5.0 \
---actor_ent_coef=1e-3 \
---actor_lr=4e-5 \
---critic_lr=1e-4 \
---world_lr=2e-4 \
---use_continues \
---hidden_size=600 \
---recurrent_state_size=600 \
---buffer_size=2000000 \
---memmap_buffer \
---kl_free_nats=0.0 \
---max_episode_steps=27000 \
---per_rank_batch_size=50 \
---checkpoint_every=100000 \
---buffer_type=episode \
---prioritize_ends=True 
+python sheeprl.py \
+exp=dreamer_v2 \
+fabric.devices=1 \
+env=atari \
+env.id=AssaultNoFrameskip-v0 \
+env.capture_video=True \
+env.action_repeat=4 \
+clip_rewards=True \
+total_steps=200000000 \
+algo.learning_starts=200000 \
+algo.per_rank_pretrain_steps=1 \
+algo.train_every=4 \
+algo.gamma=0.995 \
+algo.world_model.kl_regularizer=0.1 \
+algo.world_model.discount_scale_factor=5.0 \
+algo.actor.ent_coef=1e-3 \
+algo.actor.optimizer.lr=4e-5 \
+algo.critic.optimizer.lr=1e-4 \
+algo.world_model.optimizer.lr=2e-4 \
+algo.world_model.use_continues=True \
+algo.world_model.representation_model.hidden_size=600 \
+algo.world_model.transition_model.hidden_size=600 \
+algo.world_model.recurrent_model.recurrent_state_size=600 \
+buffer.size=2000000 \
+buffer.memmap=True \
+algo.world_model.kl_free_nats=0.0 \
+env.max_episode_steps=27000 \
+per_rank_batch_size=50 \
+checkpoint.every=100000 \
+buffer.type=episode \
+buffer.prioritize_ends=True 
 ```
 
 ## DMC environments
-It is possible to use the environments provided by the [DeepMind Control suite](https://www.deepmind.com/open-source/deepmind-control-suite). To use such environments it is necessary to specify the "dmc" domain in the `env_id` hyper-parameter, e.g., `env_id = dmc_walker_walk` will create an instance of the walker walk environment. For more information about all the environments, check their [paper](https://arxiv.org/abs/1801.00690).
+It is possible to use the environments provided by the [DeepMind Control suite](https://www.deepmind.com/open-source/deepmind-control-suite). To use such environments it is necessary to specify "dmc" and the name of the environment in the `env` and `env.id` hyper-parameters respectively, e.g., `env=dmc env.id=walker_walk` will create an instance of the walker walk environment. For more information about all the environments, check their [paper](https://arxiv.org/abs/1801.00690).
 
-When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to runthe following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="2,3" lightning run model --devices=2 --accelerator=gpu sheeprl.py dreamer_v1 --env_id=dmc_walker_walk --action_repeat=2 --capture_video --checkpoint_every=80000 --seed=1`. 
+When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to runthe following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="2,3" python sheeprl.py exp=dreamer_v2 fabric.devices=2 fabric.accelerator=gpu env=dmc env.id=walker_walk env.action_repeat=2 env.capture_video=True checkpoint.every=80000 cnn_keys.encoder=[rgb]`. 
 Other possibitities for the variable `MUJOCO_GL` are: `GLFW` for rendering to an X11 window or and `EGL` for hardware accelerated headless. (For more information, click [here](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)).
 Moreover, it could be necessary to decomment two rows in the `sheeprl.algos.dreamer_v1.dreamer_v1.py` file.
 
 The standard hyperparameters used for the DMC environment are the following:
 
 ```bash
-PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa lightning run model --devices=1 sheeprl.py dreamer_v2 \
---env_id=dmc_walker_walk \
---capture_video \
---action_repeat=2 \
---clip_rewards=False \
---total_steps=5000000 \
---learning_starts=1000 \
---pretrain_steps=100 \
---train_every=5 \
---gamma=0.99 \
---kl_regularizer=1.0 \
---actor_ent_coef=1e-4 \
---actor_lr=8e-5 \
---critic_lr=8e-5 \
---world_lr=3e-4 \
---use_continues=False \
---hidden_size=200 \
---recurrent_state_size=200 \
---buffer_size=5000000 \
---memmap_buffer \
---kl_free_nats=1.0 \
---max_episode_steps=1000 \
---per_rank_batch_size=50 \
---checkpoint_every=100000 \
---buffer_type=episode \
---prioritize_ends=False 
+PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa python sheeprl.py \
+exp=dreamer_v2 \
+fabric.devices=1 \
+env=dmc \
+env.id=dmc_walker_walk \
+env.capture_video=True \
+env.action_repeat=2 \
+clip_rewards=False \
+total_steps=5000000 \
+algo.learning_starts=1000 \
+algo.per_rank_pretrain_steps=100 \
+algo.train_every=5 \
+algo.gamma=0.99 \
+algo.world_model.kl_regularizer=1.0 \
+algo.actor.ent_coef=1e-4 \
+algo.actor.optimizer.lr=8e-5 \
+algo.critic.optimizer.lr=8e-5 \
+algo.world_model.optimizer.lr=3e-4 \
+algo.world_model.use_continues=False \
+algo.world_model.representation_model.hidden_size=200 \
+algo.world_model.transition_model.hidden_size=200 \
+algo.world_model.recurrent_model.recurrent_state_size=200 \
+buffer.size=5000000 \
+buffer.memmap=True \
+algo.world_model.kl_free_nats=1.0 \
+env.max_episode_steps=1000 \
+per_rank_batch_size=50 \
+checkpoint.every=100000 \
+buffer.type=episode \
+buffer.prioritize_ends=False 
 ```
 
 ## Recommendations
-Since DreamerV2 requires a huge number of steps and consequently a large buffer size, we recommend keeping the buffer on cpu and not moving it to cuda. Furthermore, in order to limit memory usage, we recommend to store the observations in `uint8` format and to normalize the observations just before starting the training one batch at a time. In addition, it is recommended to set the `memmap_buffer` argment to `True` to map the buffer to disk and avoid having it all in RAM. Finally, it is important to remind the user that DreamerV2 works only with observations in pixel form, therefore, only environments with observation space that is an instance of `gym.spaces.Box` can be selected when used with gymnasium.
+Since DreamerV2 requires a huge number of steps and consequently a large buffer size, we recommend keeping the buffer on cpu and not moving it to cuda. Furthermore, in order to limit memory usage, we recommend to store the observations in `uint8` format and to normalize the observations just before starting the training one batch at a time. In addition, it is recommended to set the `buffer.memmap` argment to `True` to map the buffer to disk and avoid having it all in RAM. Finally, it is important to remind the user that DreamerV2 works only with observations in pixel form, therefore, only environments with observation space that is an instance of `gym.spaces.Box` can be selected when used with gymnasium.

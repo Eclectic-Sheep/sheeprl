@@ -1,20 +1,22 @@
-import gymnasium as gym
-import numpy as np
 import torch
 from lightning import Fabric
+from omegaconf import DictConfig
 
 from sheeprl.algos.sac.agent import SACActor
-from sheeprl.algos.sac.args import SACArgs
+from sheeprl.utils.env import make_env
 
 
 @torch.no_grad()
-def test(actor: SACActor, env: gym.Env, fabric: Fabric, args: SACArgs):
+def test(actor: SACActor, fabric: Fabric, cfg: DictConfig):
+    env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(
-        np.array(env.reset(seed=args.seed)[0]), device=fabric.device, dtype=torch.float32
-    ).unsqueeze(0)
+    with fabric.device:
+        o = env.reset(seed=cfg.seed)[0]
+        next_obs = torch.cat([torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1).unsqueeze(
+            0
+        )  # [N_envs, N_obs]
     while not done:
         # Act greedly through the environment
         action = actor.get_greedy_actions(next_obs)
@@ -23,9 +25,10 @@ def test(actor: SACActor, env: gym.Env, fabric: Fabric, args: SACArgs):
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        next_obs = torch.tensor(next_obs, device=fabric.device, dtype=torch.float32).unsqueeze(0)
+        with fabric.device:
+            next_obs = torch.cat([torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1)
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)

@@ -1,0 +1,4 @@
+run:
+  dir: logs/runs/${root_dir}/${run_name}
+job:
+  chdir: False

@@ -1,0 +1,6 @@
+defaults:
+  - ppo
+  - _self_
+
+# Training receipe
+name: ppo_decoupled

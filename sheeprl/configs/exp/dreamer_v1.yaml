@@ -1,0 +1,20 @@
+# @package _global_
+
+defaults:
+  - override /algo: dreamer_v1
+  - override /env: dmc
+  - _self_
+
+# Experiment
+total_steps: 5000000
+per_rank_batch_size: 50
+per_rank_sequence_length: 50
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  size: 5000000
+  checkpoint: False

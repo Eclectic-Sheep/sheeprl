@@ -1,31 +1,27 @@
 from typing import TYPE_CHECKING
 
-import gymnasium as gym
 import torch
 import torch.nn as nn
 from lightning import Fabric
+from omegaconf import DictConfig
 from torch import Tensor
 
-from sheeprl.algos.sac_ae.args import SACAEArgs
+from sheeprl.utils.env import make_env
 
 if TYPE_CHECKING:
-    from sheeprl.algos.sac_ae.agent import SACPixelContinuousActor
+    from sheeprl.algos.sac_ae.agent import SACAEContinuousActor
 
 
 @torch.no_grad()
-def test_sac_pixel(
-    actor: "SACPixelContinuousActor",
-    env: gym.Env,
-    fabric: Fabric,
-    args: SACAEArgs,
-):
+def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: DictConfig):
+    env = make_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys
     actor.eval()
     done = False
     cumulative_rew = 0
     next_obs = {}
-    o = env.reset(seed=args.seed)[0]  # [N_envs, N_obs]
+    o = env.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     for k in o.keys():
         if k in mlp_keys + cnn_keys:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
@@ -54,7 +50,7 @@ def test_sac_pixel(
                     torch_obs = torch_obs.float()
                 next_obs[k] = torch_obs
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)

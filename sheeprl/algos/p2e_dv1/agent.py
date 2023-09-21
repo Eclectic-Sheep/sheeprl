@@ -1,30 +1,36 @@
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
+import hydra
+import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor, nn
+from omegaconf import DictConfig
 
 from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.agent import build_models as dv1_build_models
-from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor
-from sheeprl.algos.p2e_dv1.args import P2EDV1Args
+from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
+from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.models.models import MLP
 from sheeprl.utils.utils import init_weights
+
+# In order to use the hydra.utils.get_class method, in this way the user can
+# specify in the configs the name of the class without having to know where
+# to go to retrieve the class
+Actor = DV2Actor
+MinedojoActor = DV2MinedojoActor
 
 
 def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    args: P2EDV1Args,
+    cfg: DictConfig,
     obs_space: Dict[str, Any],
-    cnn_keys: Sequence[str],
-    mlp_keys: Sequence[str],
-    world_model_state: Optional[Dict[str, Tensor]] = None,
-    actor_task_state: Optional[Dict[str, Tensor]] = None,
-    critic_task_state: Optional[Dict[str, Tensor]] = None,
-    actor_exploration_state: Optional[Dict[str, Tensor]] = None,
-    critic_exploration_state: Optional[Dict[str, Tensor]] = None,
+    world_model_state: Optional[Dict[str, torch.Tensor]] = None,
+    actor_task_state: Optional[Dict[str, torch.Tensor]] = None,
+    critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
+    actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
+    critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, _FabricModule]:
     """Build the models and wrap them with Fabric.
 
@@ -32,10 +38,8 @@ def build_models(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        args (P2EDV1Args): the hyper-parameters of DreamerV1.
+        cfg (DictConfig): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
-        cnn_keys (Sequence[str]): the keys of the observation space to encoded by the cnn encoder.
-        mlp_keys (Sequence[str]): the keys of the observation space to encoded by the mlp encoder.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_task_state (Dict[str, Tensor], optional): the state of the actor_task.
@@ -55,66 +59,42 @@ def build_models(
         The actor_exploration (_FabricModule).
         The critic_exploration (_FabricModule).
     """
-    # minecraft environment does not support grayscale observations
-    if args.cnn_channels_multiplier <= 0:
-        raise ValueError(f"cnn_channels_multiplier must be greater than zero, given {args.cnn_channels_multiplier}")
-    if args.dense_units <= 0:
-        raise ValueError(f"dense_units must be greater than zero, given {args.dense_units}")
-    try:
-        dense_act = getattr(nn, args.dense_act)
-    except AttributeError:
-        raise ValueError(
-            f"Invalid value for dense_act, given {args.dense_act}, "
-            "must be one of https://pytorch.org/docs/stable/nn.html#non-linear-activations-weighted-sum-nonlinearity"
-        )
+    world_model_cfg = cfg.algo.world_model
+    actor_cfg = cfg.algo.actor
+    critic_cfg = cfg.algo.critic
 
     # Sizes
-    latent_state_size = args.stochastic_size + args.recurrent_state_size
+    latent_state_size = world_model_cfg.stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
     world_model, actor_exploration, critic_exploration = dv1_build_models(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
-        args=args,
+        cfg=cfg,
         obs_space=obs_space,
-        cnn_keys=cnn_keys,
-        mlp_keys=mlp_keys,
         world_model_state=world_model_state,
         actor_state=actor_exploration_state,
         critic_state=critic_exploration_state,
     )
-    if "minedojo" in args.env_id:
-        actor_task = MinedojoActor(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            args.actor_init_std,
-            args.actor_min_std,
-            args.dense_units,
-            dense_act,
-            args.mlp_layers,
-            distribution="tanh_normal",
-            layer_norm=False,
-        )
-    else:
-        actor_task = Actor(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            args.actor_init_std,
-            args.actor_min_std,
-            args.dense_units,
-            dense_act,
-            args.mlp_layers,
-            distribution="tanh_normal",
-            layer_norm=False,
-        )
+    actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
+    actor_task: Union[Actor, MinedojoActor] = actor_cls(
+        latent_state_size=latent_state_size,
+        actions_dim=actions_dim,
+        is_continuous=is_continuous,
+        init_std=actor_cfg.init_std,
+        min_std=actor_cfg.min_std,
+        mlp_layers=actor_cfg.mlp_layers,
+        dense_units=actor_cfg.dense_units,
+        activation=eval(actor_cfg.dense_act),
+        distribution=actor_cfg.distribution,
+        layer_norm=False,
+    )
     critic_task = MLP(
         input_dims=latent_state_size,
         output_dim=1,
-        hidden_sizes=[args.dense_units] * args.mlp_layers,
-        activation=dense_act,
+        hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
+        activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
     )
     actor_task.apply(init_weights)

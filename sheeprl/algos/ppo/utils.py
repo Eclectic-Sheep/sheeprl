@@ -1,26 +1,25 @@
-from typing import List
-
-import gymnasium as gym
 import torch
 from lightning import Fabric
+from omegaconf import DictConfig
 
 from sheeprl.algos.ppo.agent import PPOAgent
-from sheeprl.algos.ppo.args import PPOArgs
+from sheeprl.utils.env import make_env
 
 
 @torch.no_grad()
-def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs, cnn_keys: List[str], mlp_keys: List[str]):
+def test(agent: PPOAgent, fabric: Fabric, cfg: DictConfig):
+    env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=args.seed)[0]
+    o = env.reset(seed=cfg.seed)[0]
     obs = {}
     for k in o.keys():
-        if k in mlp_keys + cnn_keys:
+        if k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cnn_keys:
+            if k in cfg.cnn_keys.encoder:
                 torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-            if k in mlp_keys:
+            if k in cfg.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
@@ -37,15 +36,15 @@ def test(agent: PPOAgent, env: gym.Env, fabric: Fabric, args: PPOArgs, cnn_keys:
         cumulative_rew += reward
         obs = {}
         for k in o.keys():
-            if k in mlp_keys + cnn_keys:
+            if k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder:
                 torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cnn_keys:
+                if k in cfg.cnn_keys.encoder:
                     torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-                if k in mlp_keys:
+                if k in cfg.mlp_keys.encoder:
                     torch_obs = torch_obs.float()
                 obs[k] = torch_obs
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)

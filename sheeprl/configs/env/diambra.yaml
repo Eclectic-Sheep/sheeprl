@@ -1,0 +1,26 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: doapp
+frame_stack: 4
+sync_env: True
+action_repeat: 1
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.diambra.DiambraWrapper
+  id: ${env.id}
+  action_space: discrete
+  screen_size: ${env.screen_size}
+  grayscale: ${env.grayscale}
+  attack_but_combination: False
+  sticky_actions: ${env.action_repeat}
+  seed: null
+  rank: null
+  diambra_settings:
+    player: P1
+  diambra_wrappers:
+    actions_stack: 12
+    noop_max: 0

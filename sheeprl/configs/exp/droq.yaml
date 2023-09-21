@@ -1,0 +1,6 @@
+# @package _global_
+
+defaults:
+  - sac
+  - override /algo: droq
+  - _self_

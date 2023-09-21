@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - override /algo: sac
+  - override /env: gym
+  - _self_
+
+# Experiment
+total_steps: 1000000
+per_rank_batch_size: 256
+
+# Checkpoint
+checkpoint:
+  every: 50000
+
+# Buffer
+buffer:
+  size: 1000000
+  checkpoint: False
+  sample_next_obs: False
+
+# Environment
+env:
+  id: LunarLanderContinuous-v2

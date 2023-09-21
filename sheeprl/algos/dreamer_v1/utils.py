@@ -6,6 +6,44 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
 
+def compute_lambda_values(
+    rewards: Tensor,
+    values: Tensor,
+    done_mask: Tensor,
+    last_values: Tensor,
+    horizon: int = 15,
+    lmbda: float = 0.95,
+) -> Tensor:
+    """
+    Compute the lambda values by keeping the gradients of the variables.
+
+    Args:
+        rewards (Tensor): the estimated rewards in the latent space.
+        values (Tensor): the estimated values in the latent space.
+        done_mask (Tensor): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        last_values (Tensor): the next values for the last state in the horzon.
+        horizon: (int, optional): the horizon of imagination.
+            Default to 15.
+        lmbda (float, optional): the discout lmbda factor for the lambda values computation.
+            Default to 0.95.
+
+    Returns:
+        The tensor of the computed lambda values.
+    """
+    last_values = torch.clone(last_values)
+    last_lambda_values = 0
+    lambda_targets = []
+    for step in reversed(range(horizon - 1)):
+        if step == horizon - 2:
+            next_values = last_values
+        else:
+            next_values = values[step + 1] * (1 - lmbda)
+        delta = rewards[step] + next_values * done_mask[step]
+        last_lambda_values = delta + lmbda * done_mask[step] * last_lambda_values
+        lambda_targets.append(last_lambda_values)
+    return torch.stack(list(reversed(lambda_targets)), dim=0)
+
+
 def compute_stochastic_state(
     state_information: Tensor,
     event_shape: int = 1,

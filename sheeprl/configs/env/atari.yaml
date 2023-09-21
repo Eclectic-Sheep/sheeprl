@@ -1,0 +1,23 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+action_repeat: 4
+id: PongNoFrameskip-v4
+max_episode_steps: 27000
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: gymnasium.wrappers.AtariPreprocessing # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
+  env:
+    _target_: gymnasium.make
+    id: ${env.id}
+    render_mode: rgb_array
+  noop_max: 30
+  terminal_on_life_loss: False
+  frame_skip: ${env.action_repeat}
+  screen_size: ${env.screen_size}
+  grayscale_obs: ${env.grayscale}
+  scale_obs: False
+  grayscale_newaxis: True
