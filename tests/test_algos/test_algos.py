@@ -316,8 +316,9 @@ def test_ppo_recurrent(standard_args, start_time):
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_recurrent",
-        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.rollout_steps=2",
         "per_rank_batch_size=1",
+        "per_rank_sequence_length=2",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         "env.capture_video=False",

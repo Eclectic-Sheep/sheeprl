@@ -15,25 +15,30 @@ def test(agent: RecurrentPPOAgent, fabric: Fabric, cfg: DictConfig):
     cumulative_rew = 0
     with fabric.device:
         o = env.reset(seed=cfg.seed)[0]
-        next_obs = torch.cat([torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1).view(
-            1, 1, -1
-        )
-        state = (
-            torch.zeros(1, 1, agent.lstm_hidden_size),
-            torch.zeros(1, 1, agent.lstm_hidden_size),
-        )
+        next_obs = {
+            k: torch.tensor(o[k], dtype=torch.float32).view(1, 1, -1, *o[k].shape[-2:]) for k in cfg.cnn_keys.encoder
+        }
+        next_obs.update({k: torch.tensor(o[k], dtype=torch.float32).view(1, 1, -1) for k in cfg.mlp_keys.encoder})
+        state = torch.zeros(1, 1, agent.rnn_hidden_size, device=fabric.device)
+        actions = torch.zeros(1, 1, sum(agent.actions_dim), device=fabric.device)
     while not done:
         # Act greedly through the environment
-        action, state = agent.get_greedy_action(next_obs, state)
+        actions, state = agent.get_greedy_actions(next_obs, state, actions)
+        if agent.is_continuous:
+            actions = torch.cat(actions, dim=-1)
+        else:
+            actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        o, reward, done, truncated, info = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
         with fabric.device:
-            next_obs = torch.cat(
-                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
-            ).view(1, 1, -1)
+            next_obs = {
+                k: torch.tensor(o[k], dtype=torch.float32).view(1, 1, -1, *o[k].shape[-2:])
+                for k in cfg.cnn_keys.encoder
+            }
+            next_obs.update({k: torch.tensor(o[k], dtype=torch.float32).view(1, 1, -1) for k in cfg.mlp_keys.encoder})
 
         if cfg.dry_run:
             done = True

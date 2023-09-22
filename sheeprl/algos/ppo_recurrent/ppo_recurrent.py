@@ -46,7 +46,7 @@ def train(
                 {k: step[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
                 prev_actions=step["prev_actions"],
                 prev_hx=step["prev_states"],
-                actions=step["actions"],
+                actions=torch.split(step["actions"], agent.actions_dim, dim=-1),
             )
             entropies.append(entropy)
             new_values.append(values)
@@ -292,7 +292,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
                         real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
-                    actions = torch.cat(actions, -1)
+                    actions = torch.cat(actions, dim=-1)
 
                 # Single environment step
                 next_obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))

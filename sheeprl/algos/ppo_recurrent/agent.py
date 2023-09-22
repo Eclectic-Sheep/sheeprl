@@ -69,8 +69,10 @@ class RecurrentPPOAgent(nn.Module):
     ):
         super().__init__()
         self.device = torch.device(device) if isinstance(device, str) else device
-
         self.actions_dim = actions_dim
+        self.rnn_hidden_size = rnn_cfg.gru.hidden_size
+        self.num_envs = num_envs
+
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
         mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
         cnn_encoder = (
@@ -108,7 +110,7 @@ class RecurrentPPOAgent(nn.Module):
         )
 
         self.critic = MLP(
-            input_dims=features_dim,
+            input_dims=self.rnn_hidden_size,
             output_dim=1,
             hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
             activation=eval(critic_cfg.dense_act),
@@ -120,7 +122,7 @@ class RecurrentPPOAgent(nn.Module):
             ),
         )
         self.actor_backbone = MLP(
-            input_dims=features_dim,
+            input_dims=self.rnn_hidden_size,
             output_dim=None,
             hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
             activation=eval(actor_cfg.dense_act),
@@ -139,10 +141,6 @@ class RecurrentPPOAgent(nn.Module):
                 [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
             )
 
-        self.actions_dim = actions_dim
-        self.rnn_hidden_size = rnn_cfg.gru.hidden_size
-        self.num_envs = num_envs
-
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tensor = self.reset_hidden_states()
 
@@ -158,7 +156,12 @@ class RecurrentPPOAgent(nn.Module):
         hx = torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device)
         return hx
 
-    def get_greedy_actions(self, pre_dist: Tuple[Tensor, ...]) -> Tuple[Tensor, ...]:
+    def get_greedy_actions(
+        self, obs: Dict[str, Tensor], prev_hx: Tensor, prev_actions: Tensor
+    ) -> Tuple[Tuple[Tensor, ...], Tensor]:
+        embedded_obs = self.feature_extractor(obs)
+        hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
+        pre_dist = self.get_pre_dist(hx)
         actions = []
         if self.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
@@ -167,7 +170,7 @@ class RecurrentPPOAgent(nn.Module):
             for logits in pre_dist:
                 dist = OneHotCategorical(logits=logits)
                 actions.append(dist.mode)
-        return tuple(actions)
+        return tuple(actions), hx
 
     def get_sampled_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
