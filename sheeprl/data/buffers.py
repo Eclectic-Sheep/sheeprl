@@ -274,10 +274,6 @@ class SequentialReplayBuffer(ReplayBuffer):
             )
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
-        if batch_dim > self._buf.shape[0]:
-            raise ValueError(
-                f"n_samples * batch size ({batch_dim}) is larger than the replay buffer size ({self._buf.shape[0]})"
-            )
         if not self._full and self._pos - sequence_length + 1 < 1:
             raise ValueError(f"too long sequence length ({sequence_length})")
         if self.full and sequence_length > self._buf.shape[0]:
