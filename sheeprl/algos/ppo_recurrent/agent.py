@@ -7,7 +7,6 @@ from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.dreamer_v3.agent import LayerNormGRUCell
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiEncoder
 
@@ -19,9 +18,7 @@ class RecurrentModel(nn.Module):
         gru_hidden_size: int,
         mlp_dense_units: int,
         mlp_activation: nn.Module,
-        gru_bias: bool,
         mlp_bias: bool,
-        gru_layer_norm: bool,
         mlp_layer_norm: bool,
         mlp_pre_rnn: bool = True,
     ) -> None:
@@ -37,18 +34,23 @@ class RecurrentModel(nn.Module):
                 norm_layer=[nn.LayerNorm] if mlp_layer_norm else None,
                 norm_args=[{"normalized_shape": mlp_dense_units, "eps": 1e-3}] if mlp_layer_norm else None,
             )
-        self._gru = LayerNormGRUCell(
+        self._gru = nn.GRU(
             input_size=mlp_dense_units if mlp_pre_rnn else input_size,
             hidden_size=gru_hidden_size,
-            bias=gru_bias,
             batch_first=False,
-            layer_norm=gru_layer_norm,
         )
 
-    def forward(self, input: Tensor, hx: Tensor) -> Tensor:
-        feat = self._mlp(input) if self._mlp_pre_rnn else input
-        out = self._gru(feat, hx)
-        return out
+    def forward(self, input: Tensor, hx: Tensor, mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+        x = self._mlp(input) if self._mlp_pre_rnn else input
+        self._gru.flatten_parameters()
+        if mask is not None:
+            # To avoid: RuntimeError: 'lengths' argument should be a 1D CPU int64 tensor, but got 1D cuda:0 Long tensor
+            lengths = mask.sum(dim=0).view(-1).cpu()
+            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths=lengths, batch_first=False, enforce_sorted=False)
+        out, hx = self._gru(x, hx)
+        if mask is not None:
+            out, _ = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=False, total_length=mask.shape[0])
+        return out, hx
 
 
 class RecurrentPPOAgent(nn.Module):
@@ -102,9 +104,7 @@ class RecurrentPPOAgent(nn.Module):
             gru_hidden_size=rnn_cfg.gru.hidden_size,
             mlp_dense_units=rnn_cfg.mlp.dense_units,
             mlp_activation=eval(rnn_cfg.mlp.activation),
-            gru_bias=rnn_cfg.gru.bias,
             mlp_bias=rnn_cfg.mlp.bias,
-            gru_layer_norm=rnn_cfg.gru.layer_norm,
             mlp_layer_norm=rnn_cfg.mlp.layer_norm,
             mlp_pre_rnn=rnn_cfg.mlp_pre_rnn,
         )
@@ -157,11 +157,11 @@ class RecurrentPPOAgent(nn.Module):
         return hx
 
     def get_greedy_actions(
-        self, obs: Dict[str, Tensor], prev_hx: Tensor, prev_actions: Tensor
+        self, obs: Dict[str, Tensor], prev_hx: Tensor, prev_actions: Tensor, mask: Optional[Tensor] = None
     ) -> Tuple[Tuple[Tensor, ...], Tensor]:
         embedded_obs = self.feature_extractor(obs)
-        hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
-        pre_dist = self.get_pre_dist(hx)
+        out, hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx, mask)
+        pre_dist = self.get_pre_dist(out)
         actions = []
         if self.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
@@ -176,8 +176,8 @@ class RecurrentPPOAgent(nn.Module):
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor]:
         logprobs = []
-        sampled_actions = []
         entropies = []
+        sampled_actions = []
         if self.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
             if actions is None:
@@ -191,7 +191,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
-                dist = OneHotCategorical(logits=logits)
+                dist = OneHotCategorical(logits=logits, validate_args=False)
                 if actions is None:
                     sampled_actions.append(dist.sample())
                 else:
@@ -204,9 +204,9 @@ class RecurrentPPOAgent(nn.Module):
             torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
         )
 
-    def get_pre_dist(self, hx: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
-        actor_features = self.actor_backbone(hx)
-        pre_dist: List[Tensor] = [head(actor_features) for head in self.actor_heads]
+    def get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
+        features = self.actor_backbone(input)
+        pre_dist: List[Tensor] = [head(features) for head in self.actor_heads]
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
@@ -214,11 +214,16 @@ class RecurrentPPOAgent(nn.Module):
         else:
             return tuple(pre_dist)
 
-    def get_values(self, hx: Tensor) -> Tensor:
-        return self.critic(hx)
+    def get_values(self, input: Tensor) -> Tensor:
+        return self.critic(input)
 
     def forward(
-        self, obs: Dict[str, Tensor], prev_actions: Tensor, prev_hx: Tensor, actions: Optional[List[Tensor]] = None
+        self,
+        obs: Dict[str, Tensor],
+        prev_actions: Tensor,
+        prev_hx: Tensor,
+        actions: Optional[List[Tensor]] = None,
+        mask: Optional[Tensor] = None,
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tensor]:
         """Compute actor logits and critic values.
 
@@ -226,6 +231,8 @@ class RecurrentPPOAgent(nn.Module):
             obs (Tensor): observations collected (possibly padded with zeros).
             prev_actions (Tensor): the previous actions.
             prev_hx (Tensor): the previous state of the GRU.
+            actions (List[Tensor], optional): the actions from the replay buffer.
+            mask (Tensor, optional): the mask of the padded sequences.
 
         Returns:
             actions (Tuple[Tensor, ...]): the sampled actions
@@ -235,8 +242,8 @@ class RecurrentPPOAgent(nn.Module):
             hx (Tensor): the new recurrent state.
         """
         embedded_obs = self.feature_extractor(obs)
-        hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx)
-        values = self.get_values(hx)
-        pre_dist = self.get_pre_dist(hx)
+        out, hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx, mask)
+        values = self.get_values(out)
+        pre_dist = self.get_pre_dist(out)
         actions, logprobs, entropies = self.get_sampled_actions(pre_dist, actions)
         return actions, logprobs, entropies, values, hx

@@ -4,16 +4,28 @@ defaults:
 
 name: ppo_recurrent
 reset_recurrent_state_on_done: True
+max_grad_norm: 0.5
+anneal_lr: True
+vf_coef: 0.2
+ent_coef: 0.001
+anneal_ent_coef: True
 
-bias: True
+dense_units: 128
+# layer_norm: True
+dense_act: torch.nn.SiLU
 rnn:
-  mlp_pre_rnn: True
+  mlp_pre_rnn: False
   gru:
-    bias: ${algo.bias}
-    layer_norm: ${algo.layer_norm}
     hidden_size: 64
   mlp:
-    bias: ${algo.bias}
+    bias: True
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
     activation: ${algo.dense_act}
+encoder:
+  dense_units: 64
+  mlp_layers: 1
+
+optimizer:
+  lr: 3e-4
+  _target_: torch.optim.AdamW

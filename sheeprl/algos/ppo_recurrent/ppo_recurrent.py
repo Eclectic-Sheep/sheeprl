@@ -1,7 +1,10 @@
 import copy
+import itertools
 import os
 import pathlib
 import warnings
+from contextlib import nullcontext
+from typing import List
 
 import gymnasium as gym
 import hydra
@@ -9,14 +12,16 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from omegaconf import DictConfig, OmegaConf
-from tensordict import TensorDict
+from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
+from torch.distributed.algorithms.join import Join
+from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.utils import test
-from sheeprl.data.buffers import SequentialReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -33,64 +38,72 @@ def train(
     aggregator: MetricAggregator,
     cfg: DictConfig,
 ):
-    for i in range(cfg.algo.update_epochs):
-        entropies = []
-        new_values = []
-        new_logprobs = []
-        sequence = data[i]
-        for k in cfg.cnn_keys.encoder:
-            sequence[k] = sequence[k] / 255.0 - 0.5
-        for step in sequence:
-            step = step.unsqueeze(0)
-            _, logprobs, entropy, values, _ = agent(
-                {k: step[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
-                prev_actions=step["prev_actions"],
-                prev_hx=step["prev_states"],
-                actions=torch.split(step["actions"], agent.actions_dim, dim=-1),
-            )
-            entropies.append(entropy)
-            new_values.append(values)
-            new_logprobs.append(logprobs)
+    num_sequences = data.shape[1]
+    if cfg.per_rank_num_batches > 0:
+        batch_size = num_sequences // cfg.per_rank_num_batches
+        batch_size = batch_size if batch_size > 0 else num_sequences
+    else:
+        batch_size = 1
+    with Join([agent._forward_module]) if fabric.world_size > 1 else nullcontext():
+        for _ in range(cfg.algo.update_epochs):
+            sampler = BatchSampler(
+                RandomSampler(range(num_sequences)),
+                batch_size=batch_size,
+                drop_last=False,
+            )  # Random sampling sequences
+            for idxes in sampler:
+                batch = data[:, idxes]
+                mask = batch["mask"].unsqueeze(-1)
+                for k in cfg.cnn_keys.encoder:
+                    batch[k] = batch[k] / 255.0 - 0.5
 
-        normalized_advantages = sequence["advantages"]
-        if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
-            normalized_advantages = normalize_tensor(normalized_advantages)
+                _, logprobs, entropies, values, _ = agent(
+                    {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
+                    prev_actions=batch["prev_actions"],
+                    prev_hx=batch["prev_states"][:1],
+                    actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
+                    mask=mask,
+                )
 
-        # Policy loss
-        pg_loss = policy_loss(
-            torch.cat(new_logprobs, dim=0),
-            sequence["logprobs"],
-            normalized_advantages,
-            cfg.algo.clip_coef,
-            "mean",
-        )
+                normalized_advantages = batch["advantages"]
+                if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
+                    normalized_advantages = normalize_tensor(normalized_advantages)
 
-        # Value loss
-        v_loss = value_loss(
-            torch.cat(new_values, dim=0),
-            sequence["values"],
-            sequence["returns"],
-            cfg.algo.clip_coef,
-            cfg.algo.clip_vloss,
-            "mean",
-        )
+                # Policy loss
+                pg_loss = policy_loss(
+                    logprobs[mask],
+                    batch["logprobs"][mask],
+                    normalized_advantages,
+                    cfg.algo.clip_coef,
+                    "mean",
+                )
 
-        # Entropy loss
-        ent_loss = entropy_loss(torch.cat(entropies, dim=0), cfg.algo.loss_reduction)
+                # Value loss
+                v_loss = value_loss(
+                    values[mask],
+                    batch["values"][mask],
+                    batch["returns"][mask],
+                    cfg.algo.clip_coef,
+                    cfg.algo.clip_vloss,
+                    "mean",
+                )
 
-        # Equation (9) in the paper
-        loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+                # Entropy loss
+                ent_loss = entropy_loss(entropies[mask], cfg.algo.loss_reduction)
 
-        optimizer.zero_grad(set_to_none=True)
-        fabric.backward(loss)
-        if cfg.algo.max_grad_norm > 0.0:
-            fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-        optimizer.step()
+                # Equation (9) in the paper
+                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
 
-        # Update metrics
-        aggregator.update("Loss/policy_loss", pg_loss.detach())
-        aggregator.update("Loss/value_loss", v_loss.detach())
-        aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                optimizer.zero_grad(set_to_none=True)
+                fabric.backward(loss)
+                if cfg.algo.max_grad_norm > 0.0:
+                    fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+                optimizer.step()
+
+                # Update metrics
+                aggregator.update("Loss/policy_loss", pg_loss.detach())
+                aggregator.update("Loss/value_loss", v_loss.detach())
+                aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
 @register_algorithm()
@@ -210,7 +223,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     ).to(device)
 
     # Local data
-    rb = SequentialReplayBuffer(
+    rb = ReplayBuffer(
         cfg.algo.rollout_steps,
         cfg.env.num_envs,
         device=device,
@@ -308,7 +321,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                                 real_next_obs[k] = torch_v[None]
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
-                        real_states = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
+                        real_states, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
                         vals = agent.module.get_values(real_states).cpu().numpy()
                         rewards[truncated_envs] += vals
                 dones = np.logical_or(dones, truncated)
@@ -365,7 +378,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                 k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
             }
             feat = agent.module.feature_extractor(normalized_obs)
-            next_states = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
+            next_states, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(next_states)
             returns, advantages = gae(
                 rb["rewards"],
@@ -382,14 +395,34 @@ def main(fabric: Fabric, cfg: DictConfig):
             rb["advantages"] = advantages.float()
 
         # Get the training data as a TensorDict
-        local_data = rb.sample(
-            batch_size=cfg.per_rank_batch_size,
-            sequence_length=cfg.per_rank_sequence_length,
-            n_samples=cfg.algo.update_epochs,
-        )
+        local_data = rb.buffer
+
+        # Train the agent
+        # 1. Split data into episodes (for every environment)
+        episodes: List[TensorDictBase] = []
+        for env_id in range(cfg.env.num_envs):
+            env_data = local_data[:, env_id]  # [N_steps, *]
+            episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
+            episode_ends = episode_ends.tolist()
+            episode_ends.append(cfg.algo.rollout_steps)
+            start = 0
+            for ep_end_idx in episode_ends:
+                stop = ep_end_idx
+                # Include the done, since when we encounter a done it means that
+                # the episode has ended
+                episode = env_data[start : stop + 1]
+                if len(episode) > 0:
+                    episodes.append(episode)
+                start = stop + 1
+        # 2. Split every episode into sequences of length `per_rank_sequence_length`
+        if cfg.per_rank_sequence_length is not None and cfg.per_rank_sequence_length > 0:
+            sequences = list(itertools.chain.from_iterable([ep.split(cfg.per_rank_sequence_length) for ep in episodes]))
+        else:
+            sequences = episodes
+        padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
 
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-            train(fabric, agent, optimizer, local_data, aggregator, cfg)
+            train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
         train_step += world_size
 
         if cfg.algo.anneal_lr:
@@ -407,7 +440,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
         if cfg.algo.anneal_ent_coef:
             cfg.algo.ent_coef = polynomial_decay(
-                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+                update, initial=initial_ent_coef, final=0.0001, max_decay_steps=num_updates, power=1.0
             )
 
         # Log metrics
