@@ -8,6 +8,7 @@ from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
+from sheeprl.algos.ppo_recurrent.utils import init_weights
 from sheeprl.models.models import MLP, MultiEncoder
 
 
@@ -15,7 +16,7 @@ class RecurrentModel(nn.Module):
     def __init__(
         self,
         input_size: int,
-        gru_hidden_size: int,
+        lstm_hidden_size: int,
         mlp_dense_units: int,
         mlp_activation: nn.Module,
         mlp_bias: bool,
@@ -25,7 +26,7 @@ class RecurrentModel(nn.Module):
         super().__init__()
         self._mlp_pre_rnn = mlp_pre_rnn
         if mlp_pre_rnn:
-            self._mlp = MLP(
+            self._pre_mlp = MLP(
                 input_dims=input_size,
                 output_dim=None,
                 hidden_sizes=[mlp_dense_units],
@@ -34,23 +35,34 @@ class RecurrentModel(nn.Module):
                 norm_layer=[nn.LayerNorm] if mlp_layer_norm else None,
                 norm_args=[{"normalized_shape": mlp_dense_units, "eps": 1e-3}] if mlp_layer_norm else None,
             )
-        self._gru = nn.GRU(
+        self._lstm = nn.LSTM(
             input_size=mlp_dense_units if mlp_pre_rnn else input_size,
-            hidden_size=gru_hidden_size,
+            hidden_size=lstm_hidden_size,
             batch_first=False,
         )
+        self._post_mlp = MLP(
+            input_dims=lstm_hidden_size,
+            output_dim=None,
+            hidden_sizes=[lstm_hidden_size],
+            activation=mlp_activation,
+            layer_args={"bias": mlp_bias},
+            norm_layer=[nn.LayerNorm] if mlp_layer_norm else None,
+            norm_args=[{"normalized_shape": mlp_dense_units, "eps": 1e-3}] if mlp_layer_norm else None,
+        )
 
-    def forward(self, input: Tensor, hx: Tensor, mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, input: Tensor, states: Tuple[Tensor, Tensor], mask: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         x = self._mlp(input) if self._mlp_pre_rnn else input
-        self._gru.flatten_parameters()
+        self._lstm.flatten_parameters()
         if mask is not None:
             # To avoid: RuntimeError: 'lengths' argument should be a 1D CPU int64 tensor, but got 1D cuda:0 Long tensor
             lengths = mask.sum(dim=0).view(-1).cpu()
             x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths=lengths, batch_first=False, enforce_sorted=False)
-        out, hx = self._gru(x, hx)
+        out, states = self._lstm(x, states)
         if mask is not None:
             out, _ = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=False, total_length=mask.shape[0])
-        return out, hx
+        return self._post_mlp(out), states
 
 
 class RecurrentPPOAgent(nn.Module):
@@ -72,7 +84,7 @@ class RecurrentPPOAgent(nn.Module):
         super().__init__()
         self.device = torch.device(device) if isinstance(device, str) else device
         self.actions_dim = actions_dim
-        self.rnn_hidden_size = rnn_cfg.gru.hidden_size
+        self.rnn_hidden_size = rnn_cfg.lstm.hidden_size
         self.num_envs = num_envs
 
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
@@ -95,19 +107,19 @@ class RecurrentPPOAgent(nn.Module):
             if mlp_keys is not None and len(mlp_keys) > 0
             else None
         )
-        self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
+        self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder).apply(init_weights(2))
         self.is_continuous = is_continuous
         features_dim = self.feature_extractor.output_dim
 
         self.rnn = RecurrentModel(
-            input_size=int(features_dim + sum(actions_dim)),
-            gru_hidden_size=rnn_cfg.gru.hidden_size,
+            input_size=int(features_dim),
+            lstm_hidden_size=rnn_cfg.lstm.hidden_size,
             mlp_dense_units=rnn_cfg.mlp.dense_units,
             mlp_activation=eval(rnn_cfg.mlp.activation),
             mlp_bias=rnn_cfg.mlp.bias,
             mlp_layer_norm=rnn_cfg.mlp.layer_norm,
             mlp_pre_rnn=rnn_cfg.mlp_pre_rnn,
-        )
+        ).apply(init_weights(2))
 
         self.critic = MLP(
             input_dims=self.rnn_hidden_size,
@@ -120,7 +132,7 @@ class RecurrentPPOAgent(nn.Module):
                 if critic_cfg.layer_norm
                 else None
             ),
-        )
+        ).apply(init_weights(1))
         self.actor_backbone = MLP(
             input_dims=self.rnn_hidden_size,
             output_dim=None,
@@ -133,12 +145,12 @@ class RecurrentPPOAgent(nn.Module):
                 if actor_cfg.layer_norm
                 else None
             ),
-        )
+        ).apply(init_weights(2))
         if is_continuous:
             self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, int(sum(actions_dim)) * 2)])
         else:
             self.actor_heads = nn.ModuleList(
-                [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
+                [nn.Linear(actor_cfg.dense_units, action_dim).apply(init_weights(0.01)) for action_dim in actions_dim]
             )
 
         # Initial recurrent states for both the actor and critic rnn
@@ -153,14 +165,21 @@ class RecurrentPPOAgent(nn.Module):
         self._initial_states = value
 
     def reset_hidden_states(self) -> Tensor:
-        hx = torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device)
-        return hx
+        states = (
+            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
+            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
+        )
+        return states
 
     def get_greedy_actions(
-        self, obs: Dict[str, Tensor], prev_hx: Tensor, prev_actions: Tensor, mask: Optional[Tensor] = None
-    ) -> Tuple[Tuple[Tensor, ...], Tensor]:
+        self,
+        obs: Dict[str, Tensor],
+        prev_states: Tuple[Tensor, Tensor],
+        prev_actions: Tensor,
+        mask: Optional[Tensor] = None,
+    ) -> Tuple[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
         embedded_obs = self.feature_extractor(obs)
-        out, hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx, mask)
+        out, states = self.rnn(embedded_obs, prev_states, mask)
         pre_dist = self.get_pre_dist(out)
         actions = []
         if self.is_continuous:
@@ -170,7 +189,7 @@ class RecurrentPPOAgent(nn.Module):
             for logits in pre_dist:
                 dist = OneHotCategorical(logits=logits)
                 actions.append(dist.mode)
-        return tuple(actions), hx
+        return tuple(actions), states
 
     def get_sampled_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
@@ -221,16 +240,16 @@ class RecurrentPPOAgent(nn.Module):
         self,
         obs: Dict[str, Tensor],
         prev_actions: Tensor,
-        prev_hx: Tensor,
+        prev_states: Tuple[Tensor, Tensor],
         actions: Optional[List[Tensor]] = None,
         mask: Optional[Tensor] = None,
-    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Compute actor logits and critic values.
 
         Args:
             obs (Tensor): observations collected (possibly padded with zeros).
             prev_actions (Tensor): the previous actions.
-            prev_hx (Tensor): the previous state of the GRU.
+            prev_hx (Tensor): the previous state of the LSTM.
             actions (List[Tensor], optional): the actions from the replay buffer.
             mask (Tensor, optional): the mask of the padded sequences.
 
@@ -242,8 +261,8 @@ class RecurrentPPOAgent(nn.Module):
             hx (Tensor): the new recurrent state.
         """
         embedded_obs = self.feature_extractor(obs)
-        out, hx = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_hx, mask)
+        out, states = self.rnn(embedded_obs, prev_states, mask)
         values = self.get_values(out)
         pre_dist = self.get_pre_dist(out)
         actions, logprobs, entropies = self.get_sampled_actions(pre_dist, actions)
-        return actions, logprobs, entropies, values, hx
+        return actions, logprobs, entropies, values, states

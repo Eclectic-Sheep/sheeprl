@@ -60,12 +60,12 @@ def train(
                 _, logprobs, entropies, values, _ = agent(
                     {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
                     prev_actions=batch["prev_actions"],
-                    prev_hx=batch["prev_states"][:1],
+                    prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
                     actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
                     mask=mask,
                 )
 
-                normalized_advantages = batch["advantages"]
+                normalized_advantages = batch["advantages"][mask]
                 if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
                     normalized_advantages = normalize_tensor(normalized_advantages)
 
@@ -299,7 +299,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                         k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
                     }
                     actions, logprobs, _, values, states = agent.module(
-                        normalized_obs, prev_actions=prev_actions, prev_hx=prev_states
+                        normalized_obs, prev_actions=prev_actions, prev_states=prev_states
                     )
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -321,8 +321,8 @@ def main(fabric: Fabric, cfg: DictConfig):
                                 real_next_obs[k] = torch_v[None]
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
-                        real_states, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
-                        vals = agent.module.get_values(real_states).cpu().numpy()
+                        rnn_out, _ = agent.module.rnn(feat, tuple(s[:, truncated_envs, ...] for s in states))
+                        vals = agent.module.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
                         rewards[truncated_envs] += vals
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(1, cfg.env.num_envs, -1)
@@ -330,11 +330,13 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             step_data["dones"] = dones
             step_data["values"] = values
-            step_data["states"] = states
+            step_data["hx"] = states[0]
+            step_data["cx"] = states[1]
             step_data["actions"] = actions
             step_data["rewards"] = rewards
             step_data["logprobs"] = logprobs
-            step_data["prev_states"] = prev_states
+            step_data["prev_hx"] = prev_states[0]
+            step_data["prev_cx"] = prev_states[1]
             step_data["prev_actions"] = prev_actions
             if cfg.buffer.memmap:
                 step_data["returns"] = torch.zeros_like(rewards)
@@ -347,19 +349,19 @@ def main(fabric: Fabric, cfg: DictConfig):
             prev_actions = actions
 
             # Update the observation
+            obs = {}
             for k in obs_keys:
                 if k in cfg.cnn_keys.encoder:
-                    torch_obs = torch.as_tensor(obs[k], device=device)
+                    torch_obs = torch.as_tensor(next_obs[k], device=device)
                     torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
                 elif k in cfg.mlp_keys.encoder:
-                    torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
+                    torch_obs = torch.as_tensor(next_obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs[None]
-                next_obs[k] = torch_obs
-            obs = next_obs
+                obs[k] = torch_obs
 
             # Reset the states if the episode is done
             if cfg.algo.reset_recurrent_state_on_done:
-                prev_states = (1 - dones) * states
+                prev_states = tuple([(1 - dones) * s for s in states])
             else:
                 prev_states = states
 
@@ -378,8 +380,8 @@ def main(fabric: Fabric, cfg: DictConfig):
                 k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
             }
             feat = agent.module.feature_extractor(normalized_obs)
-            next_states, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
-            next_values = agent.module.get_values(next_states)
+            rnn_out, _ = agent.module.rnn(feat, states)
+            next_values = agent.module.get_values(rnn_out)
             returns, advantages = gae(
                 rb["rewards"],
                 rb["values"],
