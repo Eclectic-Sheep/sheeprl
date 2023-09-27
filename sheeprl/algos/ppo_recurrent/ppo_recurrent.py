@@ -451,7 +451,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
         if cfg.algo.anneal_ent_coef:
             cfg.algo.ent_coef = polynomial_decay(
-                update, initial=initial_ent_coef, final=0.0001, max_decay_steps=num_updates, power=1.0
+                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
         # Log metrics
