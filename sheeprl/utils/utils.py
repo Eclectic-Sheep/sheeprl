@@ -68,10 +68,16 @@ def init_weights(m: nn.Module):
 
 
 @torch.no_grad()
-def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None):
-    if mask is None:
+def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None) -> Tensor:
+    unmasked = mask is None
+    if unmasked:
         mask = torch.ones_like(tensor, dtype=torch.bool)
-    return (tensor - tensor[mask].mean()) / (tensor[mask].std() + eps)
+    masked_tensor = tensor[mask]
+    normalized = (masked_tensor - masked_tensor.mean()) / (masked_tensor.std() + eps)
+    if unmasked:
+        return normalized.reshape_as(mask)
+    else:
+        return normalized
 
 
 def polynomial_decay(

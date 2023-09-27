@@ -149,9 +149,9 @@ class PPOAgent(nn.Module):
             return tuple([actions]), log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1), values
         else:
             should_append = False
-            actions_dist: List[Distribution] = []
-            actions_entropies: List[Tensor] = []
             actions_logprobs: List[Tensor] = []
+            actions_entropies: List[Tensor] = []
+            actions_dist: List[Distribution] = []
             if actions is None:
                 should_append = True
                 actions: List[Tensor] = []

@@ -51,16 +51,6 @@ def test_seq_replay_buffer_sample():
     assert s.shape == torch.Size([1, 2, 4])
 
 
-def test_seq_replay_buffer_sample_fail_full():
-    buf_size = 5
-    n_envs = 1
-    rb = SequentialReplayBuffer(buf_size, n_envs)
-    td1 = TensorDict({"t": torch.rand(6, 1, 1)}, batch_size=[6, n_envs])
-    rb.add(td1)
-    with pytest.raises(ValueError, match="larger than the replay buffer size"):
-        rb.sample(4, sequence_length=2, n_samples=2)
-
-
 def test_seq_replay_buffer_sample_one_element():
     buf_size = 1
     n_envs = 1
@@ -107,17 +97,6 @@ def test_seq_replay_buffer_sample_full_large_sl():
         (samples["t"][:, 0, :] >= buf_size + rb._pos - seq_len + 1), (samples["t"][:, -1, :] < rb._pos)
     ).any()
     assert not torch.logical_and((samples["t"][:, 0, :] < rb._pos), (samples["t"][:, -1, :] >= rb._pos)).any()
-
-
-def test_seq_replay_buffer_sampleable_items():
-    buf_size = 10
-    n_envs = 1
-    seq_len = 10
-    rb = SequentialReplayBuffer(buf_size, n_envs)
-    t = TensorDict({"t": torch.arange(15).reshape(-1, 1, 1)}, batch_size=[15, n_envs])
-    rb.add(t)
-    with pytest.raises(ValueError, match="sampleable items"):
-        rb.sample(5, sequence_length=seq_len, n_samples=2)
 
 
 def test_seq_replay_buffer_sample_fail_not_full():

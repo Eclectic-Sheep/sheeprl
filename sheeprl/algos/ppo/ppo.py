@@ -296,7 +296,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                     actions = torch.cat(actions, -1)
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions)
+                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
                     real_next_obs = {

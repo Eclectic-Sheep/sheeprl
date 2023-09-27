@@ -5,9 +5,20 @@ defaults:
   - override /algo: ppo_recurrent
   - _self_
 
+algo:
+  rollout_steps: 256
+  update_epochs: 4
+
 # Experiment
 per_rank_num_batches: 4
+per_rank_sequence_length: 8
+total_steps: 409600
 
 # Environment
 env:
   id: CartPole-v1
+  num_envs: 16
+  mask_velocities: True
+
+buffer:
+  memmap: False

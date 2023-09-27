@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from sheeprl.utils.model import ArgsType, ModuleType, create_layers, miniblock
+from sheeprl.utils.model import ArgsType, ModuleType, cnn_forward, create_layers, miniblock
 
 
 class MLP(nn.Module):
@@ -322,8 +322,8 @@ class NatureCNN(CNN):
         return self._output_dim
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.model(x)
-        x = F.relu(self.fc(x.flatten(1)))
+        x = cnn_forward(self.model, x, input_dim=x.shape[-3:], output_dim=(-1,))
+        x = F.relu(self.fc(x))
         return x
 
 
