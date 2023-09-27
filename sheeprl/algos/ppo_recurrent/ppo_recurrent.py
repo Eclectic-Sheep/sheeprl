@@ -279,7 +279,7 @@ def main(fabric: Fabric, cfg: DictConfig):
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
         elif k in cfg.mlp_keys.encoder:
             torch_obs = torch_obs.float()
-        step_data[k] = torch_obs[None]
+        step_data[k] = torch_obs[None]  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
         obs[k] = torch_obs
 
     # Get the resetted recurrent states from the agent
@@ -297,7 +297,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
                         k: obs[k][None] / 255.0 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
-                    }
+                    }  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
                     )
@@ -320,7 +320,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                             device=device,
                         )
                         for k in obs_keys
-                    }
+                    }  # [Seq_len, Batch_size, D] --> [1, num_truncated_envs, D]
                     for i, truncated_env in enumerate(truncated_envs):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
@@ -341,8 +341,6 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             step_data["dones"] = dones
             step_data["values"] = values
-            step_data["hx"] = states[0]
-            step_data["cx"] = states[1]
             step_data["actions"] = actions
             step_data["rewards"] = rewards
             step_data["logprobs"] = logprobs
