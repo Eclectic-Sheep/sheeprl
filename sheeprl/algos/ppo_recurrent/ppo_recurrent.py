@@ -321,13 +321,12 @@ def main(fabric: Fabric, cfg: DictConfig):
                         )
                         for k in obs_keys
                     }
-                    for final_obs in info["final_observation"]:
-                        if final_obs is not None:
-                            for i, (k, v) in enumerate(final_obs.items()):
-                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                                if k in cfg.cnn_keys.encoder:
-                                    torch_v = torch_v / 255.0
-                                real_next_obs[k][0, i] = torch_v
+                    for i, truncated_env in enumerate(truncated_envs):
+                        for k, v in info["final_observation"][truncated_env].items():
+                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                            if k in cfg.cnn_keys.encoder:
+                                torch_v = torch_v / 255.0
+                            real_next_obs[k][0, i] = torch_v
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
                         rnn_out, _ = agent.module.rnn(
@@ -335,7 +334,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                             tuple(s[:, truncated_envs, ...] for s in states),
                         )
                         vals = agent.module.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
-                        rewards[truncated_envs] += vals
+                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(1, cfg.env.num_envs, -1)
                 rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(1, cfg.env.num_envs, -1)
