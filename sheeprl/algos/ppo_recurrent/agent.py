@@ -166,14 +166,14 @@ class RecurrentPPOAgent(nn.Module):
         self._initial_states: Tensor = self.reset_hidden_states()
 
     @property
-    def initial_states(self) -> Tensor:
+    def initial_states(self) -> Tuple[Tensor, Tensor]:
         return self._initial_states
 
     @initial_states.setter
-    def initial_states(self, value: Tensor) -> None:
+    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
         self._initial_states = value
 
-    def reset_hidden_states(self) -> Tensor:
+    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
         states = (
             torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
             torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
