@@ -18,7 +18,7 @@ total_steps: 409600
 env:
   id: CartPole-v1
   num_envs: 16
-  mask_velocities: False
+  mask_velocities: True
 
 buffer:
   memmap: False

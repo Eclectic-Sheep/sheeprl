@@ -55,7 +55,7 @@ def train(
                 batch = data[:, idxes]
                 mask = batch["mask"].unsqueeze(-1)
                 for k in cfg.cnn_keys.encoder:
-                    batch[k] = batch[k] / 255.0 - 0.5
+                    batch[k] = batch[k] / 255.0
 
                 _, logprobs, entropies, values, _ = agent(
                     {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
@@ -296,7 +296,7 @@ def main(fabric: Fabric, cfg: DictConfig):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
-                        k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+                        k: obs[k][None] / 255.0 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
                     }
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
@@ -311,17 +311,29 @@ def main(fabric: Fabric, cfg: DictConfig):
                 next_obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
-                    real_next_obs = {}
+                    real_next_obs = {
+                        k: torch.empty(
+                            1,
+                            len(truncated_envs),
+                            *observation_space[k].shape,
+                            dtype=torch.float32,
+                            device=device,
+                        )
+                        for k in obs_keys
+                    }
                     for final_obs in info["final_observation"]:
                         if final_obs is not None:
-                            for k, v in final_obs.items():
+                            for i, (k, v) in enumerate(final_obs.items()):
                                 torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                                 if k in cfg.cnn_keys.encoder:
-                                    torch_v = torch_v / 255.0 - 0.5
-                                real_next_obs[k] = torch_v[None]
+                                    torch_v = torch_v / 255.0
+                                real_next_obs[k][0, i] = torch_v
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
-                        rnn_out, _ = agent.module.rnn(feat, tuple(s[:, truncated_envs, ...] for s in states))
+                        rnn_out, _ = agent.module.rnn(
+                            torch.cat((feat, actions[:, truncated_envs, :]), dim=-1),
+                            tuple(s[:, truncated_envs, ...] for s in states),
+                        )
                         vals = agent.module.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
                         rewards[truncated_envs] += vals
                 dones = np.logical_or(dones, truncated)
@@ -376,11 +388,9 @@ def main(fabric: Fabric, cfg: DictConfig):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {
-                k: obs[k][None] / 255 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
-            }
+            normalized_obs = {k: obs[k][None] / 255.0 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys}
             feat = agent.module.feature_extractor(normalized_obs)
-            rnn_out, _ = agent.module.rnn(feat, states)
+            rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
             returns, advantages = gae(
                 rb["rewards"],
