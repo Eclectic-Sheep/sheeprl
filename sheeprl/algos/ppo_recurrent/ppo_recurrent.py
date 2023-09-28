@@ -355,7 +355,7 @@ def main(fabric: Fabric, cfg: DictConfig):
             rb.add(step_data)
 
             # Update actions
-            prev_actions = actions
+            prev_actions = (1 - dones) * actions
 
             # Update the observation
             obs = {}
