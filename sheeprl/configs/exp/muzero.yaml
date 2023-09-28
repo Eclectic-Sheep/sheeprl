@@ -6,14 +6,21 @@ defaults:
   - _self_
 
 # Experiment
-total_steps: 1000
-learning_starts: 1
+total_steps: 3500
+learning_starts: 1280
 update_epochs: 10
 chunk_sequence_len: 10
 chunks_per_batch: 128
 
 # Buffer
 buffer:
-  size: 500000
+  size: 5000
   share_data: False
-  max_trajectory_len: 500
+  max_trajectory_len: 1000
+
+algo:
+  support_size: 20
+  gamma: 0.999
+
+env:
+  id: LunarLander-v2

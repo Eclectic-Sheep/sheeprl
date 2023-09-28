@@ -385,7 +385,7 @@ class EpisodeBuffer:
         self._device = device
         self._memmap = memmap
         self._memmap_dir = memmap_dir
-        if memmap_dir is None:
+        if memmap and memmap_dir is None:
             warnings.warn(
                 "The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
                 " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
@@ -520,6 +520,8 @@ class EpisodeBuffer:
         nsample_per_eps = torch.bincount(idxes)
         samples = []
         for i, n in enumerate(nsample_per_eps):
+            if n == 0:
+                continue
             ep_len = self._buffer[i].shape[0]
             upper = ep_len - self._sequence_length + 1
             if prioritize_ends:
