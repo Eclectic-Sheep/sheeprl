@@ -33,7 +33,7 @@ The actions supported by sheeprl agents are:
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :x:                | :heavy_check_mark: | :x:                |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | SAC                       | :heavy_check_mark: | :x:                | :x:                |
 | SAC-AE                    | :heavy_check_mark: | :x:                | :x:                |
 | DroQ                      | :heavy_check_mark: | :x:                | :x:                |

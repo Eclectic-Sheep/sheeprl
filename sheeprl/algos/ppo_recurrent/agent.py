@@ -258,7 +258,7 @@ class RecurrentPPOAgent(nn.Module):
         Args:
             obs (Tensor): observations collected (possibly padded with zeros).
             prev_actions (Tensor): the previous actions.
-            prev_hx (Tensor): the previous state of the LSTM.
+            prev_states (Tuple[Tensor, Tensor]): the previous state of the LSTM.
             actions (List[Tensor], optional): the actions from the replay buffer.
             mask (Tensor, optional): the mask of the padded sequences.
 

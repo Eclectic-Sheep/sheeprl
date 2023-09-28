@@ -9,6 +9,7 @@ In the first case the observations are returned in form of python dictionary, wh
 ### Both observations
 The algorithms that can work with both image and vector observations are specified in [Table 1](../README.md) in the README, and are reported here:
 * PPO
+* PPO Recurrent
 * SAC-AE
 * Dreamer-V1
 * Dreamer-V2
@@ -74,17 +75,16 @@ python sheeprl.py exp=dreamer_v3 env=minerl env.id=custom_navigate mlp_keys.enco
 
 ### Vector observations algorithms
 The algorithms which works with only vector observations are reported here:
-* PPO Recurrent
 * SAC
 * Droq
 
-For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *PPO Recurrent* algorithm on the `LunarLander-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
+For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *SAC* algorithm on the `LunarLanderContinuous-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
 
 For these algorithms, you have to specify the *mlp* keys you want to encode. As usual you have to specify them through the `mlp_keys.encoder` and `mlp_keys.decoder` arguments (in the command or in the configs).
 
-For instance, you can train a SAC agent on the `LunarLander-v2` with the following command:
+For instance, you can train a SAC agent on the `LunarLanderContinuous-v2` with the following command:
 ```bash
-lightning run model sheeprl.py exp=sac env=gym env.id=LunarLander-v2 mlp_keys.encoder=[state]
+python sheeprl.py exp=sac env=gym env.id=LunarLanderContinuous-v2 mlp_keys.encoder=[state]
 ```
 
 
