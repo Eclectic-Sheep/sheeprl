@@ -3,7 +3,7 @@ import os
 import pathlib
 import warnings
 from math import prod
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import gymnasium as gym
 import hydra
@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -28,6 +28,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import dotdict
 
 
 def train(
@@ -39,7 +40,7 @@ def train(
     data: TensorDictBase,
     aggregator: MetricAggregator,
     update: int,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     policy_steps_per_update: int,
     group: Optional[CollectibleGroup] = None,
 ):
@@ -78,7 +79,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by SAC agent, since it does not take "
@@ -99,7 +100,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
@@ -114,7 +115,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv

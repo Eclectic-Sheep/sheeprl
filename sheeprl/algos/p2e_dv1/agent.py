@@ -4,7 +4,6 @@ import hydra
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import DictConfig
 
 from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.agent import build_models as dv1_build_models
@@ -24,7 +23,7 @@ def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     obs_space: Dict[str, Any],
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_task_state: Optional[Dict[str, torch.Tensor]] = None,

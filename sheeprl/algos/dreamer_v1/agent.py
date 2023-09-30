@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import DictConfig
 from sympy import Union
 from torch import Tensor, nn
 from torch.distributions import Normal, OneHotCategorical
@@ -330,7 +329,7 @@ def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     obs_space: Dict[str, Any],
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,

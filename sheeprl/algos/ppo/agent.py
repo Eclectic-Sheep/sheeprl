@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
@@ -63,9 +62,9 @@ class PPOAgent(nn.Module):
         self,
         actions_dim: List[int],
         obs_space: Dict[str, Any],
-        encoder_cfg: DictConfig,
-        actor_cfg: DictConfig,
-        critic_cfg: DictConfig,
+        encoder_cfg: Dict[str, Any],
+        actor_cfg: Dict[str, Any],
+        critic_cfg: Dict[str, Any],
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         screen_size: int,
