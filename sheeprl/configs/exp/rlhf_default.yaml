@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - override /env: null
+  - override /buffer: null
+  - override /checkpoint: null
+  - override /metric: null
+  - _self_
+
+exp_name: ${algo.name}
+run_name: seed_${seed}
+root_dir: ${algo.name}/${data.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Remove unnecessary keys
+cnn_keys: null
+mlp_keys: null
+total_steps: 0
+debug: false

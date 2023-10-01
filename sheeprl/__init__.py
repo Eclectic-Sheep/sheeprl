@@ -23,6 +23,7 @@ from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
 from sheeprl.algos.ppo import ppo as ppo
 from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
+from sheeprl.algos.rlhf import rlhf_dpo as rlhf_dpo
 from sheeprl.algos.rlhf import rlhf_ppo as rlhf_ppo
 from sheeprl.algos.rlhf import rlhf_rm as rlhf_rm
 from sheeprl.algos.rlhf import rlhf_sft as rlhf_sft

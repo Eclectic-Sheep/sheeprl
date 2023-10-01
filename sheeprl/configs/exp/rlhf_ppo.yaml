@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - rlhf_default
+  - /model: opt
+  - /generation: default
+  - /data: helpful_harmless
+  - /optim@actor_optimizer: adamw
+  - /optim@critic_optimizer: adamw
+  - override /algo: rlhf_ppo
+  - override /fabric: ddp-cuda
+  - _self_
+
+sft_experiment_dir: null
+rm_experiment_dir: null
+
+actor_optimizer:
+  lr: ${algo.actor_learning_rate}
+
+critic_optimizer:
+  lr: ${algo.critic_learning_rate}
+
+fabric:
+  devices: 1
