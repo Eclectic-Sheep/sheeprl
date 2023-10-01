@@ -1,15 +1,19 @@
-import json
 import os
+import shutil
 import warnings
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
+import hydra
 import lightning
 from lightning.fabric.fabric import torch
 from lightning_utilities.core.rank_zero import rank_zero_only
+from omegaconf import OmegaConf
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizer
 
-from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, TextDataArgs, TrainArgs
+from sheeprl.algos.rlhf.config_store.data import DataConfig, GenConfig
+from sheeprl.algos.rlhf.config_store.model import FINETUNE_MODE, ModelConfig
+from sheeprl.algos.rlhf.data.base import DataProcessor
 from sheeprl.algos.rlhf.lora_utils import add_lora
 from sheeprl.algos.rlhf.models import CasualModel, CriticModel, RewardModel
 
@@ -52,7 +56,7 @@ def trainable_parameter_summary(
     if show_names:
         print_fn("Trainable parameter names:")
         print_fn(trainable_param_names)
-    print_fn("Parameter dtypes:")
+    print_fn("Parameter Statistics:")
     print_fn(f"Trainable {trainable}")
     print_fn(f"Non-Trainable {non_trainable}")
     total_params = sum([sum(v.values()) for v in param_count.values()])
@@ -83,28 +87,6 @@ def prepare_optimizer_parameters(model: torch.nn.Module, weight_decay: float) ->
     return optim_groups, num_decay_params, num_nodecay_params
 
 
-def load_args_from_json(experiment_dir: str):
-    with open(os.path.join(experiment_dir, "args.json"), "r") as f:
-        args_dict = json.load(f)
-    return args_dict
-
-
-def save_args_to_json(
-    train_args: TrainArgs,
-    model_args: ModelArgs,
-    data_args: TextDataArgs,
-    gen_args: GenerationArgs,
-):
-    args = {}
-    args.update(train_args.to_dict())
-    args.update(model_args.to_dict())
-    args.update(data_args.to_dict())
-    args.update(gen_args.to_dict())
-    with open(os.path.join(train_args.experiment_dir, "args.json"), "w") as f:
-        json.dump(args, f, indent=4)
-    return args
-
-
 def get_last_checkpoint_path(experiment_dir: str):
     model_dir = os.path.join(experiment_dir, "model")
     checkpoints = [os.path.join(model_dir, f) for f in os.listdir(model_dir) if f.endswith(".pt")]
@@ -112,21 +94,21 @@ def get_last_checkpoint_path(experiment_dir: str):
     return checkpoints[-1]
 
 
-def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_args: ModelArgs):
-    finetune_mode = model_args.finetune_mode
-    if finetune_mode == "all":
+def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_cfg: ModelConfig):
+    finetune_mode = model_cfg.finetune_mode
+    if finetune_mode == FINETUNE_MODE.ALL:
         fabric.print("Using all layers parameters for finetuning")
         for param in model.parameters():
             param.requires_grad = True
 
-    elif finetune_mode == "lora":
+    elif finetune_mode == FINETUNE_MODE.LORA:
         fabric.print("Adding LORA parameters for finetuning")
-        add_lora(model, model_args)
+        add_lora(model, model_cfg=model_cfg)
         if isinstance(model, CriticModel):
             for param in model.head.parameters():
                 param.requires_grad = True
 
-    elif finetune_mode == "last_layer":
+    elif finetune_mode == FINETUNE_MODE.LAST_LAYER:
         fabric.print("Using only head layer parameters for finetuning")
         for name, param in model.named_parameters():
             param.requires_grad = False
@@ -175,14 +157,15 @@ def prepare_tokenizer(tokenizer_name: str) -> PreTrainedTokenizer:
 
 
 def prepare_generation_config(
-    tokenizer: PreTrainedTokenizer, model_args: ModelArgs, gen_args: GenerationArgs, fabric: lightning.Fabric
+    tokenizer: PreTrainedTokenizer, model_cfg: ModelConfig, gen_cfg: GenConfig, fabric: lightning.Fabric
 ) -> Dict[str, Any]:
+    gen_cfg_dict = asdict(gen_cfg)
     try:
-        generation_config = GenerationConfig.from_pretrained(model_args.model_name, **asdict(gen_args))
+        generation_config = GenerationConfig.from_pretrained(model_cfg.name, **gen_cfg_dict)
     except EnvironmentError:
         # If the model does not have `generation_config.json` file, we create from scratch
         fabric.print("`generation_config.json` not found, creating `GenerationConfig` from scratch")
-        generation_config = GenerationConfig(**asdict(gen_args))
+        generation_config = GenerationConfig(**gen_cfg_dict)
     generation_config.pad_token_id = tokenizer.pad_token_id
     generation_config.eos_token_id = tokenizer.eos_token_id
     generation_config.bos_token_id = tokenizer.bos_token_id
@@ -198,3 +181,36 @@ def compute_masked_logprobs(
         return (logprobs * loss_mask).sum(-1) / loss_mask.sum(-1)
     else:
         return (logprobs * loss_mask).sum(-1)
+
+
+def validate_dataset(fabric: lightning.Fabric, data_cfg: DataConfig) -> DataProcessor:
+    data_processor: DataProcessor = hydra.utils.instantiate(data_cfg)
+    full_path = data_processor.full_path
+    create_dataset: bool = True
+    if os.path.isdir(full_path):
+        config_path = full_path / "config.yaml"
+        if not config_path.exists():
+            fabric.print(f"Config file not found at {config_path} for the given dataset {data_cfg.name}")
+            fabric.print("Dataset will be recreated and previous files will be deleted.")
+        else:
+            open_config = OmegaConf.load(config_path)
+            loaded_dataset_cfg = DataConfig(**open_config)
+            if data_cfg != loaded_dataset_cfg:
+                fabric.print(
+                    f"Dataset config mismatch. Expected {data_cfg} but found {loaded_dataset_cfg}. "
+                    f"New dataset will be recreated and previous files will be deleted."
+                )
+                create_dataset = True
+            else:
+                fabric.print("Dataset already exists. Skipping dataset creation.")
+                create_dataset = False
+        if create_dataset:
+            shutil.rmtree(full_path)
+
+    data_processor.tokenizer = prepare_tokenizer(data_cfg.tokenizer_name)
+    if create_dataset:
+        fabric.print(f"Creating new dataset in {full_path}")
+        data_processor.process()
+        OmegaConf.save(data_cfg, full_path / "config.yaml", resolve=True)
+
+    return data_processor

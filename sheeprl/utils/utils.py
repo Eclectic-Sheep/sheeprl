@@ -127,3 +127,28 @@ def print_config(
     if cfg_save_path is not None:
         with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
             rich.print(tree, file=fp)
+
+
+@rank_zero_only
+def rank_zero_print(*args, **kwargs):
+    print(*args, **kwargs)
+    if kwargs.get("file") is None:
+        print(*args, **kwargs, file=open("log.txt", "a"))
+
+
+class dotdict(dict):
+
+    """dot.notation access to dictionary attributes"""
+
+    def __init__(self, d):
+        for k, v in d.items():
+            if isinstance(v, dict):
+                d[k] = dotdict(v)
+
+        super().__init__(d)
+
+    __getattr__ = dict.get
+
+    __setattr__ = dict.__setitem__
+
+    __delattr__ = dict.__delitem__

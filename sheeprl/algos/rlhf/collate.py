@@ -1,5 +1,11 @@
+from typing import List
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
+
+
+def list_to_tensor(list_item: List[int], dtype=torch.int64):
+    return torch.tensor(list_item, dtype=dtype)
 
 
 class SFTCollate:
@@ -9,8 +15,12 @@ class SFTCollate:
         self.ignore_index = ignore_index
 
     def __call__(self, batch):
-        input_ids = [item["chosen_input_ids"].type(torch.int64) for item in batch]
-        targets = [item["chosen_masked_targets"].type(torch.int64) for item in batch]
+        input_ids, targets = [], []
+        for item in batch:
+            prompt_len = item["prompt_len"]
+            input_ids.append(list_to_tensor(item["chosen_input_ids"]))
+            target = list_to_tensor([self.ignore_index] * prompt_len + item["chosen_input_ids"][prompt_len:])
+            targets.append(target)
 
         # Use PyTorch's pad_sequence function
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.pad_value)
@@ -31,10 +41,20 @@ class CompareCollate:
         self.ignore_index = ignore_index
 
     def __call__(self, batch):
-        input_ids = [item["chosen_input_ids"].type(torch.int64) for item in batch]
-        input_ids += [item["rejected_input_ids"].type(torch.int64) for item in batch]
-        targets = [item["chosen_masked_targets"].type(torch.int64) for item in batch]
-        targets += [item["rejected_masked_targets"].type(torch.int64) for item in batch]
+        chosen_input_ids, chosen_targets = [], []
+        rejected_input_ids, rejected_targets = [], []
+        for item in batch:
+            prompt_len = item["prompt_len"]
+            chosen_input_ids.append(list_to_tensor(item["chosen_input_ids"]))
+            rejected_input_ids.append(list_to_tensor(item["rejected_input_ids"]))
+            chosen_target = list_to_tensor([self.ignore_index] * prompt_len + item["chosen_input_ids"][prompt_len:])
+            chosen_targets.append(chosen_target)
+            rejected_targets.append(
+                list_to_tensor([self.ignore_index] * prompt_len + item["rejected_input_ids"][prompt_len:])
+            )
+        input_ids = chosen_input_ids + rejected_input_ids
+        targets = chosen_targets + rejected_targets
+
         # Use PyTorch's pad_sequence function
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.pad_value)
         targets = pad_sequence(targets, batch_first=True, padding_value=self.ignore_index)
@@ -45,8 +65,8 @@ class CompareCollate:
             "rejected_input_ids": input_ids[len(batch) :],
             "chosen_attention_mask": attention_mask[: len(batch)],
             "rejected_attention_mask": attention_mask[len(batch) :],
-            "chosen_masked_targets": targets[: len(batch)],
-            "rejected_masked_targets": targets[len(batch) :],
+            "chosen_targets": targets[: len(batch)],
+            "rejected_targets": targets[len(batch) :],
         }
 
 
