@@ -1,8 +1,9 @@
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 
+from sheeprl.algos.rlhf.config_store.algo import RM_LOSS_TYPE
 from sheeprl.algos.rlhf.utils import compute_masked_logprobs
 
 
@@ -151,11 +152,11 @@ def reward_loss_per_sample(
 
 
 def load_reward_loss(reward_loss_type: str):
-    if reward_loss_type == "average":
+    if reward_loss_type == RM_LOSS_TYPE.AVERAGE:
         return reward_loss_average
-    elif reward_loss_type == "last_token":
+    elif reward_loss_type == RM_LOSS_TYPE.LAST_TOKEN:
         return reward_loss_last_token
-    elif reward_loss_type == "per_sample":
+    elif reward_loss_type == RM_LOSS_TYPE.PER_SAMPLE:
         return reward_loss_per_sample
     else:
         raise ValueError(f"Invalid reward loss type: {reward_loss_type}")
@@ -173,22 +174,39 @@ def finetune_loss(
 
 
 def dpo_loss(
-    actor_chosen_logps: torch.Tensor,
-    actor_rejected_logps: torch.Tensor,
-    reference_chosen_logps: torch.Tensor,
-    reference_rejected_logps: torch.Tensor,
-    chosen_targets: torch.Tensor,
-    rejected_targets: torch.Tensor,
+    batch: Dict[str, torch.Tensor],
+    actor_model: torch.nn.Module,
+    ref_model: torch.nn.Module,
     beta: float,
     ignore_index: int,
     reference_free: bool = False,
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
     """Adapted from https://github.com/eric-mitchell/direct-preference-optimization/blob/main/trainers.py#L45C1-L50C110"""
+    chosen_input_ids = batch["chosen_input_ids"]
+    chosen_attention_mask = batch["chosen_attention_mask"]
+    chosen_targets = batch["chosen_targets"]
+    rejected_input_ids = batch["rejected_input_ids"]
+    rejected_attention_mask = batch["rejected_attention_mask"]
+    rejected_targets = batch["rejected_targets"]
 
-    masked_actor_chosen_logps = compute_masked_logprobs(actor_chosen_logps, chosen_targets, ignore_index)
-    masked_actor_rejected_logps = compute_masked_logprobs(actor_rejected_logps, rejected_targets, ignore_index)
-    masked_reference_chosen_logps = compute_masked_logprobs(reference_chosen_logps, chosen_targets, ignore_index)
-    masked_reference_rejected_logps = compute_masked_logprobs(reference_rejected_logps, rejected_targets, ignore_index)
+    with torch.inference_mode():
+        ref_chosen_logprobs = ref_model(
+            input_ids=chosen_input_ids, attention_mask=chosen_attention_mask, use_cache=False
+        )
+        ref_rejected_logprobs = ref_model(
+            input_ids=rejected_input_ids, attention_mask=rejected_attention_mask, use_cache=False
+        )
+    actor_chosen_logprobs = actor_model(
+        input_ids=chosen_input_ids, attention_mask=chosen_attention_mask, use_cache=False
+    )
+    actor_rejected_logprobs = actor_model(
+        input_ids=rejected_input_ids, attention_mask=rejected_attention_mask, use_cache=False
+    )
+
+    masked_actor_chosen_logps = compute_masked_logprobs(actor_chosen_logprobs, chosen_targets, ignore_index)
+    masked_actor_rejected_logps = compute_masked_logprobs(actor_rejected_logprobs, rejected_targets, ignore_index)
+    masked_reference_chosen_logps = compute_masked_logprobs(ref_chosen_logprobs, chosen_targets, ignore_index)
+    masked_reference_rejected_logps = compute_masked_logprobs(ref_rejected_logprobs, rejected_targets, ignore_index)
 
     actor_logratios = masked_actor_chosen_logps - masked_actor_rejected_logps
     ref_logratios = masked_reference_chosen_logps - masked_reference_rejected_logps

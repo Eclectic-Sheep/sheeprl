@@ -3,17 +3,19 @@ from typing import Dict, Tuple, Union
 import torch
 from tensordict import make_tensordict
 
-from sheeprl.algos.rlhf.args import PPOArgs
-from sheeprl.algos.rlhf.loss import policy_loss, value_loss
-from sheeprl.algos.rlhf.metrics import PPOMetricManager
-from sheeprl.algos.rlhf.models import ActorModel, CriticModel
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
+
 import lightning as L
 from torch.utils.data import DataLoader
 from transformers import GenerationConfig, PreTrainedTokenizer
+
+from sheeprl.algos.rlhf.config_store.algo import PPOAlgoConfig
+from sheeprl.algos.rlhf.loss import policy_loss, value_loss
+from sheeprl.algos.rlhf.metrics import PPOMetricManager
+from sheeprl.algos.rlhf.models import ActorModel, CriticModel
 
 
 class FixedKLController:
@@ -108,7 +110,7 @@ def collect_rollout(
     reward_model: CriticModel,
     kl_controller: Union[FixedKLController, AdaptiveKLController],
     generation_config: GenerationConfig,
-    train_args: PPOArgs,
+    algo_cfg: PPOAlgoConfig,
     tokenizer: PreTrainedTokenizer,
     fabric: L.Fabric,
     metrics: PPOMetricManager,
@@ -123,7 +125,7 @@ def collect_rollout(
     mini_batch_dataloader = DataLoader(
         batch_tdict,
         shuffle=False,
-        batch_size=train_args.rollout_mini_batch_size,
+        batch_size=algo_cfg.rollout_mini_batch_size,
         collate_fn=lambda x: x,
         num_workers=0,
         drop_last=False,
@@ -184,10 +186,10 @@ def collect_rollout(
     kl_div = rollout["actor_log_probs"] - rollout["ref_log_probs"]
 
     mean_kl_div = masked_mean(kl_div, action_mask).mean()
-    if train_args.clip_rewards:
-        torch.clip_(reward_scores, -train_args.reward_clip_value, train_args.reward_clip_value)
+    if algo_cfg.clip_rewards:
+        torch.clip_(reward_scores, -algo_cfg.reward_clip_value, algo_cfg.reward_clip_value)
 
-    if train_args.normalize_rewards:
+    if algo_cfg.normalize_rewards:
         # we normalize the reward but do not shift the mean
         # TODO: Does it really important to normalize the rewards?
         reward_scores = normalize(reward_scores, shift_mean=False)
@@ -203,8 +205,8 @@ def collect_rollout(
     advantages, returns = compute_advantages_and_returns(
         rewards=rewards * action_mask,
         values=values * action_mask,
-        gamma=train_args.gae_gamma,
-        lambd=train_args.gae_lambd,
+        gamma=algo_cfg.gae_gamma,
+        lambd=algo_cfg.gae_lambd,
     )
     rollout["advantages"] = advantages
     rollout["returns"] = returns
@@ -224,7 +226,7 @@ def ppo_step(
     batch: Dict[str, torch.Tensor],
     actor_model: torch.nn.Module,
     critic_model: torch.nn.Module,
-    ppo_args: PPOArgs,
+    algo_cfg: PPOAlgoConfig,
     max_prompt_length: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     generated_data = {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
@@ -238,21 +240,21 @@ def ppo_step(
     log_probs = actor_model(**generated_data)[:, start_token_idx:]  # (B, num_new_tokens)
     values = critic_model(**generated_data)[:, start_token_idx:-1]  # (B, num_new_tokens)
     action_mask = batch["attention_mask"][:, start_token_idx:-1].int()
-    if ppo_args.normalize_advantages:
+    if algo_cfg.normalize_advantages:
         advantages = masked_normalize(advantages, action_mask)
 
     p_loss = policy_loss(
         log_probs=log_probs,
         old_log_probs=old_log_probs,
         advantages=advantages,
-        clip_coeff=ppo_args.clip_coeff,
+        clip_coeff=algo_cfg.clip_coeff,
         action_mask=action_mask,
     )
     v_loss = value_loss(
         values=values,
         old_values=old_values,
         returns=returns,
-        clip_coeff=ppo_args.clip_coeff,
+        clip_coeff=algo_cfg.clip_coeff,
         action_mask=action_mask,
     )
 

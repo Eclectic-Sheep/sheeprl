@@ -15,8 +15,6 @@ import torch.nn.utils.parametrize as parametrize
 import transformers
 from torch import nn
 
-from sheeprl.algos.rlhf.args import ModelArgs
-
 
 class LoRAParametrization(nn.Module):
     def __init__(
@@ -217,7 +215,7 @@ def untie_weights(linear: nn.Linear, embedding: nn.Embedding):
     embedding.parametrizations.weight[0].lora_B = nn.Parameter(embedding.parametrizations.weight[0].lora_B.clone())
 
 
-def add_lora(model: torch.nn.Module, model_args: ModelArgs):
+def add_lora(model: torch.nn.Module, model_args):
     if isinstance(model_args.lora_targets, str):
         lora_targets = ast.literal_eval(model_args.lora_targets)
     else:

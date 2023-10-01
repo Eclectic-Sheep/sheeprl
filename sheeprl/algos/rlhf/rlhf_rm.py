@@ -1,42 +1,44 @@
-import os
-import sys
-import time
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable
 
-import lightning as L
-import torch
-from dotenv import load_dotenv
-from lightning.fabric.loggers.tensorboard import TensorBoardLogger
-from torch.utils.data import DataLoader
+import hydra
+from lightning.fabric import Fabric
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
-from sheeprl.algos.rlhf.metrics import RMMetricManager, reward_accuracy
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_TRANSFORMERS_AVAILABLE))
 
+import time
 
-from sheeprl.algos.rlhf.args import GenerationArgs, ModelArgs, RMArgs, TextDataArgs
+import torch
+from torch.utils.data import DataLoader
+
 from sheeprl.algos.rlhf.collate import CompareCollate
+from sheeprl.algos.rlhf.config_store import register_configs
+from sheeprl.algos.rlhf.config_store.algo import RMAlgoConfig
+from sheeprl.algos.rlhf.config_store.data import DataConfig
+from sheeprl.algos.rlhf.config_store.model import ModelConfig
+from sheeprl.algos.rlhf.data.base import TextDataset
 from sheeprl.algos.rlhf.loss import load_reward_loss
+from sheeprl.algos.rlhf.metrics import RMMetricManager, reward_accuracy
 from sheeprl.algos.rlhf.models import CriticModel, RewardModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
     get_last_checkpoint_path,
-    load_args_from_json,
     prepare_optimizer_parameters,
-    prepare_tokenizer,
-    save_args_to_json,
     setup_finetuning,
     trainable_parameter_summary,
+    validate_dataset,
 )
-from sheeprl.utils.parser import HfArgumentParser
+from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
-__all__ = ["main"]
+register_configs()
 
 
 @torch.inference_mode()
@@ -71,101 +73,84 @@ def evaluate(model: RewardModel, val_dataloader: DataLoader, loss: Callable, pad
 
 
 @register_algorithm()
-def main():
-    # Retrieve arguments
-    if len(sys.argv) > 1:
-        parser = HfArgumentParser([RMArgs, ModelArgs, GenerationArgs])
-        dataclasses = parser.parse_args_into_dataclasses()
-        train_args: RMArgs = dataclasses[0]
-        model_args: ModelArgs = dataclasses[1]
-        gen_args: GenerationArgs = dataclasses[2]
+def main(fabric: Fabric, cfg: DictConfig):
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    algo_cfg = RMAlgoConfig(**cfg.algo)
+    model_cfg = ModelConfig(**cfg.model)
+    data_cfg = DataConfig(**cfg.data)
+    optim_cfg = cfg.optim
 
-    data_args_path = Path(train_args.data_dir) / "args.json"
-    data_args = TextDataArgs.from_json(str(data_args_path))
-
-    # Setup Fabric
-    fabric = L.Fabric(accelerator="auto")
-    fabric.launch()
-    fabric.seed_everything(train_args.seed + fabric.global_rank)
-    fabric.print(f"Fabric Rank: {fabric.global_rank}")
-    # Setup for rank 0
-    if fabric.is_global_zero:
-        # Setup Logger
-        logger = TensorBoardLogger(train_args.experiment_dir)
-        fabric._loggers = [logger]
-        # Save args
-        os.makedirs(train_args.experiment_dir, exist_ok=True)
-        all_args = save_args_to_json(
-            train_args=train_args,
-            model_args=model_args,
-            data_args=data_args,
-            gen_args=gen_args,
-        )
-        # Log hyperparameters
-        fabric.logger.log_hyperparams(all_args)
-
-    # Setup Metrics
-
-    metrics = RMMetricManager(log_interval=train_args.log_interval).to(fabric.device)
-
-    # Setup Reward Loss
-
-    reward_loss = load_reward_loss(train_args.loss_type)
-
-    # Setup Tokenizer
-    tokenizer = prepare_tokenizer(model_args.model_name)
-
-    # Setup Model
-    sft_experiment_dir = train_args.sft_experiment_dir if train_args.sft_experiment_dir is not None else None
+    # Check if we are loading a finetuned model
+    sft_experiment_dir = algo_cfg.sft_experiment_dir if algo_cfg.sft_experiment_dir is not None else None
     sft_checkpoint_path = None
     if sft_experiment_dir is not None:
         fabric.print(f"Loading finetuned transformer from {sft_experiment_dir}")
-        sft_exp_args = load_args_from_json(experiment_dir=sft_experiment_dir)
-        model_args = ModelArgs(**sft_exp_args["model_args"])
+        sft_exp_cfg = OmegaConf.load(Path(sft_experiment_dir) / ".hydra/config.yaml")
+        ckpt_model_cfg = ModelConfig(**sft_exp_cfg.model)
         sft_checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
-    model = CriticModel.from_checkpoint(
-        device=fabric.device, model_args=model_args, freeze=True, path=sft_checkpoint_path
-    )
-    setup_finetuning(fabric=fabric, model=model, model_args=model_args)
-    model = model.to(fabric.device)
+    else:
+        ckpt_model_cfg = model_cfg
 
-    trainable_parameter_summary(model, show_names=False, fabric=fabric)
+    # Create TensorBoardLogger. This will create the logger only on the
+    # rank-0 process
+    logger, log_dir = create_tensorboard_logger(fabric, cfg)
+    experiment_dir = Path(log_dir).parent
+    if fabric.is_global_zero:
+        fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(cfg)
 
     # Setup Dataloaders
-    collator = CompareCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_args.ignore_index)
-    train_data = torch.load(Path(train_args.data_dir) / "preference_train.pt")
+    data_processor = validate_dataset(fabric, data_cfg)
+    dataset_path = Path(data_processor.full_path)
+    tokenizer = data_processor.tokenizer
+
+    collator = CompareCollate(pad_value=tokenizer.pad_token_id, ignore_index=data_cfg.ignore_index)
+    train_dataset = TextDataset(dataframe_path=dataset_path / "reward_model_train.pkl")
     train_dataloader = DataLoader(
-        train_data,
+        train_dataset,
         shuffle=True,
-        batch_size=train_args.micro_batch_size,
+        batch_size=algo_cfg.micro_batch_size,
         collate_fn=collator,
-        num_workers=train_args.num_workers,
+        num_workers=algo_cfg.num_workers,
     )
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
 
-    val_data = torch.load(Path(train_args.data_dir) / "preference_validation.pt")
+    val_dataset = TextDataset(dataframe_path=dataset_path / "reward_model_validation.pkl")
     val_dataloader = DataLoader(
-        val_data,
+        val_dataset,
         shuffle=False,
-        batch_size=train_args.micro_batch_size,
+        batch_size=algo_cfg.micro_batch_size,
         collate_fn=collator,
-        num_workers=train_args.num_workers,
+        num_workers=algo_cfg.num_workers,
     )
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
 
-    # Setup Optimizer Scheduler
-    trainable_params, _, _ = prepare_optimizer_parameters(model, train_args.weight_decay)
-    optimizer_cls: Union[torch.optim.Adam, torch.optim.AdamW] = getattr(torch.optim, train_args.optimizer)
-    optimizer = optimizer_cls(
-        trainable_params,
-        lr=train_args.learning_rate,
-        eps=train_args.optimizer_eps,
-        betas=(train_args.optimizer_beta1, train_args.optimizer_beta2),
+    # Setup Model
+    model = RewardModel.from_checkpoint(
+        device=fabric.device, model_cfg=ckpt_model_cfg, freeze=True, path=sft_checkpoint_path
     )
-    num_training_steps = train_args.epochs * len(train_dataloader)
+    setup_finetuning(fabric=fabric, model=model, model_cfg=model_cfg)
+    model = model.to(fabric.device)
+    trainable_parameter_summary(model, show_names=False, fabric=fabric)
+
+    # Setup Metrics
+
+    metrics = RMMetricManager(log_interval=algo_cfg.log_interval).to(fabric.device)
+
+    # Setup Reward Loss
+    reward_loss = load_reward_loss(algo_cfg.loss_type)
+
+    # Setup Optimizer Scheduler
+    trainable_params, _, _ = prepare_optimizer_parameters(model, optim_cfg.weight_decay)
+    optimizer = hydra.utils.instantiate(
+        optim_cfg,
+        params=trainable_params,
+        _convert_="partial",
+    )
+    num_training_steps = algo_cfg.epochs * len(train_dataloader)
     lr_scheduler = CosineSchedulerWithWarmup(
-        learning_rate=train_args.learning_rate,
-        warmup_steps=train_args.lr_warmup_steps,
+        lr=optim_cfg.lr,
+        warmup_steps=algo_cfg.lr_warmup_steps,
         lr_decay_steps=num_training_steps,
     )
     model, optimizer = fabric.setup(model, optimizer)
@@ -176,7 +161,7 @@ def main():
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
             data_iterator = iter(train_dataloader)
-        is_accumulating = (k) % train_args.gradient_accumulation_steps != 0
+        is_accumulating = (k) % algo_cfg.gradient_accumulation_steps != 0
         last_step = k == num_training_steps - 1
 
         # Setup learning rate
@@ -204,14 +189,14 @@ def main():
                 rejected_rewards=rejected_rewards,
                 pad_token_id=tokenizer.pad_token_id,
             )
-            fabric.backward(loss / train_args.gradient_accumulation_steps)
+            fabric.backward(loss / algo_cfg.gradient_accumulation_steps)
             # DDP + gradient accumulation does not work with GPT2
             # https://github.com/huggingface/transformers/issues/22994
 
         dt = time.time() - t0
         if not is_accumulating:
             metrics.info_grad_norm.update(compute_grad_norm(model))
-            fabric.clip_gradients(model, optimizer, max_norm=train_args.gradient_clip_val, error_if_nonfinite=True)
+            fabric.clip_gradients(model, optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
@@ -223,13 +208,13 @@ def main():
             train_acc = reward_accuracy(choosen_last_rewards, rejected_last_rewards)
             metrics.train_acc.update(train_acc)
 
-        if k > 0 and (k % train_args.eval_interval == 0 or last_step):
+        if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
             val_loss, val_acc = evaluate(
                 model=model,
                 val_dataloader=val_dataloader,
                 loss=reward_loss,
                 pad_token_id=tokenizer.pad_token_id,
-                eval_iters=train_args.eval_iters,
+                eval_iters=algo_cfg.eval_iters,
             )
             with torch.no_grad():
                 metrics.val_loss.reset()
@@ -237,7 +222,7 @@ def main():
                 metrics.val_loss.update(val_loss)
                 metrics.val_acc.update(val_acc)
         fabric.barrier()
-        if k > 0 and (k % train_args.log_interval == 0 or last_step):
+        if k > 0 and (k % algo_cfg.log_interval == 0 or last_step):
             computed_metrics = metrics.compute_all()
             metrics.log_all(fabric=fabric, step=k, metrics_dict=computed_metrics)
 
@@ -249,20 +234,12 @@ def main():
                     description += f", {metric_name}: {metric_value:.3f}"
                 iterator.set_description(description)
 
-        if k > 0 and (k % train_args.save_interval == 0 or last_step):
+        if k > 0 and (k % algo_cfg.save_interval == 0 or last_step):
             checkpoint_model: CriticModel = model.module
             checkpoint_model.save_checkpoint(
                 fabric=fabric,
-                train_args=train_args,
-                model_args=model_args,
+                experiment_dir=experiment_dir,
+                model_cfg=model_cfg,
                 step=k,
             )
-    fabric.print("Experiment output folder: ", train_args.experiment_dir)
-
-
-if __name__ == "__main__":
-    # Uncomment this line if you see an error: "Expected is_sm80 to be true, but got false"
-    # torch.backends.cuda.enable_flash_sdp(False)
-    torch.set_float32_matmul_precision("high")
-    load_dotenv()
-    main()
+    fabric.print("Experiment output folder: ", experiment_dir)

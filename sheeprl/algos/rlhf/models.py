@@ -7,25 +7,26 @@ import torch.nn.functional as F
 from lightning_utilities.core.rank_zero import rank_zero_only
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, PreTrainedModel
 
-from sheeprl.algos.rlhf.args import ModelArgs, TrainArgs
+from sheeprl.algos.rlhf.config_store.model import FINETUNE_MODE, HuggingFaceConfig, ModelConfig
 from sheeprl.algos.rlhf.lora_utils import add_lora, get_lora_state_dict, merge_lora
 
 
-def load_hf_transformer(model_args: ModelArgs) -> PreTrainedModel:
-    model_cls = AutoModel if not model_args.casual else AutoModelForCausalLM
-    model_config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=model_args.trust_remote_code)
-    if hasattr(model_config, "dropout"):
-        model_config.dropout = 0.0 if model_args.disable_dropout else model_config.dropout
-    model_config.use_cache = model_args.use_cache
-    model_config.torch_dtype = torch.get_default_dtype()
+def load_hf_transformer(model_cfg: ModelConfig) -> PreTrainedModel:
+    model_cls = AutoModel if not model_cfg.casual else AutoModelForCausalLM
+    hf_cfg: HuggingFaceConfig = model_cfg.library_config
+    auto_config = AutoConfig.from_pretrained(model_cfg.name, trust_remote_code=hf_cfg.trust_remote_code)
+    if hasattr(auto_config, "dropout"):
+        auto_config.dropout = 0.0 if model_cfg.disable_dropout else auto_config.dropout
+    auto_config.use_cache = hf_cfg.use_cache
+    auto_config.torch_dtype = torch.get_default_dtype()
     model = model_cls.from_pretrained(
-        model_args.model_name,
-        trust_remote_code=model_args.trust_remote_code,
-        load_in_8bit=model_args.load_in_8bit,
-        low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        config=model_config,
+        model_cfg.name,
+        trust_remote_code=hf_cfg.trust_remote_code,
+        load_in_8bit=hf_cfg.load_in_8bit,
+        low_cpu_mem_usage=hf_cfg.low_cpu_mem_usage,
+        config=auto_config,
     )
-    if model_args.freeze_transformer:
+    if model_cfg.freeze_transformer:
         for param in model.parameters():
             param.requires_grad = False
     return model
@@ -46,23 +47,25 @@ class CasualModel(torch.nn.Module):
     def from_checkpoint(
         cls,
         device: torch.device,
-        model_args: ModelArgs,
+        model_cfg: ModelConfig,
         path: Optional[str] = None,
         freeze: bool = False,
     ):
-        model = load_hf_transformer(model_args)
+        model = load_hf_transformer(model_cfg)
         model = cls(model=model)
         if path is not None:
             sd = torch.load(path, map_location=device)
-            if model_args.finetune_mode == "last_layer":
+            if model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:
                 embedding_weights = sd["last_layer_weights"]
                 model.model.set_input_embeddings(embedding_weights)
-            elif model_args.finetune_mode == "lora":
-                add_lora(model, model_args)
+            elif model_cfg.finetune_mode == FINETUNE_MODE.LORA:
+                add_lora(model, model_cfg)
                 model.load_state_dict(sd, strict=False)
                 merge_lora(model)
-            else:
+            elif model_cfg.finetune_mode == FINETUNE_MODE.ALL:
                 model.load_state_dict(sd)
+            else:
+                raise ValueError(f"Unknown finetune mode {model_cfg.finetune_mode}")
         if freeze:
             for param in model.parameters():
                 param.requires_grad = False
@@ -70,13 +73,13 @@ class CasualModel(torch.nn.Module):
         return model
 
     @rank_zero_only
-    def save_checkpoint(self, fabric: L.Fabric, train_args: TrainArgs, model_args: ModelArgs, step):
-        output_file = os.path.join(train_args.experiment_dir, "model", f"checkpoint-{step}.pt")
+    def save_checkpoint(self, fabric: L.Fabric, experiment_dir: str, model_cfg: ModelConfig, step):
+        output_file = os.path.join(experiment_dir, "model", f"checkpoint-{step}.pt")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if model_args.finetune_mode == "last_layer":
+        if model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:
             embedding_weights = self.model.get_input_embeddings().weight
             sd = {"last_layer_weights": embedding_weights}
-        if model_args.finetune_mode == "lora":
+        if model_cfg.finetune_mode == FINETUNE_MODE.LORA:
             sd = get_lora_state_dict(self)
         else:
             sd = self.state_dict()
@@ -136,24 +139,22 @@ class CriticModel(torch.nn.Module):
     def from_checkpoint(
         cls,
         device: torch.device,
-        model_args: ModelArgs,
+        model_cfg: ModelConfig,
         path: Optional[str] = None,
         freeze: bool = False,
     ):
-        model = load_hf_transformer(model_args)
+        model = load_hf_transformer(model_cfg)
         transformer_config = model.base_model.config
-        if model_args.embedding_dim_name is None:
+        if model_cfg.embedding_dim_name is None:
             if hasattr(model, "get_input_embeddings"):
                 embedding_dim = model.get_input_embeddings().weight.shape[-1]
             else:
                 raise ValueError("embedding_dim_name is None and model does not have `get_input_embeddings` method")
         else:
-            embedding_dim = getattr(transformer_config, model_args.embedding_dim_name, None)
+            embedding_dim = getattr(transformer_config, model_cfg.embedding_dim_name, None)
             if embedding_dim is None:
-                raise ValueError(
-                    f"`embedding_dim_name={model_args.embedding_dim_name}` not found in transformer_config"
-                )
-        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_args.transformer_name)
+                raise ValueError(f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in transformer_config")
+        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_cfg.transformer_name)
         if path is not None:
             sd = torch.load(path, map_location=device)
             new_sd = {}
@@ -161,11 +162,11 @@ class CriticModel(torch.nn.Module):
                 new_k = k.replace("model.model", "transformer")
                 new_k = new_k.replace("model.", "")
                 new_sd[new_k] = v
-            if model_args.finetune_mode == "lora":
-                add_lora(model, model_args)
+            if model_cfg.finetune_mode == FINETUNE_MODE.LORA:
+                add_lora(model, model_cfg)
                 model.load_state_dict(new_sd, strict=False)
                 merge_lora(model)
-            elif model_args.finetune_mode == "last_layer" or model_args.casual:
+            elif model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER or model_cfg.casual:
                 model.load_state_dict(new_sd, strict=False)
             else:
                 model.load_state_dict(new_sd)
@@ -175,8 +176,8 @@ class CriticModel(torch.nn.Module):
         return model
 
     @rank_zero_only
-    def save_checkpoint(self, fabric: L.Fabric, train_args: TrainArgs, model_args: ModelArgs, step):
-        output_file = os.path.join(train_args.experiment_dir, "model", f"checkpoint-{step}.pt")
+    def save_checkpoint(self, fabric: L.Fabric, experiment_dir: str, model_args, step):
+        output_file = os.path.join(experiment_dir, "model", f"checkpoint-{step}.pt")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         if model_args.finetune_mode == "lora":
             sd = get_lora_state_dict(self)
