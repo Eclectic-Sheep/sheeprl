@@ -393,6 +393,7 @@ def build_models(
     recurrent_model = RecurrentModel(
         input_size=sum(actions_dim) + world_model_cfg.stochastic_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        activation=eval(world_model_cfg.recurrent_model.dense_act),
     )
     representation_model = MLP(
         input_dims=(

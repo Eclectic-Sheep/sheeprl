@@ -43,6 +43,7 @@ world_model:
   recurrent_model:
     recurrent_state_size: 200
     dense_units: ${algo.dense_units}
+    dense_act: ${algo.dense_act}
 
   # Prior
   transition_model:
