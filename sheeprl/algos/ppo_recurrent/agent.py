@@ -1,9 +1,9 @@
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+import gymnasium
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
@@ -13,7 +13,7 @@ from sheeprl.models.models import MLP, MultiEncoder
 
 class RecurrentModel(nn.Module):
     def __init__(
-        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: DictConfig, post_rnn_mlp_cfg: DictConfig
+        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: Dict[str, Any], post_rnn_mlp_cfg: Dict[str, Any]
     ) -> None:
         super().__init__()
         if pre_rnn_mlp_cfg.apply:
@@ -76,11 +76,11 @@ class RecurrentPPOAgent(nn.Module):
     def __init__(
         self,
         actions_dim: Sequence[int],
-        obs_space: Dict[str, Any],
-        encoder_cfg: DictConfig,
-        rnn_cfg: DictConfig,
-        actor_cfg: DictConfig,
-        critic_cfg: DictConfig,
+        obs_space: gymnasium.spaces.Dict,
+        encoder_cfg: Dict[str, Any],
+        rnn_cfg: Dict[str, Any],
+        actor_cfg: Dict[str, Any],
+        critic_cfg: Dict[str, Any],
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         is_continuous: bool,

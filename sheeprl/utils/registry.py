@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List
 # tasks[module] = [..., {"name": algorithm, "entrypoint": entrypoint, "decoupled": decoupled}]
 # where `module` and `algorithm` are respectively taken from sheeprl/algos/{module}/{algorithm}.py,
 # while `entrypoint` is the decorated function
-tasks: Dict[str, List[Dict[str, str]]] = {}
+tasks: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def _register(fn: Callable[..., Any], decoupled: bool = False) -> Callable[..., Any]:

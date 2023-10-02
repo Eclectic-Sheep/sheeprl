@@ -1,15 +1,14 @@
 import os
 import time
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from lightning.fabric import Fabric
 from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
-from omegaconf import DictConfig
 
 
-def create_tensorboard_logger(fabric: Fabric, cfg: DictConfig) -> Tuple[Optional[TensorBoardLogger], str]:
+def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Tuple[Optional[TensorBoardLogger], str]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.

@@ -4,6 +4,7 @@ import pathlib
 import warnings
 from datetime import timedelta
 from math import prod
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -13,7 +14,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
@@ -28,11 +29,12 @@ from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import dotdict
 
 
 @torch.no_grad()
 def player(
-    fabric: Fabric, cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective
+    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
     logger = fabric.logger
     rank = fabric.global_rank
@@ -46,7 +48,7 @@ def player(
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
@@ -314,7 +316,7 @@ def trainer(
     # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
-    cfg: DictConfig = data[0]
+    cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
     fabric = Fabric(
@@ -330,7 +332,7 @@ def trainer(
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
@@ -495,7 +497,7 @@ def trainer(
 
 
 @register_algorithm(decoupled=True)
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "

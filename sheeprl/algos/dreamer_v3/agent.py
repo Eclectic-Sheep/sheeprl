@@ -1,13 +1,13 @@
 import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import gymnasium
 import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import DictConfig
 from torch import Tensor, device, nn
 from torch.distributions import (
     Distribution,
@@ -815,8 +815,8 @@ def build_models(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: DictConfig,
-    obs_space: Dict[str, Any],
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,

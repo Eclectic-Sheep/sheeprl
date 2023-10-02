@@ -6,7 +6,6 @@ import cv2
 import gymnasium as gym
 import hydra
 import numpy as np
-from omegaconf import DictConfig
 
 from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper, RewardAsObservationWrapper
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
@@ -18,7 +17,7 @@ if _IS_DMC_AVAILABLE:
 
 
 def make_env(
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     seed: int,
     rank: int,
     run_name: Optional[str] = None,
@@ -26,11 +25,12 @@ def make_env(
     vector_env_idx: int = 0,
 ) -> Callable[[], gym.Env]:
     """
-    Create the callable function to createenvironment and
-    force the environment to return only pixels observations.
+    Create the callable function to create environment and
+    force the environment to return an observation space of type
+    gymnasium.spaces.Dict.
 
     Args:
-        cfg (str): the configs of the environment to initialize.
+        cfg (Dict[str, Any]): the configs of the environment to initialize.
         seed (int): the seed to use.
         rank (int): the rank of the process.
         run_name (str, optional): the name of the run.
