@@ -32,4 +32,4 @@ wrapper:
     scale: False
     exclude_image_scaling: False
     process_discrete_binary: False
-    role_relative: False
+    role_relative: True

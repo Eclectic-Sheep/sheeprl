@@ -49,7 +49,7 @@ class DiambraWrapper(core.Env):
                 "game_id": id,
                 "action_space": eval(action_space),
                 "n_players": 1,
-                "role": eval(role),
+                "role": eval(role) if role is not None else None,
                 "render_mode": render_mode,
             },
         )
