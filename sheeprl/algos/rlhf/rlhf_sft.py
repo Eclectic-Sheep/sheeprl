@@ -22,7 +22,7 @@ from sheeprl.algos.rlhf.config_store import register_configs
 from sheeprl.algos.rlhf.config_store.algo import SFTAlgoConfig
 from sheeprl.algos.rlhf.config_store.data import DataConfig, GenConfig
 from sheeprl.algos.rlhf.config_store.model import ModelConfig
-from sheeprl.algos.rlhf.data.base import TextDataset
+from sheeprl.algos.rlhf.data import TextDataset
 from sheeprl.algos.rlhf.loss import finetune_loss
 from sheeprl.algos.rlhf.metrics import SFTMetricManager
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel

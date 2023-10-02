@@ -21,7 +21,7 @@ from sheeprl.algos.rlhf.config_store import register_configs
 from sheeprl.algos.rlhf.config_store.algo import RMAlgoConfig
 from sheeprl.algos.rlhf.config_store.data import DataConfig
 from sheeprl.algos.rlhf.config_store.model import ModelConfig
-from sheeprl.algos.rlhf.data.base import TextDataset
+from sheeprl.algos.rlhf.data import TextDataset
 from sheeprl.algos.rlhf.loss import load_reward_loss
 from sheeprl.algos.rlhf.metrics import RMMetricManager, reward_accuracy
 from sheeprl.algos.rlhf.models import CriticModel, RewardModel

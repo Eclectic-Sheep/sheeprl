@@ -20,7 +20,7 @@ from sheeprl.algos.rlhf.collate import LeftPadCollate
 from sheeprl.algos.rlhf.config_store.algo import PPOAlgoConfig
 from sheeprl.algos.rlhf.config_store.data import DataConfig, GenConfig
 from sheeprl.algos.rlhf.config_store.model import ModelConfig
-from sheeprl.algos.rlhf.data.base import TextDataset
+from sheeprl.algos.rlhf.data import TextDataset
 from sheeprl.algos.rlhf.metrics import PPOMetricManager
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel, RewardModel
 from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, ppo_step

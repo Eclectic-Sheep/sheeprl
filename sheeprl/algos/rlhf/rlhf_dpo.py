@@ -20,7 +20,7 @@ from sheeprl.algos.rlhf.collate import CompareCollate
 from sheeprl.algos.rlhf.config_store.algo import DPOAlgoConfig
 from sheeprl.algos.rlhf.config_store.data import DataConfig, GenConfig
 from sheeprl.algos.rlhf.config_store.model import ModelConfig
-from sheeprl.algos.rlhf.data.base import TextDataset
+from sheeprl.algos.rlhf.data import TextDataset
 from sheeprl.algos.rlhf.loss import dpo_loss
 from sheeprl.algos.rlhf.metrics import DPOMetricManager, reward_accuracy
 from sheeprl.algos.rlhf.models import ActorModel, CasualModel
