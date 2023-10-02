@@ -58,7 +58,7 @@ def train(
     critic_exploration_optimizer: _FabricOptimizer,
     is_continuous: bool,
     actions_dim: Sequence[int],
-    is_exploring: True,
+    is_exploring: bool = True,
 ) -> None:
     """Runs one-step update of the agent.
 
