@@ -19,10 +19,11 @@ env:
   screen_size: 128
   reward_as_observation: True
   wrapper:
-    attack_but_combination: True
     diambra_settings:
       characters: Kasumi
       difficulty: 4
+    diambra_wrappers:
+      no_attack_buttons_combinations: False
 
 # Checkpoint
 checkpoint:
@@ -38,30 +39,30 @@ cnn_keys:
     - frame
 mlp_keys:
   encoder:
+    - P1_character
+    - P1_health
+    - P1_side
+    - P1_wins
+    - P2_character
+    - P2_health
+    - P2_side
+    - P2_wins
+    - stage
+    - timer
+    - action
     - reward
-    - P1_actions_attack
-    - P1_actions_move
-    - P1_oppChar
-    - P1_oppHealth
-    - P1_oppSide
-    - P1_oppWins
-    - P1_ownChar
-    - P1_ownHealth
-    - P1_ownSide
-    - P1_ownWins
-    - stage
   decoder:
-    - P1_actions_attack
-    - P1_actions_move
-    - P1_oppChar
-    - P1_oppHealth
-    - P1_oppSide
-    - P1_oppWins
-    - P1_ownChar
-    - P1_ownHealth
-    - P1_ownSide
-    - P1_ownWins
+    - P1_character
+    - P1_health
+    - P1_side
+    - P1_wins
+    - P2_character
+    - P2_health
+    - P2_side
+    - P2_wins
     - stage
+    - timer
+    - action
 
 # Algorithm
 algo:
