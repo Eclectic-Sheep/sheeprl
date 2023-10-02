@@ -26,7 +26,7 @@ class dotdict(dict):
                 self[k] = dotdict(v)
 
     def __getstate__(self):
-        return dict(self)
+        return self
 
     def __setstate__(self, state):
         self.update(state)
