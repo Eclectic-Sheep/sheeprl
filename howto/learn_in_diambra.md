@@ -45,7 +45,7 @@ Each environment has its own observation and action space, so it is reccomended 
 >
 > You have to be [registered](https://diambra.ai/register/) and logged in to acces the [DIAMRA documentation](https://docs.diambra.ai/).
 
-The observation space is slightly modified to be compatible with our algorithms, in particular, the `gym.spaces.Box` observations are converted in `gymnasium.spaces.Box` observations, mantaining the dimensions, the range and the type of the observations. Moreover, the `gym.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gym.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
+The observation space is slightly modified to be compatible with our algorithms, in particular, the `gymnasium.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gymnasium.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
 
 > **Note**
 >
@@ -86,7 +86,7 @@ env:
     diambra_settings:
         characters: Kasumi
         step_ratio: 5
-        player: P1
+        role: diambra.arena.Roles.P1
     diambra_wrappers:
         reward_normalization: True
         reward_normalization_factor: 0.3
@@ -102,14 +102,14 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 > Some settings and wrappers are included in the cli arguments when the command is launched. These settings/wrappers cannot be specified in the `diambra_settings` and `diambra_wrappers` parameters, respectively.
 > The settings/wrappers you cannot specify in the `diambra_settings` and `diambra_wrappers` parameters are the following:
 > * `action_space` (settings): you can set it with the `env.wrapper.action_space` argument.
-> * `attack_but_combination` (settings): you can set it with the `env.wrapper.attack_but_combination` argument.
-> * `frame_shape` (settings): you can set it with the `env.screen_size` argument.
+> * `n_players` (settings): you cannot set it, since it is always `1`.
+> * `frame_shape` (settings and wrappers): you can set it with the `env.screen_size` argument.
 > * `flatten` (wrappers): you cannot set it, since it is always `True`.
-> * `sticky_actions` (wrappers): you can set it with the `env.action_repeat` argument.
-> * `frame_stack` (wrappers): you can set it with the `env.frame_stack` argument.
+> * `repeat_action` (wrappers): you can set it with the `env.action_repeat` argument.
+> * `stack_frames` (wrappers): you can set it with the `env.stack_frames` argument.
 > * `dilation` (wrappers): you can set it with the `env.frame_stack_dilation` argument
 >
-> When you set the `action_repeat` cli argument greater than one (i.e., the `sticky_actions` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
+> When you set the `action_repeat` cli argument greater than one (i.e., the `repeat_action` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
 >
 > **Important**
 >

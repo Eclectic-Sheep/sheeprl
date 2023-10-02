@@ -12,15 +12,25 @@ action_repeat: 1
 wrapper:
   _target_: sheeprl.envs.diambra.DiambraWrapper
   id: ${env.id}
-  action_space: discrete
+  action_space: diambra.arena.SpaceTypes.DISCRETE # or diambra.arena.SpaceTypes.MULTI_DISCRETE
   screen_size: ${env.screen_size}
   grayscale: ${env.grayscale}
-  attack_but_combination: False
-  sticky_actions: ${env.action_repeat}
-  seed: null
+  repeat_action: ${env.action_repeat}
   rank: null
+  log_level: 0
   diambra_settings:
-    player: P1
+    role: diambra.arena.Roles.P1
+    step_ratio: 6
+    difficulty: 4
+    continue_game: 0.0
+    show_final: False
+    outfits: 1
   diambra_wrappers:
-    actions_stack: 12
-    noop_max: 0
+    stack_actions: 1
+    no_op_max: 0
+    no_attack_buttons_combinations: False
+    add_last_action: True
+    scale: False
+    exclude_image_scaling: False
+    process_discrete_binary: False
+    role_relative: True
