@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import rich.syntax
 import rich.tree
@@ -127,7 +127,7 @@ def symexp(x: Tensor) -> Tensor:
 
 @rank_zero_only
 def print_config(
-    config: Dict[str, Any],
+    config: DictConfig,
     fields: Sequence[str] = ("algo", "buffer", "checkpoint", "env", "fabric", "metric"),
     resolve: bool = True,
     cfg_save_path: Optional[Union[str, os.PathLike]] = None,
