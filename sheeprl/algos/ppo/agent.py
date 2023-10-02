@@ -1,6 +1,7 @@
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import gymnasium
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -61,7 +62,7 @@ class PPOAgent(nn.Module):
     def __init__(
         self,
         actions_dim: List[int],
-        obs_space: Dict[str, Any],
+        obs_space: gymnasium.spaces.Dict,
         encoder_cfg: Dict[str, Any],
         actor_cfg: Dict[str, Any],
         critic_cfg: Dict[str, Any],

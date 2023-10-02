@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
+import gymnasium
 import hydra
 import torch
 from lightning.fabric import Fabric
@@ -24,7 +25,7 @@ def build_models(
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
-    obs_space: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_task_state: Optional[Dict[str, torch.Tensor]] = None,
     critic_task_state: Optional[Dict[str, torch.Tensor]] = None,

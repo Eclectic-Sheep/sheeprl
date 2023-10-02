@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+import gymnasium
 import hydra
 import numpy as np
 import torch
@@ -330,7 +331,7 @@ def build_models(
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
-    obs_space: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,

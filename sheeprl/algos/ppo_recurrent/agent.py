@@ -1,6 +1,7 @@
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+import gymnasium
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -75,7 +76,7 @@ class RecurrentPPOAgent(nn.Module):
     def __init__(
         self,
         actions_dim: Sequence[int],
-        obs_space: Dict[str, Any],
+        obs_space: gymnasium.spaces.Dict,
         encoder_cfg: Dict[str, Any],
         rnn_cfg: Dict[str, Any],
         actor_cfg: Dict[str, Any],
