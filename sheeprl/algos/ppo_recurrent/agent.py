@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
@@ -13,7 +12,7 @@ from sheeprl.models.models import MLP, MultiEncoder
 
 class RecurrentModel(nn.Module):
     def __init__(
-        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: Dict[str, Any], post_rnn_mlp_cfg: DictConfig
+        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: Dict[str, Any], post_rnn_mlp_cfg: Dict[str, Any]
     ) -> None:
         super().__init__()
         if pre_rnn_mlp_cfg.apply:
