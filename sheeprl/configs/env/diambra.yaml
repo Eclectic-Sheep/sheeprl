@@ -17,6 +17,7 @@ wrapper:
   grayscale: ${env.grayscale}
   repeat_action: ${env.action_repeat}
   rank: null
+  log_level: 0
   diambra_settings:
     role: diambra.arena.Roles.P1
     step_ratio: 6
