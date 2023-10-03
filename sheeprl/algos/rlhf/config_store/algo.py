@@ -131,6 +131,7 @@ class PPOAlgoConfig(RLHFAlgoConfig):
         rm_experiment_dir (str): Path to reward modelling experiment directory. Latest checkpoint will be loaded.
         actor_learning_rate (float): Learning rate for actor optimizer
         critic_learning_rate (float): Learning rate for critic optimizer
+        init_critic_with_rm (bool): Whether to initialize critic with reward model checkpoint or not.
     """
 
     name: str = "rlhf_ppo"
@@ -152,6 +153,7 @@ class PPOAlgoConfig(RLHFAlgoConfig):
     rm_experiment_dir: str = II("rm_experiment_dir")
     actor_learning_rate: float = 1e-6
     critic_learning_rate: float = 1e-6
+    init_critic_with_rm: bool = True
 
 
 def register_algo_configs(cs: ConfigStore) -> None:

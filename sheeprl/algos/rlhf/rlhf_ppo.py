@@ -139,8 +139,14 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
     # Critic Model for PPO training
     fabric.print("\nLoading critic model")
+    if algo_cfg.init_critic_with_rm:
+        critic_ckpt_path = rm_checkpoint_path
+        critic_model_cfg = rm_ckpt_model_cfg
+    else:
+        critic_ckpt_path = sft_checkpoint_path
+        critic_model_cfg = sft_ckpt_model_cfg
     critic_model = CriticModel.from_checkpoint(
-        device=fabric.device, model_cfg=rm_ckpt_model_cfg, path=rm_checkpoint_path, freeze=True
+        device=fabric.device, model_cfg=critic_model_cfg, path=critic_ckpt_path, freeze=True
     )
     setup_finetuning(fabric, critic_model, model_cfg)
     trainable_parameter_summary(model=critic_model, show_names=False, fabric=fabric)
