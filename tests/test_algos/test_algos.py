@@ -614,3 +614,70 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         keys.add("rb")
     check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("checkpoint_buffer", [True, False])
+def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
+    root_dir = os.path.join("pytest_" + start_time, "p2e_dv3", os.environ["LT_DEVICES"])
+    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "exp=p2e_dv3",
+        "env=dummy",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+
+    keys = {
+        "world_model",
+        "actor_task",
+        "critic_task",
+        "target_critic_task",
+        "ensembles",
+        "world_optimizer",
+        "actor_task_optimizer",
+        "critic_task_optimizer",
+        "ensemble_optimizer",
+        "expl_decay_steps",
+        "update",
+        "batch_size",
+        "actor_exploration",
+        "actor_exploration_optimizer",
+        "last_log",
+        "last_checkpoint",
+        "critics_exploration",
+        "moments_task",
+        "critics_exploration",
+        "critic_exploration_optimizer_extr",
+        "moments_exploration_extr",
+        "critic_exploration_optimizer_intr",
+        "moments_exploration_intr",
+    }
+    if checkpoint_buffer:
+        keys.add("rb")
+    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))

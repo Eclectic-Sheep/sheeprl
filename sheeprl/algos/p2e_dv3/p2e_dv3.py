@@ -232,7 +232,7 @@ def train(
             next_state_embedding_dist = MSEDistribution(out, 1)
             loss -= next_state_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
-            ).sum()
+            ).mean()
         loss.backward()
         if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
             ensemble_grad = fabric.clip_gradients(
