@@ -2,7 +2,7 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Dict, Sequence
+from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor, nn
-from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent, OneHotCategorical
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
@@ -53,11 +53,9 @@ def train(
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
-    critic_exploration: _FabricModule,
-    target_critic_exploration: nn.Module,
+    critics_exploration: Dict[str, Dict[str, Any]],
     actor_exploration_optimizer: _FabricOptimizer,
-    critic_exploration_optimizer: _FabricOptimizer,
-    moments_exploration: Moments,
+    moments_exploration: Dict[str, Moments],
     moments_task: Moments,
     is_continuous: bool,
     actions_dim: Sequence[int],
@@ -231,10 +229,10 @@ def train(
                     -1,
                 )
             )[:-1]
-            next_state_embedding_dist = Independent(Normal(out, 1), 1)
+            next_state_embedding_dist = MSEDistribution(out, 1)
             loss -= next_state_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
-            ).mean()
+            ).sum()
         loss.backward()
         if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
             ensemble_grad = fabric.clip_gradients(
@@ -276,49 +274,59 @@ def train(
             actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
             imagined_actions[i] = actions
 
-        # Predict values and continues
-        predicted_values = TwoHotEncodingDistribution(critic_exploration(imagined_trajectories), dims=1).mean
-        continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
-        ).mode
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
-        continues = torch.cat((true_done, continues[1:]))
+        advantages = []
+        weights_sum = sum([c["weight"] for c in critics_exploration.values()])
+        for k, critic in critics_exploration.items():
+            # Predict values and continues
+            predicted_values = TwoHotEncodingDistribution(critic["module"](imagined_trajectories), dims=1).mean
+            continues = Independent(
+                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+            ).mode
+            true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
+            continues = torch.cat((true_done, continues[1:]))
 
-        # Predict intrinsic reward
-        next_state_embedding = torch.empty(
-            len(ensembles),
-            cfg.algo.horizon + 1,
-            batch_size * sequence_length,
-            stochastic_size * discrete_size,
-            device=device,
-        )
-        for i, ens in enumerate(ensembles):
-            next_state_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1))
+            if critic["reward_type"] == "intrinsic":
+                # Predict intrinsic reward
+                next_state_embedding = torch.empty(
+                    len(ensembles),
+                    cfg.algo.horizon + 1,
+                    batch_size * sequence_length,
+                    stochastic_size * discrete_size,
+                    device=device,
+                )
+                for i, ens in enumerate(ensembles):
+                    next_state_embedding[i] = ens(
+                        torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1)
+                    )
 
-        # next_state_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
-        intrinsic_reward = next_state_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
-        aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
+                # next_state_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
+                reward = next_state_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
+                aggregator.update(f"Rewards/intrinsic_{k}", reward.detach().cpu().mean())
+            else:
+                reward = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
 
-        lambda_values = compute_lambda_values(
-            intrinsic_reward[1:],
-            predicted_values[1:],
-            continues[1:] * cfg.algo.gamma,
-            lmbda=cfg.algo.lmbda,
-        )
+            lambda_values = compute_lambda_values(
+                reward[1:],
+                predicted_values[1:],
+                continues[1:] * cfg.algo.gamma,
+                lmbda=cfg.algo.lmbda,
+            )
+            critic["lambda_values"] = lambda_values
+            baseline = predicted_values[:-1]
+            offset, invscale = moments_exploration[k](lambda_values)
+            normed_lambda_values = (lambda_values - offset) / invscale
+            normed_baseline = (baseline - offset) / invscale
+            advantages.append((normed_lambda_values - normed_baseline) * critic["weight"] / weights_sum)
 
-        aggregator.update("Values_exploration/predicted_values", predicted_values.detach().cpu().mean())
-        aggregator.update("Values_exploration/lambda_values", lambda_values.detach().cpu().mean())
+            aggregator.update(f"Values_exploration/predicted_values_{k}", predicted_values.detach().cpu().mean())
+            aggregator.update(f"Values_exploration/lambda_values_{k}", lambda_values.detach().cpu().mean())
 
+        advantage = torch.stack(advantages, dim=0).sum(dim=0)
         with torch.no_grad():
             discount = torch.cumprod(continues * cfg.algo.gamma, dim=0) / cfg.algo.gamma
 
         actor_exploration_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor_exploration(imagined_trajectories.detach())[1]
-        baseline = predicted_values[:-1]
-        offset, invscale = moments_exploration(lambda_values)
-        normed_lambda_values = (lambda_values - offset) / invscale
-        normed_baseline = (baseline - offset) / invscale
-        advantage = normed_lambda_values - normed_baseline
         if is_continuous:
             objective = advantage
         else:
@@ -350,28 +358,28 @@ def train(
         aggregator.update("Grads/actor_exploration", actor_grads_exploration.mean().detach())
         aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
 
-        qv = TwoHotEncodingDistribution(critic_exploration(imagined_trajectories.detach()[:-1]), dims=1)
-        predicted_target_values_expl = TwoHotEncodingDistribution(
-            target_critic_exploration(imagined_trajectories.detach()[:-1]), dims=1
-        ).mean
-        critic_exploration_optimizer.zero_grad(set_to_none=True)
-        # Critic optimization. Eq. 10 in the paper
-        critic_exploration_optimizer.zero_grad(set_to_none=True)
-        value_loss_exploration = -qv.log_prob(lambda_values.detach())
-        value_loss_exploration = value_loss_exploration - qv.log_prob(predicted_target_values_expl.detach())
-        value_loss_exploration = torch.mean(value_loss_exploration * discount[:-1].squeeze(-1))
+        for k, critic in critics_exploration.items():
+            qv = TwoHotEncodingDistribution(critic["module"](imagined_trajectories.detach()[:-1]), dims=1)
+            predicted_target_values_expl = TwoHotEncodingDistribution(
+                critic["target_module"](imagined_trajectories.detach()[:-1]), dims=1
+            ).mean
+            # Critic optimization. Eq. 10 in the paper
+            critic["optimizer"].zero_grad(set_to_none=True)
+            value_loss = -qv.log_prob(critic["lambda_values"].detach())
+            value_loss = value_loss - qv.log_prob(predicted_target_values_expl.detach())
+            value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
-        fabric.backward(value_loss_exploration)
-        if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-            critic_grads_exploration = fabric.clip_gradients(
-                module=critic_exploration,
-                optimizer=critic_exploration_optimizer,
-                max_norm=cfg.algo.critic.clip_gradients,
-                error_if_nonfinite=False,
-            )
-        critic_exploration_optimizer.step()
-        aggregator.update("Grads/critic_exploration", critic_grads_exploration.mean().detach())
-        aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
+            fabric.backward(value_loss)
+            if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
+                critic_grads_exploration = fabric.clip_gradients(
+                    module=critic["module"],
+                    optimizer=critic["optimizer"],
+                    max_norm=cfg.algo.critic.clip_gradients,
+                    error_if_nonfinite=False,
+                )
+            critic["optimizer"].step()
+            aggregator.update(f"Grads/critic_exploration_{k}", critic_grads_exploration.mean().detach())
+            aggregator.update(f"Loss/value_loss_exploration_{k}", value_loss.detach())
 
         # reset the world_model gradients, to avoid interferences with task learning
         world_optimizer.zero_grad(set_to_none=True)
@@ -485,11 +493,11 @@ def train(
         )
     critic_task_optimizer.step()
     aggregator.update("Grads/critic_task", critic_grads_task.mean().detach())
-    aggregator.update("Loss/value_loss", value_loss_task.detach())
+    aggregator.update("Loss/value_loss_task", value_loss_task.detach())
 
     # Reset everything
     actor_exploration_optimizer.zero_grad(set_to_none=True)
-    critic_exploration_optimizer.zero_grad(set_to_none=True)
+    [c["optimizer"].zero_grad(set_to_none=True) for c in critics_exploration.values()]
     actor_task_optimizer.zero_grad(set_to_none=True)
     critic_task_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
@@ -497,7 +505,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -523,6 +531,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -582,8 +591,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         critic_task,
         target_critic_task,
         actor_exploration,
-        critic_exploration,
-        target_critic_exploration,
+        critics_exploration,
     ) = build_models(
         fabric,
         actions_dim,
@@ -595,8 +603,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         state["critic_task"] if cfg.checkpoint.resume_from else None,
         state["target_critic_task"] if cfg.checkpoint.resume_from else None,
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
-        state["critic_exploration"] if cfg.checkpoint.resume_from else None,
-        state["target_critic_exploration"] if cfg.checkpoint.resume_from else None,
+        state["critics_exploration"] if cfg.checkpoint.resume_from else None,
     )
 
     # initialize the ensembles with different seeds to be sure they have different weights
@@ -649,9 +656,8 @@ def main(fabric: Fabric, cfg: DictConfig):
     actor_exploration_optimizer = hydra.utils.instantiate(
         cfg.algo.actor.optimizer, params=actor_exploration.parameters()
     )
-    critic_exploration_optimizer = hydra.utils.instantiate(
-        cfg.algo.critic.optimizer, params=critic_exploration.parameters()
-    )
+    for k, critic in critics_exploration.items():
+        critic["optimizer"] = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic["module"].parameters())
     actor_task_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor_task.parameters())
     critic_task_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic_task.parameters())
     ensemble_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=ensembles.parameters())
@@ -661,30 +667,36 @@ def main(fabric: Fabric, cfg: DictConfig):
         critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])
         ensemble_optimizer.load_state_dict(state["ensemble_optimizer"])
         actor_exploration_optimizer.load_state_dict(state["actor_exploration_optimizer"])
-        critic_exploration_optimizer.load_state_dict(state["critic_exploration_optimizer"])
+        [
+            c["optimizer"].load_state_dict(state[f"critic_exploration_optimizer_{k}"])
+            for k, c in critics_exploration.items()
+        ]
     (
         world_optimizer,
         actor_task_optimizer,
         critic_task_optimizer,
         ensemble_optimizer,
         actor_exploration_optimizer,
-        critic_exploration_optimizer,
     ) = fabric.setup_optimizers(
         world_optimizer,
         actor_task_optimizer,
         critic_task_optimizer,
         ensemble_optimizer,
         actor_exploration_optimizer,
-        critic_exploration_optimizer,
     )
+    for k, critic in critics_exploration.items():
+        critic["optimizer"] = fabric.setup_optimizers(critic["optimizer"])
 
-    moments_exploration = Moments(
-        fabric,
-        cfg.algo.actor.moments.decay,
-        cfg.algo.actor.moments.max,
-        cfg.algo.actor.moments.percentile.low,
-        cfg.algo.actor.moments.percentile.high,
-    )
+    moments_exploration = {
+        k: Moments(
+            fabric,
+            cfg.algo.actor.moments.decay,
+            cfg.algo.actor.moments.max,
+            cfg.algo.actor.moments.percentile.low,
+            cfg.algo.actor.moments.percentile.high,
+        )
+        for k in critics_exploration.keys()
+    }
     moments_task = Moments(
         fabric,
         cfg.algo.actor.moments.decay,
@@ -692,6 +704,9 @@ def main(fabric: Fabric, cfg: DictConfig):
         cfg.algo.actor.moments.percentile.low,
         cfg.algo.actor.moments.percentile.high,
     )
+    if cfg.checkpoint.resume_from:
+        [m.load_state_dict(state[f"moments_exploration_{k}"]) for k, m in moments_exploration.items()]
+        moments_task.load_state_dict(state["moments_task"])
 
     # Metrics
     with device:
@@ -700,10 +715,13 @@ def main(fabric: Fabric, cfg: DictConfig):
                 "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/policy_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/policy_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                **{
+                    f"Loss/value_loss_exploration_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
+                    for k in critics_exploration.keys()
+                },
                 "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
@@ -713,16 +731,28 @@ def main(fabric: Fabric, cfg: DictConfig):
                 "State/p_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "State/q_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Rewards/intrinsic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Values_exploration/predicted_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Values_exploration/lambda_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                **{
+                    f"Rewards/intrinsic_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
+                    for k in critics_exploration.keys()
+                },
+                **{
+                    f"Values_exploration/predicted_values_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
+                    for k in critics_exploration.keys()
+                },
+                **{
+                    f"Values_exploration/lambda_values_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
+                    for k in critics_exploration.keys()
+                },
                 "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Grads/actor_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Grads/critic_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Grads/actor_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/critic_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                **{
+                    f"Grads/critic_exploration_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
+                    for k in critics_exploration.keys()
+                },
                 "Grads/ensemble": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             }
         )
@@ -941,13 +971,15 @@ def main(fabric: Fabric, cfg: DictConfig):
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for i in distributed_sampler:
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                        tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
-                        for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
-                            tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-                        for cp, tcp in zip(
-                            critic_exploration.module.parameters(), target_critic_exploration.parameters()
-                        ):
-                            tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
+                        for k in critics_exploration.keys():
+                            tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
+                            for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
+                                tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
+                            for cp, tcp in zip(
+                                critics_exploration[k]["module"].module.parameters(),
+                                critics_exploration[k]["target_module"].parameters(),
+                            ):
+                                tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                     train(
                         fabric,
                         world_model,
@@ -963,10 +995,8 @@ def main(fabric: Fabric, cfg: DictConfig):
                         ensembles=ensembles,
                         ensemble_optimizer=ensemble_optimizer,
                         actor_exploration=actor_exploration,
-                        critic_exploration=critic_exploration,
-                        target_critic_exploration=target_critic_exploration,
+                        critics_exploration=critics_exploration,
                         actor_exploration_optimizer=actor_exploration_optimizer,
-                        critic_exploration_optimizer=critic_exploration_optimizer,
                         is_continuous=is_continuous,
                         actions_dim=actions_dim,
                         is_exploring=is_exploring,
@@ -994,7 +1024,7 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            if update >= learning_starts:
+            if "Time/train_time" in timer_metrics:
                 fabric.log(
                     "Time/sps_train",
                     (train_step - last_train) / timer_metrics["Time/train_time"],
@@ -1033,12 +1063,19 @@ def main(fabric: Fabric, cfg: DictConfig):
                 "update": update * world_size,
                 "batch_size": cfg.per_rank_batch_size * world_size,
                 "actor_exploration": actor_exploration.state_dict(),
-                "critic_exploration": critic_exploration.state_dict(),
-                "target_critic_exploration": target_critic_exploration.state_dict(),
                 "actor_exploration_optimizer": actor_exploration_optimizer.state_dict(),
-                "critic_exploration_optimizer": critic_exploration_optimizer.state_dict(),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
+                "critics_exploration": {
+                    k: {"module": c["module"].state_dict(), "target_module": c["target_module"].state_dict()}
+                    for k, c in critics_exploration.items()
+                },
+                "moments_task": moments_task.state_dict(),
+                **{
+                    f"critic_exploration_optimizer_{k}": c["optimizer"].state_dict()
+                    for k, c in critics_exploration.items()
+                },
+                **{f"moments_exploration_{k}": m.state_dict() for k, m in moments_exploration.items()},
             }
             ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(

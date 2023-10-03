@@ -6,6 +6,14 @@ defaults:
 name: p2e_dv3
 intrinsic_reward_multiplier: 1
 
+critics_exploration:
+  intr:
+    weight: 0.1
+    reward_type: intrinsic
+  extr:
+    weight: 1.0
+    reward_type: task
+
 ensembles:
   n: 8 # the number of the ensembles
   dense_act: ${algo.dense_act}

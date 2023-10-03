@@ -455,6 +455,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.actor.moments.percentile.low,
         cfg.algo.actor.moments.percentile.high,
     )
+    if cfg.checkpoint.resume_from:
+        moments.load_state_dict(state["moments"])
 
     # Metrics
     aggregator = MetricAggregator(

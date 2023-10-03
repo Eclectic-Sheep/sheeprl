@@ -32,9 +32,8 @@ def build_models(
     critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     target_critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-    critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-    target_critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module]:
+    critics_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, Dict[str, Any]]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -65,8 +64,7 @@ def build_models(
         The critic_task (_FabricModule).
         The target_critic_task (nn.Module).
         The actor_exploration (_FabricModule).
-        The critic_exploration (_FabricModule).
-        The target_critic_exploration (nn.Module).
+        The critics_exploration (Dict[str, Any]).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -76,22 +74,22 @@ def build_models(
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
-    # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration = dv3_build_models(
+    # Create task models
+    world_model, actor_task, critic_task, target_critic_task = dv3_build_models(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
         cfg=cfg,
         obs_space=obs_space,
         world_model_state=world_model_state,
-        actor_state=actor_exploration_state,
-        critic_state=critic_exploration_state,
-        target_critic_state=target_critic_exploration_state,
+        actor_state=actor_task_state,
+        critic_state=critic_task_state,
+        target_critic_state=target_critic_task_state,
     )
 
-    # Create task models
+    # Create exploration models
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
-    actor_task: Union[Actor, MinedojoActor] = actor_cls(
+    actor_exploration: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -104,37 +102,45 @@ def build_models(
         layer_norm=actor_cfg.layer_norm,
         unimix=cfg.algo.unimix,
     )
-    critic_task = MLP(
-        input_dims=latent_state_size,
-        output_dim=critic_cfg.bins,
-        hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
-        flatten_dim=None,
-        layer_args={"bias": not critic_cfg.layer_norm},
-        norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
-    )
-    actor_task.apply(init_weights)
-    critic_task.apply(init_weights)
 
+    critics_exploration = {}
+    for k, v in cfg.algo.critics_exploration.items():
+        critics_exploration[k] = {
+            "weight": v.weight,
+            "reward_type": v.reward_type,
+            "module": MLP(
+                input_dims=latent_state_size,
+                output_dim=critic_cfg.bins,
+                hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
+                activation=eval(critic_cfg.dense_act),
+                flatten_dim=None,
+                layer_args={"bias": not critic_cfg.layer_norm},
+                norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
+                norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+                if critic_cfg.layer_norm
+                else None,
+            ),
+        }
+        critics_exploration[k]["module"].apply(init_weights)
+        if cfg.algo.hafner_initialization:
+            critics_exploration[k]["module"].apply(uniform_init_weights(0.0))
+        if critics_exploration_state:
+            critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
+        critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
+        critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
+        if critics_exploration_state:
+            critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
+
+    actor_exploration.apply(init_weights)
     if cfg.algo.hafner_initialization:
-        actor_task.mlp_heads.apply(uniform_init_weights(1.0))
-        critic_task.model[-1].apply(uniform_init_weights(0.0))
+        actor_exploration.mlp_heads.apply(uniform_init_weights(1.0))
 
-    # Load task models from checkpoint
-    if actor_task_state:
-        actor_task.load_state_dict(actor_task_state)
-    if critic_task_state:
-        critic_task.load_state_dict(critic_task_state)
+    # Load exploration models from checkpoint
+    if actor_exploration_state:
+        actor_exploration.load_state_dict(actor_exploration_state)
 
-    # Setup task models with Fabric
-    actor_task = fabric.setup_module(actor_task)
-    critic_task = fabric.setup_module(critic_task)
-    target_critic_task = copy.deepcopy(critic_task.module)
-    if target_critic_task_state:
-        target_critic_task.load_state_dict(target_critic_task_state)
+    # Setup exploration models with Fabric
+    actor_exploration = fabric.setup_module(actor_exploration)
 
     return (
         world_model,
@@ -142,6 +148,5 @@ def build_models(
         critic_task,
         target_critic_task,
         actor_exploration,
-        critic_exploration,
-        target_critic_exploration,
+        critics_exploration,
     )
