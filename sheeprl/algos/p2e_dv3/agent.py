@@ -104,32 +104,39 @@ def build_models(
     )
 
     critics_exploration = {}
+    intrinsic_critics = 0
     for k, v in cfg.algo.critics_exploration.items():
-        critics_exploration[k] = {
-            "weight": v.weight,
-            "reward_type": v.reward_type,
-            "module": MLP(
-                input_dims=latent_state_size,
-                output_dim=critic_cfg.bins,
-                hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-                activation=eval(critic_cfg.dense_act),
-                flatten_dim=None,
-                layer_args={"bias": not critic_cfg.layer_norm},
-                norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-                norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-                if critic_cfg.layer_norm
-                else None,
-            ),
-        }
-        critics_exploration[k]["module"].apply(init_weights)
-        if cfg.algo.hafner_initialization:
-            critics_exploration[k]["module"].apply(uniform_init_weights(0.0))
-        if critics_exploration_state:
-            critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
-        critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
-        critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
-        if critics_exploration_state:
-            critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
+        if v.weight > 0:
+            if v.reward_type == "intrinsic":
+                intrinsic_critics += 1
+            critics_exploration[k] = {
+                "weight": v.weight,
+                "reward_type": v.reward_type,
+                "module": MLP(
+                    input_dims=latent_state_size,
+                    output_dim=critic_cfg.bins,
+                    hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
+                    activation=eval(critic_cfg.dense_act),
+                    flatten_dim=None,
+                    layer_args={"bias": not critic_cfg.layer_norm},
+                    norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
+                    norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+                    if critic_cfg.layer_norm
+                    else None,
+                ),
+            }
+            critics_exploration[k]["module"].apply(init_weights)
+            if cfg.algo.hafner_initialization:
+                critics_exploration[k]["module"].apply(uniform_init_weights(0.0))
+            if critics_exploration_state:
+                critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
+            critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
+            critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
+            if critics_exploration_state:
+                critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
+
+    if intrinsic_critics == 0:
+        raise RuntimeError("You must specify at least one intrinsic critic (`reward_type='intrinsic'`)")
 
     actor_exploration.apply(init_weights)
     if cfg.algo.hafner_initialization:
