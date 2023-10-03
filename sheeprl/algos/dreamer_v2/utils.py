@@ -1,12 +1,11 @@
 import os
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from omegaconf import DictConfig
 from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
@@ -82,7 +81,7 @@ def compute_lambda_values(
 def test(
     player: Union["PlayerDV2", "PlayerDV1"],
     fabric: Fabric,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     test_name: str = "",
     sample_actions: bool = False,
 ):

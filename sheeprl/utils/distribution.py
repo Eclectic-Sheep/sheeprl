@@ -144,6 +144,7 @@ class TruncatedNormal(TruncatedStandardNormal):
         return super(TruncatedNormal, self).log_prob(self._to_std_rv(value)) - self._log_scale
 
 
+# TODO: let distributions be complaint to torch.distributions.Distribution API
 # From https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/jaxutils.py
 class SymlogDistribution(Distribution):
     def __init__(

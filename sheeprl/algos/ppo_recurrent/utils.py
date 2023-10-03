@@ -1,8 +1,7 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 import torch
 from lightning import Fabric
-from omegaconf import DictConfig
 
 from sheeprl.utils.env import make_env
 
@@ -11,7 +10,7 @@ if TYPE_CHECKING:
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: DictConfig):
+def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any]):
     env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False

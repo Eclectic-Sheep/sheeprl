@@ -1,11 +1,10 @@
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict
 
 import gymnasium as gym
 import numpy as np
 import torch
 from lightning import Fabric
-from omegaconf import DictConfig
 from torch import Tensor
 
 from sheeprl.utils.env import make_env
@@ -60,7 +59,7 @@ def compute_lambda_values(
 def test(
     player: "PlayerDV3",
     fabric: Fabric,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     test_name: str = "",
     sample_actions: bool = False,
 ):
