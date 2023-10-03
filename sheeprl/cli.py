@@ -81,4 +81,10 @@ def run(cfg: DictConfig):
             fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
+    if "rlhf" in module:
+        # Needed because we already tokenized the dataset before instantiating
+        # dataloaders. This disables FastTokenizer's parallelism.
+        # TODO: check if can be avoided because it makes the dataprocessing
+        # too slow.
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     fabric.launch(command, cfg)
