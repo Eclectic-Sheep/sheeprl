@@ -164,7 +164,6 @@ logs
 poetry.lock
 notebooks
 pytest_*
-data
 !sheeprl/configs/env
 .diambra*
 .hydra

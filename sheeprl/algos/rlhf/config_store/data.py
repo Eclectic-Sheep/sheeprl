@@ -15,7 +15,7 @@ class DataConfig:
     _target_: str = "sheeprl.algos.rlhf.data.base.DataProcessor"
     name: str = MISSING
     dataset_name: str = MISSING
-    root_dir: str = Path("./data")
+    root_dir: str = Path("./rlhf_data")
     tokenizer_name: str = II("model.name")
     max_length: int = 256
     max_prompt_length: int = 128
