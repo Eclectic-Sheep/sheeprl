@@ -23,7 +23,7 @@ class DataConfig:
     ignore_index: int = -1
     remove_same_responses: bool = True
     remove_same_inputs: bool = True
-    minimum_response_length: int = 2
+    minimum_response_length: int = 5
     save_skipped_examples: bool = False
     shuffle: bool = True
     seed: int = II("seed")
@@ -45,6 +45,8 @@ class SummarizationConfig(DataConfig):
     _target_: str = "sheeprl.algos.rlhf.data.SummarizationData"
     name: str = "summarization"
     dataset_name: str = "CarperAI/openai_summarize_comparisons"
+    max_length: int = 384
+    max_prompt_length: int = 256
 
 
 @dataclass

@@ -1,4 +1,3 @@
-import json
 import os
 import time
 from pathlib import Path
@@ -221,7 +220,7 @@ class DataProcessor:
                 )
 
             all_skipped_samples = pd.concat(skipped_samples)
-            print(f"Processed {len(dataframe)} samples, skipped {len(skipped_samples)} samples")
+            print(f"Processed {len(dataframe)} samples, skipped total of {len(all_skipped_samples)} samples")
             output_data = {}
             if self.reward_model_split > 0:
                 print(f"Using {self.reward_model_split * 100}% of the training data for the reward model training")
@@ -289,22 +288,3 @@ class DataProcessor:
             "attention_mask": encoded_prompt["attention_mask"],
         }
         return output
-
-
-class JsonProcessor(DataProcessor):
-    def __init__(self, file_path: str, *args, **kwargs):
-        self.file_path = file_path
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Json file {file_path} does not exist")
-        with open(file_path, "r") as f:
-            self.json_data = json.load(f)
-        super().__init__(*args, **kwargs)
-
-    def get_prompt(self, sample: Dict[str, Any]) -> str:
-        return sample["prompt"]
-
-    def get_chosen(self, sample: Dict[str, Any]) -> str:
-        return sample["chosen"]
-
-    def get_rejected(self, sample: Dict[str, Any]) -> str:
-        return sample["rejected"]

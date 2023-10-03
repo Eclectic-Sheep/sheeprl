@@ -184,6 +184,7 @@ def compute_masked_logprobs(
 
 
 def validate_dataset(fabric: lightning.Fabric, data_cfg: DataConfig) -> DataProcessor:
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
     data_processor: DataProcessor = hydra.utils.instantiate(data_cfg)
     full_path = data_processor.full_path
     create_dataset: bool = True
@@ -196,17 +197,23 @@ def validate_dataset(fabric: lightning.Fabric, data_cfg: DataConfig) -> DataProc
             open_config = OmegaConf.load(config_path)
             loaded_dataset_cfg = DataConfig(**open_config)
             if data_cfg != loaded_dataset_cfg:
-                fabric.print(
-                    f"Dataset config mismatch. Expected {data_cfg} but found {loaded_dataset_cfg}. "
-                    f"New dataset will be recreated and previous files will be deleted."
-                )
+                diffs = {}
+                for k, v in asdict(data_cfg).items():
+                    if v != getattr(loaded_dataset_cfg, k):
+                        diffs[k] = (v, getattr(loaded_dataset_cfg, k))
+                fabric.print("Dataset config changed.")
+
+                fabric.print("\n".join([f"{k} was {v[0]} now {v[1]}" for k, v in diffs.items()]))
+                fabric.print("New dataset will be recreated and previous files will be deleted.")
                 create_dataset = True
             else:
                 fabric.print("Dataset already exists. Skipping dataset creation.")
                 create_dataset = False
         if create_dataset:
             shutil.rmtree(full_path)
-
+    # This disables FastTokenizer's parallelism for multiprocessing with dataloaders
+    # TODO: check if can be avoided
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     data_processor.tokenizer = prepare_tokenizer(data_cfg.tokenizer_name)
     if create_dataset:
         fabric.print(f"Creating new dataset in {full_path}")
