@@ -32,7 +32,7 @@ def build_models(
     critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     target_critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-    critics_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
+    critics_exploration_state: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module, _FabricModule, Dict[str, Any]]:
     """Build the models and wrap them with Fabric.
 
@@ -52,19 +52,17 @@ def build_models(
             critic_task. Default to None.
         actor_exploration_state (Dict[str, Tensor], optional): the state of the actor_exploration.
             Default to None.
-        critic_exploration_state (Dict[str, Tensor], optional): the state of the critic_exploration.
+        critics_exploration_state (Dict[str, Dict[str, Any]], optional): the state of the critic_exploration.
             Default to None.
-        target_critic_exploration_state (Dict[str, Tensor], optional): the state of the target
-            critic_exploration. Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and
-        reward models and the continue model.
+            reward models and the continue model.
         The actor_task (_FabricModule).
         The critic_task (_FabricModule).
         The target_critic_task (nn.Module).
         The actor_exploration (_FabricModule).
-        The critics_exploration (Dict[str, Any]).
+        The critics_exploration (Dict[str, Dict[str, Any]]).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor

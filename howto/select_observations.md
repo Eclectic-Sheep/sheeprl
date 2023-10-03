@@ -15,7 +15,8 @@ The algorithms that can work with both image and vector observations are specifi
 * Dreamer-V2
 * Dreamer-V3
 * Plan2Explore (Dreamer-V1)
-* Plan2Explore (Dreamer-V1)
+* Plan2Explore (Dreamer-V2)
+* Plan2Explore (Dreamer-V3)
 
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover you can select all/some/none of the image observations.
 You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decoder to the script to select the vector observations and the image observations, respectively.

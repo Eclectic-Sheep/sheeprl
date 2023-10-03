@@ -101,10 +101,8 @@ def train(
         ensembles (_FabricModule): the ensemble models.
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
         actor_exploration (_FabricModule): the actor for exploration.
-        critic_exploration (_FabricModule): the critic for exploration.
-        target_critic_exploration (nn.Module): the target critic for exploration.
+        critics_exploration (Dict[str, Dict[str, Any]]): the critic for exploration.
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
-        critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
         is_continuous (bool): whether or not are continuous actions.
         actions_dim (Sequence[int]): the actions dimension.
         is_exploring (bool): whether the agent is exploring.

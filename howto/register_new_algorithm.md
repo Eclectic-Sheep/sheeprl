@@ -419,6 +419,7 @@ from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
 from sheeprl.algos.droq import droq as droq
 from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
+from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
 from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
@@ -431,7 +432,7 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.3.2"
+__version__ = "0.4.2"
 ```
 
 Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:
@@ -449,6 +450,7 @@ SheepRL Agents
 │ sheeprl.algos.droq          │ droq          │ main       │ False     │
 │ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
 │ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
+│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
 │ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
