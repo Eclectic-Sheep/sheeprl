@@ -65,7 +65,7 @@ atari = [
   "gymnasium[other]==0.29.*",
 ]
 minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
-minerl = ["minerl==0.4.4"]
+minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
 diambra = ["diambra==0.0.16", "diambra-arena==2.2.1"]
 crafter = ["crafter==1.8.1"]
 
