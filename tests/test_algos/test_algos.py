@@ -671,11 +671,10 @@ def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
         "last_checkpoint",
         "critics_exploration",
         "moments_task",
-        "critics_exploration",
-        "critic_exploration_optimizer_extr",
-        "moments_exploration_extr",
-        "critic_exploration_optimizer_intr",
-        "moments_exploration_intr",
+        "critic_exploration_optimizer_extrinsic",
+        "moments_exploration_extrinsic",
+        "critic_exploration_optimizer_intrinsic",
+        "moments_exploration_intrinsic",
     }
     if checkpoint_buffer:
         keys.add("rb")

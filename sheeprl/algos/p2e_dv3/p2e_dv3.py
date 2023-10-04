@@ -1053,9 +1053,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             or update == num_updates
         ):
             last_checkpoint = policy_step
-            critics_exploration_state = {"critis_exploration": {}}
+            critics_exploration_state = {"critics_exploration": {}}
             for k, c in critics_exploration.items():
-                critics_exploration_state["critis_exploration"][k] = {
+                critics_exploration_state["critics_exploration"][k] = {
                     "module": c["module"].state_dict(),
                     "target_module": c["target_module"].state_dict(),
                 }
