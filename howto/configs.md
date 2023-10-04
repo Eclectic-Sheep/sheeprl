@@ -114,8 +114,8 @@ torch_deterministic: False
 
 # Output folders
 exp_name: "default"
-run_name: ${env.id}_${exp_name}_${seed}
-root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
+root_dir: ${algo.name}/${env.id}
 
 # Encoder and decoder keys
 cnn_keys:
