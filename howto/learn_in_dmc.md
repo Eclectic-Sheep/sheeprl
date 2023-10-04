@@ -8,10 +8,14 @@ First you should install the proper environments:
 
 MuJoCo/DMC supports three different OpenGL rendering backends: EGL (headless), GLFW (windowed), OSMesa (headless).
 For each of them, you need to install some pakages:
-- GLFW: `sudo apt-get install libglfw3 libglew2.0`
-- EGL: `sudo apt-get install libglew2.0`
+- GLFW: `sudo apt-get install libglfw3 libglew2.2`
+- EGL: `sudo apt-get install libglew2.2`
 - OSMesa: `sudo apt-get install libgl1-mesa-glx libosmesa6`
 In order to use one of these rendering backends, you need to set the `MUJOCO_GL` environment variable to `"glfw"`, `"egl"`, `"osmesa"`, respectively.
+
+> **Note**
+>
+> The `libglew2.2` could have a different name, based on your OS (e.g., `libglew2.2` is for Ubuntu 22.04.2 LTS).
 
 For more information: [https://github.com/deepmind/dm_control](https://github.com/deepmind/dm_control) and [https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)
 
