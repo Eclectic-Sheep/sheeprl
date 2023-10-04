@@ -29,7 +29,7 @@ It is possible to train your agents on all the tasks provided by MineDojo. You n
 For instance, you can use the following command to select the MineDojo open-ended environment.
 
 ```bash
-python sheeprl.py exp=p2e_dv2 env=minedojo env.id=open-ened algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor cnn_keys.encoder=[rgb]
+python sheeprl.py exp=p2e_dv2 env=minedojo env.id=open-ended algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor cnn_keys.encoder=[rgb]
 ```
 
 ### Observation Space
