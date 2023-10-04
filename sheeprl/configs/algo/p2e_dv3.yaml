@@ -7,10 +7,10 @@ name: p2e_dv3
 intrinsic_reward_multiplier: 1
 
 critics_exploration:
-  intr:
+  intrinsic:
     weight: 0.1
     reward_type: intrinsic
-  extr:
+  extrinsic:
     weight: 1.0
     reward_type: task
 

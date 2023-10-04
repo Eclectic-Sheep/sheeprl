@@ -142,8 +142,8 @@ def train(
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         qc = continue_targets = None
-    p = Independent(Normal(posteriors_mean, posteriors_std), 1)
-    q = Independent(Normal(priors_mean, priors_std), 1)
+    posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
+    priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -151,8 +151,8 @@ def train(
         batch_obs,
         qr,
         data["rewards"],
-        p,
-        q,
+        posteriors_dist,
+        priors_dist,
         cfg.algo.world_model.kl_free_nats,
         cfg.algo.world_model.kl_regularizer,
         qc,
@@ -175,8 +175,8 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.mean().detach())
-    aggregator.update("State/p_entropy", p.entropy().mean().detach())
-    aggregator.update("State/q_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
 
     if is_exploring:
         # Ensemble Learning
@@ -539,8 +539,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Loss/ensemble_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "State/p_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "State/q_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Rewards/intrinsic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
             "Values_exploration/predicted_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),

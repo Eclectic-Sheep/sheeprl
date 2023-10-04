@@ -197,11 +197,11 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
-        "State/p_entropy",
+        "State/post_entropy",
         Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
     )
     aggregator.update(
-        "State/q_entropy",
+        "State/prior_entropy",
         Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
     )
 
@@ -666,8 +666,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Loss/ensemble_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/p_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/q_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+                "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Rewards/intrinsic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
                 "Values_exploration/predicted_values": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),

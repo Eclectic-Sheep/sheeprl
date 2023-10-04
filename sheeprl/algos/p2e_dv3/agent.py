@@ -52,7 +52,7 @@ def build_models(
             critic_task. Default to None.
         actor_exploration_state (Dict[str, Tensor], optional): the state of the actor_exploration.
             Default to None.
-        critics_exploration_state (Dict[str, Dict[str, Any]], optional): the state of the critic_exploration.
+        critics_exploration_state (Dict[str, Dict[str, Any]], optional): the state of the critics_exploration.
             Default to None.
 
     Returns:
@@ -125,7 +125,7 @@ def build_models(
             }
             critics_exploration[k]["module"].apply(init_weights)
             if cfg.algo.hafner_initialization:
-                critics_exploration[k]["module"].apply(uniform_init_weights(0.0))
+                critics_exploration[k]["module"].model[-1].apply(uniform_init_weights(0.0))
             if critics_exploration_state:
                 critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
             critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
@@ -146,6 +146,11 @@ def build_models(
 
     # Setup exploration models with Fabric
     actor_exploration = fabric.setup_module(actor_exploration)
+
+    # Set requires_grad=False for all target critics
+    target_critic_task.requires_grad_(False)
+    for c in critics_exploration.values():
+        c["target_module"].requires_grad_(False)
 
     return (
         world_model,

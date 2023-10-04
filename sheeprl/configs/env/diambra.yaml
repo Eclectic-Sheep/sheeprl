@@ -24,7 +24,7 @@ wrapper:
     difficulty: 4
     continue_game: 0.0
     show_final: False
-    outfits: 1
+    outfits: 4
   diambra_wrappers:
     stack_actions: 1
     no_op_max: 0

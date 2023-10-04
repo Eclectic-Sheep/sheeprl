@@ -212,6 +212,15 @@ def train(
         Independent(OneHotCategorical(logits=priors_logits.detach(), validate_args=False), 1).entropy().mean().detach(),
     )
 
+    # Free up space
+    del posterior
+    del prior_logits
+    del priors_logits
+    del recurrent_state
+    del posterior_logits
+    del posteriors_logits
+    world_optimizer.zero_grad(set_to_none=True)
+
     if is_exploring:
         # Ensemble Learning
         loss = 0.0
@@ -358,9 +367,10 @@ def train(
 
         for k, critic in critics_exploration.items():
             qv = TwoHotEncodingDistribution(critic["module"](imagined_trajectories.detach()[:-1]), dims=1)
-            predicted_target_values_expl = TwoHotEncodingDistribution(
-                critic["target_module"](imagined_trajectories.detach()[:-1]), dims=1
-            ).mean
+            with torch.no_grad():
+                predicted_target_values_expl = TwoHotEncodingDistribution(
+                    critic["target_module"](imagined_trajectories.detach()[:-1]), dims=1
+                ).mean
             # Critic optimization. Eq. 10 in the paper
             critic["optimizer"].zero_grad(set_to_none=True)
             value_loss = -qv.log_prob(critic["lambda_values"].detach())
@@ -471,9 +481,10 @@ def train(
 
     # Predict the values
     qv = TwoHotEncodingDistribution(critic_task(imagined_trajectories.detach()[:-1]), dims=1)
-    predicted_target_values_tsk = TwoHotEncodingDistribution(
-        target_critic_task(imagined_trajectories.detach()[:-1]), dims=1
-    ).mean
+    with torch.no_grad():
+        predicted_target_values_tsk = TwoHotEncodingDistribution(
+            target_critic_task(imagined_trajectories.detach()[:-1]), dims=1
+        ).mean
 
     # Critic optimization. Eq. 10 in the paper
     critic_task_optimizer.zero_grad(set_to_none=True)
@@ -495,11 +506,12 @@ def train(
 
     # Reset everything
     actor_exploration_optimizer.zero_grad(set_to_none=True)
-    [c["optimizer"].zero_grad(set_to_none=True) for c in critics_exploration.values()]
     actor_task_optimizer.zero_grad(set_to_none=True)
     critic_task_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
     ensemble_optimizer.zero_grad(set_to_none=True)
+    for c in critics_exploration.values():
+        c["optimizer"].zero_grad(set_to_none=True)
 
 
 @register_algorithm()
@@ -665,10 +677,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])
         ensemble_optimizer.load_state_dict(state["ensemble_optimizer"])
         actor_exploration_optimizer.load_state_dict(state["actor_exploration_optimizer"])
-        [
+        for k, c in critics_exploration.items():
             c["optimizer"].load_state_dict(state[f"critic_exploration_optimizer_{k}"])
-            for k, c in critics_exploration.items()
-        ]
     (
         world_optimizer,
         actor_task_optimizer,
@@ -703,58 +713,54 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.actor.moments.percentile.high,
     )
     if cfg.checkpoint.resume_from:
-        [m.load_state_dict(state[f"moments_exploration_{k}"]) for k, m in moments_exploration.items()]
+        for k, m in moments_exploration.items():
+            m.load_state_dict(state[f"moments_exploration_{k}"])
         moments_task.load_state_dict(state["moments_task"])
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/policy_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                **{
-                    f"Loss/value_loss_exploration_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
-                    for k in critics_exploration.keys()
-                },
-                "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Loss/ensemble_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/p_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/q_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                **{
-                    f"Rewards/intrinsic_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
-                    for k in critics_exploration.keys()
-                },
-                **{
-                    f"Values_exploration/predicted_values_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
-                    for k in critics_exploration.keys()
-                },
-                **{
-                    f"Values_exploration/lambda_values_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
-                    for k in critics_exploration.keys()
-                },
-                "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/actor_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/critic_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                "Grads/actor_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-                **{
-                    f"Grads/critic_exploration_{k}": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute)
-                    for k in critics_exploration.keys()
-                },
-                "Grads/ensemble": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            }
+    critics_exploration_metrics = {}
+    for k, c in critics_exploration.items():
+        critics_exploration_metrics[f"Loss/value_loss_exploration_{k}"] = MeanMetric(
+            sync_on_compute=cfg.metric.sync_on_compute
         )
-    aggregator.to(device)
+        critics_exploration_metrics[f"Values_exploration/predicted_values_{k}"] = MeanMetric(
+            sync_on_compute=cfg.metric.sync_on_compute
+        )
+        critics_exploration_metrics[f"Values_exploration/lambda_values_{k}"] = MeanMetric(
+            sync_on_compute=cfg.metric.sync_on_compute
+        )
+        critics_exploration_metrics[f"Grads/critic_exploration_{k}"] = MeanMetric(
+            sync_on_compute=cfg.metric.sync_on_compute
+        )
+        if c["reward_type"] == "intrinsic":
+            critics_exploration_metrics[f"Rewards/intrinsic_{k}"] = MeanMetric(
+                sync_on_compute=cfg.metric.sync_on_compute
+            )
+    aggregator = MetricAggregator(
+        {
+            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/value_loss_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/policy_loss_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Loss/ensemble_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/actor_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/critic_task": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/actor_exploration": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            "Grads/ensemble": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
+            **critics_exploration_metrics,
+        }
+    ).to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
@@ -1047,6 +1053,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             or update == num_updates
         ):
             last_checkpoint = policy_step
+            critics_exploration_state = {"critis_exploration": {}}
+            for k, c in critics_exploration.items():
+                critics_exploration_state["critis_exploration"][k] = {
+                    "module": c["module"].state_dict(),
+                    "target_module": c["target_module"].state_dict(),
+                }
+                critics_exploration_state[f"critic_exploration_optimizer_{k}"] = c["optimizer"].state_dict()
+                critics_exploration_state[f"moments_exploration_{k}"] = moments_exploration[k].state_dict()
             state = {
                 "world_model": world_model.state_dict(),
                 "actor_task": actor_task.state_dict(),
@@ -1064,16 +1078,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_exploration_optimizer": actor_exploration_optimizer.state_dict(),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
-                "critics_exploration": {
-                    k: {"module": c["module"].state_dict(), "target_module": c["target_module"].state_dict()}
-                    for k, c in critics_exploration.items()
-                },
                 "moments_task": moments_task.state_dict(),
-                **{
-                    f"critic_exploration_optimizer_{k}": c["optimizer"].state_dict()
-                    for k, c in critics_exploration.items()
-                },
-                **{f"moments_exploration_{k}": m.state_dict() for k, m in moments_exploration.items()},
+                **critics_exploration_state,
             }
             ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
