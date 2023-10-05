@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.distribution import OneHotCategorical
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 
 
 class CNNEncoder(nn.Module):
@@ -163,7 +163,9 @@ class PPOAgent(nn.Module):
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(pre_dist):
-                actions_dist.append(OneHotCategorical(logits=logits, validate_args=self.distribution_cfg.validate_args))
+                actions_dist.append(
+                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                )
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
                     actions.append(actions_dist[-1].sample())
@@ -188,7 +190,7 @@ class PPOAgent(nn.Module):
         else:
             return tuple(
                 [
-                    OneHotCategorical(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
+                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
                     for logits in pre_dist
                 ]
             )

@@ -26,7 +26,7 @@ from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, 
 from sheeprl.algos.p2e_dv2.agent import build_models
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.models.models import MLP
-from sheeprl.utils.distribution import OneHotCategorical
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -215,7 +215,7 @@ def train(
     aggregator.update(
         "State/p_entropy",
         Independent(
-            OneHotCategorical(logits=posteriors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         )
@@ -226,7 +226,7 @@ def train(
     aggregator.update(
         "State/q_entropy",
         Independent(
-            OneHotCategorical(logits=priors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         )

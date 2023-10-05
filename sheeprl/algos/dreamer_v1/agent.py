@@ -16,7 +16,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategorical
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -303,7 +303,7 @@ class PlayerDV1(nn.Module):
             expl_actions = []
             for act in actions:
                 sample = (
-                    OneHotCategorical(logits=torch.zeros_like(act), validate_args=self.validate_args)
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
                     .sample()
                     .to(self.device)
                 )

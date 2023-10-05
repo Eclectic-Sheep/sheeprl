@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Categorical, Distribution, constraints
+from torch.distributions.kl import _kl_categorical_categorical, register_kl
 from torch.distributions.utils import broadcast_all
 
 from sheeprl.utils.utils import symexp, symlog
@@ -17,6 +18,8 @@ CONST_INV_SQRT_2PI = 1 / math.sqrt(2 * math.pi)
 CONST_INV_SQRT_2 = 1 / math.sqrt(2)
 CONST_LOG_INV_SQRT_2PI = math.log(CONST_INV_SQRT_2PI)
 CONST_LOG_SQRT_2PI_E = 0.5 * math.log(2 * math.pi * math.e)
+
+__all__ = ["OneHotCategoricalValidateArgs", "OneHotCategoricalStraightThroughValidateArgs"]
 
 
 class TruncatedStandardNormal(Distribution):
@@ -269,7 +272,7 @@ class TwoHotEncodingDistribution:
 
 # Taken from https://github.com/pytorch/pytorch/blob/main/torch/distributions/one_hot_categorical.py
 # to add validate args to the categorical distribution
-class OneHotCategorical(Distribution):
+class OneHotCategoricalValidateArgs(Distribution):
     r"""
     Creates a one-hot categorical distribution parameterized by :attr:`probs` or
     :attr:`logits`.
@@ -290,7 +293,7 @@ class OneHotCategorical(Distribution):
     Example::
 
         >>> # xdoctest: +IGNORE_WANT("non-deterinistic")
-        >>> m = OneHotCategorical(torch.tensor([ 0.25, 0.25, 0.25, 0.25 ]))
+        >>> m = OneHotCategoricalValidateArgs(torch.tensor([ 0.25, 0.25, 0.25, 0.25 ]))
         >>> m.sample()  # equal probability of 0, 1, 2, 3
         tensor([ 0.,  0.,  0.,  1.])
 
@@ -309,10 +312,10 @@ class OneHotCategorical(Distribution):
         super().__init__(batch_shape, event_shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
-        new = self._get_checked_instance(OneHotCategorical, _instance)
+        new = self._get_checked_instance(OneHotCategoricalValidateArgs, _instance)
         batch_shape = torch.Size(batch_shape)
         new._categorical = self._categorical.expand(batch_shape)
-        super(OneHotCategorical, new).__init__(batch_shape, self.event_shape, validate_args=False)
+        super(OneHotCategoricalValidateArgs, new).__init__(batch_shape, self.event_shape, validate_args=False)
         new._validate_args = self._validate_args
         return new
 
@@ -374,9 +377,9 @@ class OneHotCategorical(Distribution):
         return values
 
 
-class OneHotCategoricalStraightThrough(OneHotCategorical):
+class OneHotCategoricalStraightThroughValidateArgs(OneHotCategoricalValidateArgs):
     r"""
-    Creates a reparameterizable :class:`OneHotCategorical` distribution based on the straight-
+    Creates a reparameterizable :class:`OneHotCategoricalValidateArgs` distribution based on the straight-
     through gradient estimator from [1].
 
     [1] Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation
@@ -388,3 +391,8 @@ class OneHotCategoricalStraightThrough(OneHotCategorical):
         samples = self.sample(sample_shape)
         probs = self._categorical.probs  # cached via @lazy_property
         return samples + (probs - probs.detach())
+
+
+@register_kl(OneHotCategoricalValidateArgs, OneHotCategoricalValidateArgs)
+def _kl_onehotcategoricalvalidateargs_onehotcategoricalvalidateargs(p, q):
+    return _kl_categorical_categorical(p._categorical, q._categorical)

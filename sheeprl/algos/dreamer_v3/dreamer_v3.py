@@ -32,7 +32,7 @@ from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
     MSEDistribution,
-    OneHotCategorical,
+    OneHotCategoricalValidateArgs,
     SymlogDistribution,
     TwoHotEncodingDistribution,
 )
@@ -195,7 +195,7 @@ def train(
     aggregator.update(
         "State/post_entropy",
         Independent(
-            OneHotCategorical(logits=posteriors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         )
@@ -206,7 +206,7 @@ def train(
     aggregator.update(
         "State/prior_entropy",
         Independent(
-            OneHotCategorical(logits=priors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         )

@@ -5,7 +5,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent
 from torch.distributions.kl import kl_divergence
 
-from sheeprl.utils.distribution import OneHotCategoricalStraightThrough
+from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 
 
 def reconstruction_loss(
@@ -66,24 +66,26 @@ def reconstruction_loss(
     # KL balancing
     lhs = kl = kl_divergence(
         Independent(
-            OneHotCategoricalStraightThrough(logits=posteriors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(
+                logits=posteriors_logits.detach(), validate_args=validate_args
+            ),
             1,
             validate_args=validate_args,
         ),
         Independent(
-            OneHotCategoricalStraightThrough(logits=priors_logits, validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits, validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),
     )
     rhs = kl_divergence(
         Independent(
-            OneHotCategoricalStraightThrough(logits=posteriors_logits, validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits, validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),
         Independent(
-            OneHotCategoricalStraightThrough(logits=priors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),

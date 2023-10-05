@@ -9,7 +9,7 @@ from torch.distributions import Independent, Normal
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategorical
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 
 
 class RecurrentModel(nn.Module):
@@ -203,7 +203,7 @@ class RecurrentPPOAgent(nn.Module):
             actions.append(dist.mode)
         else:
             for logits in pre_dist:
-                dist = OneHotCategorical(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 actions.append(dist.mode)
         return tuple(actions), states
 
@@ -230,7 +230,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
-                dist = OneHotCategorical(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 if actions is None:
                     sampled_actions.append(dist.sample())
                 else:

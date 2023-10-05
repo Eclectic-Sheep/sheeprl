@@ -16,7 +16,11 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategorical, OneHotCategoricalStraightThrough, TruncatedNormal
+from sheeprl.utils.distribution import (
+    OneHotCategoricalStraightThroughValidateArgs,
+    OneHotCategoricalValidateArgs,
+    TruncatedNormal,
+)
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -554,7 +558,11 @@ class PlayerDV3(nn.Module):
         else:
             expl_actions = []
             for act in actions:
-                sample = OneHotCategorical(logits=torch.zeros_like(act), validate_args=False).sample().to(self.device)
+                sample = (
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
+                    .sample()
+                    .to(self.device)
+                )
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
@@ -720,7 +728,7 @@ class Actor(nn.Module):
             actions: List[Tensor] = []
             for logits in pre_dist:
                 actions_dist.append(
-                    OneHotCategoricalStraightThrough(
+                    OneHotCategoricalStraightThroughValidateArgs(
                         logits=self._uniform_mix(logits), validate_args=self.distribution_cfg.validate_args
                     )
                 )
@@ -807,7 +815,9 @@ class MinedojoActor(Actor):
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(
-                OneHotCategoricalStraightThrough(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                OneHotCategoricalStraightThroughValidateArgs(
+                    logits=logits, validate_args=self.distribution_cfg.validate_args
+                )
             )
             if is_training:
                 actions.append(actions_dist[-1].rsample())

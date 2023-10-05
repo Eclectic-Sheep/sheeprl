@@ -13,7 +13,11 @@ from torch.distributions import Distribution, Independent, Normal, TanhTransform
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategorical, OneHotCategoricalStraightThrough, TruncatedNormal
+from sheeprl.utils.distribution import (
+    OneHotCategoricalStraightThroughValidateArgs,
+    OneHotCategoricalValidateArgs,
+    TruncatedNormal,
+)
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 
 
@@ -527,7 +531,9 @@ class Actor(nn.Module):
             actions: List[Tensor] = []
             for logits in pre_dist:
                 actions_dist.append(
-                    OneHotCategoricalStraightThrough(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                    OneHotCategoricalStraightThroughValidateArgs(
+                        logits=logits, validate_args=self.distribution_cfg.validate_args
+                    )
                 )
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
@@ -608,7 +614,9 @@ class MinedojoActor(Actor):
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(
-                OneHotCategoricalStraightThrough(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                OneHotCategoricalStraightThroughValidateArgs(
+                    logits=logits, validate_args=self.distribution_cfg.validate_args
+                )
             )
             if is_training:
                 actions.append(actions_dist[-1].rsample())
@@ -746,7 +754,7 @@ class PlayerDV2(nn.Module):
             expl_actions = []
             for act in actions:
                 sample = (
-                    OneHotCategorical(logits=torch.zeros_like(act), validate_args=self.validate_args)
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
                     .sample()
                     .to(self.device)
                 )

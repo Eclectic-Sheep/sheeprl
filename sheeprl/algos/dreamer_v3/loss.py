@@ -5,7 +5,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent
 from torch.distributions.kl import kl_divergence
 
-from sheeprl.utils.distribution import OneHotCategoricalStraightThrough
+from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 
 
 def reconstruction_loss(
@@ -69,12 +69,14 @@ def reconstruction_loss(
     kl_free_nats = torch.tensor([kl_free_nats], device=device)
     dyn_loss = kl = kl_divergence(
         Independent(
-            OneHotCategoricalStraightThrough(logits=posteriors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(
+                logits=posteriors_logits.detach(), validate_args=validate_args
+            ),
             1,
             validate_args=validate_args,
         ),
         Independent(
-            OneHotCategoricalStraightThrough(logits=priors_logits, validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits, validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),
@@ -82,12 +84,12 @@ def reconstruction_loss(
     dyn_loss = kl_dynamic * torch.maximum(dyn_loss, kl_free_nats)
     repr_loss = kl_divergence(
         Independent(
-            OneHotCategoricalStraightThrough(logits=posteriors_logits, validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits, validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),
         Independent(
-            OneHotCategoricalStraightThrough(logits=priors_logits.detach(), validate_args=validate_args),
+            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
             1,
             validate_args=validate_args,
         ),
