@@ -1,6 +1,7 @@
 import os
 from typing import Optional, Sequence, Tuple, Union
 
+import numpy as np
 import rich.syntax
 import rich.tree
 import torch
@@ -8,6 +9,21 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
+
+NUMPY_TO_TORCH_DTYPE_DICT = {
+    np.dtype("bool"): torch.bool,
+    np.dtype("uint8"): torch.uint8,
+    np.dtype("int8"): torch.int8,
+    np.dtype("int16"): torch.int16,
+    np.dtype("int32"): torch.int32,
+    np.dtype("int64"): torch.int64,
+    np.dtype("float16"): torch.float16,
+    np.dtype("float32"): torch.float32,
+    np.dtype("float64"): torch.float64,
+    np.dtype("complex64"): torch.complex64,
+    np.dtype("complex128"): torch.complex128,
+}
+TORCH_TO_NUMPY_DTYPE_DICT = {value: key for key, value in NUMPY_TO_TORCH_DTYPE_DICT.items()}
 
 
 class dotdict(dict):

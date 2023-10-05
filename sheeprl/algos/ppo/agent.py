@@ -138,7 +138,7 @@ class PPOAgent(nn.Module):
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
-            normal = Independent(Normal(mean, std), 1)
+            normal = Independent(Normal(mean, std, validate_args=False), 1, validate_args=False)
             if actions is None:
                 actions = normal.sample()
             else:
@@ -156,7 +156,7 @@ class PPOAgent(nn.Module):
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(pre_dist):
-                actions_dist.append(OneHotCategorical(logits=logits))
+                actions_dist.append(OneHotCategorical(logits=logits, validate_args=False))
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
                     actions.append(actions_dist[-1].sample())
@@ -179,4 +179,4 @@ class PPOAgent(nn.Module):
         if self.is_continuous:
             return [torch.chunk(pre_dist[0], 2, -1)[0]]
         else:
-            return tuple([OneHotCategorical(logits=logits).mode for logits in pre_dist])
+            return tuple([OneHotCategorical(logits=logits, validate_args=False).mode for logits in pre_dist])

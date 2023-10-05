@@ -120,7 +120,7 @@ class ReplayBuffer:
         data = data.to(self.device)
         data_len = data.shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if next_pos < self._pos or (data_len >= self._buffer_size and not self._full):
+        if next_pos <= self._pos or (data_len >= self._buffer_size and not self._full):
             idxes = torch.tensor(
                 list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)), device=self.device
             )
