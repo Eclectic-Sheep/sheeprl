@@ -432,7 +432,7 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 ```
 
 Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:

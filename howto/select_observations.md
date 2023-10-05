@@ -28,9 +28,9 @@ You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decod
 >
 > We recommend to read [this](./work_with_multi-encoder_multi-decoder.md) to know how the encoder and decoder work with more observations.
 
-For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `P1_oppHealth` and `P1_ownHealth` as vector observation, you have to run the following command:
+For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `opp_health` and `own_health` as vector observation, you have to run the following command:
 ```bash
-python sheeprl.py exp=ppo env=diambra env.id=doapp cnn_keys.encoder=[frame] mlp_keys.encoder=[P1_oppHealth,P1_ownHealth]
+diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 cnn_keys.encoder=[frame] mlp_keys.encoder=[opp_health,own_health]
 ```
 
 > **Note**
@@ -41,7 +41,7 @@ It is important to know the observations the environment provides, for instance,
 > **Note**
 >
 > For some environments provided by gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the `cnn_keys` args:
-> `python sheeprl.py cnn_keys.encoder=[rgb]`
+> `python sheeprl.py exp=... cnn_keys.encoder=[rgb]`
 
 #### Frame Stack
 For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
