@@ -2,8 +2,10 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
+from torch.distributions import Distribution, Independent
 from torch.distributions.kl import kl_divergence
+
+from sheeprl.utils.distribution import OneHotCategoricalStraightThrough
 
 
 def reconstruction_loss(

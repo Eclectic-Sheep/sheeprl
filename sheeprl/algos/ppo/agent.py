@@ -5,9 +5,10 @@ import gymnasium
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+from sheeprl.utils.distribution import OneHotCategorical
 
 
 class CNNEncoder(nn.Module):

@@ -5,10 +5,11 @@ import gymnasium
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.distributions import Independent, Normal, OneHotCategorical
+from torch.distributions import Independent, Normal
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.utils.distribution import OneHotCategorical
 
 
 class RecurrentModel(nn.Module):

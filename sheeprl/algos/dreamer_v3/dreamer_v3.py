@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
@@ -30,7 +30,12 @@ from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
-from sheeprl.utils.distribution import MSEDistribution, SymlogDistribution, TwoHotEncodingDistribution
+from sheeprl.utils.distribution import (
+    MSEDistribution,
+    OneHotCategorical,
+    SymlogDistribution,
+    TwoHotEncodingDistribution,
+)
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator

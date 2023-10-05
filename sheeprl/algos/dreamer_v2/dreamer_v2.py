@@ -19,7 +19,7 @@ from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
@@ -28,6 +28,7 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
+from sheeprl.utils.distribution import OneHotCategorical
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator

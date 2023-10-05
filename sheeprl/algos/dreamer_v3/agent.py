@@ -9,22 +9,14 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, device, nn
-from torch.distributions import (
-    Distribution,
-    Independent,
-    Normal,
-    OneHotCategorical,
-    OneHotCategoricalStraightThrough,
-    TanhTransform,
-    TransformedDistribution,
-)
+from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
 from torch.distributions.utils import probs_to_logits
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.distribution import OneHotCategorical, OneHotCategoricalStraightThrough, TruncatedNormal
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
