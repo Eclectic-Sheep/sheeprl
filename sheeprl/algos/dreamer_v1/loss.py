@@ -43,8 +43,8 @@ def reconstruction_loss(
     observations: Dict[str, Tensor],
     qr: Distribution,
     rewards: Tensor,
-    p: Distribution,
-    q: Distribution,
+    posteriors_dist: Distribution,
+    priors_dist: Distribution,
     kl_free_nats: float = 3.0,
     kl_regularizer: float = 1.0,
     qc: Optional[Distribution] = None,
@@ -60,8 +60,8 @@ def reconstruction_loss(
         observations (Dict[str, Tensor]): the observations provided by the environment.
         qr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
-        p (Distribution): the distribution of the stochastic state.
-        q (Distribution): the predicted distribution of the stochastic state.
+        posteriors_dist (Distribution): the distribution of the stochastic state.
+        priors_dist (Distribution): the predicted distribution of the stochastic state.
         kl_free_nats (float): lower bound of the KL divergence.
             Default to 3.0.
         kl_regularizer (float): scale factor of the KL divergence.
@@ -85,7 +85,7 @@ def reconstruction_loss(
     device = rewards.device
     observation_loss = -sum([qo[k].log_prob(observations[k]).mean() for k in qo.keys()])
     reward_loss = -qr.log_prob(rewards).mean()
-    kl = kl_divergence(p, q).mean()
+    kl = kl_divergence(posteriors_dist, priors_dist).mean()
     state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl)
     continue_loss = torch.tensor(0, device=device)
     if qc is not None and continue_targets is not None:

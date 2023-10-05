@@ -54,12 +54,12 @@ def reconstruction_loss(
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()),
-        OneHotCategoricalStraightThrough(logits=priors_logits),
+        OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits.detach()),
+        OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits),
     )
     rhs = kl_divergence(
-        OneHotCategoricalStraightThrough(logits=posteriors_logits),
-        OneHotCategoricalStraightThrough(logits=priors_logits.detach()),
+        OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits),
+        OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits.detach()),
     )
     kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:

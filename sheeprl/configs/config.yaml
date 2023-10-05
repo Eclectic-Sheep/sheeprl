@@ -6,6 +6,7 @@ defaults:
   - algo: default.yaml
   - buffer: default.yaml
   - checkpoint: default.yaml
+  - distribution: default.yaml
   - env: default.yaml
   - fabric: default.yaml
   - metric: default.yaml

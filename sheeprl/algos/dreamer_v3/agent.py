@@ -9,22 +9,18 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, device, nn
-from torch.distributions import (
-    Distribution,
-    Independent,
-    Normal,
-    OneHotCategorical,
-    OneHotCategoricalStraightThrough,
-    TanhTransform,
-    TransformedDistribution,
-)
+from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
 from torch.distributions.utils import probs_to_logits
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.distribution import (
+    OneHotCategoricalStraightThroughValidateArgs,
+    OneHotCategoricalValidateArgs,
+    TruncatedNormal,
+)
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -273,7 +269,7 @@ class RecurrentModel(nn.Module):
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
-        layer_norm (bool, optional): whether to use the LayerNorm inside the GRU.
+        layer_norm (bool): whether to use the LayerNorm inside the GRU.
             Defaults to True.
     """
 
@@ -325,6 +321,7 @@ class RSSM(nn.Module):
         transition_model (nn.Module): the transition model described in
             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
+        distribution_cfg (Dict[str, Any]): the configs of the distributions.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
@@ -338,6 +335,7 @@ class RSSM(nn.Module):
         recurrent_model: nn.Module,
         representation_model: nn.Module,
         transition_model: nn.Module,
+        distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
     ) -> None:
@@ -347,6 +345,7 @@ class RSSM(nn.Module):
         self.transition_model = transition_model
         self.discrete = discrete
         self.unimix = unimix
+        self.distribution_cfg = distribution_cfg
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -416,7 +415,9 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete)
+        return logits, compute_stochastic_state(
+            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
+        )
 
     def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
         """
@@ -431,7 +432,9 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.transition_model(recurrent_out)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
+        return logits, compute_stochastic_state(
+            logits, discrete=self.discrete, sample=sample_state, validate_args=self.distribution_cfg.validate_args
+        )
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -492,6 +495,7 @@ class PlayerDV3(nn.Module):
             recurrent_model=rssm.recurrent_model.module,
             representation_model=rssm.representation_model.module,
             transition_model=rssm.transition_model.module,
+            distribution_cfg=actor.distribution_cfg,
             discrete=rssm.discrete,
             unimix=rssm.unimix,
         )
@@ -503,6 +507,7 @@ class PlayerDV3(nn.Module):
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
+        self.validate_args = self.actor.distribution_cfg.validate_args
 
     @torch.no_grad()
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -553,7 +558,11 @@ class PlayerDV3(nn.Module):
         else:
             expl_actions = []
             for act in actions:
-                sample = OneHotCategorical(logits=torch.zeros_like(act), validate_args=False).sample().to(self.device)
+                sample = (
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
+                    .sample()
+                    .to(self.device)
+                )
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
@@ -599,6 +608,7 @@ class Actor(nn.Module):
         actions_dim (Sequence[int]): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
+        distribution_cfg (Dict[str, Any]): The configs of the distributions.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
@@ -609,10 +619,6 @@ class Actor(nn.Module):
             Default to nn.SiLU.
         mlp_layers (int): the number of dense layers.
             Default to 5.
-        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
-            `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
-            space is a discrete one, `trunc_normal` otherwise.
-            Defaults to `auto`.
         layer_norm (bool, optional): whether to apply the layer normalization.
             Defaults to True.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
@@ -627,17 +633,18 @@ class Actor(nn.Module):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
         init_std: float = 0.0,
         min_std: float = 0.1,
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        distribution: str = "auto",
         layer_norm: bool = True,
         unimix: float = 0.01,
     ) -> None:
         super().__init__()
-        self.distribution = distribution.lower()
+        self.distribution_cfg = distribution_cfg
+        self.distribution = distribution_cfg.pop("type").lower()
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
             raise ValueError(
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
@@ -695,15 +702,19 @@ class Actor(nn.Module):
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(
-                    TransformedDistribution(actions_dist, TanhTransform(), validate_args=False), 1
+                    TransformedDistribution(
+                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
+                    ),
+                    1,
+                    validate_args=self.distribution_cfg.validate_args,
                 )
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std, validate_args=False)
-                actions_dist = Independent(actions_dist, 1)
+                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=False)
-                actions_dist = Independent(dist, 1)
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
             if is_training:
                 actions = actions_dist.rsample()
             else:
@@ -717,7 +728,9 @@ class Actor(nn.Module):
             actions: List[Tensor] = []
             for logits in pre_dist:
                 actions_dist.append(
-                    OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits), validate_args=False)
+                    OneHotCategoricalStraightThroughValidateArgs(
+                        logits=self._uniform_mix(logits), validate_args=self.distribution_cfg.validate_args
+                    )
                 )
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
@@ -740,25 +753,25 @@ class MinedojoActor(Actor):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 1024,
         dense_act: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        distribution: str = "auto",
         layer_norm: bool = True,
     ) -> None:
         super().__init__(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            init_std,
-            min_std,
-            dense_units,
-            dense_act,
-            mlp_layers,
-            distribution,
-            layer_norm,
+            latent_state_size=latent_state_size,
+            actions_dim=actions_dim,
+            is_continuous=is_continuous,
+            distribution_cfg=distribution_cfg,
+            init_std=init_std,
+            min_std=min_std,
+            dense_units=dense_units,
+            dense_act=dense_act,
+            mlp_layers=mlp_layers,
+            layer_norm=layer_norm,
         )
 
     def forward(
@@ -801,7 +814,11 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            actions_dist.append(
+                OneHotCategoricalStraightThroughValidateArgs(
+                    logits=logits, validate_args=self.distribution_cfg.validate_args
+                )
+            )
             if is_training:
                 actions.append(actions_dist[-1].rsample())
             else:
@@ -913,6 +930,7 @@ def build_models(
         recurrent_model=recurrent_model.apply(init_weights),
         representation_model=representation_model.apply(init_weights),
         transition_model=transition_model.apply(init_weights),
+        distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
     )
@@ -994,7 +1012,7 @@ def build_models(
         dense_units=actor_cfg.dense_units,
         activation=eval(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
-        distribution=actor_cfg.distribution,
+        distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
         unimix=cfg.algo.unimix,
     )

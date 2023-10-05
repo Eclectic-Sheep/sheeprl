@@ -7,8 +7,9 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Independent, OneHotCategoricalStraightThrough
+from torch.distributions import Independent
 
+from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 from sheeprl.utils.env import make_env
 
 if TYPE_CHECKING:
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v2.agent import PlayerDV2
 
 
-def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) -> Tensor:
+def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True, validate_args=False) -> Tensor:
     """
     Compute the stochastic state from the logits computed by the transition or representaiton model.
 
@@ -26,12 +27,14 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) ->
             Defaults to 32.
         sample (bool): whether or not to sample the stochastic state.
             Default to True.
+        validate_args: whether or not to validate distribution arguments.
+            Default to False.
 
     Returns:
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    dist = Independent(OneHotCategoricalStraightThrough(logits=logits, validate_args=False), 1)
+    dist = Independent(OneHotCategoricalStraightThroughValidateArgs(logits=logits, validate_args=validate_args), 1)
     stochastic_state = dist.rsample() if sample else dist.mode
     return stochastic_state
 

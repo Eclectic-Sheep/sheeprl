@@ -102,6 +102,7 @@ def train(
     """
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
@@ -166,17 +167,32 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size observations.shape
-    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    qo = {
+        k: Independent(
+            Normal(rec_obs, 1, validate_args=validate_args),
+            len(rec_obs.shape[2:]),
+            validate_args=validate_args,
+        )
+        for k, rec_obs in decoded_information.items()
+    }
 
     # compute predictions for the rewards
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of rewards
-    qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    qr = Independent(
+        Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # compute predictions for terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+        qc = Independent(
+            Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         qc = continue_targets = None
@@ -185,8 +201,16 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the stochastic size
-    p = Independent(Normal(posteriors_mean, posteriors_std), 1)
-    q = Independent(Normal(priors_mean, priors_std), 1)
+    posteriors_dist = Independent(
+        Normal(posteriors_mean, posteriors_std, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
+    priors_dist = Independent(
+        Normal(priors_mean, priors_std, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
@@ -196,8 +220,8 @@ def train(
         batch_obs,
         qr,
         data["rewards"],
-        p,
-        q,
+        posteriors_dist,
+        priors_dist,
         cfg.algo.world_model.kl_free_nats,
         cfg.algo.world_model.kl_regularizer,
         qc,
@@ -217,8 +241,8 @@ def train(
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/post_entropy", p.entropy().mean().detach())
-    aggregator.update("State/prior_entropy", q.entropy().mean().detach())
+    aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
+    aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
 
     # Behaviour Learning
     # Unflatten first 2 dimensions of recurrent and posterior states in order
@@ -257,12 +281,24 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of values/rewards
-    predicted_values = Independent(Normal(critic(imagined_trajectories), 1), 1).mean
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mean
+    predicted_values = Independent(
+        Normal(critic(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mean
+    predicted_rewards = Independent(
+        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mean
 
     # predict the probability that the episode will continue in the imagined states
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        predicted_continues = Independent(
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ).mean
     else:
         predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
@@ -331,7 +367,11 @@ def train(
     # (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory
     # because it is used only for computing correclty the lambda values
-    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
+    qv = Independent(
+        Normal(critic(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # critic optimization step
     critic_optimizer.zero_grad(set_to_none=True)

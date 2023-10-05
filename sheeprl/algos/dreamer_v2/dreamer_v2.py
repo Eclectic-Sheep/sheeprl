@@ -19,7 +19,7 @@ from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
@@ -28,6 +28,7 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -115,6 +116,7 @@ def train(
 
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -162,14 +164,29 @@ def train(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # Compute the distribution over the reconstructed observations
-    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    po = {
+        k: Independent(
+            Normal(rec_obs, 1, validate_args=validate_args),
+            len(rec_obs.shape[2:]),
+            validate_args=validate_args,
+        )
+        for k, rec_obs in decoded_information.items()
+    }
 
     # Compute the distribution over the rewards
-    pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    pr = Independent(
+        Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # Compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+        pc = Independent(
+            Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         pc = continue_targets = None
@@ -194,6 +211,7 @@ def train(
         pc,
         continue_targets,
         cfg.algo.world_model.discount_scale_factor,
+        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -213,11 +231,25 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/post_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
     aggregator.update(
         "State/prior_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
 
     # Behaviour Learning
@@ -276,11 +308,21 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # Predict values and rewards
-    predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
+    predicted_target_values = Independent(
+        Normal(target_critic(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mode
+    predicted_rewards = Independent(
+        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mode
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            1,
+            validate_args,
         ).mean
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
@@ -354,7 +396,11 @@ def train(
     # Predict the values distribution only for the first H (horizon)
     # imagined states (to match the dimension with the lambda values),
     # It removes the last imagined state in the trajectory because it is used for bootstrapping
-    qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
+    qv = Independent(
+        Normal(critic(imagined_trajectories.detach()[:-1]), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # Critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)

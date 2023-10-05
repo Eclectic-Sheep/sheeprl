@@ -196,6 +196,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cnn_keys=cfg.cnn_keys.encoder,
         mlp_keys=cfg.mlp_keys.encoder,
         is_continuous=is_continuous,
+        distribution_cfg=cfg.distribution,
         num_envs=cfg.env.num_envs,
         screen_size=cfg.env.screen_size,
         device=device,

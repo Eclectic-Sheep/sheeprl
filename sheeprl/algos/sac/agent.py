@@ -1,5 +1,5 @@
 import copy
-from typing import Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, Sequence, SupportsFloat, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -55,6 +55,7 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
+        distribution_cfg: Dict[str, Any],
         hidden_size: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
@@ -65,6 +66,7 @@ class SACActor(nn.Module):
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
+            distribution_cfg (Dict[str, Any]): the configs of the distributions.
             hidden_size (int): the hidden sizes for both of the two-layer MLP.
                 Defaults to 256.
             action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
@@ -73,6 +75,8 @@ class SACActor(nn.Module):
                 Defaults to 1.0.
         """
         super().__init__()
+        self.distribution_cfg = distribution_cfg
+
         self.model = MLP(input_dims=observation_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
@@ -112,7 +116,7 @@ class SACActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        normal = torch.distributions.Normal(mean, std)
+        normal = torch.distributions.Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
 
         # Reparameterization trick (mean + std * N(0,1))
         x_t = normal.rsample()

@@ -8,7 +8,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from sympy import Union
 from torch import Tensor, nn
-from torch.distributions import Normal, OneHotCategorical
+from torch.distributions import Normal
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
@@ -16,6 +16,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -70,6 +71,7 @@ class RSSM(nn.Module):
         transition_model (_FabricModule): the transition model described
             in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
             The model is composed by a multi-layer perceptron to predict the prior state.
+        distribution_cfg (Dict[str, Any]): the configs of the distribution.
         min_std (float): the minimum value of the standard deviation computed
             by the representation and transition models.
             Default to 0.1.
@@ -80,6 +82,7 @@ class RSSM(nn.Module):
         recurrent_model: _FabricModule,
         representation_model: _FabricModule,
         transition_model: _FabricModule,
+        distribution_cfg: Dict[str, Any],
         min_std: float = 0.1,
     ) -> None:
         super().__init__()
@@ -87,6 +90,7 @@ class RSSM(nn.Module):
         self.representation_model = representation_model
         self.transition_model = transition_model
         self.min_std = min_std
+        self.distribution_cfg = distribution_cfg
 
     def dynamic(
         self,
@@ -145,6 +149,7 @@ class RSSM(nn.Module):
             self.representation_model(torch.cat((recurrent_state, embedded_obs), -1)),
             event_shape=1,
             min_std=self.min_std,
+            validate_args=self.distribution_cfg.validate_args,
         )
         return posterior_mean_std, posterior
 
@@ -159,7 +164,9 @@ class RSSM(nn.Module):
             The prior state (Tensor): the sampled prior state predicted by the transition model.
         """
         prior_mean_std = self.transition_model(recurrent_out)
-        return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
+        return compute_stochastic_state(
+            prior_mean_std, event_shape=1, min_std=self.min_std, validate_args=self.distribution_cfg.validate_args
+        )
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """One-step imagination of the next latent state.
@@ -250,6 +257,7 @@ class PlayerDV1(nn.Module):
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
+        self.validate_args = self.actor.distribution_cfg.validate_args
         self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -287,12 +295,18 @@ class PlayerDV1(nn.Module):
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
-                self.actions = torch.clip(Normal(self.actions, self.expl_amount).sample(), -1, 1)
+                self.actions = torch.clip(
+                    Normal(self.actions, self.expl_amount, validate_args=self.validate_args).sample(), -1, 1
+                )
             expl_actions = [self.actions]
         else:
             expl_actions = []
             for act in actions:
-                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(self.device)
+                sample = (
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
+                    .sample()
+                    .to(self.device)
+                )
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
@@ -319,7 +333,8 @@ class PlayerDV1(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         _, self.stochastic_state = compute_stochastic_state(
-            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
+            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
+            validate_args=self.validate_args,
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
         self.actions = torch.cat(actions, -1)
@@ -412,10 +427,11 @@ def build_models(
         flatten_dim=None,
     )
     rssm = RSSM(
-        recurrent_model.apply(init_weights),
-        representation_model.apply(init_weights),
-        transition_model.apply(init_weights),
-        world_model_cfg.min_std,
+        recurrent_model=recurrent_model.apply(init_weights),
+        representation_model=representation_model.apply(init_weights),
+        transition_model=transition_model.apply(init_weights),
+        distribution_cfg=cfg.distribution,
+        min_std=world_model_cfg.min_std,
     )
     cnn_decoder = (
         CNNDecoder(
@@ -477,7 +493,7 @@ def build_models(
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
         activation=eval(actor_cfg.dense_act),
-        distribution=actor_cfg.distribution,
+        distribution_cfg=cfg.distribution,
         layer_norm=False,
     )
     critic = MLP(
