@@ -153,6 +153,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
         hidden_size=cfg.algo.actor.hidden_size,
         action_low=action_space.low,
         action_high=action_space.high,

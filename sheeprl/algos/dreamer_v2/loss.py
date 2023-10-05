@@ -20,6 +20,7 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     discount_scale_factor: float = 1.0,
+    validate_args: bool = False,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 2 in
@@ -46,6 +47,8 @@ def reconstruction_loss(
             Default to None.
         discount_scale_factor (float): the scale factor for the continue loss.
             Default to 1.0.
+        validate_args (bool): Whether or not to validate distributions arguments.
+            Default to False.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
@@ -60,12 +63,28 @@ def reconstruction_loss(
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
+        Independent(
+            OneHotCategoricalStraightThrough(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ),
+        Independent(
+            OneHotCategoricalStraightThrough(logits=priors_logits, validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ),
     )
     rhs = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
+        Independent(
+            OneHotCategoricalStraightThrough(logits=posteriors_logits, validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ),
+        Independent(
+            OneHotCategoricalStraightThrough(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ),
     )
     kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:

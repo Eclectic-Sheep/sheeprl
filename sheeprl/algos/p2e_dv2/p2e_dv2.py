@@ -110,6 +110,7 @@ def train(
     """
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -148,14 +149,27 @@ def train(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # compute the distribution over the reconstructed observations
-    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    po = {
+        k: Independent(
+            Normal(rec_obs, 1, validate_args=validate_args), len(rec_obs.shape[2:]), validate_args=validate_args
+        )
+        for k, rec_obs in decoded_information.items()
+    }
 
     # compute the distribution over the rewards
-    pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
+    pr = Independent(
+        Normal(world_model.reward_model(latent_states.detach()), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=False), 1)
+        pc = Independent(
+            Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         pc = continue_targets = None
@@ -180,6 +194,7 @@ def train(
         pc,
         continue_targets,
         cfg.algo.world_model.discount_scale_factor,
+        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -198,11 +213,25 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/p_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategorical(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
     aggregator.update(
         "State/q_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategorical(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
 
     if is_exploring:
@@ -220,7 +249,9 @@ def train(
                     -1,
                 )
             )[:-1]
-            next_obs_embedding_dist = Independent(Normal(out, 1), 1)
+            next_obs_embedding_dist = Independent(
+                Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
+            )
             loss -= next_obs_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
             ).mean()
@@ -281,7 +312,11 @@ def train(
         aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
         if cfg.algo.world_model.use_continues and world_model.continue_model:
-            continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+            continues = Independent(
+                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            ).mean
             true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
             continues = torch.cat((true_done, continues[1:]))
         else:
@@ -336,7 +371,11 @@ def train(
         actor_exploration_optimizer.step()
         aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
 
-        qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
+        qv = Independent(
+            Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         critic_exploration_optimizer.zero_grad(set_to_none=True)
         value_loss_exploration = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
         fabric.backward(value_loss_exploration)
@@ -385,7 +424,11 @@ def train(
     predicted_target_values = target_critic_task(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        continues = Independent(
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ).mean
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
     else:
@@ -437,7 +480,11 @@ def train(
     actor_task_optimizer.step()
     aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
 
-    qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
+    qv = Independent(
+        Normal(critic_task(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
     critic_task_optimizer.zero_grad(set_to_none=True)
     value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
