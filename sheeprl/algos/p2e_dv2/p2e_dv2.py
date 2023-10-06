@@ -213,7 +213,7 @@ def train(
     aggregator.update("Loss/continue_loss", continue_loss.detach())
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
-        "State/p_entropy",
+        "State/post_entropy",
         Independent(
             OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
             1,
@@ -224,7 +224,7 @@ def train(
         .detach(),
     )
     aggregator.update(
-        "State/q_entropy",
+        "State/prior_entropy",
         Independent(
             OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
             1,

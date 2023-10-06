@@ -446,7 +446,9 @@ class Actor(nn.Module):
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
+        self.distribution_cfg = distribution_cfg
         self.distribution = distribution_cfg.pop("type", "auto").lower()
+        self.distribution_cfg.type = self.distribution
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
             raise ValueError(
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
@@ -476,7 +478,6 @@ class Actor(nn.Module):
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
-        self.distribution_cfg = distribution_cfg
 
     def forward(
         self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None

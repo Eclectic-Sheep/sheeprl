@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor, nn
-from torch.distributions import Bernoulli, Distribution, Independent, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
@@ -26,7 +26,12 @@ from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, init_
 from sheeprl.algos.p2e_dv3.agent import build_models
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.models.models import MLP
-from sheeprl.utils.distribution import MSEDistribution, SymlogDistribution, TwoHotEncodingDistribution
+from sheeprl.utils.distribution import (
+    MSEDistribution,
+    OneHotCategoricalValidateArgs,
+    SymlogDistribution,
+    TwoHotEncodingDistribution,
+)
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -109,6 +114,7 @@ def train(
     """
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -160,7 +166,11 @@ def train(
     pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
     # Compute the distribution over the terminal steps, if required
-    pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+    pc = Independent(
+        Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
     continue_targets = 1 - data["dones"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
@@ -202,14 +212,25 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/post_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach(), validate_args=False), 1)
+        Independent(
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         .entropy()
         .mean()
         .detach(),
     )
     aggregator.update(
         "State/prior_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach(), validate_args=False), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
 
     # Free up space
@@ -287,7 +308,9 @@ def train(
             # Predict values and continues
             predicted_values = TwoHotEncodingDistribution(critic["module"](imagined_trajectories), dims=1).mean
             continues = Independent(
-                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
             ).mode
             true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
             continues = torch.cat((true_done, continues[1:]))
@@ -425,7 +448,9 @@ def train(
     predicted_values = TwoHotEncodingDistribution(critic_task(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(
-        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+        1,
+        validate_args=validate_args,
     ).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))

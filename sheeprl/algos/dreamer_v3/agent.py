@@ -644,7 +644,8 @@ class Actor(nn.Module):
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
-        self.distribution = distribution_cfg.pop("type").lower()
+        self.distribution = distribution_cfg.pop("type", "auto").lower()
+        self.distribution_cfg.type = self.distribution
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
             raise ValueError(
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "

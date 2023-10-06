@@ -96,7 +96,7 @@ def build_models(
         dense_units=actor_cfg.dense_units,
         activation=eval(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
-        distribution=actor_cfg.distribution,
+        distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
         unimix=cfg.algo.unimix,
     )
