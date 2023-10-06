@@ -5,10 +5,11 @@ import gymnasium
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.distributions import Independent, Normal, OneHotCategorical
+from torch.distributions import Independent, Normal
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 
 
 class RecurrentModel(nn.Module):
@@ -84,6 +85,7 @@ class RecurrentPPOAgent(nn.Module):
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
         num_envs: int = 1,
         screen_size: int = 64,
         device: Union[torch.device, str] = "cpu",
@@ -91,6 +93,7 @@ class RecurrentPPOAgent(nn.Module):
         super().__init__()
         self.num_envs = num_envs
         self.actions_dim = actions_dim
+        self.distribution_cfg = distribution_cfg
         self.rnn_hidden_size = rnn_cfg.lstm.hidden_size
         self.device = torch.device(device) if isinstance(device, str) else device
 
@@ -192,11 +195,15 @@ class RecurrentPPOAgent(nn.Module):
         pre_dist = self.get_pre_dist(out)
         actions = []
         if self.is_continuous:
-            dist = Independent(Normal(*pre_dist), 1)
+            dist = Independent(
+                Normal(*pre_dist, validate_args=self.distribution_cfg.validate_args),
+                1,
+                validate_args=self.distribution_cfg.validate_args,
+            )
             actions.append(dist.mode)
         else:
             for logits in pre_dist:
-                dist = OneHotCategorical(logits=logits)
+                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 actions.append(dist.mode)
         return tuple(actions), states
 
@@ -207,7 +214,11 @@ class RecurrentPPOAgent(nn.Module):
         entropies = []
         sampled_actions = []
         if self.is_continuous:
-            dist = Independent(Normal(*pre_dist), 1)
+            dist = Independent(
+                Normal(*pre_dist, validate_args=self.distribution_cfg.validate_args),
+                1,
+                validate_args=self.distribution_cfg.validate_args,
+            )
             if actions is None:
                 actions = dist.sample()
             else:
@@ -219,7 +230,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
-                dist = OneHotCategorical(logits=logits, validate_args=False)
+                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 if actions is None:
                     sampled_actions.append(dist.sample())
                 else:

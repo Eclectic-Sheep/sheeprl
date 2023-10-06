@@ -276,6 +276,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     actor = SACAEContinuousActor(
         encoder=copy.deepcopy(encoder),
         action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
         hidden_size=cfg.algo.actor.hidden_size,
         action_low=envs.single_action_space.low,
         action_high=envs.single_action_space.high,

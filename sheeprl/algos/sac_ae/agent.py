@@ -1,6 +1,6 @@
 import copy
 from math import prod
-from typing import Dict, List, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Sequence, SupportsFloat, Tuple, Union
 
 import numpy as np
 import torch
@@ -229,11 +229,14 @@ class SACAEContinuousActor(nn.Module):
         self,
         encoder: Union[MultiEncoder, _FabricModule],
         action_dim: int,
+        distribution_cfg: Dict[str, Any],
         hidden_size: int = 1024,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
     ):
         super().__init__()
+        self.distribution_cfg = distribution_cfg
+
         self.encoder = encoder
         self.model = MLP(input_dims=encoder.output_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
@@ -280,7 +283,7 @@ class SACAEContinuousActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        normal = torch.distributions.Normal(mean, std)
+        normal = torch.distributions.Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
 
         # Reparameterization trick (mean + std * N(0,1))
         x_t = normal.rsample()

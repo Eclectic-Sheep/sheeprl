@@ -11,7 +11,6 @@ This document explains how the configuration files and folders are structured. I
 > For every possible hydra config, the parameters that are not specified in the config is highly probable that are passed to the object to be instantiated at runtime. If it is not the case, please let us know!
 
 ## Parent Folder Structure
-
 ```tree
 sheeprl/configs
 ├── algo
@@ -22,19 +21,22 @@ sheeprl/configs
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo.yaml
 │   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── ppo.yaml
+│   ├── sac.yaml
 │   ├── sac_ae.yaml
-│   ├── sac_decoupled.yaml
-│   └── sac.yaml
+│   └── sac_decoupled.yaml
 ├── buffer
 │   └── default.yaml
 ├── checkpoint
 │   └── default.yaml
 ├── config.yaml
+├── distribution
+│   └── default.yaml
 ├── env
 │   ├── atari.yaml
+│   ├── crafter.yaml
 │   ├── default.yaml
 │   ├── diambra.yaml
 │   ├── dmc.yaml
@@ -47,31 +49,31 @@ sheeprl/configs
 ├── exp
 │   ├── default.yaml
 │   ├── dreamer_v1.yaml
-│   ├── dreamer_v2_ms_pacman.yaml
 │   ├── dreamer_v2.yaml
+│   ├── dreamer_v2_ms_pacman.yaml
+│   ├── dreamer_v3.yaml
 │   ├── dreamer_v3_100k_boxing.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
-│   ├── dreamer_v3_dmc_walker_walk.yaml
-│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_doapp.yaml
+│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_navigate.yaml
-│   ├── dreamer_v3.yaml
+│   ├── dreamer_v3_XL_crafter.yaml
+│   ├── dreamer_v3_dmc_walker_walk.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
+│   ├── ppo.yaml
 │   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── ppo.yaml
+│   ├── sac.yaml
 │   ├── sac_ae.yaml
-│   ├── sac_decoupled.yaml
-│   └── sac.yaml
+│   └── sac_decoupled.yaml
 ├── fabric
 │   ├── ddp-cpu.yaml
 │   ├── ddp-cuda.yaml
 │   └── default.yaml
 ├── hydra
 │   └── default.yaml
-├── __init__.py
 ├── metric
 │   └── default.yaml
 └── optim
@@ -96,6 +98,7 @@ defaults:
   - algo: default.yaml
   - buffer: default.yaml
   - checkpoint: default.yaml
+  - distribution: default.yaml
   - env: default.yaml
   - fabric: default.yaml
   - metric: default.yaml
@@ -114,8 +117,8 @@ torch_deterministic: False
 
 # Output folders
 exp_name: "default"
-run_name: ${env.id}_${exp_name}_${seed}
-root_dir: ${algo.name}/${now:%Y-%m-%d_%H-%M-%S}
+run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
+root_dir: ${algo.name}/${env.id}
 
 # Encoder and decoder keys
 cnn_keys:
