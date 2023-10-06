@@ -101,7 +101,7 @@ def build_models(
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
         activation=eval(actor_cfg.dense_act),
-        distribution=actor_cfg.distribution,
+        distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
     )
     critic_task = MLP(

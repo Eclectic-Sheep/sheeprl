@@ -9,19 +9,15 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import (
-    Distribution,
-    Independent,
-    Normal,
-    OneHotCategorical,
-    OneHotCategoricalStraightThrough,
-    TanhTransform,
-    TransformedDistribution,
-)
+from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.distribution import (
+    OneHotCategoricalStraightThroughValidateArgs,
+    OneHotCategoricalValidateArgs,
+    TruncatedNormal,
+)
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 
 
@@ -305,6 +301,7 @@ class RSSM(nn.Module):
         transition_model (_FabricModule): the transition model described in
             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
+        distribution_cfg (Dict[str, Any]): the configs of the distributions.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
     """
@@ -314,6 +311,7 @@ class RSSM(nn.Module):
         recurrent_model: _FabricModule,
         representation_model: _FabricModule,
         transition_model: _FabricModule,
+        distribution_cfg: Dict[str, Any],
         discrete: Optional[int] = 32,
     ) -> None:
         super().__init__()
@@ -321,6 +319,7 @@ class RSSM(nn.Module):
         self.representation_model = representation_model
         self.transition_model = transition_model
         self.discrete = discrete
+        self.distribution_cfg = distribution_cfg
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -372,7 +371,9 @@ class RSSM(nn.Module):
             posterior (Tensor): the sampled posterior stochastic state.
         """
         logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        return logits, compute_stochastic_state(logits, discrete=self.discrete)
+        return logits, compute_stochastic_state(
+            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
+        )
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -384,7 +385,9 @@ class RSSM(nn.Module):
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete)
+        return logits, compute_stochastic_state(
+            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
+        )
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -414,6 +417,7 @@ class Actor(nn.Module):
         actions_dim (Sequence[int]): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
+        distribution_cfg (Dict[str, Any]): The configs of the distributions.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 5.
         min_std (float): the minimum standard deviation for the actions.
@@ -424,10 +428,6 @@ class Actor(nn.Module):
             Default to nn.ELU.
         mlp_layers (int): the number of linear layers.
             Default to 4.
-        distribution (str): the distribution for the action. Possible values are: `auto`, `discrete`, `normal`,
-            `tanh_normal` and `trunc_normal`. If `auto`, then the distribution will be `discrete` if the
-            space is a discrete one, `trunc_normal` otherwise.
-            Defaults to `auto`.
         layer_norm (bool): whether or not to use the layer norm.
             Default to False.
     """
@@ -437,16 +437,16 @@ class Actor(nn.Module):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
         init_std: float = 0.0,
         min_std: float = 0.1,
         dense_units: int = 400,
         activation: nn.Module = nn.ELU,
         mlp_layers: int = 4,
-        distribution: str = "auto",
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
-        self.distribution = distribution.lower()
+        self.distribution = distribution_cfg.pop("type", "auto").lower()
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
             raise ValueError(
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
@@ -476,6 +476,7 @@ class Actor(nn.Module):
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
+        self.distribution_cfg = distribution_cfg
 
     def forward(
         self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
@@ -502,15 +503,21 @@ class Actor(nn.Module):
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Independent(
+                    TransformedDistribution(
+                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
+                    ),
+                    1,
+                    validate_args=self.distribution_cfg.validate_args,
+                )
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
+                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
-                actions_dist = Independent(dist, 1)
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
             if is_training:
                 actions = actions_dist.rsample()
             else:
@@ -523,7 +530,11 @@ class Actor(nn.Module):
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+                actions_dist.append(
+                    OneHotCategoricalStraightThroughValidateArgs(
+                        logits=logits, validate_args=self.distribution_cfg.validate_args
+                    )
+                )
                 if is_training:
                     actions.append(actions_dist[-1].rsample())
                 else:
@@ -537,25 +548,25 @@ class MinedojoActor(Actor):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 400,
         activation: nn.Module = nn.ELU,
         mlp_layers: int = 4,
-        distribution: str = "auto",
         layer_norm: bool = False,
     ) -> None:
         super().__init__(
-            latent_state_size,
-            actions_dim,
-            is_continuous,
-            init_std,
-            min_std,
-            dense_units,
-            activation,
-            mlp_layers,
-            distribution,
-            layer_norm,
+            latent_state_size=latent_state_size,
+            actions_dim=actions_dim,
+            is_continuous=is_continuous,
+            init_std=init_std,
+            min_std=min_std,
+            dense_units=dense_units,
+            activation=activation,
+            mlp_layers=mlp_layers,
+            layer_norm=layer_norm,
+            distribution_cfg=distribution_cfg,
         )
 
     def forward(
@@ -602,7 +613,11 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            actions_dist.append(
+                OneHotCategoricalStraightThroughValidateArgs(
+                    logits=logits, validate_args=self.distribution_cfg.validate_args
+                )
+            )
             if is_training:
                 actions.append(actions_dist[-1].rsample())
             else:
@@ -686,6 +701,7 @@ class PlayerDV2(nn.Module):
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
+        self.validate_args = self.actor.distribution_cfg.validate_args
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -728,12 +744,20 @@ class PlayerDV2(nn.Module):
         if is_continuous:
             self.actions = torch.cat(actions, -1)
             if self.expl_amount > 0.0:
-                self.actions = torch.clip(Normal(self.actions, self.expl_amount).sample(), -1, 1)
+                self.actions = torch.clip(
+                    Normal(self.actions, self.expl_amount, validate_args=self.validate_args).sample(),
+                    -1,
+                    1,
+                )
             expl_actions = [self.actions]
         else:
             expl_actions = []
             for act in actions:
-                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(self.device)
+                sample = (
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
+                    .sample()
+                    .to(self.device)
+                )
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
@@ -764,7 +788,9 @@ class PlayerDV2(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
-        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
+        stochastic_state = compute_stochastic_state(
+            posterior_logits, discrete=self.discrete_size, validate_args=self.validate_args
+        )
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
@@ -871,10 +897,11 @@ def build_models(
         else None,
     )
     rssm = RSSM(
-        recurrent_model.apply(init_weights),
-        representation_model.apply(init_weights),
-        transition_model.apply(init_weights),
-        world_model_cfg.discrete_size,
+        recurrent_model=recurrent_model.apply(init_weights),
+        representation_model=representation_model.apply(init_weights),
+        transition_model=transition_model.apply(init_weights),
+        distribution_cfg=cfg.distribution,
+        discrete=world_model_cfg.discrete_size,
     )
     cnn_decoder = (
         CNNDecoder(
@@ -954,7 +981,7 @@ def build_models(
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
         activation=eval(actor_cfg.dense_act),
-        distribution=actor_cfg.distribution,
+        distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
     )
     critic = MLP(

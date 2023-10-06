@@ -103,6 +103,7 @@ def player(
         "cnn_keys": cfg.cnn_keys.encoder,
         "mlp_keys": cfg.mlp_keys.encoder,
         "screen_size": cfg.env.screen_size,
+        "distribution_cfg": cfg.distribution,
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)

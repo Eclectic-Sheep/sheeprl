@@ -98,7 +98,6 @@ actor:
   ent_coef: 1e-4
   min_std: 0.1
   init_std: 0.0
-  distribution: "auto"
   objective_mix: 1.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
