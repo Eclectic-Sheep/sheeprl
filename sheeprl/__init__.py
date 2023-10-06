@@ -25,6 +25,7 @@ from sheeprl.algos.ppo import ppo_np as ppo_np
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
 from sheeprl.algos.sac import sac as sac
 from sheeprl.algos.sac import sac_decoupled as sac_decoupled
+from sheeprl.algos.sac import sac_np as sac_np
 from sheeprl.algos.sac_ae import sac_ae as sac_ae
 
 np.float = np.float32
