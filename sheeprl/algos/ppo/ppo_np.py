@@ -184,6 +184,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         encoder_cfg=cfg.algo.encoder,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
+        distribution_cfg=cfg.distribution,
         cnn_keys=cfg.cnn_keys.encoder,
         mlp_keys=cfg.mlp_keys.encoder,
         screen_size=cfg.env.screen_size,
