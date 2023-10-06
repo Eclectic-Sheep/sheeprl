@@ -11,7 +11,6 @@ import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from omegaconf import OmegaConf
-from tensordict import make_tensordict
 from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import MeanMetric, SumMetric
@@ -375,16 +374,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         if cfg.buffer.share_data and fabric.world_size > 1:
             # Gather all the tensors from all the world and reshape them
-            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(
-                local_data
-            )  # Fabric does not work with TensorDict
+            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(local_data)
+            # Flatten the first three dimensions: [World_Size, Buffer_Size, Num_Envs]
             gathered_data = {k: v.flatten(start_dim=0, end_dim=2) for k, v in gathered_data.items()}
         else:
-            gathered_data = make_tensordict(
-                local_data,
-                batch_size=[cfg.buffer.size, cfg.env.num_envs],
-            )
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in gathered_data.items()}
+            # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
+            gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in local_data.items()}
 
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
