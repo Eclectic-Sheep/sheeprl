@@ -258,6 +258,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.mlp_keys.encoder], axis=-1)
             dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+            rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -280,7 +281,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
-        step_data["rewards"] = rewards[np.newaxis, ..., np.newaxis]
+        step_data["rewards"] = rewards[np.newaxis]
         rb.add(step_data)
 
         # next_obs becomes the new obs
@@ -296,8 +297,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 sample_next_obs=cfg.buffer.sample_next_obs,
                 dtype=torch.float32,
                 device=device,
-            )  # [G*B, 1]
-            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [G*B, World, 1]
+            )  # [G*B]
+            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
             if fabric.world_size > 1:
                 gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in gathered_data.items()}  # [G*B*World]
             if world_size > 1:

@@ -93,6 +93,7 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self.buffer_size
 
+    @torch.no_grad()
     def to_tensor(
         self,
         dtype: Optional[torch.dtype] = None,
@@ -213,7 +214,10 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
 
-    def sample(self, batch_size: int, sample_next_obs: bool = False, **kwargs) -> Dict[str, np.ndarray]:
+    @torch.no_grad()
+    def sample(
+        self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, **kwargs
+    ) -> Dict[str, np.ndarray]:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
@@ -248,8 +252,9 @@ class ReplayBuffer:
                     "Make sure that at least two samples are added."
                 )
             batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size,))
-        return self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs)
+        return self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs, clone=clone)
 
+    @torch.no_grad()
     def sample_tensors(
         self,
         batch_size: int,
@@ -259,26 +264,32 @@ class ReplayBuffer:
         device: Union[str, torch.dtype] = "cpu",
         **kwargs,
     ) -> Dict[str, Tensor]:
-        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs)
+        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone)
         for k, v in samples.items():
             torch_v = torch.as_tensor(
                 v,
                 dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
                 device=device,
             )
-            if clone:
-                torch_v = torch_v.clone()
             samples[k] = torch_v
         return samples
 
-    def _get_samples(self, batch_idxes: ArrayLike, sample_next_obs: bool = False) -> Dict[str, np.ndarray]:
-        env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),))
+    @torch.no_grad()
+    def _get_samples(
+        self, batch_idxes: ArrayLike, sample_next_obs: bool = False, clone: bool = False
+    ) -> Dict[str, np.ndarray]:
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
-        buf = {k: v[batch_idxes, env_idxes] for k, v in self.buffer.items()}
-        if sample_next_obs:
-            for k in self._obs_keys:
-                buf[f"next_{k}"] = self.buffer[k][(batch_idxes + 1) % self._buffer_size, env_idxes]
+        env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),))
+        buf: Dict[str, np.ndarray] = {}
+        for k, v in self.buffer.items():
+            buf[k] = v[batch_idxes, env_idxes]
+            if clone:
+                buf[k] = buf[k].copy()
+            if sample_next_obs:
+                buf[f"next_{k}"] = v[(batch_idxes + 1) % self._buffer_size, env_idxes]
+                if clone:
+                    buf[f"next_{k}"] = buf[f"next_{k}"].copy()
         return buf
 
     def __getitem__(self, key: str) -> np.ndarray:
