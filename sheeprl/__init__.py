@@ -14,6 +14,7 @@ if not _IS_TORCH_GREATER_EQUAL_2_0:
 import numpy as np
 
 from sheeprl.algos.dreamer_v1 import dreamer_v1 as dreamer_v1
+from sheeprl.algos.dreamer_v1 import dreamer_v1_np as dreamer_v1_np
 from sheeprl.algos.dreamer_v2 import dreamer_v2 as dreamer_v2
 from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
 from sheeprl.algos.droq import droq as droq

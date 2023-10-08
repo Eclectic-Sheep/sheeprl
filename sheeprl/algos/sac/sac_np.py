@@ -303,7 +303,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in gathered_data.items()}  # [G*B*World]
             if world_size > 1:
                 dist_sampler: DistributedSampler = DistributedSampler(
-                    range(len(gathered_data)),
+                    next(iter(gathered_data.values())).shape[0],
                     num_replicas=world_size,
                     rank=fabric.global_rank,
                     shuffle=True,
@@ -315,7 +315,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=next(iter(gathered_data.values())).shape[0],
+                    batch_size=cfg.per_rank_batch_size,
+                    drop_last=False,
                 )
 
             # Start training
