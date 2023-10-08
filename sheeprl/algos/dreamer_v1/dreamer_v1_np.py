@@ -637,8 +637,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     else:
                         real_actions = torch.cat([real_act.argmax(dim=-1) for real_act in real_actions]).cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated).reshape((1, cfg.env.num_envs, -1)).astype(np.uint8)
-            rewards = rewards.reshape((1, cfg.env.num_envs, -1))
+            dones = np.logical_or(dones, truncated).astype(np.uint8)
 
         if "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -662,14 +661,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
                 real_next_obs[k] = real_next_obs[k].reshape(cfg.env.num_envs, -1, *real_next_obs[k].shape[-2:])
             step_data[k] = real_next_obs[k][np.newaxis]
-        actions = actions.reshape((1, cfg.env.num_envs, -1))
 
         # next_obs becomes the new obs
         obs = next_obs
 
-        step_data["dones"] = dones
-        step_data["actions"] = actions
-        step_data["rewards"] = clip_rewards_fn(rewards)
+        step_data["dones"] = dones[np.newaxis]
+        step_data["actions"] = actions[np.newaxis]
+        step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
         rb.add(step_data)
 
         # Reset and save the observation coming from the automatic reset
