@@ -1,0 +1,21 @@
+# @package _global_
+
+# Specify here the default training configuration
+defaults:
+  - generation: default.yaml
+  - _self_
+
+hydra:
+  run:
+    dir: logs/rlhf_eval/${now:%Y-%m-%d_%H-%M-%S}
+
+generation:
+  do_sample: false
+
+experiment_dir: ???
+num_workers: 1
+mini_batch_size: 1
+data_split: test
+use_masked_targets: false
+label_smoothing: 0.0
+seed: 42
