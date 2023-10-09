@@ -1,8 +1,12 @@
+"""Dreamer-V2 implementation from [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+Adapted from the original implementation from https://github.com/danijar/dreamerv2
+"""
+
 import copy
 import os
 import pathlib
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
@@ -10,16 +14,20 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
+from lightning.fabric.wrappers import _FabricModule
 from omegaconf import OmegaConf
-from torch.distributions import Bernoulli, Independent, Normal
+from tensordict.tensordict import TensorDictBase
+from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.optim import Optimizer
+from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
-from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
-from sheeprl.algos.dreamer_v2.utils import test
+from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
+from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
+from sheeprl.data.buffers import EpisodeBuffer
 from sheeprl.data.buffers_np import EnvIndipendentReplayBuffer, SequentialReplayBuffer
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -37,134 +45,125 @@ def train(
     world_model: WorldModel,
     actor: _FabricModule,
     critic: _FabricModule,
-    world_optimizer: _FabricOptimizer,
-    actor_optimizer: _FabricOptimizer,
-    critic_optimizer: _FabricOptimizer,
-    data: Dict[str, torch.Tensor],
+    target_critic: torch.nn.Module,
+    world_optimizer: Optimizer,
+    actor_optimizer: Optimizer,
+    critic_optimizer: Optimizer,
+    data: TensorDictBase,
     aggregator: MetricAggregator,
     cfg: Dict[str, Any],
+    actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
 
     The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2c in
-        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        - stochastic_state: is what is called st or stochastic state from Figure 2c in
-        [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-            It can be both posterior or prior.
-        - latent state: the concatenation of the stochastic and recurrent states on the last dimension.
-        - p: the output of the representation model, from Eq. 9 in
-        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - q: the output of the transition model, from Eq. 9 in
-        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qo: the output of the observation model, from Eq. 9 in
-        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qr: the output of the reward model, from Eq. 9 in
-        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
-        - qc: the output of the continue model.
-        - qv: the output of the value model (critic), from Eq. 2 in
-        [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+        - recurrent_state: is what is called ht or deterministic state from Figure 2 in .
+        - prior: the stochastic state coming out from the transition model, depicted as z-hat_t in Figure 2.
+        - posterior: the stochastic state coming out from the representation model, depicted as z_t in Figure 2.
+        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one)
+        and recurrent states on the last dimension.
+        - p: the output of the transition model, from Eq. 1.
+        - q: the output of the representation model, from Eq. 1.
+        - po: the output of the observation model (decoder), from Eq. 1.
+        - pr: the output of the reward model, from Eq. 1.
+        - pc: the output of the continue model (discout predictor), from Eq. 1.
+        - pv: the output of the value model (critic), from Eq. 3.
 
-    In particular, it updates the agent as specified by Algorithm 1 in
-    [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
+    In particular, the agent is updated as following:
 
     1. Dynamic Learning:
         - Encoder: encode the observations.
         - Recurrent Model: compute the recurrent state from the previous recurrent state,
-            the previous stochastic state, and from the previous actions.
-        - Transition Model: predict the posterior state from the recurrent state, i.e., the deterministic state or ht.
-        - Representation Model: compute the posterior state from the recurrent state and
+            the previous posterior state, and from the previous actions.
+        - Transition Model: predict the stochastic state from the recurrent state, i.e., the deterministic state or ht.
+        - Representation Model: compute the actual stochastic state from the recurrent state and
             from the embedded observations provided by the environment.
         - Observation Model: reconstructs observations from latent states.
         - Reward Model: estimate rewards from the latent states.
         - Update the models
     2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state s_t up
-        to the horizon H: s'_(t+1), ..., s'_(t+H).
+        - Imagine trajectories in the latent space from each latent state
+        s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
         - Predict rewards and values in the imagined trajectories.
-        - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
+        - Compute lambda targets (Eq. 4 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193))
         - Update the actor and the critic
 
     Args:
         fabric (Fabric): the fabric instance.
-        world_model (WorldModel): the world model wrapped with Fabric.
+        world_model (_FabricModule): the world model wrapped with Fabric.
         actor (_FabricModule): the actor model wrapped with Fabric.
         critic (_FabricModule): the critic model wrapped with Fabric.
-        world_optimizer (_FabricOptimizer): the world optimizer.
-        actor_optimizer (_FabricOptimizer): the actor optimizer.
-        critic_optimizer (_FabricOptimizer): the critic optimizer.
+        target_critic (nn.Module): the target critic model.
+        world_optimizer (Optimizer): the world optimizer.
+        actor_optimizer (Optimizer): the actor optimizer.
+        critic_optimizer (Optimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
         aggregator (MetricAggregator): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
+        actions_dim (Sequence[int]): the actions dimension.
     """
+
+    # The environment interaction goes like this:
+    # Actions:       0   a1       a2       a3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     v  /     v  /     v
+    # Observations:  o0       o1       o2      o3
+    # Rewards:       0        r1       r2      r3
+    # Dones:         0        d1       d2      d3
+    # Is-first       1        i1       i2      i3
+
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
     validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
+    discrete_size = cfg.algo.world_model.discrete_size
     device = fabric.device
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.mlp_keys.encoder})
 
+    # Given how the environment interaction works, we assume that the first element in a sequence
+    # is the first one, as if the environment has been reset
+    data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
+
     # Dynamic Learning
-    # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
-    # the dimension of each vector must be (1, batch_size, recurrent_state_size)
-    # the recurrent state is the deterministic state (or ht) from the Figure 2c in
-    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+    stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
+    posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
 
-    # initialize the posterior that must be of dimension (1, batch_size, stochastic_size)
-    # the stochastic state is the stochastic state (or st) from the Figure 2c in
-    # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
-    posterior = torch.zeros(1, batch_size, stochastic_size, device=device)
+    # Initialize the recurrent_states, which will contain all the recurrent states
+    # computed during the dynamic learning phase
+    recurrent_states = torch.zeros(sequence_length, batch_size, recurrent_state_size, device=device)
 
-    # initialize the tensors for dynamic learning
-    # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
-    # and its dimension is (sequence_length, batch_size, recurrent_state_size)
-    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
-    # posteriors will contain all the posterior states computed during the dynamic learning phase,
-    # and its dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+    # Initialize all the tensor to collect priors and posteriors states with their associated logits
+    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
+    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
+    posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
-    # posteriors_mean and posteriors_std will contain all
-    # the actual means and stds of the posterior states respectively,
-    # their dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    posteriors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-
-    # priors_mean and priors_std will contain all
-    # the predicted means and stds of the prior states respectively,
-    # their dimension is (sequence_length, batch_size, stochastic_size)
-    priors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    priors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-
+    # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
     for i in range(0, sequence_length):
-        # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
-        # compute the mean and std of both the posterior and prior state, the new recurrent state
-        # and the new posterior state
-        recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
-            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+        # One step of dynamic learning, which take the posterior state, the recurrent state, the action
+        # and the observation and compute the next recurrent, prior and posterior states
+        recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
         )
         recurrent_states[i] = recurrent_state
+        priors_logits[i] = prior_logits
         posteriors[i] = posterior
-        posteriors_mean[i] = posterior_mean_std[0]
-        posteriors_std[i] = posterior_mean_std[1]
-        priors_mean[i] = prior_state_mean_std[0]
-        priors_std[i] = prior_state_mean_std[1]
+        posteriors_logits[i] = posterior_logits
 
-    # concatenate the posterior states with the recurrent states on the last dimension
-    # latent_states tensor has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size)
-    latent_states = torch.cat((posteriors, recurrent_states), -1)
+    # Concatenate the posteriors with the recurrent states on the last dimension.
+    # Latent_states has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
+    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
-    # compute predictions for the observations
+    # Compute predictions for the observations
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    # compute the distribution of the reconstructed observations
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size observations.shape
-    qo = {
+
+    # Compute the distribution over the reconstructed observations
+    po = {
         k: Independent(
             Normal(rec_obs, 1, validate_args=validate_args),
             len(rec_obs.shape[2:]),
@@ -173,62 +172,53 @@ def train(
         for k, rec_obs in decoded_information.items()
     }
 
-    # compute predictions for the rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of rewards
-    qr = Independent(
+    # Compute the distribution over the rewards
+    pr = Independent(
         Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
         1,
         validate_args=validate_args,
     )
 
-    # compute predictions for terminal steps, if required
+    # Compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(
+        pc = Independent(
             Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
             1,
             validate_args=validate_args,
         )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
-        qc = continue_targets = None
+        pc = continue_targets = None
 
-    # compute the distributions of the states (posteriors and priors)
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the stochastic size
-    posteriors_dist = Independent(
-        Normal(posteriors_mean, posteriors_std, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
-    priors_dist = Independent(
-        Normal(priors_mean, priors_std, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    # Reshape posterior and prior logits to shape [T, B, 32, 32]
+    priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
+    posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
 
-    # world model optimization step
+    # World model optimization step
     world_optimizer.zero_grad(set_to_none=True)
-    # compute the overall loss of the world model
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        qo,
+        po,
         batch_obs,
-        qr,
+        pr,
         data["rewards"],
-        posteriors_dist,
-        priors_dist,
+        priors_logits,
+        posteriors_logits,
+        cfg.algo.world_model.kl_balancing_alpha,
         cfg.algo.world_model.kl_free_nats,
+        cfg.algo.world_model.kl_free_avg,
         cfg.algo.world_model.kl_regularizer,
-        qc,
+        pc,
         continue_targets,
-        cfg.algo.world_model.continue_scale_factor,
+        cfg.algo.world_model.discount_scale_factor,
+        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
-            module=world_model, optimizer=world_optimizer, max_norm=cfg.algo.world_model.clip_gradients
+            module=world_model,
+            optimizer=world_optimizer,
+            max_norm=cfg.algo.world_model.clip_gradients,
+            error_if_nonfinite=False,
         )
     world_optimizer.step()
     aggregator.update("Grads/world_model", world_model_grads.mean().detach())
@@ -237,150 +227,187 @@ def train(
     aggregator.update("Loss/reward_loss", reward_loss.detach())
     aggregator.update("Loss/state_loss", state_loss.detach())
     aggregator.update("Loss/continue_loss", continue_loss.detach())
-    aggregator.update("State/kl", kl.detach())
-    aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
-    aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
-
-    # Behaviour Learning
-    # Unflatten first 2 dimensions of recurrent and posterior states in order
-    # to have all the states on the first dimension.
-    # The 1 in the second dimension is needed for the recurrent model in the imagination step,
-    # 1 because the agent imagines one state at a time.
-    # (1, batch_size * sequence_length, stochastic_size)
-    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
-
-    # initialize the recurrent state of the recurrent model with the recurrent states computed
-    # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-
-    # starting states for the imagination phase.
-    # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
-    imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
-
-    # initialize the tensor of the imagined states
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size, device=device
+    aggregator.update("State/kl", kl.mean().detach())
+    aggregator.update(
+        "State/post_entropy",
+        Independent(
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
+    )
+    aggregator.update(
+        "State/prior_entropy",
+        Independent(
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
 
-    # imagine trajectories in the latent space
-    for i in range(cfg.algo.horizon):
-        # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
+    # Behaviour Learning
+    # (1, batch_size * sequence_length, stochastic_size * discrete_size)
+    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
 
-        # imagination step
+    # (1, batch_size * sequence_length, recurrent_state_size).
+    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+
+    # (1, batch_size * sequence_length, recurrent_state_size + stochastic_size * discrete_size)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+
+    # Initialize the tensor of the imagined trajectories
+    imagined_trajectories = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        stoch_state_size + recurrent_state_size,
+        device=device,
+    )
+    imagined_trajectories[0] = imagined_latent_state
+
+    # Initialize the tensor of the imagined actions
+    imagined_actions = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        data["actions"].shape[-1],
+        device=device,
+    )
+    imagined_actions[0] = torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1])
+
+    # The imagination goes like this, with H=3:
+    # Actions:       0   a'1      a'2     a'3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     v  /     v  /     v
+    # States:        z0 ---> z'1 ---> z'2 ---> z'3
+    # Rewards:       r'0     r'1      r'2      r'3
+    # Values:        v'0     v'1      v'2      v'3
+    # Lambda-values: l'0     l'1      l'2
+    # Continues:     c0      c'1      c'2      c'3
+    # where z0 comes from the posterior (is initialized as the concatenation of the posteriors and the recurrent states)
+    # while z'i is the imagined states (prior)
+
+    # Imagine trajectories in the latent space
+    for i in range(1, cfg.algo.horizon + 1):
+        # (1, batch_size * sequence_length, sum(actions_dim))
+        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        imagined_actions[i] = actions
+
+        # Imagination step
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
 
-        # update current state
-        imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_states
+        # Update current state
+        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories[i] = imagined_latent_state
 
-    # predict values and rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of values/rewards
-    predicted_values = Independent(
-        Normal(critic(imagined_trajectories), 1, validate_args=validate_args),
+    # Predict values and rewards
+    predicted_target_values = Independent(
+        Normal(target_critic(imagined_trajectories), 1, validate_args=validate_args),
         1,
         validate_args=validate_args,
-    ).mean
+    ).mode
     predicted_rewards = Independent(
         Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
         1,
         validate_args=validate_args,
-    ).mean
-
-    # predict the probability that the episode will continue in the imagined states
+    ).mode
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(
+        continues = Independent(
             Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
             1,
-            validate_args=validate_args,
+            validate_args,
         ).mean
+        true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
+        continues = torch.cat((true_done, continues[1:]))
     else:
-        predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
+        continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
-    # compute the lambda_values, by passing as last values the values of the last imagined state
-    # the dimensions of the lambda_values tensor are
-    # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
+    # Compute the lambda_values, by passing as last value the value of the last imagined state
+    # (horizon, batch_size * sequence_length, 1)
     lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_values,
-        predicted_continues,
-        last_values=predicted_values[-1],
+        predicted_rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-1:],
         horizon=cfg.algo.horizon,
         lmbda=cfg.algo.lmbda,
     )
 
-    # compute the discounts to multiply to the lambda values
+    # Compute the discounts to multiply the lambda values
     with torch.no_grad():
-        # the time steps in Eq. 7 and Eq. 8 of the paper are weighted by the cumulative product of the predicted
-        # discount factors, estimated by the continue model, so terms are wighted down based on how likely
-        # the imagined trajectory would have ended.
-        # Ref. subsection "Learning objectives" of paragraph 3 (Learning Behaviors by Latent Imagination)
-        # in [https://doi.org/10.48550/arXiv.1912.01603](https://doi.org/10.48550/arXiv.1912.01603)
-        #
-        # Suppose the case in which the continue model is not used and gamma = .99
-        # predicted_continues.shape = (15, 2500, 1)
-        # predicted_continues = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (15 rows)
-        # torch.ones_like(predicted_continues[:1]) = [
-        #   [ [1.], ..., [1.] ]
-        # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # predicted_continues[:-2] = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (13 rows)
-        # torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   ...,
-        #   [ [.99], ..., [.99] ],
-        # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   [ [.9801], ..., [.9801] ],
-        #   ...,
-        #   [ [.8775], ..., [.8775] ],
-        # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
-    # actor optimization step
+    # Actor optimization step. Eq. 6 from the paper
+    # Given the following diagram, with H=3:
+    # Actions:       0  [a'1]    [a'2]     a'3
+    #                    ^ \      ^ \      ^ \
+    #                   /   \    /   \    /   \
+    #                  /     v  /     v  /     v
+    # States:       [z0] -> [z'1] ->  z'2 ->   z'3
+    # Values:       [v'0]   [v'1]     v'2      v'3
+    # Lambda-values: l'0    [l'1]    [l'2]
+    # Entropies:            [e'1]    [e'2]
+    # The quantities wrapped into `[]` are the ones used for the actor optimization.
+    # From Hafner (https://github.com/danijar/dreamerv2/blob/main/dreamerv2/agent.py#L253):
+    # `Two states are lost at the end of the trajectory, one for the boostrap
+    #  value prediction and one because the corresponding action does not lead
+    #  anywhere anymore. One target is lost at the start of the trajectory
+    #  because the initial state comes from the replay buffer.`
     actor_optimizer.zero_grad(set_to_none=True)
-    # compute the policy loss
-    policy_loss = actor_loss(discount * lambda_values)
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
+
+    # Dynamics backpropagation
+    dynamics = lambda_values[1:]
+
+    # Reinforce
+    advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+    reinforce = (
+        torch.stack(
+            [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ],
+            -1,
+        ).sum(-1)
+        * advantage
+    )
+    objective = cfg.algo.actor.objective_mix * reinforce + (1 - cfg.algo.actor.objective_mix) * dynamics
+    try:
+        entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
+    except NotImplementedError:
+        entropy = torch.zeros_like(objective)
+    policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
-            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients
+            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
     aggregator.update("Grads/actor", actor_grads.mean().detach())
     aggregator.update("Loss/policy_loss", policy_loss.detach())
 
-    # Predict the values distribution only for the first H (horizon) imagined states
-    # (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory
-    # because it is used only for computing correclty the lambda values
+    # Predict the values distribution only for the first H (horizon)
+    # imagined states (to match the dimension with the lambda values),
+    # It removes the last imagined state in the trajectory because it is used for bootstrapping
     qv = Independent(
-        Normal(critic(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        Normal(critic(imagined_trajectories.detach()[:-1]), 1, validate_args=validate_args),
         1,
         validate_args=validate_args,
     )
 
-    # critic optimization step
+    # Critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
-    # compute the value loss
-    # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
-    # it is necessary to remove the last dimension to properly match the shapes
-    # for the log prob
-    value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
+    value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
     fabric.backward(value_loss)
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients
+            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
     aggregator.update("Grads/critic", critic_grads.mean().detach())
@@ -445,7 +472,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     actions_dim = (
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
-    # observation_shape = observation_space["rgb"].shape
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
@@ -475,7 +501,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
-    world_model, actor, critic = build_models(
+    world_model, actor, critic, target_critic = build_models(
         fabric,
         actions_dim,
         is_continuous,
@@ -484,8 +510,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["world_model"] if cfg.checkpoint.resume_from else None,
         state["actor"] if cfg.checkpoint.resume_from else None,
         state["critic"] if cfg.checkpoint.resume_from else None,
+        state["target_critic"] if cfg.checkpoint.resume_from else None,
     )
-    player = PlayerDV1(
+    player = PlayerDV2(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
@@ -496,6 +523,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
     )
 
     # Optimizers
@@ -534,18 +562,30 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2
-    rb = EnvIndipendentReplayBuffer(
-        buffer_size,
-        cfg.env.num_envs,
-        obs_keys=obs_keys,
-        memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        buffer_cls=SequentialReplayBuffer,
-    )
+    buffer_type = cfg.buffer.type.lower()
+    if buffer_type == "sequential":
+        rb = EnvIndipendentReplayBuffer(
+            buffer_size,
+            cfg.env.num_envs,
+            obs_keys=obs_keys,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+            buffer_cls=SequentialReplayBuffer,
+        )
+    elif buffer_type == "episode":
+        rb = EpisodeBuffer(
+            buffer_size,
+            sequence_length=cfg.per_rank_sequence_length,
+            device="cpu",
+            memmap=cfg.buffer.memmap,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        )
+    else:
+        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], EnvIndipendentReplayBuffer):
+        elif isinstance(state["rb"], (EnvIndipendentReplayBuffer, EpisodeBuffer)):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
@@ -561,8 +601,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
-    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
+    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
     max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
@@ -591,17 +631,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
+    episode_steps = [[] for _ in range(cfg.env.num_envs)]
     obs = envs.reset(seed=cfg.seed)[0]
-    for k in obs_keys:
-        if k in cfg.cnn_keys.encoder:
-            obs[k] = obs[k].reshape(cfg.env.num_envs, -1, *obs[k].shape[-2:])
-        step_data[k] = obs[k][np.newaxis]
+    for k in obs.keys():
+        if k in obs_keys:
+            obs[k] = obs[k].reshape(cfg.env.num_envs, *obs[k].shape[1:])
+            step_data[k] = obs[k][np.newaxis]
     step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    rb.add(step_data, validate_args=False)
+    step_data["is_first"] = np.ones_like(step_data["dones"])
+    if buffer_type == "sequential":
+        rb.add(step_data, validate_args=False)
+    else:
+        for i, env_ep in enumerate(episode_steps):
+            env_ep.append(step_data[i : i + 1][None, ...])
     player.init_states()
 
+    per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
@@ -609,7 +656,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             # Sample an action given the observation received by the environment
-            if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
+            if (
+                update <= learning_starts
+                and cfg.checkpoint.resume_from is None
+                and "minedojo" not in cfg.algo.actor.cls.lower()
+            ):
                 real_actions = actions = np.array(envs.action_space.sample())
                 if not is_continuous:
                     actions = np.concatenate(
@@ -636,6 +687,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         real_actions = torch.cat(real_actions, -1).cpu().numpy()
                     else:
                         real_actions = torch.cat([real_act.argmax(dim=-1) for real_act in real_actions]).cpu().numpy()
+
+            step_data["is_first"] = copy.deepcopy(step_data["dones"])
             next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
             dones = np.logical_or(dones, truncated).astype(np.uint8)
 
@@ -662,13 +715,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 real_next_obs[k] = real_next_obs[k].reshape(cfg.env.num_envs, -1, *real_next_obs[k].shape[-2:])
             step_data[k] = real_next_obs[k][np.newaxis]
 
-        # next_obs becomes the new obs
+        # Next_obs becomes the new obs
         obs = next_obs
 
         step_data["dones"] = dones[np.newaxis]
         step_data["actions"] = actions[np.newaxis]
         step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
-        rb.add(step_data, validate_args=False)
+        if buffer_type == "sequential":
+            rb.add(step_data, validate_args=False)
+        else:
+            for i, env_ep in enumerate(episode_steps):
+                env_ep.append(step_data[i : i + 1][None, ...])
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -680,41 +737,70 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["dones"] = np.zeros((1, reset_envs, 1))
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-            rb.add(reset_data, dones_idxes, validate_args=False)
+            reset_data["is_first"] = np.ones_like(reset_data["dones"])
+            if buffer_type == "episode":
+                for i, d in enumerate(dones_idxes):
+                    if len(episode_steps[d]) >= cfg.per_rank_sequence_length:
+                        rb.add(torch.cat(episode_steps[d], dim=0))
+                        episode_steps[d] = [reset_data[i : i + 1][None, ...]]
+            else:
+                rb.add(reset_data, dones_idxes, validate_args=False)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
                 step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
             # Reset internal agent states
-            player.init_states(reset_envs=dones_idxes)
+            player.init_states(dones_idxes)
 
         updates_before_training -= 1
 
         # Train the agent
-        if update > learning_starts and updates_before_training <= 0:
+        if update >= learning_starts and updates_before_training <= 0:
             fabric.barrier()
-            # Start training
+            if buffer_type == "sequential":
+                local_data = rb.sample_tensors(
+                    batch_size=cfg.per_rank_batch_size,
+                    sequence_length=cfg.per_rank_sequence_length,
+                    n_samples=cfg.algo.per_rank_pretrain_steps
+                    if update == learning_starts
+                    else cfg.algo.per_rank_gradient_steps,
+                    dtype=None,
+                    device=fabric.device,
+                    from_numpy=True,
+                )
+            else:
+                local_data = rb.sample(
+                    cfg.per_rank_batch_size,
+                    n_samples=cfg.algo.per_rank_pretrain_steps
+                    if update == learning_starts
+                    else cfg.algo.per_rank_gradient_steps,
+                    prioritize_ends=cfg.buffer.prioritize_ends,
+                ).to(device)
+            distributed_sampler = BatchSampler(
+                range(next(iter(local_data.values())).shape[0]), batch_size=1, drop_last=False
+            )
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-                for i in range(cfg.algo.per_rank_gradient_steps):
-                    sample = rb.sample_tensors(
-                        batch_size=cfg.per_rank_batch_size,
-                        sequence_length=cfg.per_rank_sequence_length,
-                        n_samples=1,
-                        dtype=None,
-                        device=device,
-                    )  # [N_samples, Seq_len, Batch_size, ...]
-                    batch = {k: v[0].float() for k, v in sample.items()}
+                for i in distributed_sampler:
+                    if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                        for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
+                            tcp.data.copy_(cp.data)
+                    batch = {}
+                    for k, v in local_data.items():
+                        batch[k] = v[i].squeeze(0).float()
                     train(
                         fabric,
                         world_model,
                         actor,
                         critic,
+                        target_critic,
                         world_optimizer,
                         actor_optimizer,
                         critic_optimizer,
                         batch,
                         aggregator,
                         cfg,
+                        actions_dim,
                     )
+                    per_rank_gradient_steps += 1
                 train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
@@ -728,12 +814,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             aggregator.update("Params/exploration_amout", player.expl_amount)
 
         # Log metrics
-        if (
-            update > learning_starts
-            and policy_step - last_log >= cfg.metric.log_every
-            or update == num_updates
-            or cfg.dry_run
-        ):
+        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
             # Sync distributed metrics
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
@@ -769,6 +850,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "world_model": world_model.state_dict(),
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
+                "target_critic": target_critic.state_dict(),
                 "world_optimizer": world_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
