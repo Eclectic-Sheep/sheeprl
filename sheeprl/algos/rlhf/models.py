@@ -13,7 +13,7 @@ from sheeprl.algos.rlhf.lora_utils import add_lora, get_lora_state_dict, merge_l
 
 def load_hf_transformer(model_cfg: ModelConfig) -> PreTrainedModel:
     model_cls = AutoModel if not model_cfg.casual else AutoModelForCausalLM
-    hf_cfg: HuggingFaceConfig = model_cfg.library_config
+    hf_cfg: HuggingFaceConfig = model_cfg.library_cfg
     auto_config = AutoConfig.from_pretrained(model_cfg.name, trust_remote_code=hf_cfg.trust_remote_code)
     if hasattr(auto_config, "dropout"):
         auto_config.dropout = 0.0 if model_cfg.disable_dropout else auto_config.dropout
@@ -52,14 +52,14 @@ class CasualModel(torch.nn.Module):
         freeze: bool = False,
     ):
         model = load_hf_transformer(model_cfg)
-        model = cls(model=model)
+        model = cls(model=model).to(device)
         if path is not None:
             sd = torch.load(path, map_location=device)
             if model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:
                 embedding_weights = sd["last_layer_weights"]
                 model.model.set_input_embeddings(embedding_weights)
             elif model_cfg.finetune_mode == FINETUNE_MODE.LORA:
-                add_lora(model, model_cfg)
+                add_lora(model, lora_cfg=model_cfg.lora_cfg, device=device)
                 model.load_state_dict(sd, strict=False)
                 merge_lora(model)
             elif model_cfg.finetune_mode == FINETUNE_MODE.ALL:
@@ -154,7 +154,7 @@ class CriticModel(torch.nn.Module):
             embedding_dim = getattr(transformer_config, model_cfg.embedding_dim_name, None)
             if embedding_dim is None:
                 raise ValueError(f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in transformer_config")
-        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_cfg.transformer_name)
+        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_cfg.transformer_name).to(device)
         if path is not None:
             sd = torch.load(path, map_location=device)
             new_sd = {}
@@ -163,7 +163,7 @@ class CriticModel(torch.nn.Module):
                 new_k = new_k.replace("model.", "")
                 new_sd[new_k] = v
             if model_cfg.finetune_mode == FINETUNE_MODE.LORA:
-                add_lora(model, model_cfg)
+                add_lora(model, lora_cfg=model_cfg.lora_cfg, device=device)
                 model.load_state_dict(new_sd, strict=False)
                 merge_lora(model)
             elif model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER or model_cfg.casual:
@@ -176,14 +176,14 @@ class CriticModel(torch.nn.Module):
         return model
 
     @rank_zero_only
-    def save_checkpoint(self, fabric: L.Fabric, experiment_dir: str, model_args, step):
+    def save_checkpoint(self, fabric: L.Fabric, experiment_dir: str, model_cfg: ModelConfig, step):
         output_file = os.path.join(experiment_dir, "model", f"checkpoint-{step}.pt")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if model_args.finetune_mode == "lora":
+        if model_cfg.finetune_mode == FINETUNE_MODE.LORA:
             sd = get_lora_state_dict(self)
             head_sd = self.get_head_state_dict()
             sd.update(head_sd)
-        elif model_args.finetune_mode == "last_layer":
+        elif model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:
             sd = self.get_head_state_dict()
         else:
             sd = self.state_dict()
@@ -195,12 +195,23 @@ class RewardModel(CriticModel):
         super().__init__(model, embedding_dim, transformer_name)
         self.gain = torch.nn.Parameter(torch.tensor(1.0), requires_grad=True)
         self.bias = torch.nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        self._disable_bias_gain = False
+
+    def disable_bias_gain(self):
+        self._disable_bias_gain = True
+
+    def enable_bias_gain(self):
+        self._disable_bias_gain = False
 
     def forward(self, **kwargs):
+        if self._disable_bias_gain:
+            value_out = super().forward(**kwargs)
+            return value_out
         value_out = super().forward(**kwargs)
         return value_out * self.gain + self.bias
 
     def get_head_state_dict(self):
         head_state_dict = super().get_head_state_dict()
-        head_state_dict.update({"gain": self.gain, "bias": self.bias})
+        if not self._disable_bias_gain:
+            head_state_dict.update({"gain": self.gain, "bias": self.bias})
         return head_state_dict

@@ -8,9 +8,9 @@ from omegaconf import II, MISSING
 
 # Omegaconf does not support Literal String types
 class FINETUNE_MODE(Enum):
-    ALL = "all"
-    LAST_LAYER = "last_layer"
-    LORA = "lora"
+    ALL = "ALL"
+    LAST_LAYER = "LAST_LAYER"
+    LORA = "LORA"
 
 
 @dataclass
@@ -44,29 +44,33 @@ class ModelConfig:
     casual: bool = True
     freeze_transformer: bool = False
     disable_dropout: bool = False
-    library_config: HuggingFaceConfig = HuggingFaceConfig()
+    library_cfg: HuggingFaceConfig = HuggingFaceConfig()
     finetune_mode: FINETUNE_MODE = FINETUNE_MODE.ALL
-    lora_config: Optional[LORAConfig] = None
+    lora_cfg: Optional[LORAConfig] = None
+
+    def __post_init__(self):
+        if isinstance(self.finetune_mode, str):
+            self.finetune_mode = FINETUNE_MODE(self.finetune_mode)
 
 
 @dataclass
 class OPTConfig(ModelConfig):
     name: str = "facebook/opt-350m"
     embedding_dim_name: Optional[str] = "word_embed_proj_dim"
-    lora_config: Optional[LORAConfig] = LORAConfig(targets="('q_proj','v_proj')")
+    lora_cfg: Optional[LORAConfig] = LORAConfig(targets="('q_proj','v_proj')")
 
 
 @dataclass
 class GPT2Config(ModelConfig):
     name: str = "gpt2-medium"
     embedding_dim_name: Optional[str] = "n_embd"
-    lora_config: Optional[LORAConfig] = LORAConfig(targets="('c_attn',)")
+    lora_cfg: Optional[LORAConfig] = LORAConfig(targets="('c_attn',)")
 
 
 @dataclass
 class Phi1dot5Config(ModelConfig):
     name: str = "microsoft/phi-1_5"
-    library_config: HuggingFaceConfig = HuggingFaceConfig(trust_remote_code=True)
+    library_cfg: HuggingFaceConfig = HuggingFaceConfig(trust_remote_code=True)
 
 
 def register_model_configs(cs: ConfigStore) -> None:

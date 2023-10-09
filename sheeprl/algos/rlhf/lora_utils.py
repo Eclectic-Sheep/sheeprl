@@ -15,6 +15,8 @@ import torch.nn.utils.parametrize as parametrize
 import transformers
 from torch import nn
 
+from sheeprl.algos.rlhf.config_store.model import LORAConfig
+
 
 class LoRAParametrization(nn.Module):
     def __init__(
@@ -59,34 +61,40 @@ class LoRAParametrization(nn.Module):
         self.forward_fn = self.lora_forward
 
     @classmethod
-    def from_linear(cls, layer: torch.nn.Linear, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0):
+    def from_linear(
+        cls, layer: torch.nn.Linear, device, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0
+    ):
         fan_out, fan_in = layer.weight.shape
         return cls(
             fan_in, fan_out, fan_in_fan_out=False, rank=rank, lora_dropout_p=lora_dropout_p, lora_alpha=lora_alpha
-        )
+        ).to(device)
 
     @classmethod
-    def from_conv2d(cls, layer: torch.nn.Conv2d, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0):
+    def from_conv2d(
+        cls, layer: torch.nn.Conv2d, device, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0
+    ):
         fan_out, fan_in = layer.weight.view(layer.weight.shape[0], -1).shape
         return cls(
             fan_in, fan_out, fan_in_fan_out=False, rank=rank, lora_dropout_p=lora_dropout_p, lora_alpha=lora_alpha
-        )
+        ).to(device)
 
     @classmethod
     def from_embedding(
-        cls, layer: torch.nn.Embedding, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0
+        cls, layer: torch.nn.Embedding, device, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0
     ):
         fan_in, fan_out = layer.weight.shape
         return cls(
             fan_in, fan_out, fan_in_fan_out=True, rank=rank, lora_dropout_p=lora_dropout_p, lora_alpha=lora_alpha
-        )
+        ).to(device)
 
     @classmethod
-    def from_conv1d(cls, layer: torch.nn.Conv1d, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0):
+    def from_conv1d(
+        cls, layer: torch.nn.Conv1d, device, rank: int = 4, lora_dropout_p: float = 0.0, lora_alpha: float = 1.0
+    ):
         fan_out, fan_in = layer.weight.view(layer.weight.shape[0], -1).shape
         return cls(
             fan_in, fan_out, fan_in_fan_out=False, rank=rank, lora_dropout_p=lora_dropout_p, lora_alpha=lora_alpha
-        )
+        ).to(device)
 
 
 def apply_lora(layer, register: bool = True, merge: bool = False, lora_config: Optional[Dict[Any, Any]] = None):
@@ -215,27 +223,35 @@ def untie_weights(linear: nn.Linear, embedding: nn.Embedding):
     embedding.parametrizations.weight[0].lora_B = nn.Parameter(embedding.parametrizations.weight[0].lora_B.clone())
 
 
-def add_lora(model: torch.nn.Module, model_args):
-    if isinstance(model_args.lora_targets, str):
-        lora_targets = ast.literal_eval(model_args.lora_targets)
+def add_lora(model: torch.nn.Module, device, lora_cfg: LORAConfig):
+    if isinstance(lora_cfg.targets, str):
+        lora_targets = ast.literal_eval(lora_cfg.targets)
     else:
-        lora_targets = model_args.lora_targets
-    rank = model_args.lora_rank
-    alpha = model_args.lora_alpha
-    dropout = model_args.lora_dropout
+        lora_targets = lora_cfg.targets
+    rank = lora_cfg.rank
+    alpha = lora_cfg.alpha
+    dropout = lora_cfg.dropout
 
-    lora_config = {
+    lora_config_dict = {
         torch.nn.Embedding: {
-            "weight": partial(LoRAParametrization.from_embedding, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout),
+            "weight": partial(
+                LoRAParametrization.from_embedding, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout, device=device
+            ),
         },
         torch.nn.Linear: {
-            "weight": partial(LoRAParametrization.from_linear, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout),
+            "weight": partial(
+                LoRAParametrization.from_linear, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout, device=device
+            ),
         },
         torch.nn.Conv1d: {
-            "weight": partial(LoRAParametrization.from_conv1d, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout),
+            "weight": partial(
+                LoRAParametrization.from_conv1d, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout, device=device
+            ),
         },
         transformers.pytorch_utils.Conv1D: {
-            "weight": partial(LoRAParametrization.from_conv1d, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout),
+            "weight": partial(
+                LoRAParametrization.from_conv1d, rank=rank, lora_alpha=alpha, lora_dropout_p=dropout, device=device
+            ),
         },
     }
 
@@ -243,10 +259,10 @@ def add_lora(model: torch.nn.Module, model_args):
         return any(t in name for t in lora_targets)
 
     def _get_lora_data(module: torch.nn.Module):
-        for module_cls, data in lora_config.items():
+        for module_cls, data in lora_config_dict.items():
             if isinstance(module, module_cls):
                 return data
-        raise ValueError(f"module {module} not supported is not instance of {lora_config.keys()}")
+        raise ValueError(f"module {module} not supported is not instance of {lora_config_dict.keys()}")
 
     named_modules = list(model.named_modules())
     for n, m in named_modules:
@@ -259,3 +275,14 @@ def add_lora(model: torch.nn.Module, model_args):
                     p.data = p.data.to(torch.get_default_dtype())
                     setattr(m, attr_name, p)
                 parametrize.register_parametrization(m, attr_name, parametrization(m))
+
+
+def add_multiple_lora(model: torch.nn.Module, device, lora_cfg: LORAConfig, num: int):
+    num_added_lora = 0
+    if num > 1:
+        model.apply(apply_to_lora(_prepare_for_multiple_lora))
+    while num_added_lora < num:
+        if num_added_lora == 0:
+            add_lora(model=model, device=device, lora_cfg=lora_cfg)
+        model.apply(apply_to_lora(_append_lora))
+        num_added_lora += 1

@@ -82,12 +82,12 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     # Check if we are loading a finetuned model
     sft_experiment_dir = algo_cfg.sft_experiment_dir if algo_cfg.sft_experiment_dir is not None else None
-    sft_checkpoint_path = None
+    checkpoint_path = None
     if sft_experiment_dir is not None:
         fabric.print(f"Loading finetuned transformer from {sft_experiment_dir}")
         sft_exp_cfg = OmegaConf.load(Path(sft_experiment_dir) / ".hydra/config.yaml")
         ckpt_model_cfg = ModelConfig(**sft_exp_cfg.model)
-        sft_checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
+        checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
     else:
         ckpt_model_cfg = model_cfg
 
@@ -127,7 +127,7 @@ def main(fabric: Fabric, cfg: DictConfig):
 
     # Setup Model
     model = RewardModel.from_checkpoint(
-        device=fabric.device, model_cfg=ckpt_model_cfg, freeze=True, path=sft_checkpoint_path
+        device=fabric.device, model_cfg=ckpt_model_cfg, freeze=True, path=checkpoint_path
     )
     setup_finetuning(fabric=fabric, model=model, model_cfg=model_cfg)
     model = model.to(fabric.device)

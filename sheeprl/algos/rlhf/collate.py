@@ -103,11 +103,12 @@ class EvaluateCollate:
         attention_mask = []
         prompt_len_list = []
         for item in batch:
-            input_ids = item["chosen_input_ids"].type(torch.int64)
+            input_ids = list_to_tensor(item["chosen_input_ids"])
             input_ids_list.append(input_ids)
             prompt_len = item["prompt_len"]
             prompt_input_ids_list.append(input_ids[:prompt_len])
-            targets_list.append(item["targets"].type(torch.int64))
+            target = list_to_tensor([self.ignore_index] * prompt_len + item["chosen_input_ids"][prompt_len:])
+            targets_list.append(target)
             prompt_len_list.append(prompt_len)
 
         # Use PyTorch's pad_sequence function

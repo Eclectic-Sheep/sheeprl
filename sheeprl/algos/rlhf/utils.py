@@ -103,7 +103,7 @@ def setup_finetuning(fabric: lightning.Fabric, model: torch.nn.Module, model_cfg
 
     elif finetune_mode == FINETUNE_MODE.LORA:
         fabric.print("Adding LORA parameters for finetuning")
-        add_lora(model, model_cfg=model_cfg)
+        add_lora(model, lora_cfg=model_cfg.lora_cfg, device=fabric.device)
         if isinstance(model, CriticModel):
             for param in model.head.parameters():
                 param.requires_grad = True

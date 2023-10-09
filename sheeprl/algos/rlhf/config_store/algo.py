@@ -81,6 +81,10 @@ class RMAlgoConfig(RLHFAlgoConfig):
     loss_type: RM_LOSS_TYPE = RM_LOSS_TYPE.PER_SAMPLE
     sft_experiment_dir: Optional[str] = II("sft_experiment_dir")
 
+    def __post_init__(self):
+        if isinstance(self.loss_type, str):
+            self.loss_type = RM_LOSS_TYPE[self.loss_type.upper()]
+
 
 @dataclass
 class DPOAlgoConfig(RLHFAlgoConfig):

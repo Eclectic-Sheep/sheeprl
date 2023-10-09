@@ -169,11 +169,12 @@ def main(fabric: L.Fabric, cfg: DictConfig):
         gen_cfg=gen_cfg,
         fabric=fabric,
     )
-    gen_cfg.temperature = 0.0
+    eval_gen_cfg = gen_cfg.copy()
+    eval_gen_cfg.temperature = 0.0
     eval_generation_config = prepare_generation_config(
         tokenizer=tokenizer,
         model_cfg=model_cfg,
-        gen_cfg=gen_cfg,
+        gen_cfg=eval_gen_cfg,
         fabric=fabric,
     )
 
