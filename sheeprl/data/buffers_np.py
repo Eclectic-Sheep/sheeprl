@@ -266,15 +266,22 @@ class ReplayBuffer:
         sample_next_obs: bool = False,
         dtype: Optional[torch.dtype] = None,
         device: Union[str, torch.dtype] = "cpu",
+        from_numpy: bool = True,
         **kwargs,
     ) -> Dict[str, Tensor]:
         samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone)
         for k, v in samples.items():
-            torch_v = torch.as_tensor(
-                v,
-                dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                device=device,
-            )
+            if from_numpy:
+                torch_v = torch.from_numpy(v).to(
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
+            else:
+                torch_v = torch.as_tensor(
+                    v,
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
             samples[k] = torch_v
         return samples
 
@@ -465,13 +472,16 @@ class SequentialReplayBuffer(ReplayBuffer):
             env_idxes = np.tile(env_idxes, (1, sequence_length))
             env_idxes = np.ravel(env_idxes)
 
+        # Flatten indexes
+        flattened_idxes = (flattened_batch_idxes * self._n_envs + env_idxes).flat
+
         # Get samples
         samples: Dict[str, np.ndarray] = {}
         for k, v in self.buffer.items():
             # Retrieve the items by flattening the indices
             # (b1_s1, b1_s2, b1_s3, ..., bn_s1, bn_s2, bn_s3, ...)
             # where bm_sk is the k-th elements in the sequence of the m-th batch
-            flattened_v = v[flattened_batch_idxes, env_idxes]
+            flattened_v = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_idxes, axis=0)
             # Properly reshape the items:
             # [
             #   [b1_s1, b1_s2, ...],
@@ -652,6 +662,7 @@ class EnvIndipendentReplayBuffer:
         sequence_length: int = 1,
         dtype: Optional[torch.dtype] = None,
         device: Union[str, torch.dtype] = "cpu",
+        from_numpy: bool = True,
         **kwargs,
     ) -> Dict[str, Tensor]:
         samples = self.sample(
@@ -663,10 +674,16 @@ class EnvIndipendentReplayBuffer:
             concat_along_axis=self._concat_along_axis,
         )
         for k, v in samples.items():
-            torch_v = torch.as_tensor(
-                v,
-                dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                device=device,
-            )
+            if from_numpy:
+                torch_v = torch.from_numpy(v).to(
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
+            else:
+                torch_v = torch.as_tensor(
+                    v,
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
             samples[k] = torch_v
         return samples
