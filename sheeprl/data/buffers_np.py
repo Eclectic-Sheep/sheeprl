@@ -457,10 +457,13 @@ class SequentialReplayBuffer(ReplayBuffer):
         flattened_batch_idxes = np.ravel(batch_idxes)
 
         # Each sequence must come from the same environment
-        env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],))
-        env_idxes = np.reshape(env_idxes, (-1, 1))
-        env_idxes = np.tile(env_idxes, (1, sequence_length))
-        env_idxes = np.ravel(env_idxes)
+        if self._n_envs == 1:
+            env_idxes = np.zeros((np.prod(batch_shape),), dtype=batch_idxes.dtype)
+        else:
+            env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],))
+            env_idxes = np.reshape(env_idxes, (-1, 1))
+            env_idxes = np.tile(env_idxes, (1, sequence_length))
+            env_idxes = np.ravel(env_idxes)
 
         # Get samples
         samples: Dict[str, np.ndarray] = {}
@@ -476,10 +479,10 @@ class SequentialReplayBuffer(ReplayBuffer):
             #   ...,
             #   [bn_s1, bn_s2, ...]
             # ]
-            batched_v = np.reshape(flattened_v, batch_shape + flattened_v.shape[1:])
+            batched_v = np.reshape(flattened_v, (n_samples, batch_size, sequence_length) + flattened_v.shape[1:])
             # Reshape back to # [N_samples, Seq_len, Batch_size]
             samples[k] = np.swapaxes(
-                np.reshape(batched_v, (n_samples, batch_size) + batched_v.shape[1:]),
+                batched_v,
                 axis1=1,
                 axis2=2,
             )
@@ -487,9 +490,11 @@ class SequentialReplayBuffer(ReplayBuffer):
                 samples[k] = batched_v.copy()
             if sample_next_obs:
                 flattened_next_v = v[(flattened_batch_idxes + 1) % self._buffer_size, env_idxes]
-                batched_next_v = np.reshape(flattened_next_v, batch_shape + flattened_next_v.shape[1:])
+                batched_next_v = np.reshape(
+                    flattened_next_v, (n_samples, batch_size, sequence_length) + flattened_next_v.shape[1:]
+                )
                 samples[f"next_{k}"] = np.swapaxes(
-                    np.reshape(batched_next_v, (n_samples, batch_size) + batched_next_v.shape[1:]),
+                    batched_next_v,
                     axis1=1,
                     axis2=2,
                 )
