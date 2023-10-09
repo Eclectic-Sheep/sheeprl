@@ -7,7 +7,13 @@ import gymnasium as gym
 import hydra
 import numpy as np
 
-from sheeprl.envs.wrappers import ActionRepeat, FrameStack, MaskVelocityWrapper, RewardAsObservationWrapper
+from sheeprl.envs.wrappers import (
+    ActionRepeat,
+    FrameStack,
+    GrayscaleRenderWrapper,
+    MaskVelocityWrapper,
+    RewardAsObservationWrapper,
+)
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
 
 if _IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE:
@@ -48,6 +54,15 @@ def make_env(
             env_spec = gym.spec(cfg.env.id).entry_point
         except Exception:
             env_spec = ""
+
+        if "diambra" in cfg.env.wrapper._target_ and not cfg.env.sync_env:
+            if cfg.env.wrapper.diambra_settings.pop("splash_screen", True):
+                warnings.warn(
+                    "You must set the `splash_screen` setting to `False` when using the `AsyncVectorEnv` "
+                    "in `DIAMBRA` environments. The specified `splash_screen` setting is ignored and set "
+                    "to `False`."
+                )
+            cfg.env.wrapper.diambra_settings.splash_screen = False
 
         instantiate_kwargs = {}
         if "seed" in cfg.env.wrapper:
@@ -177,6 +192,8 @@ def make_env(
             env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.env.max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if cfg.env.capture_video and rank == 0 and vector_env_idx == 0 and run_name is not None:
+            if cfg.env.grayscale:
+                env = GrayscaleRenderWrapper(env)
             env = gym.experimental.wrappers.RecordVideoV0(
                 env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
             )
