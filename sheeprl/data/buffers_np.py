@@ -130,52 +130,53 @@ class ReplayBuffer:
         return buf
 
     @typing.overload
-    def add(self, data: "ReplayBuffer") -> None:
+    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
         ...
 
     @typing.overload
-    def add(self, data: Dict[str, ArrayLike]) -> None:
+    def add(self, data: Dict[str, ArrayLike], validate_args: bool = False) -> None:
         ...
 
-    def add(self, data: Union["ReplayBuffer", Dict[str, ArrayLike]]) -> None:
+    def add(self, data: Union["ReplayBuffer", Dict[str, ArrayLike]], validate_args: bool = False) -> None:
         """_summary_
 
         Args:
             data (Union[&quot;ReplayBuffer&quot;, Dict[str, ArrayLike]]): data to add.
         """
-        if isinstance(data, ReplayBuffer):
-            data = data.buffer
-        elif not isinstance(data, dict):
-            raise ValueError(
-                f"`data` must be a dictionary containing Numpy arrays, but `data` is of type `{type(data)}`"
-            )
-        elif isinstance(data, dict):
-            for k, v in data.items():
-                if not isinstance(v, np.ndarray):
-                    raise ValueError(
-                        f"`data` must be a dictionary containing Numpy arrays. Found key `{k}` "
-                        f"containing a value of type `{type(v)}`"
-                    )
-        if data is None:
-            raise ValueError("The `data` replay buffer must be not None")
-        last_key = next(iter(data.keys()))
-        last_batch_shape = next(iter(data.values())).shape[:2]
-        for i, (k, v) in enumerate(data.items()):
-            if len(v.shape) < 2:
-                raise RuntimeError(
-                    "`data` must have at least 2: [sequence_length, n_envs, ...]. " f"Shape of `{k}` is {v.shape}"
+        if validate_args:
+            if isinstance(data, ReplayBuffer):
+                data = data.buffer
+            elif not isinstance(data, dict):
+                raise ValueError(
+                    f"`data` must be a dictionary containing Numpy arrays, but `data` is of type `{type(data)}`"
                 )
-            if i > 0:
-                current_key = k
-                current_batch_shape = v.shape[:2]
-                if current_batch_shape != last_batch_shape:
+            elif isinstance(data, dict):
+                for k, v in data.items():
+                    if not isinstance(v, np.ndarray):
+                        raise ValueError(
+                            f"`data` must be a dictionary containing Numpy arrays. Found key `{k}` "
+                            f"containing a value of type `{type(v)}`"
+                        )
+            if data is None:
+                raise ValueError("The `data` replay buffer must be not None")
+            last_key = next(iter(data.keys()))
+            last_batch_shape = next(iter(data.values())).shape[:2]
+            for i, (k, v) in enumerate(data.items()):
+                if len(v.shape) < 2:
                     raise RuntimeError(
-                        "Every array in `data` must be congruent in the first 2 dimensions: "
-                        f"found key `{last_key}` with shape `{last_batch_shape}` "
-                        f"and `{current_key}` with shape `{current_batch_shape}`"
+                        "`data` must have at least 2: [sequence_length, n_envs, ...]. " f"Shape of `{k}` is {v.shape}"
                     )
-                last_key = current_key
-                last_batch_shape = current_batch_shape
+                if i > 0:
+                    current_key = k
+                    current_batch_shape = v.shape[:2]
+                    if current_batch_shape != last_batch_shape:
+                        raise RuntimeError(
+                            "Every array in `data` must be congruent in the first 2 dimensions: "
+                            f"found key `{last_key}` with shape `{last_batch_shape}` "
+                            f"and `{current_key}` with shape `{current_batch_shape}`"
+                        )
+                    last_key = current_key
+                    last_batch_shape = current_batch_shape
         data_len = next(iter(data.values())).shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
         if next_pos <= self._pos or (data_len >= self._buffer_size and not self._full):
@@ -452,13 +453,13 @@ class SequentialReplayBuffer(ReplayBuffer):
         sample_next_obs: bool = False,
         clone: bool = False,
     ) -> Dict[str, np.ndarray]:
-        original_shape = np.array(batch_idxes).shape  # [Batch_size * N_samples, Seq_len]
+        batch_shape = (batch_size * n_samples, sequence_length)  # [Batch_size * N_samples, Seq_len]
         flattened_batch_idxes = np.ravel(batch_idxes)
 
         # Each sequence must come from the same environment
-        env_idxes = self._rng.integers(0, self.n_envs, size=(original_shape[0],))
+        env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],))
         env_idxes = np.reshape(env_idxes, (-1, 1))
-        env_idxes = np.tile(env_idxes, (1, original_shape[1]))
+        env_idxes = np.tile(env_idxes, (1, sequence_length))
         env_idxes = np.ravel(env_idxes)
 
         # Get samples
@@ -475,7 +476,7 @@ class SequentialReplayBuffer(ReplayBuffer):
             #   ...,
             #   [bn_s1, bn_s2, ...]
             # ]
-            batched_v = np.reshape(flattened_v, original_shape + flattened_v.shape[1:])
+            batched_v = np.reshape(flattened_v, batch_shape + flattened_v.shape[1:])
             # Reshape back to # [N_samples, Seq_len, Batch_size]
             samples[k] = np.swapaxes(
                 np.reshape(batched_v, (n_samples, batch_size) + batched_v.shape[1:]),
@@ -486,7 +487,7 @@ class SequentialReplayBuffer(ReplayBuffer):
                 samples[k] = batched_v.copy()
             if sample_next_obs:
                 flattened_next_v = v[(flattened_batch_idxes + 1) % self._buffer_size, env_idxes]
-                batched_next_v = np.reshape(flattened_next_v, original_shape + flattened_next_v.shape[1:])
+                batched_next_v = np.reshape(flattened_next_v, batch_shape + flattened_next_v.shape[1:])
                 samples[f"next_{k}"] = np.swapaxes(
                     np.reshape(batched_next_v, (n_samples, batch_size) + batched_next_v.shape[1:]),
                     axis1=1,
@@ -513,17 +514,32 @@ class EnvIndipendentReplayBuffer:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
         if n_envs <= 0:
             raise ValueError(f"The number of environments must be greater than zero, got: {n_envs}")
+        if memmap:
+            if memmap_mode not in ("r+", "w+", "c", "copyonwrite", "readwrite", "write"):
+                raise ValueError(
+                    'Accepted values for memmap_mode are "r+", "readwrite", "w+", "write", "c" or '
+                    '"copyonwrite". PyTorch does not support tensors backed by read-only '
+                    'NumPy arrays, so "r" and "readonly" are not supported.'
+                )
+            if memmap_dir is None:
+                raise ValueError(
+                    "The buffer is set to be memory-mapped but the `memmap_dir` attribute is None. "
+                    "Set the `memmap_dir` to a known directory.",
+                )
+            else:
+                memmap_dir = Path(memmap_dir)
+                memmap_dir.mkdir(parents=True, exist_ok=True)
         self._buf: Sequence[ReplayBuffer] = [
             buffer_cls(
                 buffer_size=buffer_size,
                 n_envs=1,
                 obs_keys=obs_keys,
                 memmap=memmap,
-                memmap_dir=memmap_dir,
+                memmap_dir=memmap_dir / f"env_{i}",
                 memmap_mode=memmap_mode,
                 **kwargs,
             )
-            for _ in range(n_envs)
+            for i in range(n_envs)
         ]
         self._buffer_size = buffer_size
         self._n_envs = n_envs
@@ -557,50 +573,19 @@ class EnvIndipendentReplayBuffer:
     def __len__(self) -> int:
         return self.buffer_size
 
-    def add(self, data: Dict[str, ArrayLike], indices: Optional[Sequence[int]] = None) -> None:
+    def add(
+        self, data: Dict[str, ArrayLike], indices: Optional[Sequence[int]] = None, validate_args: bool = False
+    ) -> None:
         """_summary_
 
         Args:
             data (Union[&quot;ReplayBuffer&quot;, Dict[str, ArrayLike]]): data to add.
         """
-        if isinstance(data, ReplayBuffer):
-            data = data.buffer
-        elif not isinstance(data, dict):
-            raise ValueError(
-                f"`data` must be a dictionary containing Numpy arrays, but `data` is of type `{type(data)}`"
-            )
-        elif isinstance(data, dict):
-            for k, v in data.items():
-                if not isinstance(v, np.ndarray):
-                    raise ValueError(
-                        f"`data` must be a dictionary containing Numpy arrays. Found key `{k}` "
-                        f"containing a value of type `{type(v)}`"
-                    )
-        if data is None:
-            raise ValueError("The `data` replay buffer must be not None")
-        last_key = next(iter(data.keys()))
-        last_batch_shape = next(iter(data.values())).shape[:2]
-        for i, (k, v) in enumerate(data.items()):
-            if len(v.shape) < 2:
-                raise RuntimeError(
-                    "`data` must have at least 2: [sequence_length, n_envs, ...]. " f"Shape of `{k}` is {v.shape}"
-                )
-            if i > 0:
-                current_key = k
-                current_batch_shape = v.shape[:2]
-                if current_batch_shape != last_batch_shape:
-                    raise RuntimeError(
-                        "Every array in `data` must be congruent in the first 2 dimensions: "
-                        f"found key `{last_key}` with shape `{last_batch_shape}` "
-                        f"and `{current_key}` with shape `{current_batch_shape}`"
-                    )
-                last_key = current_key
-                last_batch_shape = current_batch_shape
         if indices is None:
             indices = tuple(range(self.n_envs))
         for env_data_idx, env_idx in enumerate(indices):
             env_data = {k: v[:, env_data_idx : env_data_idx + 1] for k, v in data.items()}
-            self._buf[env_idx].add(env_data)
+            self._buf[env_idx].add(env_data, validate_args=validate_args)
 
     def sample(
         self,

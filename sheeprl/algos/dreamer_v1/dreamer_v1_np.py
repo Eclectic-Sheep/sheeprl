@@ -599,7 +599,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    rb.add(step_data)
+    rb.add(step_data, validate_args=False)
     player.init_states()
 
     for update in range(start_step, num_updates + 1):
@@ -631,7 +631,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     if len(mask) == 0:
                         mask = None
                     real_actions = actions = player.get_exploration_action(normalized_obs, is_continuous, mask)
-                    actions = torch.cat(actions, -1).cpu().numpy()
+                    actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, -1).cpu().numpy()
                     else:
@@ -668,7 +668,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["dones"] = dones[np.newaxis]
         step_data["actions"] = actions[np.newaxis]
         step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
-        rb.add(step_data)
+        rb.add(step_data, validate_args=False)
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -680,29 +680,29 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["dones"] = np.zeros((1, reset_envs, 1))
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-            rb.add(reset_data, dones_idxes)
+            rb.add(reset_data, dones_idxes, validate_args=False)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
-                step_data["dones"][d] = np.zeros_like(step_data["dones"][d])
+                step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
             # Reset internal agent states
-            player.init_states(dones_idxes)
+            player.init_states(reset_envs=dones_idxes)
 
         updates_before_training -= 1
 
         # Train the agent
         if update > learning_starts and updates_before_training <= 0:
             fabric.barrier()
-            local_data = rb.sample_tensors(
-                batch_size=cfg.per_rank_batch_size,
-                sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.algo.per_rank_gradient_steps,
-                dtype=torch.float32,
-                device=device,
-            )  # [N_samples, Seq_len, Batch_size, ...]
             # Start training
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for i in range(cfg.algo.per_rank_gradient_steps):
-                    batch = {k: v[i] for k, v in local_data.items()}
+                    sample = rb.sample_tensors(
+                        batch_size=cfg.per_rank_batch_size,
+                        sequence_length=cfg.per_rank_sequence_length,
+                        n_samples=1,
+                        dtype=torch.float32,
+                        device=device,
+                    )  # [N_samples, Seq_len, Batch_size, ...]
+                    batch = {k: v[0] for k, v in sample.items()}
                     train(
                         fabric,
                         world_model,

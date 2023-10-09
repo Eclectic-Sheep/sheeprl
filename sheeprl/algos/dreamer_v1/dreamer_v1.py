@@ -15,7 +15,6 @@ from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
-from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
@@ -703,15 +702,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Train the agent
         if update > learning_starts and updates_before_training <= 0:
             fabric.barrier()
-            local_data = rb.sample(
-                cfg.per_rank_batch_size,
-                sequence_length=cfg.per_rank_sequence_length,
-                n_samples=cfg.algo.per_rank_gradient_steps,
-            ).to(device)
-            distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
             # Start training
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-                for i in distributed_sampler:
+                for i in range(cfg.algo.per_rank_gradient_steps):
+                    local_data = rb.sample(
+                        cfg.per_rank_batch_size,
+                        sequence_length=cfg.per_rank_sequence_length,
+                        n_samples=1,
+                    ).to(device)
                     train(
                         fabric,
                         world_model,
@@ -720,7 +718,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         world_optimizer,
                         actor_optimizer,
                         critic_optimizer,
-                        local_data[i].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
+                        local_data[0].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
                         aggregator,
                         cfg,
                     )
@@ -737,7 +735,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             aggregator.update("Params/exploration_amout", player.expl_amount)
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if (
+            update > learning_starts
+            and policy_step - last_log >= cfg.metric.log_every
+            or update == num_updates
+            or cfg.dry_run
+        ):
             # Sync distributed metrics
             metrics_dict = aggregator.compute()
             fabric.log_dict(metrics_dict, policy_step)
