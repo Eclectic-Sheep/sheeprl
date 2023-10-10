@@ -47,6 +47,7 @@ class ModelConfig:
     library_cfg: HuggingFaceConfig = HuggingFaceConfig()
     finetune_mode: FINETUNE_MODE = FINETUNE_MODE.ALL
     lora_cfg: Optional[LORAConfig] = None
+    use_attention_mask: bool = True
 
     def __post_init__(self):
         if isinstance(self.finetune_mode, str):
@@ -68,9 +69,13 @@ class GPT2Config(ModelConfig):
 
 
 @dataclass
-class Phi1dot5Config(ModelConfig):
+class PhiConfig(ModelConfig):
     name: str = "microsoft/phi-1_5"
     library_cfg: HuggingFaceConfig = HuggingFaceConfig(trust_remote_code=True)
+    lora_cfg: Optional[LORAConfig] = LORAConfig(targets="('Wqkv','out_proj')")
+    # This model cannot use attention mask during the training
+    # https://huggingface.co/microsoft/phi-1_5/blob/main/modeling_mixformer_sequential.py#L756
+    use_attention_mask: bool = False
 
 
 def register_model_configs(cs: ConfigStore) -> None:
@@ -87,5 +92,5 @@ def register_model_configs(cs: ConfigStore) -> None:
     cs.store(
         group="model",
         name="phi",
-        node=Phi1dot5Config,
+        node=PhiConfig,
     )

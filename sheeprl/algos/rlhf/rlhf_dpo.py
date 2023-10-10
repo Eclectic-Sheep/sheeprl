@@ -9,6 +9,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from sheeprl.algos.rlhf.agent import DPOAgent
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
@@ -27,12 +28,9 @@ from sheeprl.algos.rlhf.models import ActorModel, CasualModel
 from sheeprl.algos.rlhf.scheduler import CosineSchedulerWithWarmup
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
-    get_last_checkpoint_path,
     log_text,
     prepare_generation_config,
     prepare_optimizer_parameters,
-    setup_finetuning,
-    trainable_parameter_summary,
     validate_dataset,
 )
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -110,17 +108,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     data_cfg = DataConfig(**cfg.data)
     gen_cfg = GenConfig(**cfg.generation)
     optim_cfg = cfg.optim
-
-    # Check if we are loading a finetuned model
-    sft_checkpoint_path: Optional[str] = None
-    if algo_cfg.sft_experiment_dir is not None:
-        sft_experiment_dir = algo_cfg.sft_experiment_dir
-        fabric.print(f"Loading finetuned transformer from {sft_experiment_dir}")
-        sft_exp_cfg = OmegaConf.load(Path(sft_experiment_dir) / ".hydra/config.yaml")
-        ckpt_model_cfg = ModelConfig(**sft_exp_cfg.model)
-        sft_checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
-    else:
-        ckpt_model_cfg = model_cfg
+    sft_experiment_dir: Optional[str] = algo_cfg.sft_experiment_dir
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
@@ -160,28 +148,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
-    # Setup Reference Model
-    fabric.print("Loading reference model")
-    ref_model = ActorModel.from_checkpoint(
-        device=fabric.device,
-        model_cfg=ckpt_model_cfg,
-        freeze=True,
-        path=sft_checkpoint_path,
-    )
-    ref_model = ref_model.to(fabric.device)
-    trainable_parameter_summary(ref_model, show_names=False, fabric=fabric)
-
-    # Setup Actor Model
-    fabric.print("Loading actor model")
-    actor_model = ActorModel.from_checkpoint(
-        device=fabric.device,
-        model_cfg=ckpt_model_cfg,
-        freeze=True,
-        path=sft_checkpoint_path,
-    )
-    setup_finetuning(fabric, actor_model, model_cfg)
-    actor_model = actor_model.to(fabric.device)
-    trainable_parameter_summary(actor_model, show_names=False, fabric=fabric)
+    agent = DPOAgent(fabric=fabric, model_cfg=model_cfg, sft_experiment_dir=sft_experiment_dir)
 
     # Setup Generation Config
     generation_config = prepare_generation_config(
@@ -192,7 +159,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     )
 
     # Setup Optimizer Scheduler
-    trainable_params, _, _ = prepare_optimizer_parameters(actor_model, optim_cfg.weight_decay)
+    trainable_params, _, _ = prepare_optimizer_parameters(agent.actor, optim_cfg.weight_decay)
     optimizer = hydra.utils.instantiate(
         optim_cfg,
         params=trainable_params,
@@ -204,10 +171,10 @@ def main(fabric: L.Fabric, cfg: DictConfig):
         warmup_steps=algo_cfg.lr_warmup_steps,
         lr_decay_steps=num_training_steps,
     )
-    actor_model, optimizer = fabric.setup(actor_model, optimizer)
+    optimizer = fabric.setup_optimizers(optimizer)
 
     gen_text = generate(
-        model=actor_model.module,
+        model=agent.actor.module,
         tokenizer=tokenizer,
         generation_config=generation_config,
         example_prompt=example_prompt,
@@ -217,6 +184,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
 
     data_iterator = iter(train_dataloader)
+    agent.actor.train()
     for k in iterator:
         # Setup counters and data
         if k % len(train_dataloader) == 0:
@@ -238,11 +206,10 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
         # Forward and Backward Pass
         t0 = time.time()
-        with fabric.no_backward_sync(actor_model, enabled=is_accumulating):
+        with fabric.no_backward_sync(agent.actor, enabled=is_accumulating):
             loss, chosen_rewards, rejected_rewards = dpo_loss(
                 batch=batch,
-                actor_model=actor_model,
-                ref_model=ref_model,
+                agent=agent,
                 beta=algo_cfg.beta,
                 ignore_index=data_cfg.ignore_index,
                 reference_free=algo_cfg.reference_free,
@@ -251,8 +218,8 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
         dt = time.time() - t0
         if not is_accumulating:
-            metrics.info_grad_norm.update(compute_grad_norm(actor_model))
-            fabric.clip_gradients(actor_model, optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True)
+            metrics.info_grad_norm.update(compute_grad_norm(agent.actor))
+            fabric.clip_gradients(agent.actor, optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
@@ -267,8 +234,8 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
             val_loss, val_acc = evaluate(
-                actor_model=actor_model,
-                ref_model=ref_model,
+                actor_model=agent.actor,
+                ref_model=agent.reference,
                 algo_cfg=algo_cfg,
                 data_cfg=data_cfg,
                 val_dataloader=val_dataloader,
@@ -283,7 +250,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
             if fabric.is_global_zero:
                 gen_text = generate(
-                    model=actor_model.module,
+                    model=agent.actor.module,
                     tokenizer=tokenizer,
                     generation_config=generation_config,
                     example_prompt=example_prompt,
@@ -303,7 +270,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
                     description += f", {metric_name}: {metric_value:.3f}"
                 iterator.set_description(description)
         if k > 0 and (k % algo_cfg.save_interval == 0 or last_step):
-            checkpoint_model: ActorModel = actor_model.module
+            checkpoint_model: ActorModel = agent.actor.module
             checkpoint_model.save_checkpoint(
                 fabric=fabric,
                 experiment_dir=experiment_dir,

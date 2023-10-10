@@ -77,7 +77,7 @@ class LeftPadCollate:
         self.ignore_index = ignore_index
 
     def __call__(self, batch):
-        input_ids = [item["chosen_input_ids"].type(torch.int64)[: item["prompt_len"]] for item in batch]
+        input_ids = [list_to_tensor(item["chosen_input_ids"])[: item["prompt_len"]] for item in batch]
         # Use PyTorch's pad_sequence function
         # convert into left padding
         reversed_input_ids = [i.flip(dims=[0]) for i in input_ids]

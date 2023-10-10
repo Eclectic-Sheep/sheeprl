@@ -1,8 +1,9 @@
-from typing import Dict, Tuple, Union
+from typing import Dict, Union
 
 import torch
 from tensordict import make_tensordict
 
+from sheeprl.algos.rlhf.agent import PPOAgent
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
@@ -13,9 +14,7 @@ from torch.utils.data import DataLoader
 from transformers import GenerationConfig, PreTrainedTokenizer
 
 from sheeprl.algos.rlhf.config_store.algo import PPOAlgoConfig
-from sheeprl.algos.rlhf.loss import policy_loss, value_loss
 from sheeprl.algos.rlhf.metrics import PPOMetricManager
-from sheeprl.algos.rlhf.models import ActorModel, CriticModel
 
 
 class FixedKLController:
@@ -104,10 +103,7 @@ def masked_normalize(
 @torch.inference_mode()
 def collect_rollout(
     batch: Dict[str, torch.Tensor],
-    actor_model: ActorModel,
-    critic_model: CriticModel,
-    ref_model: ActorModel,
-    reward_model: CriticModel,
+    agent: PPOAgent,
     kl_controller: Union[FixedKLController, AdaptiveKLController],
     generation_config: GenerationConfig,
     algo_cfg: PPOAlgoConfig,
@@ -115,8 +111,8 @@ def collect_rollout(
     fabric: L.Fabric,
     metrics: PPOMetricManager,
 ) -> Dict[str, torch.Tensor]:
-    actor_model.eval()
-    critic_model.eval()
+    agent.actor.eval()
+    agent.critic.eval()
 
     # We have the batch as dictionary let's create tensordict
     # so we can create dataloader with Fabric that transfers the data
@@ -149,7 +145,7 @@ def collect_rollout(
         prompt_attention_mask = mini_batch["prompt_attention_mask"]
         data = {"input_ids": prompt_input_ids, "attention_mask": prompt_attention_mask}
 
-        input_ids = actor_model.generate(**data, generation_config=generation_config)
+        input_ids = agent.actor.generate(**data, generation_config=generation_config)
         max_len_diff = generation_config.max_new_tokens - (input_ids.size(1) - prompt_input_ids.size(1))
         if max_len_diff > 0:
             input_ids = torch.nn.functional.pad(input_ids, (0, max_len_diff), value=tokenizer.pad_token_id)
@@ -157,11 +153,11 @@ def collect_rollout(
 
         data = {"input_ids": input_ids, "attention_mask": attention_masks}
         # for logprobs we already omit the last tokens from computation
-        actor_log_probs = actor_model(**data)[:, start_token_idx:]
-        ref_log_probs = ref_model(**data)[:, start_token_idx:]
+        actor_log_probs = agent.actor(**data)[:, start_token_idx:]
+        ref_log_probs = agent.reference(**data)[:, start_token_idx:]
         # We need to also do the same for value and reward outputs
-        values = critic_model(**data)[:, start_token_idx:-1]
-        reward_outputs = reward_model(**data)[:, start_token_idx:-1]
+        values = agent.critic(**data)[:, start_token_idx:-1]
+        reward_outputs = agent.reward(**data)[:, start_token_idx:-1]
 
         mini_batch_rollout = {
             "input_ids": input_ids,  # (B, T) (B, (prompt + generated))
@@ -217,45 +213,6 @@ def collect_rollout(
     metrics.debug_advantages(advantages)
     metrics.debug_returns(returns)
 
-    actor_model.train()
-    critic_model.train()
+    agent.actor.train()
+    agent.critic.train()
     return rollout, sample_from_rollout
-
-
-def ppo_step(
-    batch: Dict[str, torch.Tensor],
-    actor_model: torch.nn.Module,
-    critic_model: torch.nn.Module,
-    algo_cfg: PPOAlgoConfig,
-    max_prompt_length: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    generated_data = {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
-
-    old_log_probs = batch["actor_log_probs"]
-    old_values = batch["values"]
-    advantages = batch["advantages"]
-    returns = batch["returns"]
-
-    start_token_idx = max_prompt_length - 1
-    log_probs = actor_model(**generated_data)[:, start_token_idx:]  # (B, num_new_tokens)
-    values = critic_model(**generated_data)[:, start_token_idx:-1]  # (B, num_new_tokens)
-    action_mask = batch["attention_mask"][:, start_token_idx:-1].int()
-    if algo_cfg.normalize_advantages:
-        advantages = masked_normalize(advantages, action_mask)
-
-    p_loss = policy_loss(
-        log_probs=log_probs,
-        old_log_probs=old_log_probs,
-        advantages=advantages,
-        clip_coeff=algo_cfg.clip_coeff,
-        action_mask=action_mask,
-    )
-    v_loss = value_loss(
-        values=values,
-        old_values=old_values,
-        returns=returns,
-        clip_coeff=algo_cfg.clip_coeff,
-        action_mask=action_mask,
-    )
-
-    return p_loss, v_loss

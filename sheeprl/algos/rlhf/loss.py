@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from sheeprl.algos.rlhf.agent import DPOAgent
 from sheeprl.algos.rlhf.config_store.algo import RM_LOSS_TYPE
 from sheeprl.algos.rlhf.utils import compute_masked_logprobs
 
@@ -175,8 +176,7 @@ def finetune_loss(
 
 def dpo_loss(
     batch: Dict[str, torch.Tensor],
-    actor_model: torch.nn.Module,
-    ref_model: torch.nn.Module,
+    agent: DPOAgent,
     beta: float,
     ignore_index: int,
     reference_free: bool = False,
@@ -190,16 +190,16 @@ def dpo_loss(
     rejected_targets = batch["rejected_targets"]
 
     with torch.inference_mode():
-        ref_chosen_logprobs = ref_model(
+        ref_chosen_logprobs = agent.reference(
             input_ids=chosen_input_ids, attention_mask=chosen_attention_mask, use_cache=False
         )
-        ref_rejected_logprobs = ref_model(
+        ref_rejected_logprobs = agent.reference(
             input_ids=rejected_input_ids, attention_mask=rejected_attention_mask, use_cache=False
         )
-    actor_chosen_logprobs = actor_model(
+    actor_chosen_logprobs = agent.actor(
         input_ids=chosen_input_ids, attention_mask=chosen_attention_mask, use_cache=False
     )
-    actor_rejected_logprobs = actor_model(
+    actor_rejected_logprobs = agent.actor(
         input_ids=rejected_input_ids, attention_mask=rejected_attention_mask, use_cache=False
     )
 

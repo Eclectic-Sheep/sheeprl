@@ -1,3 +1,4 @@
+import copy
 import time
 from pathlib import Path
 from typing import Dict
@@ -10,6 +11,8 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from sheeprl.algos.rlhf.agent import PPOAgent
+from sheeprl.algos.rlhf.loss import policy_loss, value_loss
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
 
 if not _IS_TRANSFORMERS_AVAILABLE:
@@ -22,16 +25,13 @@ from sheeprl.algos.rlhf.config_store.data import DataConfig, GenConfig
 from sheeprl.algos.rlhf.config_store.model import ModelConfig
 from sheeprl.algos.rlhf.data import TextDataset
 from sheeprl.algos.rlhf.metrics import PPOMetricManager
-from sheeprl.algos.rlhf.models import ActorModel, CasualModel, CriticModel, RewardModel
-from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, ppo_step
+from sheeprl.algos.rlhf.models import ActorModel
+from sheeprl.algos.rlhf.ppo_utils import AdaptiveKLController, FixedKLController, collect_rollout, masked_normalize
 from sheeprl.algos.rlhf.utils import (
     compute_grad_norm,
-    get_last_checkpoint_path,
     log_text,
     prepare_generation_config,
     prepare_optimizer_parameters,
-    setup_finetuning,
-    trainable_parameter_summary,
     validate_dataset,
 )
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -43,15 +43,14 @@ __all__ = ["main"]
 
 @torch.inference_mode()
 def generate(
-    actor_model: CasualModel,
-    reward_model: CriticModel,
+    agent: PPOAgent,
     tokenizer: PreTrainedTokenizer,
     generation_config: GenerationConfig,
     example_prompt: Dict[str, torch.Tensor],
     device: torch.device,
 ):
-    actor_model.eval()
-    generated_input_ids = actor_model.generate(
+    agent.actor.eval()
+    generated_input_ids = agent.actor.module.generate(
         input_ids=example_prompt["input_ids"].to(device),
         attention_mask=example_prompt["attention_mask"].to(device),
         generation_config=generation_config,
@@ -60,11 +59,11 @@ def generate(
     prompt_length = example_prompt["input_ids"].shape[1]
     generated_attention_mask = (generated_input_ids != generation_config.pad_token_id).int()
     generated_data = {"input_ids": generated_input_ids, "attention_mask": generated_attention_mask}
-    reward = reward_model(**generated_data)[:, prompt_length:]
+    reward = agent.reward(**generated_data)[:, prompt_length:]
     action_mask = (generated_input_ids != generation_config.pad_token_id).int()[:, prompt_length:]
     last_token_idx = torch.argmax(torch.cumsum(action_mask, dim=1) * action_mask, dim=1, keepdim=True)
     reward_score = torch.gather(reward, dim=-1, index=last_token_idx).squeeze(-1)
-    actor_model.train()
+    agent.actor.train()
     return tokenizer.decode(generated_input_ids[0], skip_special_tokens=True), reward_score.item()
 
 
@@ -89,18 +88,6 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     # Setup Metrics
     metrics = PPOMetricManager(log_interval=algo_cfg.log_interval).to(fabric.device)
 
-    # Setup Previous Experiment Configs
-
-    sft_experiment_dir = algo_cfg.sft_experiment_dir
-    sft_exp_cfg = OmegaConf.load(Path(sft_experiment_dir) / ".hydra/config.yaml")
-    sft_ckpt_model_cfg = ModelConfig(**sft_exp_cfg.model)
-    sft_checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
-
-    rm_experiment_dir = algo_cfg.rm_experiment_dir
-    rm_exp_cfg = OmegaConf.load(Path(rm_experiment_dir) / ".hydra/config.yaml")
-    rm_ckpt_model_cfg = ModelConfig(**rm_exp_cfg.model)
-    rm_checkpoint_path = get_last_checkpoint_path(rm_experiment_dir)
-
     # Setup Dataloaders
     data_processor = validate_dataset(fabric, data_cfg)
     dataset_path = Path(data_processor.full_path)
@@ -118,49 +105,13 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
-    # Reference actor model for checking kl divergence
-    fabric.print("\nLoading reference model")
-    ref_model = ActorModel.from_checkpoint(
-        device=fabric.device,
-        model_cfg=sft_ckpt_model_cfg,
-        path=sft_checkpoint_path,
-        freeze=True,
+    agent = PPOAgent(
+        fabric=fabric,
+        model_cfg=model_cfg,
+        init_critic_with_rm=algo_cfg.init_critic_with_rm,
+        sft_experiment_dir=algo_cfg.sft_experiment_dir,
+        rm_experiment_dir=algo_cfg.rm_experiment_dir,
     )
-    ref_model.eval()
-    trainable_parameter_summary(model=ref_model, show_names=False, fabric=fabric)
-
-    # Actor model for PPO training
-    fabric.print("\nLoading actor model")
-    actor_model = ActorModel.from_checkpoint(
-        device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
-    )
-    setup_finetuning(fabric, actor_model, model_cfg)
-    trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
-
-    # Critic Model for PPO training
-    fabric.print("\nLoading critic model")
-    if algo_cfg.init_critic_with_rm:
-        critic_ckpt_path = rm_checkpoint_path
-        critic_model_cfg = rm_ckpt_model_cfg
-    else:
-        critic_ckpt_path = sft_checkpoint_path
-        critic_model_cfg = sft_ckpt_model_cfg
-    critic_model = CriticModel.from_checkpoint(
-        device=fabric.device, model_cfg=critic_model_cfg, path=critic_ckpt_path, freeze=True
-    )
-    setup_finetuning(fabric, critic_model, model_cfg)
-    trainable_parameter_summary(model=critic_model, show_names=False, fabric=fabric)
-
-    # Reward model
-    fabric.print("\nLoading reward model")
-    reward_model = RewardModel.from_checkpoint(
-        device=fabric.device,
-        model_cfg=rm_ckpt_model_cfg,
-        path=rm_checkpoint_path,
-        freeze=True,
-    )
-    reward_model.eval()
-    trainable_parameter_summary(model=reward_model, show_names=False, fabric=fabric)
 
     # Setup Generation Configs
     generation_config = prepare_generation_config(
@@ -169,8 +120,8 @@ def main(fabric: L.Fabric, cfg: DictConfig):
         gen_cfg=gen_cfg,
         fabric=fabric,
     )
-    eval_gen_cfg = gen_cfg.copy()
-    eval_gen_cfg.temperature = 0.0
+    eval_gen_cfg = copy.deepcopy(gen_cfg)
+    eval_gen_cfg.do_sample = False
     eval_generation_config = prepare_generation_config(
         tokenizer=tokenizer,
         model_cfg=model_cfg,
@@ -180,29 +131,27 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
     # Setup Optimizer Scheduler fabric models
 
-    actor_trainable_params, _, _ = prepare_optimizer_parameters(actor_model, weight_decay=algo_cfg.weight_decay)
+    actor_trainable_params, _, _ = prepare_optimizer_parameters(agent.actor, weight_decay=actor_optim_cfg.weight_decay)
     actor_optimizer = hydra.utils.instantiate(
         actor_optim_cfg,
         params=actor_trainable_params,
         _convert_="partial",
     )
-    actor_model, actor_optimizer = fabric.setup(actor_model, actor_optimizer)
+    actor_optimizer = fabric.setup_optimizers(actor_optimizer)
 
-    critic_trainable_params, _, _ = prepare_optimizer_parameters(critic_model, weight_decay=algo_cfg.weight_decay)
+    critic_trainable_params, _, _ = prepare_optimizer_parameters(
+        agent.critic, weight_decay=critic_optim_cfg.weight_decay
+    )
     critic_optimizer = hydra.utils.instantiate(
         critic_optim_cfg,
         params=critic_trainable_params,
         _convert_="partial",
     )
-    critic_model, critic_optimizer = fabric.setup(critic_model, critic_optimizer)
-
-    reward_model = fabric.setup_module(reward_model)
-    ref_model = fabric.setup_module(ref_model)
+    critic_optimizer = fabric.setup_optimizers(critic_optimizer)
 
     if fabric.is_global_zero:
         gen_text, score = generate(
-            actor_model=actor_model,
-            reward_model=reward_model,
+            agent=agent,
             tokenizer=tokenizer,
             generation_config=eval_generation_config,
             example_prompt=example_prompt,
@@ -221,12 +170,12 @@ def main(fabric: L.Fabric, cfg: DictConfig):
     else:
         kl_controller = FixedKLController(kl_coeff=algo_cfg.init_kl_coeff)
 
-    actor_model.train()
-    critic_model.train()
     iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
     data_iterator = iter(train_dataloader)
 
     for k in iterator:
+        agent.actor.train()
+        agent.critic.train()
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
             data_iterator = iter(train_dataloader)
@@ -240,10 +189,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
 
         rollout, sample_output = collect_rollout(
             batch=batch,
-            actor_model=actor_model,
-            critic_model=critic_model,
-            ref_model=ref_model,
-            reward_model=reward_model,
+            agent=agent,
             generation_config=generation_config,
             kl_controller=kl_controller,
             algo_cfg=algo_cfg,
@@ -261,29 +207,52 @@ def main(fabric: L.Fabric, cfg: DictConfig):
             for micro_batch in rollout_dataloader:
                 is_accumulating = (accumulator_counter) % algo_cfg.gradient_accumulation_steps != 0
 
-                with fabric.no_backward_sync(actor_model, enabled=is_accumulating), fabric.no_backward_sync(
-                    critic_model, enabled=is_accumulating
-                ):
-                    policy_loss, value_loss = ppo_step(
-                        batch=micro_batch,
-                        actor_model=actor_model,
-                        critic_model=critic_model,
-                        ppo_args=algo_cfg,
-                        max_prompt_length=max_prompt_length,
+                generated_data = {
+                    "input_ids": micro_batch["input_ids"],
+                    "attention_mask": micro_batch["attention_mask"],
+                }
+                old_log_probs = micro_batch["actor_log_probs"]
+                old_values = micro_batch["values"]
+                advantages = micro_batch["advantages"]
+                returns = micro_batch["returns"]
+                start_token_idx = max_prompt_length - 1
+                action_mask = micro_batch["attention_mask"][:, start_token_idx:-1].int()
+                if algo_cfg.normalize_advantages:
+                    advantages = masked_normalize(advantages, action_mask)
+
+                with fabric.no_backward_sync(agent.actor, enabled=is_accumulating):
+                    log_probs = agent.actor(**generated_data)[:, start_token_idx:]  # (B, num_new_tokens)
+                    p_loss = policy_loss(
+                        log_probs=log_probs,
+                        old_log_probs=old_log_probs,
+                        advantages=advantages,
+                        clip_coeff=algo_cfg.clip_coeff,
+                        action_mask=action_mask,
                     )
-                    fabric.backward(policy_loss / algo_cfg.gradient_accumulation_steps)
-                    fabric.backward((value_loss * algo_cfg.vf_coeff) / algo_cfg.gradient_accumulation_steps)
+                    fabric.backward(p_loss / algo_cfg.gradient_accumulation_steps)
+
+                with fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
+                    values = agent.critic(**generated_data)[:, start_token_idx:-1]  # (B, num_new_tokens)
+                    v_loss = value_loss(
+                        values=values,
+                        old_values=old_values,
+                        returns=returns,
+                        clip_coeff=algo_cfg.clip_coeff,
+                        action_mask=action_mask,
+                    )
+                    fabric.backward((v_loss * algo_cfg.vf_coeff) / algo_cfg.gradient_accumulation_steps)
+
                 if not is_accumulating:
-                    actor_grads = compute_grad_norm(model=actor_model)
+                    actor_grads = compute_grad_norm(model=agent.actor)
                     fabric.clip_gradients(
-                        actor_model, actor_optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True
+                        agent.actor, actor_optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True
                     )
                     actor_optimizer.step()
                     actor_optimizer.zero_grad(set_to_none=True)
 
-                    critic_grads = compute_grad_norm(model=critic_model)
+                    critic_grads = compute_grad_norm(model=agent.critic)
                     fabric.clip_gradients(
-                        critic_model, critic_optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True
+                        agent.critic, critic_optimizer, max_norm=algo_cfg.gradient_clip_val, error_if_nonfinite=True
                     )
                     critic_optimizer.step()
                     critic_optimizer.zero_grad(set_to_none=True)
@@ -293,8 +262,8 @@ def main(fabric: L.Fabric, cfg: DictConfig):
         with torch.no_grad():
             metrics.info_rollout_time.update(time_rollout)
             metrics.info_ppo_time.update(time_ppo)
-            metrics.train_actor_loss.update(policy_loss.item())
-            metrics.train_critic_loss.update(value_loss.item())
+            metrics.train_actor_loss.update(p_loss.item())
+            metrics.train_critic_loss.update(v_loss.item())
             metrics.info_actor_grad_norm.update(actor_grads)
             metrics.info_critic_grad_norm.update(critic_grads)
             metrics.info_kl_coeff.update(kl_controller.value)
@@ -302,8 +271,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
             if fabric.is_global_zero:
                 gen_text, score = generate(
-                    actor_model=actor_model,
-                    reward_model=reward_model,
+                    agent=agent,
                     tokenizer=tokenizer,
                     generation_config=eval_generation_config,
                     example_prompt=example_prompt,
@@ -327,7 +295,7 @@ def main(fabric: L.Fabric, cfg: DictConfig):
                 iterator.set_description(description)
 
         if k > 0 and (k % algo_cfg.save_interval == 0 or last_step):
-            checkpoint_model: ActorModel = actor_model.module
+            checkpoint_model: ActorModel = agent.actor.module
             checkpoint_model.save_checkpoint(
                 fabric=fabric,
                 experiment_dir=experiment_dir,

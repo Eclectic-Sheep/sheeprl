@@ -196,6 +196,11 @@ def validate_dataset(fabric: lightning.Fabric, data_cfg: DataConfig) -> DataProc
         else:
             open_config = OmegaConf.load(config_path)
             loaded_dataset_cfg = DataConfig(**open_config)
+            # TODO: improve this check
+            # It is most efficient way to check if the config has changed
+            # However, if you are using the same architecture (such as GPT2) with
+            # gpt2-large and gpt2-xlarge as different model names it will be
+            # also triggered.
             if data_cfg != loaded_dataset_cfg:
                 diffs = {}
                 for k, v in asdict(data_cfg).items():
@@ -215,9 +220,10 @@ def validate_dataset(fabric: lightning.Fabric, data_cfg: DataConfig) -> DataProc
     # TODO: check if can be avoided
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     data_processor.tokenizer = prepare_tokenizer(data_cfg.tokenizer_name)
-    if create_dataset:
+    if create_dataset and fabric.is_global_zero:
         fabric.print(f"Creating new dataset in {full_path}")
         data_processor.process()
         OmegaConf.save(data_cfg, full_path / "config.yaml", resolve=True)
+    fabric.barrier()
 
     return data_processor
