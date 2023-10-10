@@ -102,6 +102,7 @@ class ReplayBuffer:
         dtype: Optional[torch.dtype] = None,
         clone: bool = False,
         device: Union[str, torch.dtype] = "cpu",
+        from_numpy: bool = False,
     ) -> Dict[str, Tensor]:
         """Converts the replay buffer to a dictionary mapping string to torch.Tensor.
 
@@ -119,11 +120,17 @@ class ReplayBuffer:
         """
         buf = {}
         for k, v in self.buffer.items():
-            torch_v = torch.as_tensor(
-                v,
-                dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                device=device,
-            )
+            if from_numpy:
+                torch_v = torch.from_numpy(v).to(
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
+            else:
+                torch_v = torch.as_tensor(
+                    v,
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
             if clone:
                 torch_v = torch_v.clone()
             buf[k] = torch_v
@@ -179,12 +186,12 @@ class ReplayBuffer:
                     last_batch_shape = current_batch_shape
         data_len = next(iter(data.values())).shape[0]
         next_pos = (self._pos + data_len) % self._buffer_size
-        if next_pos <= self._pos or (data_len >= self._buffer_size and not self._full):
+        if next_pos <= self._pos or (data_len > self._buffer_size and not self._full):
             idxes = np.array(list(range(self._pos, self._buffer_size)) + list(range(0, next_pos)))
         else:
             idxes = np.array(range(self._pos, next_pos))
         if data_len > self._buffer_size:
-            data_to_store = data[-self._buffer_size - next_pos :]
+            data_to_store = {k: v[-self._buffer_size - next_pos :] for k, v in data.items()}
         else:
             data_to_store = data
         if self._memmap and self.empty:
@@ -266,7 +273,7 @@ class ReplayBuffer:
         sample_next_obs: bool = False,
         dtype: Optional[torch.dtype] = None,
         device: Union[str, torch.dtype] = "cpu",
-        from_numpy: bool = True,
+        from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
         samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone)
@@ -662,7 +669,7 @@ class EnvIndipendentReplayBuffer:
         sequence_length: int = 1,
         dtype: Optional[torch.dtype] = None,
         device: Union[str, torch.dtype] = "cpu",
-        from_numpy: bool = True,
+        from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
         samples = self.sample(

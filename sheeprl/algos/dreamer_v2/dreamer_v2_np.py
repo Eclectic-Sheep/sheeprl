@@ -765,7 +765,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     else cfg.algo.per_rank_gradient_steps,
                     dtype=None,
                     device=fabric.device,
-                    from_numpy=True,
+                    from_numpy=False,
                 )
             else:
                 local_data = rb.sample(

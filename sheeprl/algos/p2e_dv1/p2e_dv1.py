@@ -741,7 +741,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = obs
         step_data["rewards"] = clip_rewards_fn(rewards)
         rb.add(step_data[None, ...])
 
