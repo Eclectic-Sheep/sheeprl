@@ -213,14 +213,14 @@ class ReplayBuffer:
                     shape=(self._buffer_size, self._n_envs, *v.shape[2:]),
                     mode=self._memmap_mode,
                 )
-                self.buffer[k][idxes, :] = data_to_store[k]
+                self.buffer[k][idxes] = data_to_store[k]
         elif self.empty:
             for k, v in data_to_store.items():
                 self.buffer[k] = np.empty(shape=(self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype)
-                self.buffer[k][idxes, :] = data_to_store[k]
+                self.buffer[k][idxes] = data_to_store[k]
         else:
             for k, v in data_to_store.items():
-                self.buffer[k][idxes, :] = data_to_store[k]
+                self.buffer[k][idxes] = data_to_store[k]
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
@@ -254,7 +254,7 @@ class ReplayBuffer:
             first_range_end = self._pos - 1 if sample_next_obs else self._pos
             second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
             valid_idxes = np.array(list(range(0, first_range_end)) + list(range(self._pos, second_range_end)))
-            batch_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_size,))]
+            batch_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_size,), dtype=np.intp)]
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
             if max_pos_to_sample == 0:
@@ -262,7 +262,7 @@ class ReplayBuffer:
                     "You want to sample the next observations, but one sample has been added to the buffer. "
                     "Make sure that at least two samples are added."
                 )
-            batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size,))
+            batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size,), dtype=np.intp)
         return self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs, clone=clone)
 
     @torch.no_grad()
@@ -298,10 +298,11 @@ class ReplayBuffer:
     ) -> Dict[str, np.ndarray]:
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
-        env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),))
         samples: Dict[str, np.ndarray] = {}
+        env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),), dtype=np.intp)
+        flattened_idxes = (batch_idxes * self.n_envs + env_idxes).flat
         for k, v in self.buffer.items():
-            samples[k] = v[batch_idxes, env_idxes]
+            samples[k] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_idxes, axis=0)
             if clone:
                 samples[k] = samples[k].copy()
             if sample_next_obs:
@@ -444,13 +445,13 @@ class SequentialReplayBuffer(ReplayBuffer):
             second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
             valid_idxes = np.array(list(range(0, first_range_end)) + list(range(self._pos, second_range_end)))
             # start_idxes are the indices of the first elements of the sequences
-            start_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_dim,))]
+            start_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_dim,), dtype=np.intp)]
         else:
             # when the buffer is not full, we need to start the sequence so that it does not go out of bounds
-            start_idxes = self._rng.integers(0, self._pos - sequence_length + 1, size=(batch_dim,))
+            start_idxes = self._rng.integers(0, self._pos - sequence_length + 1, size=(batch_dim,), dtype=np.intp)
 
         # chunk_length contains the relative indices of the sequence (0, 1, ..., sequence_length-1)
-        chunk_length = np.arange(sequence_length).reshape(1, -1)
+        chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
         idxes = (start_idxes.reshape(-1, 1) + chunk_length) % self.buffer_size
 
         # (n_samples, sequence_length, batch_size)
@@ -472,9 +473,9 @@ class SequentialReplayBuffer(ReplayBuffer):
 
         # Each sequence must come from the same environment
         if self._n_envs == 1:
-            env_idxes = np.zeros((np.prod(batch_shape),), dtype=batch_idxes.dtype)
+            env_idxes = np.zeros((np.prod(batch_shape),), dtype=np.intp)
         else:
-            env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],))
+            env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],), dtype=np.intp)
             env_idxes = np.reshape(env_idxes, (-1, 1))
             env_idxes = np.tile(env_idxes, (1, sequence_length))
             env_idxes = np.ravel(env_idxes)
