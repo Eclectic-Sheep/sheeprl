@@ -31,6 +31,7 @@ def standard_args():
         "env.num_envs=1",
         "fabric.devices=auto",
         f"env.sync_env={_IS_WINDOWS}",
+        "env.capture_video=False",
     ]
 
 
@@ -92,7 +93,6 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -131,7 +131,6 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -178,7 +177,6 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "algo.actor.network_frequency=1",
         "algo.decoder.update_freq=1",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -221,7 +219,6 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -261,7 +258,6 @@ def test_ppo(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -292,7 +288,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -316,11 +311,12 @@ def test_ppo_recurrent(standard_args, start_time):
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_recurrent",
-        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.rollout_steps=2",
         "per_rank_batch_size=1",
+        "per_rank_sequence_length=2",
+        "algo.update_epochs=2",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        "env.capture_video=False",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -358,7 +354,8 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.world_model.encoder.cnn_channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -409,7 +406,8 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.world_model.encoder.cnn_channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -469,7 +467,8 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "cnn_keys.encoder=[rgb]",
         "algo.per_rank_pretrain_steps=1",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -532,7 +531,8 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.per_rank_pretrain_steps=1",
         "algo.layer_norm=True",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -588,7 +588,8 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.layer_norm=True",
         "algo.train_every=1",
         f"buffer.checkpoint={checkpoint_buffer}",
-        "env.capture_video=False",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
     ]
 
     with mock.patch.object(sys, "argv", args):

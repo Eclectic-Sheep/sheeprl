@@ -9,11 +9,11 @@ from lightning import Fabric
 from lightning.fabric.accelerators.tpu import TPUAccelerator
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from lightning.fabric.strategies.ddp import DDPStrategy
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.registry import tasks
-from sheeprl.utils.utils import print_config
+from sheeprl.utils.utils import dotdict, print_config
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
@@ -25,6 +25,7 @@ def run(cfg: DictConfig):
             "`python sheeprl.py fabric.strategy=...`"
         )
     print_config(cfg)
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -60,7 +61,7 @@ def run(cfg: DictConfig):
             cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
         logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-        logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        logger.log_hyperparams(cfg)
         fabric = Fabric(**cfg.fabric, loggers=logger, callbacks=[CheckpointCallback()])
     else:
         if "sac_ae" in module:
@@ -76,8 +77,7 @@ def run(cfg: DictConfig):
                 strategy = "auto"
             else:
                 strategy = DDPStrategy(find_unused_parameters=True)
-            with open_dict(cfg):
-                cfg.fabric.pop("strategy", None)
+            cfg.fabric.pop("strategy", None)
             fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])

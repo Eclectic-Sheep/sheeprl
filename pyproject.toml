@@ -2,7 +2,7 @@
 create = true
 in-project = true
 [build-system]
-requires = ["setuptools >= 61.0.0"]
+requires = ["setuptools >= 61.0.0", "swig==4.*"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -22,7 +22,7 @@ classifiers = ["Programming Language :: Python"]
 dependencies = [
   "gymnasium[box2d]==0.29.*",
   "moviepy@git+https://github.com/Zulko/moviepy.git",
-  "tensordict==0.1.*",
+  "tensordict==0.2.*",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
   "lightning==2.0.*",
@@ -31,6 +31,7 @@ dependencies = [
   "torchmetrics==1.1.*",
   "rich==13.5.*",
   "opencv-python==4.8.0.*",
+  "torch==2.0.*"
 ]
 dynamic = ["version"]
 
@@ -75,14 +76,8 @@ rlhf = [
   "einops==0.6.1",
 ]
 minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
-minerl = ["minerl==0.4.4"]
-diambra = [
-  "wheel==0.38.4",
-  "setuptools<=66.0.0",
-  "gym==0.21.0",
-  "diambra==0.0.16",
-  "diambra-arena==2.1.2",
-]
+minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
+diambra = ["diambra==0.0.16", "diambra-arena==2.2.2"]
 crafter = ["crafter==1.8.1"]
 
 [tool.ruff]

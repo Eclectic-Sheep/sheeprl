@@ -1,11 +1,11 @@
 import copy
 import time
 from collections import deque
-from typing import Any, Callable, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
-from gymnasium.core import Env
+from gymnasium.core import Env, RenderFrame
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -48,7 +48,6 @@ class ActionRepeat(gym.Wrapper):
         super().__init__(env)
         if amount <= 0:
             raise ValueError("`amount` should be a positive integer")
-        self._env = env
         self._amount = amount
 
     @property
@@ -56,7 +55,7 @@ class ActionRepeat(gym.Wrapper):
         return self._amount
 
     def __getattr__(self, name):
-        return getattr(self._env, name)
+        return getattr(self.env, name)
 
     def step(self, action):
         done = False
@@ -64,7 +63,7 @@ class ActionRepeat(gym.Wrapper):
         current_step = 0
         total_reward = 0.0
         while current_step < self._amount and not (done or truncated):
-            obs, reward, done, truncated, info = self._env.step(action)
+            obs, reward, done, truncated, info = self.env.step(action)
             total_reward += reward
             current_step += 1
         return obs, total_reward, done, truncated, info
@@ -131,19 +130,18 @@ class FrameStack(gym.Wrapper):
             raise RuntimeError(
                 f"Expected an observation space of type gym.spaces.Dict, got: {type(env.observation_space)}"
             )
-        self._env = env
         self._num_stack = num_stack
         self._cnn_keys = []
         self._dilation = dilation
-        self.observation_space = copy.deepcopy(self._env.observation_space)
-        for k, v in self._env.observation_space.spaces.items():
+        self.observation_space = copy.deepcopy(self.env.observation_space)
+        for k, v in self.env.observation_space.spaces.items():
             if cnn_keys and len(v.shape) == 3:
                 self._cnn_keys.append(k)
                 self.observation_space[k] = gym.spaces.Box(
-                    np.repeat(self._env.observation_space[k].low[None, ...], num_stack, axis=0),
-                    np.repeat(self._env.observation_space[k].high[None, ...], num_stack, axis=0),
-                    (self._num_stack, *self._env.observation_space[k].shape),
-                    self._env.observation_space[k].dtype,
+                    np.repeat(self.env.observation_space[k].low[None, ...], num_stack, axis=0),
+                    np.repeat(self.env.observation_space[k].high[None, ...], num_stack, axis=0),
+                    (self._num_stack, *self.env.observation_space[k].shape),
+                    self.env.observation_space[k].dtype,
                 )
 
         if self._cnn_keys is None or len(self._cnn_keys) == 0:
@@ -156,7 +154,7 @@ class FrameStack(gym.Wrapper):
         return np.stack(list(frames_subset), axis=0)
 
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, truncated, infos = self._env.step(action)
+        obs, reward, done, truncated, infos = self.env.step(action)
         for k in self._cnn_keys:
             self._frames[k].append(obs[k])
             if (
@@ -174,7 +172,7 @@ class FrameStack(gym.Wrapper):
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None, **kwargs
     ) -> Tuple[Any, Dict[str, Any]]:
-        obs, infos = self._env.reset(seed=seed, **kwargs)
+        obs, infos = self.env.reset(seed=seed, **kwargs)
         [self._frames[k].clear() for k in self._cnn_keys]
         for k in self._cnn_keys:
             [self._frames[k].append(obs[k]) for _ in range(self._num_stack * self._dilation)]
@@ -200,25 +198,24 @@ class RewardAsObservationWrapper(gym.Wrapper):
 
     def __init__(self, env: Env) -> None:
         super().__init__(env)
-        self._env = env
         reward_range = (
-            self._env.reward_range or (-np.inf, np.inf) if hasattr(self._env, "reward_range") else (-np.inf, np.inf)
+            self.env.reward_range or (-np.inf, np.inf) if hasattr(self.env, "reward_range") else (-np.inf, np.inf)
         )
         # The reward is assumed to be a scalar
-        if isinstance(self._env.observation_space, gym.spaces.Dict):
+        if isinstance(self.env.observation_space, gym.spaces.Dict):
             self.observation_space = gym.spaces.Dict(
                 {
                     "reward": gym.spaces.Box(*reward_range, (1,), np.float32),
-                    **{k: v for k, v in self._env.observation_space.items()},
+                    **{k: v for k, v in self.env.observation_space.items()},
                 }
             )
         else:
             self.observation_space = gym.spaces.Dict(
-                {"obs": self._env.observation_space, "reward": gym.spaces.Box(*reward_range, (1,), np.float32)}
+                {"obs": self.env.observation_space, "reward": gym.spaces.Box(*reward_range, (1,), np.float32)}
             )
 
     def __getattr__(self, name):
-        return getattr(self._env, name)
+        return getattr(self.env, name)
 
     def _convert_obs(self, obs: Any, reward: Union[float, np.ndarray]) -> Dict[str, Any]:
         reward_obs = (np.array(reward) if not isinstance(reward, np.ndarray) else reward).reshape(-1)
@@ -232,11 +229,25 @@ class RewardAsObservationWrapper(gym.Wrapper):
         return obs
 
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, truncated, infos = self._env.step(action)
+        obs, reward, done, truncated, infos = self.env.step(action)
         return self._convert_obs(obs, copy.deepcopy(reward)), reward, done, truncated, infos
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
-        obs, infos = self._env.reset(seed=seed, options=options)
+        obs, infos = self.env.reset(seed=seed, options=options)
         return self._convert_obs(obs, 0), infos
+
+
+class GrayscaleRenderWrapper(gym.Wrapper):
+    def __init__(self, env: Env):
+        super().__init__(env)
+
+    def render(self) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
+        frame = super().render()
+        if isinstance(frame, np.ndarray):
+            if len(frame.shape) == 2:
+                frame = frame[..., np.newaxis]
+            if len(frame.shape) == 3 and frame.shape[-1] == 1:
+                frame = frame.repeat(3, axis=-1)
+        return frame

@@ -10,6 +10,28 @@ from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
 
 
+class dotdict(dict):
+    """
+    A dictionary supporting dot notation.
+    """
+
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for k, v in self.items():
+            if isinstance(v, dict):
+                self[k] = dotdict(v)
+
+    def __getstate__(self):
+        return self
+
+    def __setstate__(self, state):
+        self.update(state)
+
+
 @torch.no_grad()
 def gae(
     rewards: Tensor,
@@ -68,10 +90,16 @@ def init_weights(m: nn.Module):
 
 
 @torch.no_grad()
-def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None):
-    if mask is None:
+def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None) -> Tensor:
+    unmasked = mask is None
+    if unmasked:
         mask = torch.ones_like(tensor, dtype=torch.bool)
-    return (tensor - tensor[mask].mean()) / (tensor[mask].std() + eps)
+    masked_tensor = tensor[mask]
+    normalized = (masked_tensor - masked_tensor.mean()) / (masked_tensor.std() + eps)
+    if unmasked:
+        return normalized.reshape_as(mask)
+    else:
+        return normalized
 
 
 def polynomial_decay(
@@ -134,21 +162,3 @@ def rank_zero_print(*args, **kwargs):
     print(*args, **kwargs)
     if kwargs.get("file") is None:
         print(*args, **kwargs, file=open("log.txt", "a"))
-
-
-class dotdict(dict):
-
-    """dot.notation access to dictionary attributes"""
-
-    def __init__(self, d):
-        for k, v in d.items():
-            if isinstance(v, dict):
-                d[k] = dotdict(v)
-
-        super().__init__(d)
-
-    __getattr__ = dict.get
-
-    __setattr__ = dict.__setitem__
-
-    __delattr__ = dict.__delitem__

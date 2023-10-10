@@ -3,6 +3,7 @@ import os
 import pathlib
 import warnings
 from math import prod
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -10,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -27,6 +28,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import dotdict
 
 
 def train(
@@ -37,7 +39,7 @@ def train(
     alpha_optimizer: Optimizer,
     rb: ReplayBuffer,
     aggregator: MetricAggregator,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
     # We sample one time to reduce the communications between processes
@@ -124,7 +126,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by DroQ agent, since it does not take "
@@ -145,7 +147,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
@@ -160,7 +162,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -198,6 +200,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
         hidden_size=cfg.algo.actor.hidden_size,
         action_low=action_space.low,
         action_high=action_space.high,
@@ -363,17 +366,19 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters

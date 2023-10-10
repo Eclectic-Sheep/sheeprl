@@ -2,7 +2,7 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Dict
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from lightning.pytorch.utilities.seed import isolate_rng
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
@@ -32,7 +32,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import init_weights, polynomial_decay
+from sheeprl.utils.utils import dotdict, init_weights, polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -48,7 +48,7 @@ def train(
     critic_task_optimizer: _FabricOptimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -103,6 +103,7 @@ def train(
     """
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
@@ -135,15 +136,30 @@ def train(
     latent_states = torch.cat((posteriors, recurrent_states), -1)
 
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
-    qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
+    qo = {
+        k: Independent(
+            Normal(rec_obs, 1, validate_args=validate_args), len(rec_obs.shape[2:]), validate_args=validate_args
+        )
+        for k, rec_obs in decoded_information.items()
+    }
+    qr = Independent(
+        Normal(world_model.reward_model(latent_states.detach()), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=False), 1)
+        qc = Independent(
+            Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         qc = continue_targets = None
-    p = Independent(Normal(posteriors_mean, posteriors_std), 1)
-    q = Independent(Normal(priors_mean, priors_std), 1)
+    p = Independent(
+        Normal(posteriors_mean, posteriors_std, validate_args=validate_args), 1, validate_args=validate_args
+    )
+    q = Independent(Normal(priors_mean, priors_std, validate_args=validate_args), 1, validate_args=validate_args)
 
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -184,7 +200,9 @@ def train(
         ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
             out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
-            next_obs_embedding_dist = Independent(Normal(out, 1), 1)
+            next_obs_embedding_dist = Independent(
+                Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
+            )
             loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
         loss.backward()
         if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
@@ -236,7 +254,9 @@ def train(
 
         if cfg.algo.world_model.use_continues and world_model.continue_model:
             predicted_continues = Independent(
-                Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1
+                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
             ).mean
         else:
             predicted_continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
@@ -272,7 +292,11 @@ def train(
         actor_exploration_optimizer.step()
         aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
 
-        qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
+        qv = Independent(
+            Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         critic_exploration_optimizer.zero_grad(set_to_none=True)
         value_loss_exploration = critic_loss(qv, lambda_values.detach(), discount[..., 0])
         fabric.backward(value_loss_exploration)
@@ -306,7 +330,11 @@ def train(
     predicted_values = critic_task(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(Bernoulli(logits=world_model.continue_model(imagined_trajectories)), 1).mean
+        predicted_continues = Independent(
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        ).mean
     else:
         predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
@@ -336,7 +364,11 @@ def train(
     actor_task_optimizer.step()
     aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
 
-    qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
+    qv = Independent(
+        Normal(critic_task(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
     critic_task_optimizer.zero_grad(set_to_none=True)
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
@@ -361,7 +393,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -373,7 +405,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // world_size
         cfg.root_dir = root_dir
@@ -388,7 +420,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -709,7 +741,6 @@ def main(fabric: Fabric, cfg: DictConfig):
 
         step_data["dones"] = dones
         step_data["actions"] = actions
-        step_data["observations"] = obs
         step_data["rewards"] = clip_rewards_fn(rewards)
         rb.add(step_data[None, ...])
 
@@ -784,17 +815,19 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters

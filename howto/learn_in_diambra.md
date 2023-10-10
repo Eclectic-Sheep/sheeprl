@@ -45,7 +45,7 @@ Each environment has its own observation and action space, so it is reccomended 
 >
 > You have to be [registered](https://diambra.ai/register/) and logged in to acces the [DIAMRA documentation](https://docs.diambra.ai/).
 
-The observation space is slightly modified to be compatible with our algorithms, in particular, the `gym.spaces.Box` observations are converted in `gymnasium.spaces.Box` observations, mantaining the dimensions, the range and the type of the observations. Moreover, the `gym.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gym.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
+The observation space is slightly modified to be compatible with our algorithms, in particular, the `gymnasium.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gymnasium.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
 
 > **Note**
 >
@@ -61,7 +61,7 @@ diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.n
 The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the diambra configs with the argument `env=diambra`, then set the `env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.id` argument to `doapp` (i.e., `env.id=doapp`).
 
 ```bash
-diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4
+diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 cnn_keys.encoder=[frame]
 ```
 
 Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
@@ -72,7 +72,7 @@ To modify the default settings or add other wrappers, you have to add the settin
 For insance, in the following example, we create the `custom_exp.yaml` file in the `sheeprl/configs/exp` folder where the we select the diambra environment, in addition, the player one is selected and a step ratio of $5$ is choosen. Moreover, the rewards are normalized by a factor of $0.3$.
 
 
-```diff
+```yaml
 # @package _global_
 
 defaults:
@@ -81,15 +81,15 @@ defaults:
     - _self_
 
 env:
-    env:
     id: doapp
+    wrapper:
     diambra_settings:
         characters: Kasumi
         step_ratio: 5
-        player: P1
+        role: diambra.arena.Roles.P1
     diambra_wrappers:
-        reward_normalization: True
-        reward_normalization_factor: 0.3
+        normalize_reward: True
+        normalization_factor: 0.3
 ```
 
 Now, to run your experiment, you have to execute the following command:
@@ -102,18 +102,20 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 > Some settings and wrappers are included in the cli arguments when the command is launched. These settings/wrappers cannot be specified in the `diambra_settings` and `diambra_wrappers` parameters, respectively.
 > The settings/wrappers you cannot specify in the `diambra_settings` and `diambra_wrappers` parameters are the following:
 > * `action_space` (settings): you can set it with the `env.wrapper.action_space` argument.
-> * `attack_but_combination` (settings): you can set it with the `env.wrapper.attack_but_combination` argument.
-> * `frame_shape` (settings): you can set it with the `env.screen_size` argument.
+> * `n_players` (settings): you cannot set it, since it is always `1`.
+> * `frame_shape` (settings and wrappers): you can set it with the `env.screen_size` argument.
 > * `flatten` (wrappers): you cannot set it, since it is always `True`.
-> * `sticky_actions` (wrappers): you can set it with the `env.action_repeat` argument.
-> * `frame_stack` (wrappers): you can set it with the `env.frame_stack` argument.
+> * `repeat_action` (wrappers): you can set it with the `env.action_repeat` argument.
+> * `stack_frames` (wrappers): you can set it with the `env.stack_frames` argument.
 > * `dilation` (wrappers): you can set it with the `env.frame_stack_dilation` argument
 >
-> When you set the `action_repeat` cli argument greater than one (i.e., the `sticky_actions` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
+> When you set the `action_repeat` cli argument greater than one (i.e., the `repeat_action` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
+>
+> You can increase the performance of the DIAMBRA engine with the `env.wrapper.increase_performance` parameter. When set to `True` the engine is faster, but the recorded video will have the dimension specified by the `env.screen_size` parameter. 
 >
 > **Important**
 >
-> You **must** set the **`sync_env`** cli argument to **`True`**.
+> If you want to use the `AsyncVectorEnv` ([https://gymnasium.farama.org/api/vector/#async-vector-env](https://gymnasium.farama.org/api/vector/#async-vector-env)), you **must** set the **`env.wrapper.diambra_settings.splash_screen`** cli argument to **`False`**. Moreover, you must set the number of container to `env.num_envs + 1` (i.e., you must set the `-s` cli argument as specified before).
 
 ## Headless machines
 

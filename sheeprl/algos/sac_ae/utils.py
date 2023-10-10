@@ -1,9 +1,8 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from omegaconf import DictConfig
 from torch import Tensor
 
 from sheeprl.utils.env import make_env
@@ -13,7 +12,7 @@ if TYPE_CHECKING:
 
 
 @torch.no_grad()
-def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: DictConfig):
+def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any]):
     env = make_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys

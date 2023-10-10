@@ -9,6 +9,7 @@ In the first case the observations are returned in form of python dictionary, wh
 ### Both observations
 The algorithms that can work with both image and vector observations are specified in [Table 1](../README.md) in the README, and are reported here:
 * PPO
+* PPO Recurrent
 * SAC-AE
 * Dreamer-V1
 * Dreamer-V2
@@ -26,9 +27,9 @@ You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decod
 >
 > We recommend to read [this](./work_with_multi-encoder_multi-decoder.md) to know how the encoder and decoder work with more observations.
 
-For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `P1_oppHealth` and `P1_ownHealth` as vector observation, you have to run the following command:
+For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `opp_health` and `own_health` as vector observation, you have to run the following command:
 ```bash
-python sheeprl.py exp=ppo env=diambra env.id=doapp cnn_keys.encoder=[frame] mlp_keys.encoder=[P1_oppHealth,P1_ownHealth]
+diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 cnn_keys.encoder=[frame] mlp_keys.encoder=[opp_health,own_health]
 ```
 
 > **Note**
@@ -39,7 +40,7 @@ It is important to know the observations the environment provides, for instance,
 > **Note**
 >
 > For some environments provided by gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the `cnn_keys` args:
-> `python sheeprl.py cnn_keys.encoder=[rgb]`
+> `python sheeprl.py exp=... cnn_keys.encoder=[rgb]`
 
 #### Frame Stack
 For image observations it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
@@ -74,17 +75,16 @@ python sheeprl.py exp=dreamer_v3 env=minerl env.id=custom_navigate mlp_keys.enco
 
 ### Vector observations algorithms
 The algorithms which works with only vector observations are reported here:
-* PPO Recurrent
 * SAC
 * Droq
 
-For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *PPO Recurrent* algorithm on the `LunarLander-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
+For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *SAC* algorithm on the `LunarLanderContinuous-v2` environment, but you cannot train it on the `CarRacing-v2` environment.
 
 For these algorithms, you have to specify the *mlp* keys you want to encode. As usual you have to specify them through the `mlp_keys.encoder` and `mlp_keys.decoder` arguments (in the command or in the configs).
 
-For instance, you can train a SAC agent on the `LunarLander-v2` with the following command:
+For instance, you can train a SAC agent on the `LunarLanderContinuous-v2` with the following command:
 ```bash
-lightning run model sheeprl.py exp=sac env=gym env.id=LunarLander-v2 mlp_keys.encoder=[state]
+python sheeprl.py exp=sac env=gym env.id=LunarLanderContinuous-v2 mlp_keys.encoder=[state]
 ```
 
 

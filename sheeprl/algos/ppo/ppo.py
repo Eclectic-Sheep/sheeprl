@@ -2,7 +2,7 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Union
+from typing import Any, Dict, Union
 
 import gymnasium as gym
 import hydra
@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
@@ -26,7 +26,7 @@ from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -35,7 +35,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
 ):
     """Train the agent on the data collected from the environment."""
     indexes = list(range(data.shape[0]))
@@ -105,7 +105,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO agent, since it does not take "
@@ -130,7 +130,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
         cfg.root_dir = root_dir
@@ -141,7 +141,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -188,6 +188,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         cnn_keys=cfg.cnn_keys.encoder,
         mlp_keys=cfg.mlp_keys.encoder,
         screen_size=cfg.env.screen_size,
+        distribution_cfg=cfg.distribution,
         is_continuous=is_continuous,
     )
 
@@ -296,20 +297,27 @@ def main(fabric: Fabric, cfg: DictConfig):
                     actions = torch.cat(actions, -1)
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions)
+                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
-                    real_next_obs = {}
-                    for final_obs in info["final_observation"]:
-                        if final_obs is not None:
-                            for k, v in final_obs.items():
-                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                                if k in cfg.cnn_keys.encoder:
-                                    torch_v = torch_v / 255.0 - 0.5
-                                real_next_obs[k] = torch_v
+                    real_next_obs = {
+                        k: torch.empty(
+                            len(truncated_envs),
+                            *observation_space[k].shape,
+                            dtype=torch.float32,
+                            device=device,
+                        )
+                        for k in obs_keys
+                    }
+                    for i, truncated_env in enumerate(truncated_envs):
+                        for k, v in info["final_observation"][truncated_env].items():
+                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                            if k in cfg.cnn_keys.encoder:
+                                torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
+                            real_next_obs[k][i] = torch_v
                     with torch.no_grad():
                         vals = agent.module.get_value(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += vals
+                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
                 rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
@@ -408,17 +416,19 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters

@@ -6,7 +6,7 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Dict, Sequence
+from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
@@ -15,11 +15,11 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
@@ -28,12 +28,13 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import dotdict, polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -51,7 +52,7 @@ def train(
     critic_optimizer: Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
     actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
@@ -115,6 +116,7 @@ def train(
 
     batch_size = cfg.per_rank_batch_size
     sequence_length = cfg.per_rank_sequence_length
+    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -162,14 +164,29 @@ def train(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # Compute the distribution over the reconstructed observations
-    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    po = {
+        k: Independent(
+            Normal(rec_obs, 1, validate_args=validate_args),
+            len(rec_obs.shape[2:]),
+            validate_args=validate_args,
+        )
+        for k, rec_obs in decoded_information.items()
+    }
 
     # Compute the distribution over the rewards
-    pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+    pr = Independent(
+        Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # Compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states), validate_args=False), 1)
+        pc = Independent(
+            Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
         continue_targets = (1 - data["dones"]) * cfg.algo.gamma
     else:
         pc = continue_targets = None
@@ -194,6 +211,7 @@ def train(
         pc,
         continue_targets,
         cfg.algo.world_model.discount_scale_factor,
+        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -213,11 +231,25 @@ def train(
     aggregator.update("State/kl", kl.mean().detach())
     aggregator.update(
         "State/post_entropy",
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
     aggregator.update(
         "State/prior_entropy",
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
+        Independent(
+            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+            1,
+            validate_args=validate_args,
+        )
+        .entropy()
+        .mean()
+        .detach(),
     )
 
     # Behaviour Learning
@@ -276,11 +308,21 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # Predict values and rewards
-    predicted_target_values = Independent(Normal(target_critic(imagined_trajectories), 1), 1).mode
-    predicted_rewards = Independent(Normal(world_model.reward_model(imagined_trajectories), 1), 1).mode
+    predicted_target_values = Independent(
+        Normal(target_critic(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mode
+    predicted_rewards = Independent(
+        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    ).mode
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=False), 1
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            1,
+            validate_args,
         ).mean
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
@@ -354,7 +396,11 @@ def train(
     # Predict the values distribution only for the first H (horizon)
     # imagined states (to match the dimension with the lambda values),
     # It removes the last imagined state in the trajectory because it is used for bootstrapping
-    qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
+    qv = Independent(
+        Normal(critic(imagined_trajectories.detach()[:-1]), 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
 
     # Critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
@@ -375,7 +421,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -387,7 +433,7 @@ def main(fabric: Fabric, cfg: DictConfig):
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // world_size
         cfg.root_dir = root_dir
@@ -402,7 +448,7 @@ def main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -782,17 +828,19 @@ def main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters

@@ -66,7 +66,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: TensorDictBase,
     aggregator: MetricAggregator,
-    cfg: DictConfig,
+    cfg: Dict[str, Any],
 ):
     l1 = loss1(...)
     l2 = loss2(...)
@@ -82,7 +82,7 @@ def train(
 
 
 @register_algorithm(decoupled=False)
-def sota_main(fabric: Fabric, cfg: DictConfig):
+def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -93,7 +93,7 @@ def sota_main(fabric: Fabric, cfg: DictConfig):
     logger, log_dir = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
+        fabric.logger.log_hyperparams(cfg)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -244,17 +244,19 @@ def sota_main(fabric: Fabric, cfg: DictConfig):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters
@@ -431,7 +433,7 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.3.2"
+__version__ = "0.4.3"
 ```
 
 Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:

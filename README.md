@@ -14,7 +14,7 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
 | A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :construction:     |
 | PPO                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
 | SAC-AE                    | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
@@ -33,7 +33,7 @@ The actions supported by sheeprl agents are:
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :x:                | :heavy_check_mark: | :x:                |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | SAC                       | :heavy_check_mark: | :x:                | :x:                |
 | SAC-AE                    | :heavy_check_mark: | :x:                | :x:                |
 | DroQ                      | :heavy_check_mark: | :x:                | :x:                |
@@ -147,7 +147,7 @@ pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sh
 >
 > If you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 >
-> **MineRL**, **MineDojo**, and **DIAMBRA** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo,diambra]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` or `pip install -e .[diambra]` before running an experiment with the MineRL or MineDojo or DIAMBRA environment, respectively.
+> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively.
 
 </details>  
 

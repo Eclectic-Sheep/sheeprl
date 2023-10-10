@@ -3,6 +3,7 @@ import os
 import pathlib
 import warnings
 from datetime import timedelta
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -12,7 +13,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
@@ -28,12 +29,12 @@ from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
 
 
 @torch.no_grad()
 def player(
-    fabric: Fabric, cfg: DictConfig, world_collective: TorchCollective, player_trainer_collective: TorchCollective
+    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
     # Initialize the fabric object
     logger = fabric.logger
@@ -47,7 +48,7 @@ def player(
         run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
         ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
         cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
         cfg.root_dir = root_dir
@@ -102,6 +103,7 @@ def player(
         "cnn_keys": cfg.cnn_keys.encoder,
         "mlp_keys": cfg.mlp_keys.encoder,
         "screen_size": cfg.env.screen_size,
+        "distribution_cfg": cfg.distribution,
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)
@@ -197,7 +199,7 @@ def player(
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
-                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
+                        k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
                     }
                     actions, logprobs, _, values = agent(normalized_obs)
                     if is_continuous:
@@ -210,17 +212,24 @@ def player(
                 obs, rewards, dones, truncated, info = envs.step(real_actions)
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
-                    real_next_obs = {}
-                    for final_obs in info["final_observation"]:
-                        if final_obs is not None:
-                            for k, v in final_obs.items():
-                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                                if k in cfg.cnn_keys.encoder:
-                                    torch_v = torch_v / 255.0 - 0.5
-                                real_next_obs[k] = torch_v
+                    real_next_obs = {
+                        k: torch.empty(
+                            len(truncated_envs),
+                            *observation_space[k].shape,
+                            dtype=torch.float32,
+                            device=device,
+                        )
+                        for k in obs_keys
+                    }
+                    for i, truncated_env in enumerate(truncated_envs):
+                        for k, v in info["final_observation"][truncated_env].items():
+                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                            if k in cfg.cnn_keys.encoder:
+                                torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
+                            real_next_obs[k][i] = torch_v
                     with torch.no_grad():
-                        vals = agent.get_value(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += vals
+                        vals = agent.module.get_value(real_next_obs).cpu().numpy()
+                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
                 rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
@@ -259,7 +268,7 @@ def player(
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
+        normalized_obs = {k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
         next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
             rb["rewards"],
@@ -351,7 +360,7 @@ def trainer(
     # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
-    cfg: DictConfig = data[0]
+    cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
     fabric = Fabric(
@@ -465,7 +474,7 @@ def trainer(
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
                         normalized_obs = {
-                            k: batch[k] / 255 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
+                            k: batch[k] / 255.0 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
                             for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
                         }
                         _, logprobs, entropy, new_values = agent(
@@ -575,7 +584,7 @@ def trainer(
 
 
 @register_algorithm(decoupled=True)
-def main(fabric: Fabric, cfg: DictConfig):
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "

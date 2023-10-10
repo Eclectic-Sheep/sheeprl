@@ -52,8 +52,10 @@ def value_loss(
 ) -> Tensor:
     if not clip_vloss:
         values_pred = new_values
+        # return F.mse_loss(values_pred, returns, reduction=reduction)
     else:
         values_pred = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
+        # return torch.max((new_values - returns) ** 2, (values_pred - returns) ** 2).mean()
     return F.mse_loss(values_pred, returns, reduction=reduction)
 
 

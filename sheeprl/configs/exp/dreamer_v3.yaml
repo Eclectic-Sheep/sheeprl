@@ -18,3 +18,7 @@ checkpoint:
 buffer:
   size: 1000000
   checkpoint: False
+
+# Distribution
+distribution:
+  type: "auto"

@@ -20,3 +20,7 @@ buffer:
   type: sequential
   checkpoint: False
   prioritize_ends: False
+
+# Distribution
+distribution:
+  type: "auto"

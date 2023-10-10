@@ -1,13 +1,14 @@
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import gymnasium
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 
 
 class CNNEncoder(nn.Module):
@@ -62,16 +63,18 @@ class PPOAgent(nn.Module):
     def __init__(
         self,
         actions_dim: List[int],
-        obs_space: Dict[str, Any],
-        encoder_cfg: DictConfig,
-        actor_cfg: DictConfig,
-        critic_cfg: DictConfig,
+        obs_space: gymnasium.spaces.Dict,
+        encoder_cfg: Dict[str, Any],
+        actor_cfg: Dict[str, Any],
+        critic_cfg: Dict[str, Any],
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         screen_size: int,
+        distribution_cfg: Dict[str, Any],
         is_continuous: bool = False,
     ):
         super().__init__()
+        self.distribution_cfg = distribution_cfg
         self.actions_dim = actions_dim
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
         mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
@@ -138,7 +141,11 @@ class PPOAgent(nn.Module):
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
-            normal = Independent(Normal(mean, std), 1)
+            normal = Independent(
+                Normal(mean, std, validate_args=self.distribution_cfg.validate_args),
+                1,
+                validate_args=self.distribution_cfg.validate_args,
+            )
             if actions is None:
                 actions = normal.sample()
             else:
@@ -149,14 +156,16 @@ class PPOAgent(nn.Module):
             return tuple([actions]), log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1), values
         else:
             should_append = False
-            actions_dist: List[Distribution] = []
-            actions_entropies: List[Tensor] = []
             actions_logprobs: List[Tensor] = []
+            actions_entropies: List[Tensor] = []
+            actions_dist: List[Distribution] = []
             if actions is None:
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(pre_dist):
-                actions_dist.append(OneHotCategorical(logits=logits))
+                actions_dist.append(
+                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                )
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
                     actions.append(actions_dist[-1].sample())
@@ -179,4 +188,9 @@ class PPOAgent(nn.Module):
         if self.is_continuous:
             return [torch.chunk(pre_dist[0], 2, -1)[0]]
         else:
-            return tuple([OneHotCategorical(logits=logits).mode for logits in pre_dist])
+            return tuple(
+                [
+                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
+                    for logits in pre_dist
+                ]
+            )
