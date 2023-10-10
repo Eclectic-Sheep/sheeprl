@@ -301,9 +301,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
             if fabric.world_size > 1:
                 gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in gathered_data.items()}  # [G*B*World]
+            idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
             if world_size > 1:
                 dist_sampler: DistributedSampler = DistributedSampler(
-                    next(iter(gathered_data.values())).shape[0],
+                    idxes_to_sample,
                     num_replicas=world_size,
                     rank=fabric.global_rank,
                     shuffle=True,
@@ -315,7 +316,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=next(iter(gathered_data.values())).shape[0],
+                    sampler=idxes_to_sample,
                     batch_size=cfg.per_rank_batch_size,
                     drop_last=False,
                 )

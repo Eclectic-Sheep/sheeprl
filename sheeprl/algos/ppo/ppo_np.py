@@ -36,17 +36,17 @@ def train(
     cfg: Dict[str, Any],
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(next(iter(data.values())).shape[0]))
+    idxes_to_sample = list(range(next(iter(data.values())).shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
-            indexes,
+            idxes_to_sample,
             num_replicas=fabric.world_size,
             rank=fabric.global_rank,
             shuffle=True,
             seed=cfg.seed,
         )
     else:
-        sampler = RandomSampler(indexes)
+        sampler = RandomSampler(idxes_to_sample)
     sampler = BatchSampler(sampler, batch_size=cfg.per_rank_batch_size, drop_last=False)
 
     for epoch in range(cfg.algo.update_epochs):
@@ -349,7 +349,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Transform the data into PyTorch Tensors
-        local_data = rb.to_tensor(dtype=torch.float32, device=device)
+        local_data = rb.to_tensor(dtype=None, device=device)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
@@ -377,10 +377,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Gather all the tensors from all the world and reshape them
             gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(local_data)
             # Flatten the first three dimensions: [World_Size, Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=2) for k, v in gathered_data.items()}
+            gathered_data = {k: v.flatten(start_dim=0, end_dim=2).float() for k, v in gathered_data.items()}
         else:
             # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in local_data.items()}
+            gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
         with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
