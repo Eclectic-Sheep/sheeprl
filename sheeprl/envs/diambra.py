@@ -31,6 +31,7 @@ class DiambraWrapper(core.Env):
         diambra_wrappers: Dict[str, Any] = {},
         render_mode: str = "rgb_array",
         log_level: int = 0,
+        increase_performance: bool = True,
     ) -> None:
         super().__init__()
 
@@ -72,9 +73,12 @@ class DiambraWrapper(core.Env):
             **{
                 "flatten": True,
                 "repeat_action": repeat_action,
-                "frame_shape": screen_size + (int(grayscale),),
             },
         )
+        if increase_performance:
+            settings.frame_shape = screen_size + (int(grayscale),)
+        else:
+            wrappers.frame_shape = screen_size + (int(grayscale),)
         self._env = diambra.arena.make(id, settings, wrappers, rank=rank, render_mode=render_mode, log_level=log_level)
 
         # Observation and action space

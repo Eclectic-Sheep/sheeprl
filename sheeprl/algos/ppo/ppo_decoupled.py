@@ -199,7 +199,7 @@ def player(
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
-                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
+                        k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
                     }
                     actions, logprobs, _, values = agent(normalized_obs)
                     if is_continuous:
@@ -225,7 +225,7 @@ def player(
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.cnn_keys.encoder:
-                                torch_v = torch_v / 255.0 - 0.5
+                                torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
                         vals = agent.module.get_value(real_next_obs).cpu().numpy()
@@ -268,7 +268,7 @@ def player(
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        normalized_obs = {k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
+        normalized_obs = {k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
         next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
             rb["rewards"],
@@ -474,7 +474,7 @@ def trainer(
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
                         normalized_obs = {
-                            k: batch[k] / 255 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
+                            k: batch[k] / 255.0 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
                             for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
                         }
                         _, logprobs, entropy, new_values = agent(
