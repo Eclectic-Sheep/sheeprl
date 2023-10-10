@@ -55,7 +55,7 @@ def train(
                 batch = data[:, idxes]
                 mask = batch["mask"].unsqueeze(-1)
                 for k in cfg.cnn_keys.encoder:
-                    batch[k] = batch[k] / 255.0
+                    batch[k] = batch[k] / 255.0 - 0.5
 
                 _, logprobs, entropies, values, _ = agent(
                     {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
@@ -297,7 +297,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
-                        k: obs[k][None] / 255.0 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+                        k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
                     }  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
@@ -326,7 +326,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.cnn_keys.encoder:
-                                torch_v = torch_v / 255.0
+                                torch_v = torch_v.view(1, len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][0, i] = torch_v
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
@@ -386,7 +386,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {k: obs[k][None] / 255.0 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys}
+            normalized_obs = {
+                k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+            }
             feat = agent.module.feature_extractor(normalized_obs)
             rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
@@ -462,17 +464,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters

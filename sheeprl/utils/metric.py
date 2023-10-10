@@ -1,4 +1,5 @@
 import warnings
+from math import isnan
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -105,6 +106,12 @@ class MetricAggregator:
                             category=RuntimeWarning,
                         )
                     reduced_metrics[k] = reduced
+
+                is_tensor = torch.is_tensor(reduced_metrics[k])
+                if (is_tensor and torch.isnan(reduced_metrics[k]).any()) or (
+                    not is_tensor and isnan(reduced_metrics[k])
+                ):
+                    reduced_metrics.pop(k, None)
         return reduced_metrics
 
 

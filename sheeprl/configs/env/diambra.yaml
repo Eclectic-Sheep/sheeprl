@@ -4,8 +4,8 @@ defaults:
 
 # Override from `default` config
 id: doapp
-frame_stack: 4
-sync_env: True
+frame_stack: 1
+sync_env: False
 action_repeat: 1
 
 # Wrapper to be instantiated
@@ -18,6 +18,7 @@ wrapper:
   repeat_action: ${env.action_repeat}
   rank: null
   log_level: 0
+  increase_performance: True
   diambra_settings:
     role: diambra.arena.Roles.P1
     step_ratio: 6
@@ -25,6 +26,7 @@ wrapper:
     continue_game: 0.0
     show_final: False
     outfits: 1
+    splash_screen: False
   diambra_wrappers:
     stack_actions: 1
     no_op_max: 0

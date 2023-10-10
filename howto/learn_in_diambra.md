@@ -111,9 +111,11 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 >
 > When you set the `action_repeat` cli argument greater than one (i.e., the `repeat_action` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
 >
+> You can increase the performance of the DIAMBRA engine with the `env.wrapper.increase_performance` parameter. When set to `True` the engine is faster, but the recorded video will have the dimension specified by the `env.screen_size` parameter. 
+>
 > **Important**
 >
-> You **must** set the **`sync_env`** cli argument to **`True`**.
+> If you want to use the `AsyncVectorEnv` ([https://gymnasium.farama.org/api/vector/#async-vector-env](https://gymnasium.farama.org/api/vector/#async-vector-env)), you **must** set the **`env.wrapper.diambra_settings.splash_screen`** cli argument to **`False`**. Moreover, you must set the number of container to `env.num_envs + 1` (i.e., you must set the `-s` cli argument as specified before).
 
 ## Headless machines
 
