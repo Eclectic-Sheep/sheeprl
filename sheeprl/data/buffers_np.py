@@ -253,7 +253,9 @@ class ReplayBuffer:
         if self._full:
             first_range_end = self._pos - 1 if sample_next_obs else self._pos
             second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
-            valid_idxes = np.array(list(range(0, first_range_end)) + list(range(self._pos, second_range_end)))
+            valid_idxes = np.array(
+                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)), dtype=np.intp
+            )
             batch_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_size,), dtype=np.intp)]
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
@@ -276,7 +278,7 @@ class ReplayBuffer:
         from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
-        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone)
+        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
         for k, v in samples.items():
             if from_numpy:
                 torch_v = torch.from_numpy(v).to(
@@ -301,12 +303,14 @@ class ReplayBuffer:
         samples: Dict[str, np.ndarray] = {}
         env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),), dtype=np.intp)
         flattened_idxes = (batch_idxes * self.n_envs + env_idxes).flat
+        if sample_next_obs:
+            flattened_next_idxes = (((batch_idxes + 1) % self._buffer_size) * self.n_envs + env_idxes).flat
         for k, v in self.buffer.items():
             samples[k] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_idxes, axis=0)
             if clone:
                 samples[k] = samples[k].copy()
             if sample_next_obs:
-                samples[f"next_{k}"] = v[(batch_idxes + 1) % self._buffer_size, env_idxes]
+                samples[f"next_{k}"] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_next_idxes, axis=0)
                 if clone:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
         return samples
@@ -443,7 +447,9 @@ class SequentialReplayBuffer(ReplayBuffer):
             # in (buffer_size + (self._pos - sequence_length + 1)), otherwise the sequence will contain
             # invalid values
             second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
-            valid_idxes = np.array(list(range(0, first_range_end)) + list(range(self._pos, second_range_end)))
+            valid_idxes = np.array(
+                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)), dtype=np.intp
+            )
             # start_idxes are the indices of the first elements of the sequences
             start_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_dim,), dtype=np.intp)]
         else:
