@@ -295,15 +295,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             sample = rb.sample_tensors(
                 batch_size=training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
-                dtype=torch.float32,
+                dtype=None,
                 device=device,
             )  # [G*B]
             gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
-            if fabric.world_size > 1:
-                gathered_data = {k: v.flatten(start_dim=0, end_dim=1) for k, v in gathered_data.items()}  # [G*B*World]
+            for k, v in gathered_data.items():
+                gathered_data[k] = v.float()  # [G*B*World]
+                if fabric.world_size > 1:
+                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=1)
+            idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
             if world_size > 1:
                 dist_sampler: DistributedSampler = DistributedSampler(
-                    next(iter(gathered_data.values())).shape[0],
+                    idxes_to_sample,
                     num_replicas=world_size,
                     rank=fabric.global_rank,
                     shuffle=True,
@@ -315,7 +318,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=next(iter(gathered_data.values())).shape[0],
+                    sampler=idxes_to_sample,
                     batch_size=cfg.per_rank_batch_size,
                     drop_last=False,
                 )
