@@ -7,7 +7,6 @@ defaults:
   - /data: helpful_harmless
   - /optim: adamw
   - override /algo: rlhf_rm
-  - override /fabric: ddp-cuda
   - _self_
 
 sft_experiment_dir: null

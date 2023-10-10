@@ -33,11 +33,14 @@ def load_hf_transformer(model_cfg: ModelConfig) -> PreTrainedModel:
 
 
 class CasualModel(torch.nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, model_cfg: ModelConfig):
         super().__init__()
+        self.model_cfg = model_cfg
         self.model = model
 
     def forward(self, **kwargs):
+        if self.training and not self.model_cfg.use_attention_mask:
+            kwargs.pop("attention_mask")
         return self.model(**kwargs).logits
 
     def generate(self, **kwargs):
@@ -52,7 +55,7 @@ class CasualModel(torch.nn.Module):
         freeze: bool = False,
     ):
         model = load_hf_transformer(model_cfg)
-        model = cls(model=model).to(device)
+        model = cls(model=model, model_cfg=model_cfg).to(device)
         if path is not None:
             sd = torch.load(path, map_location=device)
             if model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:
@@ -87,11 +90,13 @@ class CasualModel(torch.nn.Module):
 
 
 class ActorModel(CasualModel):
-    def __init__(self, model):
-        super().__init__(model=model)
+    def __init__(self, model, model_cfg: ModelConfig):
+        super().__init__(model=model, model_cfg=model_cfg)
 
     def forward(self, **kwargs):
         input_ids = kwargs["input_ids"]
+        if self.training and not self.model_cfg.use_attention_mask:
+            kwargs.pop("attention_mask")
         out = self.model(**kwargs)
         # Model predicts next token log probability here.
         actor_log_probs = F.log_softmax(out.logits[:, :-1, :], dim=-1)
@@ -100,8 +105,9 @@ class ActorModel(CasualModel):
 
 
 class CriticModel(torch.nn.Module):
-    def __init__(self, model, embedding_dim, transformer_name):
+    def __init__(self, model, model_cfg: ModelConfig, embedding_dim: int, transformer_name: Optional[str] = None):
         super().__init__()
+        self.model_cfg = model_cfg
         if transformer_name is None:
             # If any transformer name is provided, we search for common attribute names usually
             # avaliable inside huggingface library.
@@ -126,6 +132,8 @@ class CriticModel(torch.nn.Module):
                 module.bias.data.zero_()
 
     def forward(self, **kwargs):
+        if self.training and not self.model_cfg.use_attention_mask:
+            kwargs.pop("attention_mask")
         out = self.transformer(**kwargs)[0]
         value = self.head(out)
         return value.squeeze(-1)
@@ -204,10 +212,9 @@ class RewardModel(CriticModel):
         self._disable_bias_gain = False
 
     def forward(self, **kwargs):
-        if self._disable_bias_gain:
-            value_out = super().forward(**kwargs)
-            return value_out
         value_out = super().forward(**kwargs)
+        if self._disable_bias_gain:
+            return value_out
         return value_out * self.gain + self.bias
 
     def get_head_state_dict(self):

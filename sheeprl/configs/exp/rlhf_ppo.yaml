@@ -8,7 +8,6 @@ defaults:
   - /optim@actor_optimizer: adamw
   - /optim@critic_optimizer: adamw
   - override /algo: rlhf_ppo
-  - override /fabric: ddp-cuda
   - _self_
 
 sft_experiment_dir: null

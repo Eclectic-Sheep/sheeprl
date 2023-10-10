@@ -7,7 +7,6 @@ defaults:
   - /data: helpful_harmless
   - /optim: adamw
   - override /algo: rlhf_sft
-  - override /fabric: ddp-cuda
   - _self_
 
 fabric:

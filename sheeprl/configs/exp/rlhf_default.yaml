@@ -5,6 +5,7 @@ defaults:
   - override /buffer: null
   - override /checkpoint: null
   - override /metric: null
+  - override /fabric: auto-cuda
   - _self_
 
 exp_name: ${algo.name}
