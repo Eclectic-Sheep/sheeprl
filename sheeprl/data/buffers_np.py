@@ -784,6 +784,22 @@ class EpisodeBuffer:
                 self._memmap_dir.mkdir(parents=True, exist_ok=True)
         self._chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
 
+    def _get_buf(self) -> Sequence[Dict[str, ArrayLike]]:
+        for i, ep_spec in enumerate(self._episode_specs):
+            for filename, file_specs in ep_spec.items():
+                file_specs["file_descriptor"] = open(filename, "r+")
+                file_specs["file_descriptor"].close()
+                key = file_specs["key"]
+                self._buf[i][key] = np.memmap(
+                    filename=filename,
+                    dtype=file_specs["dtype"],
+                    shape=file_specs["shape"],
+                    mode=self._memmap_mode,
+                )
+        return self._buf
+
+    buf = property(_get_buf)
+
     @property
     def prioritize_ends(self) -> bool:
         return self._prioritize_ends
@@ -821,10 +837,10 @@ class EpisodeBuffer:
 
     @property
     def full(self) -> bool:
-        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self._buf) > 0 else False
+        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self.buf) > 0 else False
 
     def __len__(self) -> int:
-        return self._cum_lengths[-1] if len(self._buf) > 0 else 0
+        return self._cum_lengths[-1] if len(self.buf) > 0 else 0
 
     @typing.overload
     def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
@@ -983,6 +999,7 @@ class EpisodeBuffer:
                 episode_to_store[k][:] = episode[k]
             self._episode_specs.append(episode_specs)
         self._buf.append(episode_to_store)
+        _ = self._buf
 
     def sample(
         self,
@@ -1011,10 +1028,10 @@ class EpisodeBuffer:
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
 
-        nsample_per_eps = np.bincount(np.random.randint(0, len(self._buf), (batch_size * n_samples,))).astype(np.intp)
+        nsample_per_eps = np.bincount(np.random.randint(0, len(self.buf), (batch_size * n_samples,))).astype(np.intp)
         samples = {k: [] for k in self._obs_keys}
         for i, n in enumerate(nsample_per_eps):
-            ep_len = self._buf[i]["dones"].shape[0]
+            ep_len = self.buf[i]["dones"].shape[0]
             # Define the maximum index that can be sampled in the episodes
             upper = ep_len - self._sequence_length + 1
             # If you want to prioritize ends, then all the indices of the episode
@@ -1045,3 +1062,37 @@ class EpisodeBuffer:
         if clone:
             return {k: v.clone() for k, v in samples.items()}
         return samples
+
+    def __getstate__(self):
+        # Copy the object's state from self.__dict__ which contains
+        # all our instance attributes. Always use the dict.copy()
+        # method to avoid modifying the original state.
+        state = self.__dict__.copy()
+        # Remove the unpicklable entries.
+        if self._memmap:
+            for i in range(len(state["_episode_specs"])):
+                for filename in state["_episode_specs"][i].keys():
+                    state["_episode_specs"][i][filename]["file_descriptor"] = None
+                    key = state["_episode_specs"][i][filename]["key"]
+                    # We remove the buffer entry: this can be reloaded upon unpickling by reading the
+                    # related file
+                    state["_buf"][i][key] = None
+        return state
+
+    def __setstate__(self, state):
+        # Restore the previously opened file's state. To do so, we need to
+        # reopen it and read from it until the line count is restored.
+        if state["_memmap"]:
+            for i in range(len(state["_episode_specs"])):
+                for filename in state["_episode_specs"][i].keys():
+                    state["_episode_specs"][i][filename]["file_descriptor"] = open(filename, "r+")
+                    state["_episode_specs"][i][filename]["file_descriptor"].close()
+                    key = state["_episode_specs"][i][filename]["key"]
+                    state["_buf"][i][key] = np.memmap(
+                        filename=filename,
+                        dtype=state["_episode_specs"][i][filename]["dtype"],
+                        shape=state["_episode_specs"][i][filename]["shape"],
+                        mode=state["_memmap_mode"],
+                    )
+        # Restore instance attributes (i.e., filename and lineno).
+        self.__dict__.update(state)
