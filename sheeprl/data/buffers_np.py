@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 import typing
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Type, Union
+from typing import Dict, Optional, Sequence, Type
 
 import numpy as np
 import torch
-from numpy.typing import ArrayLike
 from torch import Tensor
 
+from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT
 
 
@@ -20,7 +20,7 @@ class ReplayBuffer:
         n_envs: int = 1,
         obs_keys: Sequence[str] = ("observations",),
         memmap: bool = False,
-        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
         **kwargs,
     ):
@@ -32,7 +32,7 @@ class ReplayBuffer:
             n_envs (int, optional): the number of environments. Defaults to 1.
             obs_keys (Sequence[str], optional): whether to memory-mapping the buffer. Defaults to ("observations",).
             memmap (bool, optional): whether to memory-map the numpy arrays saved in the buffer. Defaults to False.
-            memmap_dir (Optional[Union[str, os.PathLike]], optional): the memory-mapped files directory.
+            memmap_dir (str | os.PathLike | None, optional): the memory-mapped files directory.
                 Defaults to None.
             memmap_mode (str, optional): memory-map mode.
                 Possible values are: "r+", "w+", "c", "copyonwrite", "readwrite", "write".
@@ -48,7 +48,7 @@ class ReplayBuffer:
         self._memmap = memmap
         self._memmap_dir = memmap_dir
         self._memmap_mode = memmap_mode
-        self._buf: Dict[str, ArrayLike] = {}
+        self._buf: Dict[str, np.ndarray | MemmapArray] = {}
         if self._memmap:
             if self._memmap_mode not in ("r+", "w+", "c", "copyonwrite", "readwrite", "write"):
                 raise ValueError(
@@ -58,8 +58,8 @@ class ReplayBuffer:
                 )
             if self._memmap_dir is None:
                 raise ValueError(
-                    "The buffer is set to be memory-mapped but the `memmap_dir` attribute is None. "
-                    "Set the `memmap_dir` to a known directory.",
+                    "The buffer is set to be memory-mapped but the 'memmap_dir' attribute is None. "
+                    "Set the 'memmap_dir' to a known directory.",
                 )
             else:
                 self._memmap_dir = Path(self._memmap_dir)
@@ -101,7 +101,7 @@ class ReplayBuffer:
         self,
         dtype: Optional[torch.dtype] = None,
         clone: bool = False,
-        device: Union[str, torch.dtype] = "cpu",
+        device: str | torch.dtype = "cpu",
         from_numpy: bool = False,
     ) -> Dict[str, Tensor]:
         """Converts the replay buffer to a dictionary mapping string to torch.Tensor.
@@ -112,7 +112,7 @@ class ReplayBuffer:
                 Defaults to None.
             clone (bool, optional): whether to clone the converted tensors.
                 Defaults to False.
-            device (Union[str, torch.dtype], optional): the torch device to move the tensors to.
+            device (str | torch.dtype, optional): the torch device to move the tensors to.
                 Defaults to "cpu".
 
         Returns:
@@ -141,46 +141,55 @@ class ReplayBuffer:
         ...
 
     @typing.overload
-    def add(self, data: Dict[str, ArrayLike], validate_args: bool = False) -> None:
+    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None:
         ...
 
-    def add(self, data: Union["ReplayBuffer", Dict[str, ArrayLike]], validate_args: bool = False) -> None:
+    def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray], validate_args: bool = False) -> None:
         """_summary_
 
         Args:
-            data (Union[&quot;ReplayBuffer&quot;, Dict[str, ArrayLike]]): data to add.
+            data (ReplayBuffer | Dict[str, np.ndarray]): _description_
+            validate_args (bool, optional): _description_. Defaults to False.
+
+        Raises:
+            ValueError: _description_
+            ValueError: _description_
+            ValueError: _description_
+            RuntimeError: _description_
+            RuntimeError: _description_
         """
         if validate_args:
             if isinstance(data, ReplayBuffer):
                 data = data.buffer
             elif not isinstance(data, dict):
                 raise ValueError(
-                    f"`data` must be a dictionary containing Numpy arrays, but `data` is of type `{type(data)}`"
+                    f"'data' must be a dictionary containing Numpy arrays, but 'data' is of type '{type(data)}'"
                 )
             elif isinstance(data, dict):
                 for k, v in data.items():
                     if not isinstance(v, np.ndarray):
                         raise ValueError(
-                            f"`data` must be a dictionary containing Numpy arrays. Found key `{k}` "
-                            f"containing a value of type `{type(v)}`"
+                            f"'data' must be a dictionary containing Numpy arrays. Found key '{k}' "
+                            f"containing a value of type '{type(v)}'"
                         )
             if data is None:
-                raise ValueError("The `data` replay buffer must be not None")
+                raise ValueError("The 'data' replay buffer must be not None")
             last_key = next(iter(data.keys()))
             last_batch_shape = next(iter(data.values())).shape[:2]
             for i, (k, v) in enumerate(data.items()):
                 if len(v.shape) < 2:
                     raise RuntimeError(
-                        "`data` must have at least 2: [sequence_length, n_envs, ...]. " f"Shape of `{k}` is {v.shape}"
+                        "'data' must have at least 2 dimensions: [sequence_length, n_envs, ...]. "
+                        f"Shape of '{k}' is {v.shape}"
                     )
                 if i > 0:
                     current_key = k
                     current_batch_shape = v.shape[:2]
                     if current_batch_shape != last_batch_shape:
                         raise RuntimeError(
-                            "Every array in `data` must be congruent in the first 2 dimensions: "
-                            f"found key `{last_key}` with shape `{last_batch_shape}` "
-                            f"and `{current_key}` with shape `{current_batch_shape}`"
+                            "Every array in 'data' must be congruent in the first 2 dimensions: "
+                            f"found key '{last_key}' with shape '{last_batch_shape}' "
+                            f"and '{current_key}' with shape '{current_batch_shape}'"
                         )
                     last_key = current_key
                     last_batch_shape = current_batch_shape
@@ -196,19 +205,8 @@ class ReplayBuffer:
             data_to_store = data
         if self._memmap and self.empty:
             for k, v in data_to_store.items():
-                path = Path(self._memmap_dir / f"{k}.memmap")
-                path.touch(exist_ok=True)
-                fd = open(path, mode="r+")
-                fd.close()
-                filename = str(path)
-                self._memmap_specs[filename] = {
-                    "key": k,
-                    "file_descriptor": fd,
-                    "shape": (self._buffer_size, self._n_envs, *v.shape[2:]),
-                    "dtype": v.dtype,
-                }
-                self.buffer[k] = np.memmap(
-                    filename=filename,
+                self.buffer[k] = MemmapArray(
+                    filename=Path(self._memmap_dir / f"{k}.memmap"),
                     dtype=v.dtype,
                     shape=(self._buffer_size, self._n_envs, *v.shape[2:]),
                     mode=self._memmap_mode,
@@ -232,7 +230,7 @@ class ReplayBuffer:
         """Sample elements from the replay buffer.
 
         Custom sampling when using memory efficient variant,
-        as we should not sample the element with index `self.pos`
+        as we should not sample the element with index 'self.pos'
         See https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
 
         Args:
@@ -248,7 +246,7 @@ class ReplayBuffer:
             raise ValueError("Batch size must be greater than 0")
         if not self._full and self._pos == 0:
             raise ValueError(
-                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+                "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
             )
         if self._full:
             first_range_end = self._pos - 1 if sample_next_obs else self._pos
@@ -274,7 +272,7 @@ class ReplayBuffer:
         clone: bool = False,
         sample_next_obs: bool = False,
         dtype: Optional[torch.dtype] = None,
-        device: Union[str, torch.dtype] = "cpu",
+        device: str | torch.dtype = "cpu",
         from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
@@ -296,7 +294,7 @@ class ReplayBuffer:
 
     @torch.no_grad()
     def _get_samples(
-        self, batch_idxes: ArrayLike, sample_next_obs: bool = False, clone: bool = False
+        self, batch_idxes: np.ndarray, sample_next_obs: bool = False, clone: bool = False
     ) -> Dict[str, np.ndarray]:
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
@@ -315,56 +313,45 @@ class ReplayBuffer:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
         return samples
 
-    def __getitem__(self, key: str) -> np.ndarray:
+    def __getitem__(self, key: str) -> np.ndarray | np.memmap | MemmapArray:
         if not isinstance(key, str):
-            raise TypeError("`key` must be a string")
+            raise TypeError("'key' must be a string")
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         return self.buffer.get(key)
 
-    def __setitem__(self, key: str, value: ArrayLike) -> None:
+    def __setitem__(self, key: str, value: np.ndarray | np.memmap | MemmapArray) -> None:
+        if not isinstance(value, (np.ndarray, np.memmap, MemmapArray)):
+            raise ValueError(
+                "The value to be set must be an instance of 'np.ndarray', 'np.memmap' "
+                f"or '{MemmapArray.__module__}.{MemmapArray.__qualname__}', "
+                f"got {type(value)}"
+            )
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
-        self.buffer.update({key: value})
-
-    def __del__(self) -> None:
+        if value.shape[:2] != (self._buffer_size, self._n_envs):
+            raise RuntimeError(
+                "'value' must have at least two dimensions of dimension [buffer_size, n_envs, ...]. "
+                f"Shape of 'value' is {value.shape}"
+            )
         if self._memmap:
-            for filename in self._memmap_specs.keys():
-                del self._memmap_specs[filename]["file_descriptor"]
-                key = self._memmap_specs[filename]["key"]
-                self._buf[key] = None
-
-    def __getstate__(self):
-        # Copy the object's state from self.__dict__ which contains
-        # all our instance attributes. Always use the dict.copy()
-        # method to avoid modifying the original state.
-        state = self.__dict__.copy()
-        # Remove the unpicklable entries.
-        if self._memmap:
-            for filename in state["_memmap_specs"].keys():
-                state["_memmap_specs"][filename]["file_descriptor"] = None
-                key = state["_memmap_specs"][filename]["key"]
-                # We remove the buffer entry: this can be reloaded upon unpickling by reading the
-                # related file
-                state["_buf"][key] = None
-        return state
-
-    def __setstate__(self, state):
-        # Restore the previously opened file's state. To do so, we need to
-        # reopen it and read from it until the line count is restored.
-        if state["_memmap"]:
-            for filename in state["_memmap_specs"].keys():
-                state["_memmap_specs"][filename]["file_descriptor"] = open(filename, "r+")
-                state["_memmap_specs"][filename]["file_descriptor"].close()
-                key = state["_memmap_specs"][filename]["key"]
-                state["_buf"][key] = np.memmap(
-                    filename=filename,
-                    dtype=state["_memmap_specs"][filename]["dtype"],
-                    shape=state["_memmap_specs"][filename]["shape"],
-                    mode=state["_memmap_mode"],
+            if isinstance(value, (np.memmap, np.ndarray)):
+                value_to_add = MemmapArray(
+                    Path(self._memmap_dir / f"{key}.memmap"),
+                    dtype=value.dtype,
+                    shape=value.shape,
+                    mode=self._memmap_mode,
                 )
-        # Restore instance attributes (i.e., filename and lineno).
-        self.__dict__.update(state)
+                value_to_add[:] = value[:]
+            elif isinstance(value, MemmapArray):
+                value_to_add = value
+            self.buffer.update({key: value_to_add})
+        else:
+            if isinstance(value, np.memmap):
+                value_to_add = np.copy(value)
+            elif isinstance(value, MemmapArray):
+                value_to_add = np.copy(value.array)
+            self.buffer.update({key: value_to_add})
 
 
 class SequentialReplayBuffer(ReplayBuffer):
@@ -373,7 +360,6 @@ class SequentialReplayBuffer(ReplayBuffer):
     Args:
         buffer_size (int): The buffer size.
         n_envs (int, optional): The number of environments. Defaults to 1.
-        device (Union[torch.device, str], optional): The device where the buffer is created. Defaults to "cpu".
     """
 
     def __init__(
@@ -382,7 +368,7 @@ class SequentialReplayBuffer(ReplayBuffer):
         n_envs: int = 1,
         obs_keys: Sequence[str] = ("observations",),
         memmap: bool = False,
-        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
         **kwargs,
     ):
@@ -422,10 +408,10 @@ class SequentialReplayBuffer(ReplayBuffer):
 
         # Sanity checks
         if batch_size <= 0 or n_samples <= 0:
-            raise ValueError(f"`batch_size` ({batch_size}) and `n_samples` ({n_samples}) must be both greater than 0")
+            raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
         if not self.full and self._pos == 0:
             raise ValueError(
-                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+                "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
             )
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
@@ -436,7 +422,7 @@ class SequentialReplayBuffer(ReplayBuffer):
                 f"The sequence length ({sequence_length}) is greater than the buffer size ({len(self.buffer)})"
             )
 
-        # Do not sample the element with index `self.pos` as the transitions is invalid
+        # Do not sample the element with index 'self.pos' as the transitions is invalid
         if self.full:
             # when the buffer is full, it is necessary to avoid the starting index
             # to be between (self.pos - sequence_length)
@@ -467,7 +453,7 @@ class SequentialReplayBuffer(ReplayBuffer):
 
     def _get_samples(
         self,
-        batch_idxes: ArrayLike,
+        batch_idxes: np.ndarray,
         batch_size: int,
         n_samples: int,
         sequence_length: int,
@@ -534,7 +520,7 @@ class EnvIndipendentReplayBuffer:
         n_envs: int = 1,
         obs_keys: Sequence[str] = ("observations",),
         memmap: bool = False,
-        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
         buffer_cls: Type[ReplayBuffer] = ReplayBuffer,
         **kwargs,
@@ -552,8 +538,8 @@ class EnvIndipendentReplayBuffer:
                 )
             if memmap_dir is None:
                 raise ValueError(
-                    "The buffer is set to be memory-mapped but the `memmap_dir` attribute is None. "
-                    "Set the `memmap_dir` to a known directory.",
+                    "The buffer is set to be memory-mapped but the 'memmap_dir' attribute is None. "
+                    "Set the 'memmap_dir' to a known directory.",
                 )
             else:
                 memmap_dir = Path(memmap_dir)
@@ -603,12 +589,14 @@ class EnvIndipendentReplayBuffer:
         return self.buffer_size
 
     def add(
-        self, data: Dict[str, ArrayLike], indices: Optional[Sequence[int]] = None, validate_args: bool = False
+        self, data: Dict[str, np.ndarray], indices: Optional[Sequence[int]] = None, validate_args: bool = False
     ) -> None:
         """_summary_
 
         Args:
-            data (Union[&quot;ReplayBuffer&quot;, Dict[str, ArrayLike]]): data to add.
+            data (Dict[str, np.ndarray]): _description_
+            indices (Optional[Sequence[int]], optional): _description_. Defaults to None.
+            validate_args (bool, optional): _description_. Defaults to False.
         """
         if indices is None:
             indices = tuple(range(self.n_envs))
@@ -642,10 +630,10 @@ class EnvIndipendentReplayBuffer:
             sequence_length (int): the length of the sequence of each element. Defaults to 1.
 
         Returns:
-            TensorDictBase: the sampled TensorDictBase with a `batch_size` of [n_samples, sequence_length, batch_size]
+            TensorDictBase: the sampled TensorDictBase with a 'batch_size' of [n_samples, sequence_length, batch_size]
         """
         if batch_size <= 0 or n_samples <= 0:
-            raise ValueError(f"`batch_size` ({batch_size}) and `n_samples` ({n_samples}) must be both greater than 0")
+            raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
 
@@ -675,7 +663,7 @@ class EnvIndipendentReplayBuffer:
         n_samples: int = 1,
         sequence_length: int = 1,
         dtype: Optional[torch.dtype] = None,
-        device: Union[str, torch.dtype] = "cpu",
+        device: str | torch.dtype = "cpu",
         from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
