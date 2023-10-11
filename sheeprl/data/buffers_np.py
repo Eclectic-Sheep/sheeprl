@@ -354,6 +354,7 @@ class ReplayBuffer:
         # Remove the unpicklable entries.
         if self._memmap:
             for filename in state["_memmap_specs"].keys():
+                state["_memmap_specs"][filename]["file_descriptor"].close()
                 state["_memmap_specs"][filename]["file_descriptor"] = None
                 key = state["_memmap_specs"][filename]["key"]
                 # We remove the buffer entry: this can be reloaded upon unpickling by reading the
