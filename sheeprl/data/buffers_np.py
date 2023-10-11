@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import typing
 from pathlib import Path
+from sys import getrefcount
 from typing import Dict, Optional, Sequence, Type, Union
 
 import numpy as np
@@ -71,6 +72,16 @@ class ReplayBuffer:
 
     @property
     def buffer(self) -> Dict[str, np.ndarray]:
+        if self._memmap:
+            for filename in self._memmap_specs:
+                key = self._memmap_specs[filename]["key"]
+                if key in self._buf and self._buf[key] is None:
+                    self._buf[key] = np.memmap(
+                        filename=filename,
+                        dtype=self._memmap_specs[filename]["dtype"],
+                        shape=self._memmap_specs[filename]["shape"],
+                        mode=self._memmap_mode,
+                    )
         return self._buf
 
     @property
@@ -330,9 +341,10 @@ class ReplayBuffer:
     def __del__(self) -> None:
         if self._memmap:
             for filename in self._memmap_specs.keys():
-                del self._memmap_specs[filename]["file_descriptor"]
-                key = self._memmap_specs[filename]["key"]
-                self._buf[key] = None
+                if getrefcount(self._memmap_specs[filename]["file_descriptor"]) <= 2:
+                    del self._memmap_specs[filename]["file_descriptor"]
+                    key = self._memmap_specs[filename]["key"]
+                    self._buf[key] = None
 
     def __getstate__(self):
         # Copy the object's state from self.__dict__ which contains

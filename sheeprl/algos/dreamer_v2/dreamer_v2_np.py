@@ -19,7 +19,6 @@ from omegaconf import OmegaConf
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler
 from torchmetrics import MeanMetric, SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
@@ -633,10 +632,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Get the first environment observation and start the optimization
     episode_steps = [[] for _ in range(cfg.env.num_envs)]
     obs = envs.reset(seed=cfg.seed)[0]
-    for k in obs.keys():
-        if k in obs_keys:
-            obs[k] = obs[k].reshape(cfg.env.num_envs, *obs[k].shape[1:])
-            step_data[k] = obs[k][np.newaxis]
+    for k in obs_keys:
+        step_data[k] = obs[k][np.newaxis]
     step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
@@ -709,10 +706,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        for k in real_next_obs.keys():
-            if k in cfg.cnn_keys.encoder:
-                next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-                real_next_obs[k] = real_next_obs[k].reshape(cfg.env.num_envs, -1, *real_next_obs[k].shape[-2:])
+        for k in obs_keys:
             step_data[k] = real_next_obs[k][np.newaxis]
 
         # Next_obs becomes the new obs
@@ -732,7 +726,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
             reset_data = {}
-            for k in next_obs.keys():
+            for k in obs_keys:
                 reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
             reset_data["dones"] = np.zeros((1, reset_envs, 1))
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
@@ -775,17 +769,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     else cfg.algo.per_rank_gradient_steps,
                     prioritize_ends=cfg.buffer.prioritize_ends,
                 ).to(device)
-            distributed_sampler = BatchSampler(
-                range(next(iter(local_data.values())).shape[0]), batch_size=1, drop_last=False
-            )
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-                for i in distributed_sampler:
+                for i in range(next(iter(local_data.values())).shape[0]):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
                             tcp.data.copy_(cp.data)
-                    batch = {}
-                    for k, v in local_data.items():
-                        batch[k] = v[i].squeeze(0).float()
+                    batch = {k: v[i].squeeze(0).float() for k, v in local_data.items()}
                     train(
                         fabric,
                         world_model,
@@ -822,17 +811,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Sync distributed timers
             timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_train",
-                (train_step - last_train) / timer_metrics["Time/train_time"],
-                policy_step,
-            )
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
+            if "Time/train_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_train",
+                    (train_step - last_train) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if "Time/env_interaction_time" in timer_metrics:
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
             timer.reset()
 
             # Reset counters
