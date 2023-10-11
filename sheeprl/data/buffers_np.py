@@ -785,17 +785,19 @@ class EpisodeBuffer:
         self._chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
 
     def _get_buf(self) -> Sequence[Dict[str, ArrayLike]]:
-        for i, ep_spec in enumerate(self._episode_specs):
-            for filename, file_specs in ep_spec.items():
-                file_specs["file_descriptor"] = open(filename, "r+")
-                file_specs["file_descriptor"].close()
-                key = file_specs["key"]
-                self._buf[i][key] = np.memmap(
-                    filename=filename,
-                    dtype=file_specs["dtype"],
-                    shape=file_specs["shape"],
-                    mode=self._memmap_mode,
-                )
+        if self._memmap:
+            for i, ep_spec in enumerate(self._episode_specs):
+                for filename, file_specs in ep_spec.items():
+                    key = file_specs["key"]
+                    if key in self._buf[i] and self._buf[i][key] is None:
+                        file_specs["file_descriptor"] = open(filename, "r+")
+                        file_specs["file_descriptor"].close()
+                        self._buf[i][key] = np.memmap(
+                            filename=filename,
+                            dtype=file_specs["dtype"],
+                            shape=file_specs["shape"],
+                            mode=self._memmap_mode,
+                        )
         return self._buf
 
     buf = property(_get_buf)
@@ -810,7 +812,7 @@ class EpisodeBuffer:
 
     @property
     def buffer(self) -> Optional[Dict[str, ArrayLike]]:
-        if len(self._buf) > 0:
+        if len(self.buf) > 0:
             return {k: np.concatenate([v[k] for v in self._buf]) for k in self._obs_keys}
         else:
             return {}
@@ -859,6 +861,8 @@ class EpisodeBuffer:
         if isinstance(data, ReplayBuffer):
             data = data.buffer
         if validate_args:
+            if data is None:
+                raise ValueError("The `data` replay buffer must be not None")
             if not isinstance(data, dict):
                 raise ValueError(
                     f"`data` must be a dictionary containing Numpy arrays, but `data` is of type `{type(data)}`"
@@ -870,8 +874,6 @@ class EpisodeBuffer:
                             f"`data` must be a dictionary containing Numpy arrays. Found key `{k}` "
                             f"containing a value of type `{type(v)}`"
                         )
-            if data is None:
-                raise ValueError("The `data` replay buffer must be not None")
             last_key = next(iter(data.keys()))
             last_batch_shape = next(iter(data.values())).shape[:2]
             for i, (k, v) in enumerate(data.items()):
@@ -926,7 +928,7 @@ class EpisodeBuffer:
 
     def _save_episode(self, episode_chunks: Sequence[Dict[str, ArrayLike]]) -> None:
         if len(episode_chunks) == 0:
-            raise RuntimeError("Invalid episode, an empty sequence is given. You must pass a non-empty sequence")
+            raise RuntimeError("Invalid episode, an empty sequence is given. You must pass a non-empty sequence.")
         # Concatenate all the chunks of the episode
         episode = {k: [] for k in self._obs_keys}
         for chunk in episode_chunks:
@@ -936,10 +938,8 @@ class EpisodeBuffer:
 
         # Control the validity of the episode
         ep_len = episode["dones"].shape[0]
-        if episode["dones"][-1] != 1:
-            raise RuntimeError(
-                f"The episode must contain exactly one done, got: {len(torch.nonzero(episode['dones']))}"
-            )
+        if len(episode["dones"].nonzero()[0]) != 1 or episode["dones"][-1] != 1:
+            raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(episode['dones']))}")
         if ep_len < self._sequence_length:
             raise RuntimeError(f"Episode too short (at least {self._sequence_length} steps), got: {ep_len} steps")
         if ep_len > self._buffer_size:
@@ -999,7 +999,7 @@ class EpisodeBuffer:
                 episode_to_store[k][:] = episode[k]
             self._episode_specs.append(episode_specs)
         self._buf.append(episode_to_store)
-        _ = self._buf
+        _ = self.buf
 
     def sample(
         self,
@@ -1031,7 +1031,7 @@ class EpisodeBuffer:
         nsample_per_eps = np.bincount(np.random.randint(0, len(self.buf), (batch_size * n_samples,))).astype(np.intp)
         samples = {k: [] for k in self._obs_keys}
         for i, n in enumerate(nsample_per_eps):
-            ep_len = self.buf[i]["dones"].shape[0]
+            ep_len = self._buf[i]["dones"].shape[0]
             # Define the maximum index that can be sampled in the episodes
             upper = ep_len - self._sequence_length + 1
             # If you want to prioritize ends, then all the indices of the episode
