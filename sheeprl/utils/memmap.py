@@ -102,3 +102,6 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __repr__(self) -> str:
         return f"MemmapArray(shape={self._shape}, dtype={self._dtype}, mode={self._mode}, filename={self._filename})"
+
+    def __len__(self):
+        return len(self.array)
