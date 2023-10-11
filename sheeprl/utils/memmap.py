@@ -94,7 +94,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             state["_file"] = tmpfile
         self.__dict__.update(state)
 
-    def __getitem__(self, idx: Any):
+    def __getitem__(self, idx: Any) -> np.ndarray:
         return self.array[idx]
 
     def __setitem__(self, idx: Any, value: Any):

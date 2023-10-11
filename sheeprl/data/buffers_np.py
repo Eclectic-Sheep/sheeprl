@@ -158,10 +158,10 @@ class ReplayBuffer:
             RuntimeError: _description_
             RuntimeError: _description_
         """
+        if isinstance(data, ReplayBuffer):
+            data = data.buffer
         if validate_args:
-            if isinstance(data, ReplayBuffer):
-                data = data.buffer
-            elif not isinstance(data, dict):
+            if not isinstance(data, dict):
                 raise ValueError(
                     f"'data' must be a dictionary containing Numpy arrays, but 'data' is of type '{type(data)}'"
                 )
@@ -172,8 +172,6 @@ class ReplayBuffer:
                             f"'data' must be a dictionary containing Numpy arrays. Found key '{k}' "
                             f"containing a value of type '{type(v)}'"
                         )
-            if data is None:
-                raise ValueError("The 'data' replay buffer must be not None")
             last_key = next(iter(data.keys()))
             last_batch_shape = next(iter(data.values())).shape[:2]
             for i, (k, v) in enumerate(data.items()):
@@ -417,9 +415,9 @@ class SequentialReplayBuffer(ReplayBuffer):
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         if not self.full and self._pos - sequence_length + 1 < 1:
             raise ValueError(f"Cannot sample a sequence of length {sequence_length}. Data added so far: {self._pos}")
-        if self.full and sequence_length > len(self.buffer):
+        if self.full and sequence_length > self.__len__():
             raise ValueError(
-                f"The sequence length ({sequence_length}) is greater than the buffer size ({len(self.buffer)})"
+                f"The sequence length ({sequence_length}) is greater than the buffer size ({self.__len__()})"
             )
 
         # Do not sample the element with index 'self.pos' as the transitions is invalid
