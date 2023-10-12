@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from io import TextIOWrapper
 from pathlib import Path
 from sys import getrefcount
 from tempfile import _TemporaryFileWrapper
@@ -39,6 +40,34 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             self._array[:] = np.zeros_like(self._array)
         self._array_dir = self._array.__dir__()
         self._has_ownership = True
+
+    @property
+    def filename(self) -> str:
+        return self._filename
+
+    @property
+    def file(self) -> TextIOWrapper:
+        return self._file
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self._dtype
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def shape(self) -> None | int | Tuple[int, ...]:
+        return self._shape
+
+    @property
+    def has_ownership(self) -> bool:
+        return self._has_ownership
+
+    @has_ownership
+    def has_ownership(self, value: bool):
+        self._has_ownership = value
 
     @property
     def array(self) -> np.memmap:
