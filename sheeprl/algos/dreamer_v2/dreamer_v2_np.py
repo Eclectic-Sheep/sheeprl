@@ -712,9 +712,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Next_obs becomes the new obs
         obs = next_obs
 
-        step_data["dones"] = dones[np.newaxis]
-        step_data["actions"] = actions[np.newaxis]
-        step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
+        step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
+        step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
+        step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
         if buffer_type == "sequential":
             rb.add(step_data, validate_args=False)
         else:
