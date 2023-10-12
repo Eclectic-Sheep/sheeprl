@@ -113,6 +113,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         if self._has_ownership and getrefcount(self._file) <= 2:
             if isinstance(self._file, _TemporaryFileWrapper) and os.path.isfile(self._filename):
                 os.unlink(self._filename)
+            self._array = None
             del self._file
 
     def __array__(self) -> np.memmap:
