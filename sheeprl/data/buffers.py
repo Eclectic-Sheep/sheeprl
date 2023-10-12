@@ -515,7 +515,8 @@ class EpisodeBuffer:
             if prioritize_ends:
                 upper += self._sequence_length
             start_idxes = torch.min(
-                torch.randint(0, upper, size=(n,)).reshape(-1, 1), torch.tensor(ep_len - self._sequence_length)
+                torch.randint(0, upper, size=(n,), device=self.device).reshape(-1, 1),
+                torch.tensor(ep_len - self._sequence_length, device=self.device),
             )
             indices = start_idxes + self._chunk_length
             samples.append(self._buf[i][indices])

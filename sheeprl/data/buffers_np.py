@@ -984,22 +984,23 @@ class EpisodeBuffer:
         nsample_per_eps = np.bincount(np.random.randint(0, len(self._buf), (batch_size * n_samples,))).astype(np.intp)
         samples_per_eps = {k: [] for k in self._buf[0].keys()}
         for i, n in enumerate(nsample_per_eps):
-            ep_len = self._buf[i]["dones"].shape[0]
-            # Define the maximum index that can be sampled in the episodes
-            upper = ep_len - self._sequence_length + 1
-            # If you want to prioritize ends, then all the indices of the episode
-            # can be sampled as starting index
-            if self._prioritize_ends:
-                upper += self._sequence_length
-            # Sample the starting indices and upper bound with `ep_len - self._sequence_length`
-            start_idxes = np.minimum(
-                np.random.randint(0, upper, size=(n,)).reshape(-1, 1), ep_len - self._sequence_length, dtype=np.intp
-            )
-            # Compute the indices of the sequences
-            indices = start_idxes + self._chunk_length
-            # Retrieve the data
-            for k in self._buf[0].keys():
-                samples_per_eps[k].append(self._buf[i][k][indices])
+            if n > 0:
+                ep_len = self._buf[i]["dones"].shape[0]
+                # Define the maximum index that can be sampled in the episodes
+                upper = ep_len - self._sequence_length + 1
+                # If you want to prioritize ends, then all the indices of the episode
+                # can be sampled as starting index
+                if self._prioritize_ends:
+                    upper += self._sequence_length
+                # Sample the starting indices and upper bound with `ep_len - self._sequence_length`
+                start_idxes = np.minimum(
+                    np.random.randint(0, upper, size=(n,)).reshape(-1, 1), ep_len - self._sequence_length, dtype=np.intp
+                )
+                # Compute the indices of the sequences
+                indices = start_idxes + self._chunk_length
+                # Retrieve the data
+                for k in self._buf[0].keys():
+                    samples_per_eps[k].append(self._buf[i][k][indices])
         # Concatenate all the trajectories on the batch dimension and properly reshape them
         samples = {}
         for k, v in samples_per_eps.items():
