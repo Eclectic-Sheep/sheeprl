@@ -95,6 +95,25 @@ def test_episode_buffer_error_add():
     with pytest.raises(RuntimeError, match="The episode must contain the `dones` key"):
         rb.add(ep6, validate_args=True)
 
+    ep7 = {"dones": np.zeros((sl, 1, 1))}
+    ep7["dones"][-1] = 1
+    with pytest.raises(ValueError, match="The indices of the environment must be integers in"):
+        rb.add(ep7, validate_args=True, env_idxes=[10])
+
+
+def test_add_only_for_some_envs():
+    buf_size = 10
+    sl = 5
+    n_envs = 4
+    obs_keys = ("dones",)
+    rb = EpisodeBuffer(buf_size, sl, n_envs=n_envs, obs_keys=obs_keys)
+    ep1 = {"dones": np.zeros((sl, n_envs - 2, 1))}
+    rb.add(ep1, env_idxes=[0, 3])
+    assert len(rb._open_episodes[0]) > 0
+    assert len(rb._open_episodes[1]) == 0
+    assert len(rb._open_episodes[2]) == 0
+    assert len(rb._open_episodes[3]) > 0
+
 
 def test_save_episode():
     buf_size = 100
@@ -150,7 +169,7 @@ def test_episode_buffer_sample_one_element():
     ep = {"dones": np.zeros((sl, n_envs, 1)), "a": np.random.rand(sl, n_envs, 1)}
     ep["dones"][-1] = 1
     rb.add(ep)
-    sample = rb.sample(1, 1)
+    sample = rb.sample(1, n_samples=1, sequence_length=sl)
     assert rb.full
     assert (sample["dones"][0, :, 0] == ep["dones"][:, 0]).all()
     assert (sample["a"][0, :, 0] == ep["a"][:, 0]).all()
@@ -165,7 +184,7 @@ def test_episode_buffer_sample_shapes():
     ep = {"dones": np.zeros((sl, n_envs, 1))}
     ep["dones"][-1] = 1
     rb.add(ep)
-    sample = rb.sample(3, n_samples=2)
+    sample = rb.sample(3, n_samples=2, sequence_length=sl)
     assert sample["dones"].shape[:-1] == tuple([2, sl, 3])
 
 
@@ -184,7 +203,7 @@ def test_episode_buffer_sample_more_episodes():
     rb.add(ep1)
     rb.add(ep2)
     rb.add(ep3)
-    samples = rb.sample(50, n_samples=5)
+    samples = rb.sample(50, n_samples=5, sequence_length=sl)
     assert samples["dones"].shape[:-1] == tuple([5, sl, 50])
     samples = {k: np.moveaxis(samples[k], 2, 1).reshape(-1, sl, 1) for k in obs_keys}
     for i in range(len(samples["dones"])):
@@ -200,12 +219,17 @@ def test_episode_buffer_error_sample():
     buf_size = 10
     sl = 5
     rb = EpisodeBuffer(buf_size, sl)
-    with pytest.raises(RuntimeError, match="No sample has been added"):
-        rb.sample(2, 2)
+    with pytest.raises(RuntimeError, match="No valid episodes has been added to the buffer"):
+        rb.sample(2, n_samples=2)
     with pytest.raises(ValueError, match="Batch size must be greater than 0"):
         rb.sample(-1, n_samples=2)
     with pytest.raises(ValueError, match="The number of samples must be greater than 0"):
-        rb.sample(2, -1)
+        rb.sample(2, n_samples=-1)
+    ep1 = {"dones": np.zeros((15, 1, 1))}
+    rb.add(ep1)
+    with pytest.raises(RuntimeError, match="No valid episodes has been added to the buffer"):
+        rb.sample(2, n_samples=2, sequence_length=20)
+        rb.sample(2, n_samples=2, sample_next_obs=True, sequence_length=sl)
 
 
 def test_episode_buffer_prioritize_ends():
@@ -223,9 +247,23 @@ def test_episode_buffer_prioritize_ends():
     rb.add(ep1)
     rb.add(ep2)
     rb.add(ep3)
-    samples = rb.sample(50, n_samples=5)
+    samples = rb.sample(50, n_samples=5, sequence_length=sl)
     assert samples["dones"].shape[:-1] == tuple([5, sl, 50])
     assert np.isin(samples["dones"], 1).any() > 0
+
+
+def test_sample_next_obs():
+    buf_size = 10
+    sl = 5
+    n_envs = 4
+    obs_keys = ("dones",)
+    rb = EpisodeBuffer(buf_size, sl, n_envs=n_envs, obs_keys=obs_keys)
+    ep1 = {"dones": np.zeros((sl, n_envs, 1))}
+    ep1["dones"][-1] = 1
+    rb.add(ep1)
+    sample = rb.sample(10, True, n_samples=5, sequence_length=sl - 1)
+    assert "next_dones" in sample
+    assert (sample["next_dones"][:, -1] == 1).all()
 
 
 def test_memmap_episode_buffer():
