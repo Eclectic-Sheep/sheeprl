@@ -66,6 +66,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             self._shape = v.shape
             self._mode = v.mode
             self._array = v
+            self._has_ownership = False
         elif isinstance(v, MemmapArray):
             self._file.close()
             del self._file
@@ -75,6 +76,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             self._shape = v._shape
             self._mode = v._mode
             self._array = v.array
+            self._has_ownership = False
         else:
             self._array[:] = np.reshape(v, self._array.shape)
 
