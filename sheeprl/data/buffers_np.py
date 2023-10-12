@@ -788,11 +788,8 @@ class EpisodeBuffer:
         self._prioritize_ends = prioritize_ends
 
     @property
-    def buffer(self) -> Optional[Dict[str, np.ndarray | MemmapArray]]:
-        if len(self._buf) > 0:
-            return {k: np.concatenate([v[k] for v in self._buf]) for k in self._buf[0].keys()}
-        else:
-            return {}
+    def buffer(self) -> Sequence[Dict[str, np.ndarray | MemmapArray]]:
+        return self._buf
 
     @property
     def obs_keys(self) -> Sequence[str]:
@@ -954,11 +951,14 @@ class EpisodeBuffer:
             # Remove all memmaped episodes
             if self._memmap and self._memmap_dir is not None:
                 for _ in range(last_to_remove + 1):
+                    dirname = os.path.dirname(self._buf[0][next(iter(self._buf[0].keys()))].filename)
+                    for v in self._buf[0].values():
+                        del v
+                    del self._buf[0]
                     try:
-                        shutil.rmtree(os.path.dirname(self._buf[0][next(iter(self._buf[0].keys()))].filename))
+                        shutil.rmtree(dirname)
                     except Exception as e:
                         logging.error(e)
-                    del self._buf[0]
             else:
                 self._buf = self._buf[last_to_remove + 1 :]
             # Update the cum_lengths lists
