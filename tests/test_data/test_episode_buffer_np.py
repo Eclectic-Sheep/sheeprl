@@ -126,7 +126,10 @@ def test_save_episode():
     rb._save_episode(ep_chunks)
 
     assert len(rb._buf) == 1
-    assert (rb.buffer["dones"] == np.concatenate([c["dones"] for c in ep_chunks], axis=0)).all()
+    assert (
+        np.concatenate([e["dones"] for e in rb.buffer], axis=0)
+        == np.concatenate([c["dones"] for c in ep_chunks], axis=0)
+    ).all()
 
 
 def test_save_episode_errors():
@@ -277,6 +280,7 @@ def test_memmap_episode_buffer():
         match="The buffer is set to be memory-mapped but the `memmap_dir` attribute is None",
     ):
         rb = EpisodeBuffer(buf_size, sl, n_envs=n_envs, memmap=True)
+
     rb = EpisodeBuffer(buf_size, sl, n_envs=n_envs, obs_keys=obs_keys, memmap=True, memmap_dir="test_episode_buffer")
     for _ in range(buf_size // bs):
         ep = {
@@ -288,6 +292,7 @@ def test_memmap_episode_buffer():
         assert isinstance(rb._buf[-1]["dones"], MemmapArray)
         assert isinstance(rb._buf[-1]["observations"], MemmapArray)
     assert rb.is_memmap
+    del rb
     shutil.rmtree(os.path.abspath("test_episode_buffer"))
 
 
