@@ -707,7 +707,7 @@ class EpisodeBuffer:
             Default to False.
         memmap (bool): Whether to memory-mapping the buffer.
             Default to False.
-        memmap_dir (Union[str, os.PathLike], optional): The directory for the memmap.
+        memmap_dir (str | os.PathLike, optional): The directory for the memmap.
             Default to None.
         memmap_mode (str, optional): memory-map mode.
             Possible values are: "r+", "w+", "c", "copyonwrite", "readwrite", "write".
@@ -722,7 +722,7 @@ class EpisodeBuffer:
         obs_keys: Sequence[str] = ("observations",),
         prioritize_ends: bool = False,
         memmap: bool = False,
-        memmap_dir: Optional[Union[str, os.PathLike]] = None,
+        memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
     ) -> None:
         if buffer_size <= 0:
@@ -740,15 +740,13 @@ class EpisodeBuffer:
         self._sequence_length = sequence_length
         self._prioritize_ends = prioritize_ends
 
-        # Contain the specifications of the memmaped episodes
-        self._episode_specs = []
         # One list for each environment that contains open episodes:
         # one open episode per environment
         self._open_episodes = [[] for _ in range(n_envs)]
         # Contain the cumulative length of the episodes in the buffer
         self._cum_lengths: Sequence[int] = []
         # List of stored episodes
-        self._buf: Sequence[Dict[str, ArrayLike]] = []
+        self._buf: Sequence[Dict[str, np.ndarray | MemmapArray]] = []
 
         self._memmap = memmap
         self._memmap_dir = memmap_dir
@@ -770,24 +768,6 @@ class EpisodeBuffer:
                 self._memmap_dir.mkdir(parents=True, exist_ok=True)
         self._chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
 
-    def _get_buf(self) -> Sequence[Dict[str, ArrayLike]]:
-        if self._memmap:
-            for i, ep_spec in enumerate(self._episode_specs):
-                for filename, file_specs in ep_spec.items():
-                    key = file_specs["key"]
-                    if key in self._buf[i] and self._buf[i][key] is None:
-                        file_specs["file_descriptor"] = open(filename, "r+")
-                        file_specs["file_descriptor"].close()
-                        self._buf[i][key] = np.memmap(
-                            filename=filename,
-                            dtype=file_specs["dtype"],
-                            shape=file_specs["shape"],
-                            mode=self._memmap_mode,
-                        )
-        return self._buf
-
-    buf = property(_get_buf)
-
     @property
     def prioritize_ends(self) -> bool:
         return self._prioritize_ends
@@ -797,8 +777,8 @@ class EpisodeBuffer:
         self._prioritize_ends = prioritize_ends
 
     @property
-    def buffer(self) -> Optional[Dict[str, ArrayLike]]:
-        if len(self.buf) > 0:
+    def buffer(self) -> Optional[Dict[str, np.ndarray | MemmapArray]]:
+        if len(self._buf) > 0:
             return {k: np.concatenate([v[k] for v in self._buf]) for k in self._obs_keys}
         else:
             return {}
@@ -825,24 +805,24 @@ class EpisodeBuffer:
 
     @property
     def full(self) -> bool:
-        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self.buf) > 0 else False
+        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self._buf) > 0 else False
 
     def __len__(self) -> int:
-        return self._cum_lengths[-1] if len(self.buf) > 0 else 0
+        return self._cum_lengths[-1] if len(self._buf) > 0 else 0
 
     @typing.overload
     def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
         ...
 
     @typing.overload
-    def add(self, data: Dict[str, ArrayLike], validate_args: bool = False) -> None:
+    def add(self, data: Dict[str, np.ndarray | MemmapArray], validate_args: bool = False) -> None:
         ...
 
-    def add(self, data: Union["ReplayBuffer", Dict[str, ArrayLike]], validate_args: bool = False) -> None:
+    def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray | MemmapArray], validate_args: bool = False) -> None:
         """_summary_
 
         Args:
-            data (Union[&quot;ReplayBuffer&quot;, Dict[str, ArrayLike]]): data to add.
+            data (&quot;ReplayBuffer&quot; | Dict[str, np.ndarray | MemmapArray]]): data to add.
         """
         if isinstance(data, ReplayBuffer):
             data = data.buffer
@@ -912,7 +892,7 @@ class EpisodeBuffer:
                         self._save_episode(self._open_episodes[env])
                         self._open_episodes[env] = []
 
-    def _save_episode(self, episode_chunks: Sequence[Dict[str, ArrayLike]]) -> None:
+    def _save_episode(self, episode_chunks: Sequence[Dict[str, np.ndarray | MemmapArray]]) -> None:
         if len(episode_chunks) == 0:
             raise RuntimeError("Invalid episode, an empty sequence is given. You must pass a non-empty sequence.")
         # Concatenate all the chunks of the episode
@@ -940,18 +920,11 @@ class EpisodeBuffer:
             # Remove all memmaped episodes
             if self._memmap and self._memmap_dir is not None:
                 for _ in range(last_to_remove + 1):
-                    for k, file_info in self._episode_specs[0].items():
-                        file_info["file_descriptor"].close()
-                        file_info["file_descriptor"] = None
-                        filename = k
-                    self._buf[0] = None
-                    self._episode_specs[0] = None
-                    del self._buf[0]
-                    del self._episode_specs[0]
                     try:
-                        shutil.rmtree(os.path.dirname(filename))
+                        shutil.rmtree(os.path.dirname(self._buf[0][self._obs_keys[0]].filename))
                     except Exception as e:
                         logging.error(e)
+                    del self._buf[0]
             else:
                 self._buf = self._buf[last_to_remove + 1 :]
             # Update the cum_lengths lists
@@ -962,30 +935,18 @@ class EpisodeBuffer:
         if self._memmap:
             episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
             episode_dir.mkdir(parents=True, exist_ok=True)
-            episode_specs = {}
             episode_to_store = {}
             for k, v in episode.items():
                 path = Path(episode_dir / f"{k}.memmap")
-                path.touch(exist_ok=True)
-                fd = open(path, mode="r+")
-                fd.close()
                 filename = str(path)
-                episode_specs[filename] = {
-                    "key": k,
-                    "file_descriptor": fd,
-                    "shape": v.shape,
-                    "dtype": v.dtype,
-                }
-                episode_to_store[k] = np.memmap(
-                    filename=filename,
+                episode_to_store[k] = MemmapArray(
+                    filename=str(filename),
                     dtype=v.dtype,
                     shape=v.shape,
                     mode=self._memmap_mode,
                 )
                 episode_to_store[k][:] = episode[k]
-            self._episode_specs.append(episode_specs)
         self._buf.append(episode_to_store)
-        _ = self.buf
 
     def sample(
         self,
@@ -1014,7 +975,7 @@ class EpisodeBuffer:
                 "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
             )
 
-        nsample_per_eps = np.bincount(np.random.randint(0, len(self.buf), (batch_size * n_samples,))).astype(np.intp)
+        nsample_per_eps = np.bincount(np.random.randint(0, len(self._buf), (batch_size * n_samples,))).astype(np.intp)
         samples = {k: [] for k in self._obs_keys}
         for i, n in enumerate(nsample_per_eps):
             ep_len = self._buf[i]["dones"].shape[0]
@@ -1048,37 +1009,3 @@ class EpisodeBuffer:
         if clone:
             return {k: v.clone() for k, v in samples.items()}
         return samples
-
-    def __getstate__(self):
-        # Copy the object's state from self.__dict__ which contains
-        # all our instance attributes. Always use the dict.copy()
-        # method to avoid modifying the original state.
-        state = self.__dict__.copy()
-        # Remove the unpicklable entries.
-        if self._memmap:
-            for i in range(len(state["_episode_specs"])):
-                for filename in state["_episode_specs"][i].keys():
-                    state["_episode_specs"][i][filename]["file_descriptor"] = None
-                    key = state["_episode_specs"][i][filename]["key"]
-                    # We remove the buffer entry: this can be reloaded upon unpickling by reading the
-                    # related file
-                    state["_buf"][i][key] = None
-        return state
-
-    def __setstate__(self, state):
-        # Restore the previously opened file's state. To do so, we need to
-        # reopen it and read from it until the line count is restored.
-        if state["_memmap"]:
-            for i in range(len(state["_episode_specs"])):
-                for filename in state["_episode_specs"][i].keys():
-                    state["_episode_specs"][i][filename]["file_descriptor"] = open(filename, "r+")
-                    state["_episode_specs"][i][filename]["file_descriptor"].close()
-                    key = state["_episode_specs"][i][filename]["key"]
-                    state["_buf"][i][key] = np.memmap(
-                        filename=filename,
-                        dtype=state["_episode_specs"][i][filename]["dtype"],
-                        shape=state["_episode_specs"][i][filename]["shape"],
-                        mode=state["_memmap_mode"],
-                    )
-        # Restore instance attributes (i.e., filename and lineno).
-        self.__dict__.update(state)

@@ -65,7 +65,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def has_ownership(self) -> bool:
         return self._has_ownership
 
-    @has_ownership
+    @has_ownership.setter
     def has_ownership(self, value: bool):
         self._has_ownership = value
 

@@ -7,6 +7,7 @@ import torch
 from tensordict import TensorDict
 
 from sheeprl.data.buffers_np import EpisodeBuffer
+from sheeprl.utils.memmap import MemmapArray
 
 
 def test_episode_buffer_wrong_buffer_size():
@@ -43,8 +44,8 @@ def test_episode_buffer_add_episodes():
     rb.add(ep3)
     rb.add(ep4)
     assert rb.full
-    assert (rb.buf[-1]["dones"] == ep4["dones"][:, 0]).all()
-    assert (rb.buf[0]["dones"] == ep2["dones"][:, 0]).all()
+    assert (rb._buf[-1]["dones"] == ep4["dones"][:, 0]).all()
+    assert (rb._buf[0]["dones"] == ep2["dones"][:, 0]).all()
 
 
 def test_episode_buffer_add_single_dict():
@@ -58,7 +59,7 @@ def test_episode_buffer_add_single_dict():
     rb.add(ep1)
     assert rb.full
     for env in range(n_envs):
-        assert (rb.buf[0]["dones"] == ep1["dones"][:, env]).all()
+        assert (rb._buf[0]["dones"] == ep1["dones"][:, env]).all()
 
 
 def test_episode_buffer_error_add():
@@ -246,8 +247,8 @@ def test_memmap_episode_buffer():
         }
         ep["dones"][-1] = 1
         rb.add(ep)
-        assert isinstance(rb._buf[-1]["dones"], np.memmap)
-        assert isinstance(rb._buf[-1]["observations"], np.memmap)
+        assert isinstance(rb._buf[-1]["dones"], MemmapArray)
+        assert isinstance(rb._buf[-1]["observations"], MemmapArray)
     assert rb.is_memmap
     shutil.rmtree(os.path.abspath("test_episode_buffer"))
 
@@ -272,9 +273,9 @@ def test_memmap_to_file_episode_buffer():
         ep["dones"][-1] = 1
         rb.add(ep)
         del ep
-        assert isinstance(rb._buf[-1]["dones"], np.memmap)
-        assert isinstance(rb._buf[-1]["observations"], np.memmap)
-        memmap_dir = os.path.dirname(list(rb._episode_specs[-1].keys())[0])
+        assert isinstance(rb._buf[-1]["dones"], MemmapArray)
+        assert isinstance(rb._buf[-1]["observations"], MemmapArray)
+        memmap_dir = os.path.dirname(rb._buf[-1]["dones"].filename)
         assert os.path.exists(os.path.join(memmap_dir, "dones.memmap"))
         assert os.path.exists(os.path.join(memmap_dir, "observations.memmap"))
     assert rb.is_memmap
