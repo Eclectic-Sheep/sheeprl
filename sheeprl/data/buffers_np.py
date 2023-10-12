@@ -5,6 +5,7 @@ import os
 import shutil
 import typing
 import uuid
+from itertools import compress
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Type
 
@@ -723,7 +724,7 @@ class EpisodeBuffer:
     def __init__(
         self,
         buffer_size: int,
-        sequence_length: int,
+        minimum_episode_length: int,
         n_envs: int = 1,
         obs_keys: Sequence[str] = ("observations",),
         prioritize_ends: bool = False,
@@ -733,17 +734,17 @@ class EpisodeBuffer:
     ) -> None:
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
-        if sequence_length <= 0:
-            raise ValueError(f"The sequence length must be greater than zero, got: {sequence_length}")
-        if buffer_size < sequence_length:
+        if minimum_episode_length <= 0:
+            raise ValueError(f"The sequence length must be greater than zero, got: {minimum_episode_length}")
+        if buffer_size < minimum_episode_length:
             raise ValueError(
                 "The sequence length must be lower than the buffer size, "
-                f"got: bs = {buffer_size} and sl = {sequence_length}"
+                f"got: bs = {buffer_size} and sl = {minimum_episode_length}"
             )
         self._n_envs = n_envs
         self._obs_keys = obs_keys
         self._buffer_size = buffer_size
-        self._sequence_length = sequence_length
+        self._minimum_episode_length = minimum_episode_length
         self._prioritize_ends = prioritize_ends
 
         # One list for each environment that contains open episodes:
@@ -772,7 +773,6 @@ class EpisodeBuffer:
             else:
                 self._memmap_dir = Path(self._memmap_dir)
                 self._memmap_dir.mkdir(parents=True, exist_ok=True)
-        self._chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
 
     @property
     def prioritize_ends(self) -> bool:
@@ -802,8 +802,8 @@ class EpisodeBuffer:
         return self._buffer_size
 
     @property
-    def sequence_length(self) -> int:
-        return self._sequence_length
+    def minimum_episode_length(self) -> int:
+        return self._minimum_episode_length
 
     @property
     def is_memmap(self) -> bool:
@@ -811,24 +811,39 @@ class EpisodeBuffer:
 
     @property
     def full(self) -> bool:
-        return self._cum_lengths[-1] + self._sequence_length > self._buffer_size if len(self._buf) > 0 else False
+        return self._cum_lengths[-1] + self._minimum_episode_length > self._buffer_size if len(self._buf) > 0 else False
 
     def __len__(self) -> int:
         return self._cum_lengths[-1] if len(self._buf) > 0 else 0
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
+    def add(self, data: "ReplayBuffer", validate_args: bool = False, env_idxes: Sequence[int] | None = None) -> None:
         ...
 
     @typing.overload
-    def add(self, data: Dict[str, np.ndarray | MemmapArray], validate_args: bool = False) -> None:
+    def add(
+        self,
+        data: Dict[str, np.ndarray | MemmapArray],
+        validate_args: bool = False,
+        env_idxes: Sequence[int] | None = None,
+    ) -> None:
         ...
 
-    def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray | MemmapArray], validate_args: bool = False) -> None:
+    def add(
+        self,
+        data: "ReplayBuffer" | Dict[str, np.ndarray | MemmapArray],
+        validate_args: bool = False,
+        env_idxes: Sequence[int] | None = None,
+    ) -> None:
         """_summary_
 
         Args:
             data (&quot;ReplayBuffer&quot; | Dict[str, np.ndarray | MemmapArray]]): data to add.
+            validate_args (bool): whether to validate the arguments or not.
+                Default to None.
+            env_idxes (Sequence[int], optional): the indices of the environments in which to add
+                the data.
+                Default to None.
         """
         if isinstance(data, ReplayBuffer):
             data = data.buffer
@@ -868,10 +883,18 @@ class EpisodeBuffer:
             if "dones" not in data:
                 raise RuntimeError(f"The episode must contain the `dones` key, got: {data.keys()}")
 
+            if (np.array(env_idxes) >= self._n_envs).any():
+                raise ValueError(
+                    f"The indices of the environment must be integers in [0, {self._n_envs}), given {env_idxes}"
+                )
+
         # For each environment
-        for env in range(self._n_envs):
+        envs = range(self._n_envs)
+        if env_idxes is not None:
+            envs = env_idxes
+        for i, env in enumerate(envs):
             # Take the data from a single environment
-            env_data = {k: v[:, env] for k, v in data.items()}
+            env_data = {k: v[:, i] for k, v in data.items()}
             done = env_data["dones"]
             # Take episode ends
             episode_ends = done.nonzero()[0].tolist()
@@ -912,8 +935,10 @@ class EpisodeBuffer:
         ep_len = episode["dones"].shape[0]
         if len(episode["dones"].nonzero()[0]) != 1 or episode["dones"][-1] != 1:
             raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(episode['dones']))}")
-        if ep_len < self._sequence_length:
-            raise RuntimeError(f"Episode too short (at least {self._sequence_length} steps), got: {ep_len} steps")
+        if ep_len < self._minimum_episode_length:
+            raise RuntimeError(
+                f"Episode too short (at least {self._minimum_episode_length} steps), got: {ep_len} steps"
+            )
         if ep_len > self._buffer_size:
             raise RuntimeError(f"Episode too long (at most {self._buffer_size} steps), got: {ep_len} steps")
 
@@ -957,17 +982,24 @@ class EpisodeBuffer:
     def sample(
         self,
         batch_size: int,
+        sample_next_obs: bool = False,
         n_samples: int = 1,
         clone: bool = False,
+        sequence_length: int = 1,
+        **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Sample trajectories from the replay buffer.
 
         Args:
             batch_size (int): Number of element in the batch.
+            sample_next_obs (bool): Whether to sample the next obs.
+                Default to False.
             n_samples (bool): The number of samples to be retrieved.
                 Defaults to 1.
             clone (bool): Whether to clone the samples.
                 Default to False.
+            sequence_length (int): The length of the sequences to sample.
+                Default to 1.
 
         Returns:
             TensorDictBase: the sampled TensorDictBase with a `batch_size` of [batch_size, 1]
@@ -976,40 +1008,90 @@ class EpisodeBuffer:
             raise ValueError(f"Batch size must be greater than 0, got: {batch_size}")
         if n_samples <= 0:
             raise ValueError(f"The number of samples must be greater than 0, got: {n_samples}")
-        if len(self) == 0:
+        if sample_next_obs:
+            valid_episode_idxes = np.array(self._cum_lengths) - np.array([0] + self._cum_lengths[:-1]) > sequence_length
+        else:
+            valid_episode_idxes = (
+                np.array(self._cum_lengths) - np.array([0] + self._cum_lengths[:-1]) >= sequence_length
+            )
+        valid_episodes = list(compress(self._buf, valid_episode_idxes))
+        if len(valid_episodes) == 0:
             raise RuntimeError(
-                "No sample has been added to the buffer. Please add at least one sample calling `self.add()`"
+                "No valid episodes has been added to the buffer. Please add at least one episode of length greater "
+                f"than or equal to {sequence_length} calling `self.add()`"
             )
 
-        nsample_per_eps = np.bincount(np.random.randint(0, len(self._buf), (batch_size * n_samples,))).astype(np.intp)
-        samples_per_eps = {k: [] for k in self._buf[0].keys()}
+        chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
+        nsample_per_eps = np.bincount(np.random.randint(0, len(valid_episodes), (batch_size * n_samples,))).astype(
+            np.intp
+        )
+        samples_per_eps = {k: [] for k in valid_episodes[0].keys()}
+        if sample_next_obs:
+            samples_per_eps.update({f"next_{k}": [] for k in self._obs_keys})
         for i, n in enumerate(nsample_per_eps):
             if n > 0:
-                ep_len = self._buf[i]["dones"].shape[0]
+                ep_len = valid_episodes[i]["dones"].shape[0]
+                if sample_next_obs:
+                    ep_len -= 1
                 # Define the maximum index that can be sampled in the episodes
-                upper = ep_len - self._sequence_length + 1
+                upper = ep_len - sequence_length + 1
                 # If you want to prioritize ends, then all the indices of the episode
                 # can be sampled as starting index
                 if self._prioritize_ends:
-                    upper += self._sequence_length
-                # Sample the starting indices and upper bound with `ep_len - self._sequence_length`
+                    upper += sequence_length
+                # Sample the starting indices and upper bound with `ep_len - sequence_length`
                 start_idxes = np.minimum(
-                    np.random.randint(0, upper, size=(n,)).reshape(-1, 1), ep_len - self._sequence_length, dtype=np.intp
+                    np.random.randint(0, upper, size=(n,)).reshape(-1, 1), ep_len - sequence_length, dtype=np.intp
                 )
                 # Compute the indices of the sequences
-                indices = start_idxes + self._chunk_length
+                indices = start_idxes + chunk_length
                 # Retrieve the data
-                for k in self._buf[0].keys():
-                    samples_per_eps[k].append(self._buf[i][k][indices])
+                for k in valid_episodes[0].keys():
+                    samples_per_eps[k].append(
+                        np.take(valid_episodes[i][k], indices.flat, axis=0).reshape(
+                            n, sequence_length, *valid_episodes[i][k].shape[1:]
+                        )
+                    )
+                    if sample_next_obs and k in self._obs_keys:
+                        samples_per_eps[f"next_{k}"].append(valid_episodes[i][k][indices + 1])
         # Concatenate all the trajectories on the batch dimension and properly reshape them
         samples = {}
         for k, v in samples_per_eps.items():
             if len(v) > 0:
                 samples[k] = np.moveaxis(
-                    np.concatenate(v, axis=0).reshape(n_samples, batch_size, self._sequence_length, *v[0].shape[2:]),
+                    np.concatenate(v, axis=0).reshape(n_samples, batch_size, sequence_length, *v[0].shape[2:]),
                     2,
                     1,
                 )
                 if clone:
                     samples[k] = samples[k].copy()
+        return samples
+
+    @torch.no_grad()
+    def sample_tensors(
+        self,
+        batch_size: int,
+        sample_next_obs: bool = False,
+        n_samples: int = 1,
+        clone: bool = False,
+        sequence_length: int = 1,
+        dtype: Optional[torch.dtype] = None,
+        device: str | torch.dtype = "cpu",
+        from_numpy: bool = False,
+        **kwargs,
+    ) -> Dict[str, Tensor]:
+        samples = self.sample(batch_size, sample_next_obs, n_samples, clone, sequence_length)
+        for k, v in samples.items():
+            if from_numpy:
+                torch_v = torch.from_numpy(v).to(
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
+            else:
+                torch_v = torch.as_tensor(
+                    v,
+                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
+                    device=device,
+                )
+            samples[k] = torch_v
         return samples
