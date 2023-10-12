@@ -19,7 +19,7 @@ from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.data.buffers_np import EnvIndipendentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -534,7 +534,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2
-    rb = EnvIndipendentReplayBuffer(
+    rb = EnvIndependentReplayBuffer(
         buffer_size,
         cfg.env.num_envs,
         obs_keys=obs_keys,
@@ -545,7 +545,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], EnvIndipendentReplayBuffer):
+        elif isinstance(state["rb"], EnvIndependentReplayBuffer):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")

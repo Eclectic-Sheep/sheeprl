@@ -519,7 +519,7 @@ class SequentialReplayBuffer(ReplayBuffer):
         return samples
 
 
-class EnvIndipendentReplayBuffer:
+class EnvIndependentReplayBuffer:
     def __init__(
         self,
         buffer_size: int,

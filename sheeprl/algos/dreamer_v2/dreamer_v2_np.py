@@ -25,7 +25,7 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import EpisodeBuffer
-from sheeprl.data.buffers_np import EnvIndipendentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -563,7 +563,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
-        rb = EnvIndipendentReplayBuffer(
+        rb = EnvIndependentReplayBuffer(
             buffer_size,
             cfg.env.num_envs,
             obs_keys=obs_keys,
@@ -584,7 +584,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], (EnvIndipendentReplayBuffer, EpisodeBuffer)):
+        elif isinstance(state["rb"], (EnvIndependentReplayBuffer, EpisodeBuffer)):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
