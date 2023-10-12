@@ -17,6 +17,8 @@ from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT
 
 
 class ReplayBuffer:
+    batch_axis: int = 1
+
     def __init__(
         self,
         buffer_size: int,
@@ -308,7 +310,7 @@ class ReplayBuffer:
             samples[k] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_idxes, axis=0)
             if clone:
                 samples[k] = samples[k].copy()
-            if sample_next_obs:
+            if k in self._obs_keys and sample_next_obs:
                 samples[f"next_{k}"] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_next_idxes, axis=0)
                 if clone:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
@@ -362,6 +364,8 @@ class SequentialReplayBuffer(ReplayBuffer):
         buffer_size (int): The buffer size.
         n_envs (int, optional): The number of environments. Defaults to 1.
     """
+
+    batch_axis: int = 2
 
     def __init__(
         self,
@@ -560,7 +564,7 @@ class EnvIndipendentReplayBuffer:
         self._buffer_size = buffer_size
         self._n_envs = n_envs
         self._rng: np.random.Generator = np.random.default_rng()
-        self._concat_along_axis = 2 if buffer_cls == SequentialReplayBuffer else 0
+        self._concat_along_axis = buffer_cls.batch_axis
 
     @property
     def buffer(self) -> Sequence[ReplayBuffer]:
@@ -714,6 +718,8 @@ class EpisodeBuffer:
             Defaults to "r+".
     """
 
+    batch_axis: int = 2
+
     def __init__(
         self,
         buffer_size: int,
@@ -779,7 +785,7 @@ class EpisodeBuffer:
     @property
     def buffer(self) -> Optional[Dict[str, np.ndarray | MemmapArray]]:
         if len(self._buf) > 0:
-            return {k: np.concatenate([v[k] for v in self._buf]) for k in self._obs_keys}
+            return {k: np.concatenate([v[k] for v in self._buf]) for k in self._buf[0].keys()}
         else:
             return {}
 
@@ -880,7 +886,7 @@ class EpisodeBuffer:
                 for ep_end_idx in episode_ends:
                     stop = ep_end_idx
                     # Take the episode from the data
-                    episode = {k: env_data[k][start : stop + 1] for k in self._obs_keys}
+                    episode = {k: env_data[k][start : stop + 1] for k in env_data.keys()}
                     # If the episode length is greater than zero, then add it to the open episode
                     # of the corresponding environment.
                     if len(episode["dones"]) > 0:
@@ -896,11 +902,11 @@ class EpisodeBuffer:
         if len(episode_chunks) == 0:
             raise RuntimeError("Invalid episode, an empty sequence is given. You must pass a non-empty sequence.")
         # Concatenate all the chunks of the episode
-        episode = {k: [] for k in self._obs_keys}
+        episode = {k: [] for k in episode_chunks[0].keys()}
         for chunk in episode_chunks:
-            for k in self._obs_keys:
+            for k in chunk.keys():
                 episode[k].append(chunk[k])
-        episode = {k: np.concatenate(episode[k], axis=0) for k in self._obs_keys}
+        episode = {k: np.concatenate(v, axis=0) for k, v in episode.items()}
 
         # Control the validity of the episode
         ep_len = episode["dones"].shape[0]
@@ -921,7 +927,7 @@ class EpisodeBuffer:
             if self._memmap and self._memmap_dir is not None:
                 for _ in range(last_to_remove + 1):
                     try:
-                        shutil.rmtree(os.path.dirname(self._buf[0][self._obs_keys[0]].filename))
+                        shutil.rmtree(os.path.dirname(self._buf[0][next(iter(self._buf[0].keys()))].filename))
                     except Exception as e:
                         logging.error(e)
                     del self._buf[0]
@@ -976,7 +982,7 @@ class EpisodeBuffer:
             )
 
         nsample_per_eps = np.bincount(np.random.randint(0, len(self._buf), (batch_size * n_samples,))).astype(np.intp)
-        samples = {k: [] for k in self._obs_keys}
+        samples_per_eps = {k: [] for k in self._buf[0].keys()}
         for i, n in enumerate(nsample_per_eps):
             ep_len = self._buf[i]["dones"].shape[0]
             # Define the maximum index that can be sampled in the episodes
@@ -992,20 +998,17 @@ class EpisodeBuffer:
             # Compute the indices of the sequences
             indices = start_idxes + self._chunk_length
             # Retrieve the data
-            for k in self._obs_keys:
-                samples[k].append(self._buf[i][k][indices])
+            for k in self._buf[0].keys():
+                samples_per_eps[k].append(self._buf[i][k][indices])
         # Concatenate all the trajectories on the batch dimension and properly reshape them
-        samples = {
-            k: np.moveaxis(
-                np.concatenate(samples[k], axis=0).reshape(
-                    n_samples, batch_size, self._sequence_length, *samples[k][0].shape[2:]
-                ),
-                2,
-                1,
-            )
-            for k in self._obs_keys
-            if len(samples[k]) > 0
-        }
-        if clone:
-            return {k: v.clone() for k, v in samples.items()}
+        samples = {}
+        for k, v in samples_per_eps.items():
+            if len(v) > 0:
+                samples[k] = np.moveaxis(
+                    np.concatenate(v, axis=0).reshape(n_samples, batch_size, self._sequence_length, *v[0].shape[2:]),
+                    2,
+                    1,
+                )
+                if clone:
+                    samples[k] = samples[k].copy()
         return samples
