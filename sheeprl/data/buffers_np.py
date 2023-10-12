@@ -229,7 +229,7 @@ class ReplayBuffer:
 
     @torch.no_grad()
     def sample(
-        self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, **kwargs
+        self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, n_samples: int = 1, **kwargs
     ) -> Dict[str, np.ndarray]:
         """Sample elements from the replay buffer.
 
@@ -246,8 +246,8 @@ class ReplayBuffer:
             sample: the sampled dictionary, containing the sampled array,
             one for every key, with a shape of [batch_size, 1]
         """
-        if batch_size <= 0:
-            raise ValueError("Batch size must be greater than 0")
+        if batch_size <= 0 or n_samples <= 0:
+            raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
         if not self._full and self._pos == 0:
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
@@ -258,7 +258,9 @@ class ReplayBuffer:
             valid_idxes = np.array(
                 list(range(0, first_range_end)) + list(range(self._pos, second_range_end)), dtype=np.intp
             )
-            batch_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_size,), dtype=np.intp)]
+            batch_idxes = valid_idxes[
+                self._rng.integers(0, len(valid_idxes), size=(batch_size * n_samples,), dtype=np.intp)
+            ]
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
             if max_pos_to_sample == 0:
@@ -266,8 +268,11 @@ class ReplayBuffer:
                     "You want to sample the next observations, but one sample has been added to the buffer. "
                     "Make sure that at least two samples are added."
                 )
-            batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size,), dtype=np.intp)
-        return self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs, clone=clone)
+            batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size * n_samples,), dtype=np.intp)
+        return {
+            k: v.reshape(n_samples, batch_size, *v.shape[1:])
+            for k, v in self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs, clone=clone).items()
+        }
 
     @torch.no_grad()
     def sample_tensors(
@@ -556,7 +561,7 @@ class EnvIndependentReplayBuffer:
                 n_envs=1,
                 obs_keys=obs_keys,
                 memmap=memmap,
-                memmap_dir=memmap_dir / f"env_{i}",
+                memmap_dir=memmap_dir / f"env_{i}" if memmap else None,
                 memmap_mode=memmap_mode,
                 **kwargs,
             )
@@ -817,32 +822,31 @@ class EpisodeBuffer:
         return self._cum_lengths[-1] if len(self._buf) > 0 else 0
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False, env_idxes: Sequence[int] | None = None) -> None:
+    def add(self, data: "ReplayBuffer", env_idxes: Sequence[int] | None = None, validate_args: bool = False) -> None:
         ...
 
     @typing.overload
     def add(
         self,
         data: Dict[str, np.ndarray | MemmapArray],
-        validate_args: bool = False,
         env_idxes: Sequence[int] | None = None,
+        validate_args: bool = False,
     ) -> None:
         ...
 
     def add(
         self,
         data: "ReplayBuffer" | Dict[str, np.ndarray | MemmapArray],
-        validate_args: bool = False,
         env_idxes: Sequence[int] | None = None,
+        validate_args: bool = False,
     ) -> None:
         """_summary_
 
         Args:
             data (&quot;ReplayBuffer&quot; | Dict[str, np.ndarray | MemmapArray]]): data to add.
-            validate_args (bool): whether to validate the arguments or not.
+            env_idxes (Sequence[int], optional): the indices of the environments in which to add the data.
                 Default to None.
-            env_idxes (Sequence[int], optional): the indices of the environments in which to add
-                the data.
+            validate_args (bool): whether to validate the arguments or not.
                 Default to None.
         """
         if isinstance(data, ReplayBuffer):
@@ -889,10 +893,9 @@ class EpisodeBuffer:
                 )
 
         # For each environment
-        envs = range(self._n_envs)
-        if env_idxes is not None:
-            envs = env_idxes
-        for i, env in enumerate(envs):
+        if env_idxes is None:
+            env_idxes = range(self._n_envs)
+        for i, env in enumerate(env_idxes):
             # Take the data from a single environment
             env_data = {k: v[:, i] for k, v in data.items()}
             done = env_data["dones"]

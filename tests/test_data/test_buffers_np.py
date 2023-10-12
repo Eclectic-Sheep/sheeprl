@@ -95,7 +95,9 @@ def test_replay_buffer_sample():
     td1 = {"a": np.random.rand(6, 1, 1)}
     rb.add(td1)
     s = rb.sample(4)
-    assert s["a"].shape == tuple([4, 1])
+    assert s["a"].shape == tuple([1, 4, 1])
+    s = rb.sample(4, n_samples=3)
+    assert s["a"].shape == tuple([3, 4, 1])
 
 
 def test_replay_buffer_sample_next_obs_not_full():
@@ -105,7 +107,7 @@ def test_replay_buffer_sample_next_obs_not_full():
     td1 = {"observations": np.arange(4).reshape(-1, 1, 1)}
     rb.add(td1)
     s = rb.sample(10, sample_next_obs=True)
-    assert s["observations"].shape == tuple([10, 1])
+    assert s["observations"].shape == tuple([1, 10, 1])
     assert td1["observations"][-1] not in s["observations"]
 
 
@@ -116,7 +118,7 @@ def test_replay_buffer_sample_next_obs_full():
     td1 = {"observations": np.arange(8).reshape(-1, 1, 1)}
     rb.add(td1)
     s = rb.sample(10, sample_next_obs=True)
-    assert s["observations"].shape == tuple([10, 1])
+    assert s["observations"].shape == tuple([1, 10, 1])
     assert td1["observations"][-1] not in s["observations"]
 
 
@@ -127,7 +129,7 @@ def test_replay_buffer_sample_full():
     td1 = {"a": np.random.rand(6, 1, 1)}
     rb.add(td1)
     s = rb.sample(6)
-    assert s["a"].shape == tuple([6, 1])
+    assert s["a"].shape == tuple([1, 6, 1])
 
 
 def test_replay_buffer_sample_one_element():
@@ -149,7 +151,7 @@ def test_replay_buffer_sample_fail():
     rb = ReplayBuffer(buf_size, n_envs)
     with pytest.raises(ValueError, match="No sample has been added to the buffer"):
         rb.sample(1)
-    with pytest.raises(ValueError, match="Batch size must be greater than 0"):
+    with pytest.raises(ValueError, match="must be both greater than 0"):
         rb.sample(-1)
 
 
