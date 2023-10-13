@@ -38,8 +38,9 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         )
         if reset:
             self._array[:] = np.zeros_like(self._array)
-        self._array_dir = self._array.__dir__()
         self._has_ownership = True
+        self._array_dir = self._array.__dir__()
+        self.__array_interface__ = self._array.__array_interface__
 
     @property
     def filename(self) -> str:
@@ -83,31 +84,30 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         return self._array
 
     @array.setter
-    def array(self, v: np.memmap | np.ndarray | MemmapArray):
-        if not isinstance(v, (np.memmap, np.ndarray, MemmapArray)):
+    def array(self, v: np.memmap | np.ndarray):
+        if not isinstance(v, (np.memmap, np.ndarray)):
             raise ValueError(f"The value to be set must be an instance of 'np.memmap' or 'np.ndarray', got '{type(v)}'")
         if isinstance(v, np.memmap):
-            self._file.close()
-            del self._file
-            self._file = open(v.filename, mode="r+")
-            self._file.close()
+            self.__del__()
+            tmpfile = _TemporaryFileWrapper(None, v.filename, delete=True)
+            tmpfile.name = v.filename
+            tmpfile._closer.name = v.filename
+            self._file = tmpfile
             self._filename = v.filename
             self._shape = v.shape
+            self._dtype = v.dtype
             self._mode = v.mode
-            self._array = v
             self._has_ownership = False
-        elif isinstance(v, MemmapArray):
-            self._file.close()
-            del self._file
-            self._file = open(v._filename, mode="r+")
-            self._file.close()
-            self._filename = v._filename
-            self._shape = v._shape
-            self._mode = v._mode
-            self._array = v.array
-            self._has_ownership = False
+            self.__array_interface__ = v.__array_interface__
+            self._array = np.memmap(
+                filename=self._filename,
+                dtype=self._dtype,
+                shape=self._shape,
+                mode=self._mode,
+            )
         else:
-            self._array[:] = np.reshape(v, self._array.shape)
+            reshaped_v = np.reshape(v, self._shape)
+            self._array[:] = reshaped_v
 
     def __del__(self) -> None:
         if self._has_ownership and getrefcount(self._file) <= 2:
