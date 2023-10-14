@@ -126,20 +126,7 @@ class ReplayBuffer:
         """
         buf = {}
         for k, v in self.buffer.items():
-            if from_numpy:
-                torch_v = torch.from_numpy(v).to(
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            else:
-                torch_v = torch.as_tensor(
-                    v,
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            if clone:
-                torch_v = torch_v.clone()
-            buf[k] = torch_v
+            buf[k] = get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy)
         return buf
 
     @typing.overload
@@ -275,33 +262,6 @@ class ReplayBuffer:
         }
 
     @torch.no_grad()
-    def sample_tensors(
-        self,
-        batch_size: int,
-        clone: bool = False,
-        sample_next_obs: bool = False,
-        dtype: Optional[torch.dtype] = None,
-        device: str | torch.dtype = "cpu",
-        from_numpy: bool = False,
-        **kwargs,
-    ) -> Dict[str, Tensor]:
-        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
-        for k, v in samples.items():
-            if from_numpy:
-                torch_v = torch.from_numpy(v).to(
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            else:
-                torch_v = torch.as_tensor(
-                    v,
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            samples[k] = torch_v
-        return samples
-
-    @torch.no_grad()
     def _get_samples(
         self, batch_idxes: np.ndarray, sample_next_obs: bool = False, clone: bool = False
     ) -> Dict[str, np.ndarray]:
@@ -322,6 +282,22 @@ class ReplayBuffer:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
         return samples
 
+    @torch.no_grad()
+    def sample_tensors(
+        self,
+        batch_size: int,
+        clone: bool = False,
+        sample_next_obs: bool = False,
+        dtype: Optional[torch.dtype] = None,
+        device: str | torch.dtype = "cpu",
+        from_numpy: bool = False,
+        **kwargs,
+    ) -> Dict[str, Tensor]:
+        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
+        return {
+            k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
+        }
+
     def __getitem__(self, key: str) -> np.ndarray | np.memmap | MemmapArray:
         if not isinstance(key, str):
             raise TypeError("'key' must be a string")
@@ -330,7 +306,7 @@ class ReplayBuffer:
         return self.buffer.get(key)
 
     def __setitem__(self, key: str, value: np.ndarray | np.memmap | MemmapArray) -> None:
-        if not isinstance(value, (np.ndarray, np.memmap, MemmapArray)):
+        if not isinstance(value, (np.ndarray, MemmapArray)):
             raise ValueError(
                 "The value to be set must be an instance of 'np.ndarray', 'np.memmap' "
                 f"or '{MemmapArray.__module__}.{MemmapArray.__qualname__}', "
@@ -344,23 +320,17 @@ class ReplayBuffer:
                 f"Shape of 'value' is {value.shape}"
             )
         if self._memmap:
-            if isinstance(value, (np.memmap, np.ndarray)):
-                value_to_add = MemmapArray(
-                    Path(self._memmap_dir / f"{key}.memmap"),
-                    dtype=value.dtype,
-                    shape=value.shape,
-                    mode=self._memmap_mode,
-                )
-                value_to_add[:] = value[:]
+            if isinstance(value, np.ndarray):
+                filename = Path(self._memmap_dir / f"{key}.memmap")
             elif isinstance(value, MemmapArray):
-                value_to_add = value
-            self.buffer.update({key: value_to_add})
+                filename = value.filename
+            value_to_add = MemmapArray.from_array(value, filename, mode=self._memmap_mode)
         else:
-            if isinstance(value, np.memmap):
+            if isinstance(value, np.ndarray):
                 value_to_add = np.copy(value)
             elif isinstance(value, MemmapArray):
                 value_to_add = np.copy(value.array)
-            self.buffer.update({key: value_to_add})
+        self.buffer.update({key: value_to_add})
 
 
 class SequentialReplayBuffer(ReplayBuffer):
@@ -686,20 +656,9 @@ class EnvIndependentReplayBuffer:
             sequence_length=sequence_length,
             concat_along_axis=self._concat_along_axis,
         )
-        for k, v in samples.items():
-            if from_numpy:
-                torch_v = torch.from_numpy(v).to(
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            else:
-                torch_v = torch.as_tensor(
-                    v,
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            samples[k] = torch_v
-        return samples
+        return {
+            k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
+        }
 
 
 class EpisodeBuffer:
@@ -1084,17 +1043,31 @@ class EpisodeBuffer:
         **kwargs,
     ) -> Dict[str, Tensor]:
         samples = self.sample(batch_size, sample_next_obs, n_samples, clone, sequence_length)
-        for k, v in samples.items():
-            if from_numpy:
-                torch_v = torch.from_numpy(v).to(
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            else:
-                torch_v = torch.as_tensor(
-                    v,
-                    dtype=NUMPY_TO_TORCH_DTYPE_DICT[v.dtype] if dtype is None else dtype,
-                    device=device,
-                )
-            samples[k] = torch_v
-        return samples
+        return {
+            k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
+        }
+
+
+def get_tensor(
+    array: np.ndarray | MemmapArray,
+    dtype: Optional[torch.dtype] = None,
+    clone: bool = False,
+    device: str | torch.dtype = "cpu",
+    from_numpy: bool = False,
+) -> Tensor:
+    if isinstance(array, MemmapArray):
+        array = array.array
+    if clone:
+        array = array.copy()
+    if from_numpy:
+        torch_v = torch.from_numpy(array).to(
+            dtype=NUMPY_TO_TORCH_DTYPE_DICT[array.dtype] if dtype is None else dtype,
+            device=device,
+        )
+    else:
+        torch_v = torch.as_tensor(
+            array,
+            dtype=NUMPY_TO_TORCH_DTYPE_DICT[array.dtype] if dtype is None else dtype,
+            device=device,
+        )
+    return torch_v
