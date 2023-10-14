@@ -13,6 +13,10 @@ import numpy as np
 from numpy.typing import DTypeLike
 
 
+def is_shared(array: np.ndarray) -> bool:
+    return isinstance(array, np.ndarray) and hasattr(array, "_mmap")
+
+
 class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def __init__(
         self,
@@ -43,7 +47,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         self.__array_interface__ = self._array.__array_interface__
 
     @property
-    def filename(self) -> str:
+    def filename(self) -> Path:
         return self._filename
 
     @property
@@ -87,7 +91,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def array(self, v: np.memmap | np.ndarray):
         if not isinstance(v, (np.memmap, np.ndarray)):
             raise ValueError(f"The value to be set must be an instance of 'np.memmap' or 'np.ndarray', got '{type(v)}'")
-        if isinstance(v, np.memmap):
+        if is_shared(v):
             self.__del__()
             tmpfile = _TemporaryFileWrapper(None, v.filename, delete=True)
             tmpfile.name = v.filename
@@ -96,7 +100,6 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             self._filename = v.filename
             self._shape = v.shape
             self._dtype = v.dtype
-            self._mode = v.mode
             self._has_ownership = False
             self.__array_interface__ = v.__array_interface__
             self._array = np.memmap(
@@ -108,6 +111,34 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         else:
             reshaped_v = np.reshape(v, self._shape)
             self._array[:] = reshaped_v
+
+    @classmethod
+    def from_array(
+        cls,
+        array: np.ndarray | np.memmap | MemmapArray,
+        filename: str | os.PathLike,
+        mode: str = "r+",
+        reset: bool = False,
+    ) -> MemmapArray:
+        is_memmap_array = isinstance(array, MemmapArray)
+        is_shared_array = is_shared(array)
+        if isinstance(array, (np.ndarray, MemmapArray)):
+            out = cls(filename=filename, dtype=array.dtype, shape=array.shape, mode=mode, reset=reset)
+            if is_memmap_array or is_shared_array:
+                if is_memmap_array:
+                    array = array.array
+                if Path(filename).absolute() == Path(array.filename).absolute():
+                    out.array = array  # Lose ownership
+                else:
+                    out.array[:] = array[:]
+            else:
+                if os.path.exists(filename):
+                    raise FileExistsError(
+                        f"The filename '{filename}' already exists, so we cannot safely create a new "
+                        "MemmapArray from the specified array. Try to change the filename."
+                    )
+                out.array[:] = array[:]
+            return out
 
     def __del__(self) -> None:
         if self._has_ownership and getrefcount(self._file) <= 2:
