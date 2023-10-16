@@ -302,6 +302,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             for k, v in gathered_data.items():
                 gathered_data[k] = v.float()  # [G*B*World]
                 if fabric.world_size > 1:
+                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=2)
+                else:
                     gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=1)
             idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
             if world_size > 1:
