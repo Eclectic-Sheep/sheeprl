@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 
 import numpy as np
 import pytest
@@ -326,3 +327,38 @@ def test_memmap_to_file_episode_buffer():
         del ep
     del rb
     shutil.rmtree(os.path.abspath("test_episode_buffer"))
+
+
+def test_sample_tensors():
+    import torch
+
+    buf_size = 10
+    n_envs = 1
+    rb = EpisodeBuffer(buf_size, n_envs)
+    td = {"observations": np.arange(8).reshape(-1, 1, 1), "dones": np.zeros((8, 1, 1))}
+    td["dones"][-1] = 1
+    rb.add(td)
+    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3, sequence_length=5)
+    assert isinstance(s["observations"], torch.Tensor)
+    assert s["observations"].shape == torch.Size([3, 5, 10, 1])
+
+
+def test_sample_tensor_memmap():
+    import torch
+
+    buf_size = 10
+    n_envs = 4
+    root_dir = os.path.join("pytest_" + str(int(time.time())))
+    memmap_dir = os.path.join(root_dir, "memmap_buffer")
+    rb = EpisodeBuffer(buf_size, n_envs, memmap=True, memmap_dir=memmap_dir, obs_keys=("observations"))
+    td = {
+        "observations": np.random.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=np.uint8),
+        "dones": np.zeros((buf_size, n_envs, 1)),
+    }
+    td["dones"][-1] = 1
+    rb.add(td)
+    sample = rb.sample_tensors(10, False, n_samples=3, sequence_length=5)
+    assert isinstance(sample["observations"], torch.Tensor)
+    assert sample["observations"].shape == torch.Size([3, 5, 10, 3, 64, 64])
+    del rb
+    shutil.rmtree(root_dir)

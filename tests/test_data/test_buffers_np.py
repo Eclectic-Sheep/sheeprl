@@ -242,3 +242,35 @@ def test_obs_keys_replay_no_sample_next_obs_buffer():
     assert "next_tmp" in sample_keys
     del rb
     shutil.rmtree(root_dir)
+
+
+def test_sample_tensors():
+    import torch
+
+    buf_size = 5
+    n_envs = 1
+    rb = ReplayBuffer(buf_size, n_envs)
+    td1 = {"observations": np.arange(8).reshape(-1, 1, 1)}
+    rb.add(td1)
+    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3)
+    assert isinstance(s["observations"], torch.Tensor)
+    assert s["observations"].shape == torch.Size([3, 10, 1])
+
+
+def test_sample_tensor_memmap():
+    import torch
+
+    buf_size = 10
+    n_envs = 4
+    root_dir = os.path.join("pytest_" + str(int(time.time())))
+    memmap_dir = os.path.join(root_dir, "memmap_buffer")
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=memmap_dir, obs_keys=("observations"))
+    td = {
+        "observations": np.random.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=np.uint8),
+    }
+    rb.add(td)
+    sample = rb.sample_tensors(10, False, n_samples=3)
+    assert isinstance(sample["observations"], torch.Tensor)
+    assert sample["observations"].shape == torch.Size([3, 10, 3, 64, 64])
+    del rb
+    shutil.rmtree(root_dir)
