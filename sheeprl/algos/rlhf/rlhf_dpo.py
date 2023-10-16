@@ -1,11 +1,10 @@
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import hydra
 import lightning as L
 import torch
-from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -35,7 +34,6 @@ from sheeprl.algos.rlhf.utils import (
 )
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import dotdict
 
 __all__ = ["main"]
 
@@ -101,8 +99,7 @@ def generate(
 
 
 @register_algorithm()
-def main(fabric: L.Fabric, cfg: DictConfig):
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+def main(fabric: L.Fabric, cfg: Dict[str, Any]):
     algo_cfg = DPOAlgoConfig(**cfg.algo)
     model_cfg = ModelConfig(**cfg.model)
     data_cfg = DataConfig(**cfg.data)

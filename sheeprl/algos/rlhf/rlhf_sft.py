@@ -1,9 +1,8 @@
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import hydra
 from lightning.fabric import Fabric
-from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from sheeprl.utils.imports import _IS_TRANSFORMERS_AVAILABLE
@@ -38,7 +37,6 @@ from sheeprl.algos.rlhf.utils import (
 )
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import dotdict
 
 register_configs()
 
@@ -93,8 +91,7 @@ def generate(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: DictConfig):
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+def main(fabric: Fabric, cfg: Dict[str, Any]):
     algo_cfg = SFTAlgoConfig(**cfg.algo)
     model_cfg = ModelConfig(**cfg.model)
     data_cfg = DataConfig(**cfg.data)

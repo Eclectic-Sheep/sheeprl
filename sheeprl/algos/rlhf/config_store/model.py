@@ -78,6 +78,13 @@ class PhiConfig(ModelConfig):
     use_attention_mask: bool = False
 
 
+@dataclass
+class FalconConfig(ModelConfig):
+    name: str = "tiiuae/falcon-7b"
+    library_cfg: HuggingFaceConfig = HuggingFaceConfig(trust_remote_code=True)
+    lora_cfg: Optional[LORAConfig] = LORAConfig(targets="('query_key_value')")
+
+
 def register_model_configs(cs: ConfigStore) -> None:
     cs.store(
         group="model",
@@ -93,4 +100,9 @@ def register_model_configs(cs: ConfigStore) -> None:
         group="model",
         name="phi",
         node=PhiConfig,
+    )
+    cs.store(
+        group="model",
+        name="falcon",
+        node=FalconConfig,
     )
