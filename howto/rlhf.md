@@ -157,6 +157,7 @@ This work and the code developed for the task is a long educational and experime
 - [Lit-GPT](https://github.com/Lightning-AI/lit-gpt)
 - [MinLora](https://github.com/cccntu/minlora)
 - [MOSS-RLHF](https://github.com/OpenLMLab/MOSS-RLHF)
+- [Original DPO](https://github.com/eric-mitchell/direct-preference-optimization)
 
 ### Blog Posts
 
