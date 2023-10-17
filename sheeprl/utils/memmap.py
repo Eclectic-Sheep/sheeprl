@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from io import TextIOWrapper
 from pathlib import Path
 from sys import getrefcount
@@ -12,6 +13,8 @@ from typing import Any, Tuple
 import numpy as np
 from numpy.typing import DTypeLike
 
+from sheeprl.utils.imports import _IS_WINDOWS
+
 
 def is_shared(array: np.ndarray) -> bool:
     return isinstance(array, np.ndarray) and hasattr(array, "_mmap")
@@ -20,17 +23,22 @@ def is_shared(array: np.ndarray) -> bool:
 class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def __init__(
         self,
-        filename: str,
         dtype: DTypeLike,
         shape: None | int | Tuple[int, ...],
         mode: str = "r+",
         reset: bool = False,
+        filename: str | os.PathLike | None = None,
     ):
-        path = Path(filename)
-        path.touch(exist_ok=True)
-        self._file = open(path, mode="r+")
-        self._file.close()
-        self._filename = path.resolve()
+        if filename is None:
+            fd, self._filename = tempfile.mkstemp(".memmap")
+            self._file = _TemporaryFileWrapper(open(fd, mode="r+"), self._filename, delete=False)
+        else:
+            path = Path(filename)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+            self._filename = path.resolve()
+            self._file = open(path, mode="r+")
+        os.close(self._file.fileno())
         self._dtype = dtype
         self._shape = shape
         self._mode = mode
@@ -116,9 +124,9 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def from_array(
         cls,
         array: np.ndarray | np.memmap | MemmapArray,
-        filename: str | os.PathLike,
         mode: str = "r+",
         reset: bool = False,
+        filename: str | os.PathLike | None = None,
     ) -> MemmapArray:
         is_memmap_array = isinstance(array, MemmapArray)
         is_shared_array = is_shared(array)
@@ -132,19 +140,16 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
                 else:
                     out.array[:] = array[:]
             else:
-                if os.path.exists(filename):
-                    raise FileExistsError(
-                        f"The filename '{filename}' already exists, so we cannot safely create a new "
-                        "MemmapArray from the specified array. Try to change the filename."
-                    )
                 out.array[:] = array[:]
             return out
 
     def __del__(self) -> None:
-        if self._has_ownership and getrefcount(self._file) <= 2:
-            if isinstance(self._file, _TemporaryFileWrapper) and os.path.isfile(self._filename):
-                os.unlink(self._filename)
+        if (self._has_ownership and getrefcount(self._file) <= 2) or _IS_WINDOWS:
+            self._array._mmap.close()
+            del self._array._mmap
             self._array = None
+            if isinstance(self._file, (_TemporaryFileWrapper, int)) and os.path.isfile(self._filename):
+                os.unlink(self._filename)
             del self._file
 
     def __array__(self) -> np.memmap:
@@ -164,7 +169,6 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         # method to avoid modifying the original state.
         state = self.__dict__.copy()
         # Remove the unpicklable entries.
-        state["_file"].close()
         state["_file"] = None
         state["_array"] = None
         state["_has_ownership"] = False
