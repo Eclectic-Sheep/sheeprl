@@ -533,6 +533,7 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
+        "buffer.type=episode",
     ]
 
     with mock.patch.object(sys, "argv", args):

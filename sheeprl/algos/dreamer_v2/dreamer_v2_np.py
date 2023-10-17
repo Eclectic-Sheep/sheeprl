@@ -24,8 +24,7 @@ from torchmetrics import MeanMetric, SumMetric
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
-from sheeprl.data.buffers import EpisodeBuffer
-from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -565,7 +564,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if buffer_type == "sequential":
         rb = EnvIndependentReplayBuffer(
             buffer_size,
-            cfg.env.num_envs,
+            n_envs=cfg.env.num_envs,
             obs_keys=obs_keys,
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
@@ -574,8 +573,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     elif buffer_type == "episode":
         rb = EpisodeBuffer(
             buffer_size,
-            sequence_length=cfg.per_rank_sequence_length,
-            device="cpu",
+            minimum_episode_length=1 if cfg.dry_run else cfg.per_rank_sequence_length,
+            n_envs=cfg.env.num_envs,
+            obs_keys=obs_keys,
+            prioritize_ends=cfg.buffer.prioritize_ends,
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         )
@@ -630,19 +631,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
-    episode_steps = [[] for _ in range(cfg.env.num_envs)]
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
     step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    if cfg.dry_run:
+        step_data["dones"] = step_data["dones"] + 1
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["is_first"] = np.ones_like(step_data["dones"])
-    if buffer_type == "sequential":
-        rb.add(step_data, validate_args=False)
-    else:
-        for i, env_ep in enumerate(episode_steps):
-            env_ep.append(step_data[i : i + 1][None, ...])
+    rb.add(step_data, validate_args=False)
     player.init_states()
 
     per_rank_gradient_steps = 0
@@ -715,11 +713,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
         step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
         step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
-        if buffer_type == "sequential":
-            rb.add(step_data, validate_args=False)
-        else:
-            for i, env_ep in enumerate(episode_steps):
-                env_ep.append(step_data[i : i + 1][None, ...])
+        rb.add(step_data, validate_args=False)
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -732,13 +726,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
             reset_data["is_first"] = np.ones_like(reset_data["dones"])
-            if buffer_type == "episode":
-                for i, d in enumerate(dones_idxes):
-                    if len(episode_steps[d]) >= cfg.per_rank_sequence_length:
-                        rb.add(torch.cat(episode_steps[d], dim=0))
-                        episode_steps[d] = [reset_data[i : i + 1][None, ...]]
-            else:
-                rb.add(reset_data, dones_idxes, validate_args=False)
+            rb.add(reset_data, dones_idxes, validate_args=False)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
                 step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
@@ -749,32 +737,21 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if update >= learning_starts and updates_before_training <= 0:
-            fabric.barrier()
-            if buffer_type == "sequential":
-                local_data = rb.sample_tensors(
-                    batch_size=cfg.per_rank_batch_size,
-                    sequence_length=cfg.per_rank_sequence_length,
-                    n_samples=cfg.algo.per_rank_pretrain_steps
-                    if update == learning_starts
-                    else cfg.algo.per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=False,
-                )
-            else:
-                local_data = rb.sample(
-                    cfg.per_rank_batch_size,
-                    n_samples=cfg.algo.per_rank_pretrain_steps
-                    if update == learning_starts
-                    else cfg.algo.per_rank_gradient_steps,
-                    prioritize_ends=cfg.buffer.prioritize_ends,
-                ).to(device)
+            local_data = rb.sample_tensors(
+                batch_size=cfg.per_rank_batch_size,
+                sequence_length=cfg.per_rank_sequence_length,
+                n_samples=cfg.algo.per_rank_pretrain_steps
+                if update == learning_starts
+                else cfg.algo.per_rank_gradient_steps,
+                dtype=None,
+                device=fabric.device,
+            )
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for i in range(next(iter(local_data.values())).shape[0]):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
                             tcp.data.copy_(cp.data)
-                    batch = {k: v[i].squeeze(0).float() for k, v in local_data.items()}
+                    batch = {k: v[i].float() for k, v in local_data.items()}
                     train(
                         fabric,
                         world_model,
