@@ -70,11 +70,14 @@ def test_seq_replay_buffer_sample_one_element():
 def test_seq_replay_buffer_sample_shapes():
     buf_size = 30
     n_envs = 2
-    rb = SequentialReplayBuffer(buf_size, n_envs)
+    rb = SequentialReplayBuffer(buf_size, n_envs, obs_keys=("a",))
     t = {"a": np.arange(60).reshape(-1, 2, 1) % buf_size}
     rb.add(t)
     sample = rb.sample(3, sequence_length=5, n_samples=2)
     assert sample["a"].shape == tuple([2, 5, 3, 1])
+    sample = rb.sample(3, sequence_length=5, n_samples=2, sample_next_obs=True, clone=True)
+    assert sample["a"].shape == tuple([2, 5, 3, 1])
+    assert sample["next_a"].shape == tuple([2, 5, 3, 1])
 
 
 def test_seq_replay_buffer_sample_full():
@@ -130,6 +133,15 @@ def test_seq_replay_buffer_sample_no_add():
     rb = SequentialReplayBuffer(buf_size, n_envs)
     with pytest.raises(ValueError, match="No sample has been added"):
         rb.sample(2, sequence_length=5, n_samples=2)
+
+
+def test_seq_replay_buffer_sample_error():
+    buf_size = 10
+    n_envs = 1
+    rb = SequentialReplayBuffer(buf_size, n_envs)
+    with pytest.raises(ValueError, match="must be both greater than "):
+        rb.sample(-1, sequence_length=5, n_samples=2)
+        rb.sample(2, sequence_length=-1, n_samples=2)
 
 
 def test_sample_tensors():

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from sheeprl.data.buffers_np import EnvIndependentReplayBuffer
+from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, SequentialReplayBuffer
 
 
 def test_env_idependent_wrong_buffer_size():
@@ -94,3 +94,21 @@ def test_env_independent_sample_error():
         rb.sample(10, n_samples=0)
         rb.sample(-1, n_samples=10)
         rb.sample(10, n_samples=-1)
+
+
+def test_env_independent_sample_tensors():
+    import torch
+
+    bs = 20
+    n_envs = 4
+    rb = EnvIndependentReplayBuffer(bs, n_envs, buffer_cls=SequentialReplayBuffer)
+    with pytest.raises(ValueError, match="No sample has been added to the buffer"):
+        rb.sample(10, n_samples=10)
+    stps1 = {"dones": np.zeros((10, 4, 1))}
+    rb.add(stps1)
+    stps2 = {"dones": np.zeros((10, 2, 1))}
+    rb.add(stps2, [0, 3])
+
+    s = rb.sample_tensors(10, n_samples=3, sequence_length=5)
+    assert isinstance(s["dones"], torch.Tensor)
+    assert s["dones"].shape == torch.Size([3, 5, 10, 1])
