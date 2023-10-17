@@ -70,7 +70,9 @@ def test_memmap_array_get_none():
         m1.array
 
 
-@pytest.mark.skipif(_IS_WINDOWS)
+@pytest.mark.skipif(
+    _IS_WINDOWS, reason="'test_memmap_array_get_none_linux_only' should be run and succeed only on Linux"
+)
 def test_memmap_array_get_none_linux_only():
     a = np.ones((10,)) * 2
     m1 = MemmapArray.from_array(a)
