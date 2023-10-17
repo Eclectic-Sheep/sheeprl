@@ -1,3 +1,7 @@
+import os
+import shutil
+import time
+
 import numpy as np
 import pytest
 
@@ -66,11 +70,14 @@ def test_seq_replay_buffer_sample_one_element():
 def test_seq_replay_buffer_sample_shapes():
     buf_size = 30
     n_envs = 2
-    rb = SequentialReplayBuffer(buf_size, n_envs)
+    rb = SequentialReplayBuffer(buf_size, n_envs, obs_keys=("a",))
     t = {"a": np.arange(60).reshape(-1, 2, 1) % buf_size}
     rb.add(t)
     sample = rb.sample(3, sequence_length=5, n_samples=2)
     assert sample["a"].shape == tuple([2, 5, 3, 1])
+    sample = rb.sample(3, sequence_length=5, n_samples=2, sample_next_obs=True, clone=True)
+    assert sample["a"].shape == tuple([2, 5, 3, 1])
+    assert sample["next_a"].shape == tuple([2, 5, 3, 1])
 
 
 def test_seq_replay_buffer_sample_full():
@@ -126,3 +133,47 @@ def test_seq_replay_buffer_sample_no_add():
     rb = SequentialReplayBuffer(buf_size, n_envs)
     with pytest.raises(ValueError, match="No sample has been added"):
         rb.sample(2, sequence_length=5, n_samples=2)
+
+
+def test_seq_replay_buffer_sample_error():
+    buf_size = 10
+    n_envs = 1
+    rb = SequentialReplayBuffer(buf_size, n_envs)
+    with pytest.raises(ValueError, match="must be both greater than "):
+        rb.sample(-1, sequence_length=5, n_samples=2)
+        rb.sample(2, sequence_length=-1, n_samples=2)
+
+
+def test_sample_tensors():
+    import torch
+
+    buf_size = 5
+    n_envs = 1
+    rb = SequentialReplayBuffer(buf_size, n_envs)
+    td = {"observations": np.arange(8).reshape(-1, 1, 1), "dones": np.zeros((8, 1, 1))}
+    td["dones"][-1] = 1
+    rb.add(td)
+    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3, sequence_length=5)
+    assert isinstance(s["observations"], torch.Tensor)
+    assert s["observations"].shape == torch.Size([3, 5, 10, 1])
+
+
+def test_sample_tensor_memmap():
+    import torch
+
+    buf_size = 10
+    n_envs = 4
+    root_dir = os.path.join("pytest_" + str(int(time.time())))
+    memmap_dir = os.path.join(root_dir, "memmap_buffer")
+    rb = SequentialReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=memmap_dir, obs_keys=("observations"))
+    td = {
+        "observations": np.random.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=np.uint8),
+        "dones": np.zeros((buf_size, n_envs, 1)),
+    }
+    td["dones"][-1] = 1
+    rb.add(td)
+    sample = rb.sample_tensors(10, False, n_samples=3, sequence_length=5)
+    assert isinstance(sample["observations"], torch.Tensor)
+    assert sample["observations"].shape == torch.Size([3, 5, 10, 3, 64, 64])
+    del rb
+    shutil.rmtree(root_dir)
