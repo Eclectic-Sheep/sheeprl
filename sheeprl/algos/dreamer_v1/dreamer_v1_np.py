@@ -691,7 +691,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if update > learning_starts and updates_before_training <= 0:
-            fabric.barrier()
             # Start training
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for i in range(cfg.algo.per_rank_gradient_steps):

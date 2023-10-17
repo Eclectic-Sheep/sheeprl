@@ -1,0 +1,32 @@
+# @package _global_
+
+defaults:
+  - override /algo: dreamer_v3_np
+  - override /env: atari
+  - _self_
+
+# Experiment
+total_steps: 5000000
+per_rank_batch_size: 16
+per_rank_sequence_length: 64
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  size: 1000000
+  checkpoint: False
+
+# Distribution
+distribution:
+  type: "auto"
+
+# Encoder and decoder keys
+cnn_keys:
+  encoder: [rgb]
+  decoder: ${cnn_keys.encoder}
+mlp_keys:
+  encoder: []
+  decoder: ${mlp_keys.encoder}

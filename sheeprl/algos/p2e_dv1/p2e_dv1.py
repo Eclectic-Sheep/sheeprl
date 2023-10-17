@@ -765,7 +765,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if update >= learning_starts and updates_before_training <= 0:
-            fabric.barrier()
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
