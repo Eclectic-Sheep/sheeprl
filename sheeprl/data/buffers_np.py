@@ -324,7 +324,7 @@ class ReplayBuffer:
                 filename = Path(self._memmap_dir / f"{key}.memmap")
             elif isinstance(value, MemmapArray):
                 filename = value.filename
-            value_to_add = MemmapArray.from_array(value, filename, mode=self._memmap_mode)
+            value_to_add = MemmapArray.from_array(value, filename=filename, mode=self._memmap_mode)
         else:
             if isinstance(value, np.ndarray):
                 value_to_add = np.copy(value)

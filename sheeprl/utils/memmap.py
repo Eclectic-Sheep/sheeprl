@@ -148,7 +148,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             self._array._mmap.close()
             del self._array._mmap
             self._array = None
-            if isinstance(self._file, (_TemporaryFileWrapper, int)) and os.path.isfile(self._filename):
+            if isinstance(self._file, _TemporaryFileWrapper) and os.path.isfile(self._filename):
                 os.unlink(self._filename)
             del self._file
 

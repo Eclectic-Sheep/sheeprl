@@ -389,7 +389,7 @@ def test_setitem():
     assert rb["a"].shape == tuple([buf_size, n_envs, 10])
     assert (rb["a"] == a).all()
 
-    m = MemmapArray("test.memmap", dtype=np.float32, shape=(buf_size, n_envs, 4))
+    m = MemmapArray(filename="test.memmap", dtype=np.float32, shape=(buf_size, n_envs, 4))
     m.array = np.random.rand(buf_size, n_envs, 4)
     rb["m"] = m
     assert isinstance(rb["m"], np.ndarray) and not isinstance(rb["m"], (MemmapArray, np.memmap))
@@ -416,7 +416,7 @@ def test_setitem_memmap():
     assert rb["a"].shape == tuple([buf_size, n_envs, 10])
     assert (rb["a"] == a).all()
 
-    m = MemmapArray(f"{root_dir}/test.memmap", dtype=np.float32, shape=(buf_size, n_envs, 4))
+    m = MemmapArray(filename=f"{root_dir}/test.memmap", dtype=np.float32, shape=(buf_size, n_envs, 4))
     m.array = np.random.rand(buf_size, n_envs, 4)
     rb["m"] = m
     assert isinstance(rb["m"], MemmapArray)
@@ -424,6 +424,7 @@ def test_setitem_memmap():
     assert (rb["m"].array == m.array).all()
 
     del m
+    del rb
     shutil.rmtree(root_dir)
 
 
