@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import warnings
 from io import TextIOWrapper
 from pathlib import Path
 from sys import getrefcount
@@ -140,6 +141,12 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
                 else:
                     out.array[:] = array[:]
             else:
+                if filename is not None and os.path.exists(filename):
+                    warnings.warn(
+                        "The specified filename already exists. "
+                        "Please be aware that any modification will be possibly reflected.",
+                        category=UserWarning,
+                    )
                 out.array[:] = array[:]
             return out
 
