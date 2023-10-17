@@ -478,7 +478,7 @@ class SequentialReplayBuffer(ReplayBuffer):
                 axis2=2,
             )
             if clone:
-                samples[k] = batched_v.copy()
+                samples[k] = samples[k].copy()
             if sample_next_obs:
                 flattened_next_v = v[(flattened_batch_idxes + 1) % self._buffer_size, env_idxes]
                 batched_next_v = np.reshape(
