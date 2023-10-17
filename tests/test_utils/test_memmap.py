@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sheeprl.utils.imports import _IS_WINDOWS
 from sheeprl.utils.memmap import MemmapArray
 
 
@@ -67,6 +68,16 @@ def test_memmap_array_get_none():
     m1.__del__()
     with pytest.raises(Exception):
         m1.array
+
+
+@pytest.mark.skipif(_IS_WINDOWS)
+def test_memmap_array_get_none_linux_only():
+    a = np.ones((10,)) * 2
+    m1 = MemmapArray.from_array(a)
+    m2 = MemmapArray.from_array(m1, filename=m1.filename)
+    del m1
+    with pytest.raises(FileNotFoundError):
+        m2.array
 
 
 def test_memmap_array_set_from_numpy():
