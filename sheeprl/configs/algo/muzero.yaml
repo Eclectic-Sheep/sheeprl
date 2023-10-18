@@ -7,7 +7,7 @@ defaults:
 name: muzero
 gamma: 0.99
 
-support_size: 10
+support_size: ???
 
 num_simulations: 50
 nstep_horizon: 50

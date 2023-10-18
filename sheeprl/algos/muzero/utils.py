@@ -10,7 +10,12 @@ from omegaconf import DictConfig
 
 import sheeprl.algos.muzero.ctree.cytree as tree
 from sheeprl.algos.muzero.agent import MuzeroAgent
-from sheeprl.utils.utils import inverse_symsqrt, two_hot_decoder
+from sheeprl.utils.utils import inverse_symsqrt, symsqrt, two_hot_decoder, two_hot_encoder
+
+
+def scalar_to_support(scalar: torch.Tensor, support_size: int):
+    """Convert a scalar representation to a support."""
+    return two_hot_encoder(symsqrt(scalar), support_size)
 
 
 def support_to_scalar(support: torch.Tensor, support_range: int) -> torch.Tensor:
@@ -172,62 +177,65 @@ def mcts(
 ):
     """Runs MCTS for num_simulations"""
     # Initialize the hidden state and compute the actor's policy logits
-    hidden_state, policy_logits, _ = agent.initial_inference(root.image)
-    root.hidden_state = hidden_state
+    with torch.no_grad():
+        hidden_state, policy_logits, _ = agent.initial_inference(root.image)
+        root.hidden_state = hidden_state
 
-    device = hidden_state.device
-    dtype = hidden_state.dtype
-    root.image.shape[0]
+        device = hidden_state.device
+        dtype = hidden_state.dtype
+        root.image.shape[0]
 
-    # Use the actor's policy to initialize the children of the node.
-    # The policy results are used as prior probabilities.
-    normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
-    root.children = {action: Node(normalized_policy[:, action]) for action in range(normalized_policy.shape[-1])}
-    add_exploration_noise(root, noise_distribution, exploration_fraction)
-
-    # Expand until an unvisited node (i.e. not yet expanded) is reached
-    min_max_stats = MinMaxStats()
-
-    for _ in range(num_simulations):
-        node = root
-        search_path = [node]
-
-        while node.expanded():
-            # Select the child with the highest UCB score
-            ucb_scores = ucb_score(
-                parent=node,
-                min_max_stats=min_max_stats,
-                gamma=gamma,
-                pb_c_base=19652,
-                pb_c_init=1.25,
-            )
-
-            ucb_scores += 1e-7 * torch.rand(ucb_scores.shape, device=device)  # Add tiny bit of randomness for tie break
-            imagined_action = torch.argmax(ucb_scores)
-            child = node.children[imagined_action.item()]
-            search_path.append(child)
-            node = child
-
-        # When a path from the starting node to an unvisited node is found, expand the unvisited node
-        parent = search_path[-2]
-        imagined_action = imagined_action.view(1, 1, -1).to(device=device, dtype=dtype)
-        hidden_state, reward, policy_logits, value = agent.recurrent_inference(
-            imagined_action.view(1, 1, -1).to(device=device, dtype=dtype),
-            parent.hidden_state,
-        )
-        value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size)
-        node.hidden_state = hidden_state
-        node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), support_size)
+        # Use the actor's policy to initialize the children of the node.
+        # The policy results are used as prior probabilities.
         normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
-        for action in range(normalized_policy.numel()):
-            node.children[action] = Node(normalized_policy.squeeze()[action])
+        root.children = {action: Node(normalized_policy[:, action]) for action in range(normalized_policy.shape[-1])}
+        add_exploration_noise(root, noise_distribution, exploration_fraction)
 
-        # Backpropagate the search path to update the nodes' statistics
-        for visited_node in reversed(search_path):
-            visited_node.value_sum += value.squeeze()
-            visited_node.visit_count += 1
-            min_max_stats.update(visited_node.value().item())
-            value = visited_node.reward + gamma * value
+        # Expand until an unvisited node (i.e. not yet expanded) is reached
+        min_max_stats = MinMaxStats()
+
+        for _ in range(num_simulations):
+            node = root
+            search_path = [node]
+
+            while node.expanded():
+                # Select the child with the highest UCB score
+                ucb_scores = ucb_score(
+                    parent=node,
+                    min_max_stats=min_max_stats,
+                    gamma=gamma,
+                    pb_c_base=19652,
+                    pb_c_init=1.25,
+                )
+
+                ucb_scores += 1e-7 * torch.rand(
+                    ucb_scores.shape, device=device
+                )  # Add tiny bit of randomness for tie break
+                imagined_action = torch.argmax(ucb_scores)
+                child = node.children[imagined_action.item()]
+                search_path.append(child)
+                node = child
+
+            # When a path from the starting node to an unvisited node is found, expand the unvisited node
+            parent = search_path[-2]
+            imagined_action = imagined_action.view(1, 1, -1).to(device=device, dtype=dtype)
+            hidden_state, reward, policy_logits, value = agent.recurrent_inference(
+                imagined_action,
+                parent.hidden_state,
+            )
+            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size)
+            node.hidden_state = hidden_state
+            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), support_size)
+            normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
+            for action in range(normalized_policy.numel()):
+                node.children[action] = Node(normalized_policy.squeeze()[action])
+
+            # Backpropagate the search path to update the nodes' statistics
+            for visited_node in reversed(search_path):
+                visited_node.value_sum += value.squeeze()
+                visited_node.visit_count += 1
+                min_max_stats.update(visited_node.value().item())
+                value = visited_node.reward + gamma * value
 
 
 def ucb_score(
@@ -252,18 +260,14 @@ def ucb_score(
     min_value = torch.min(children_rewards + gamma * min_max_normalized)
     max_value = torch.max(children_rewards + gamma * min_max_normalized) + 1e-7
     value_score = (children_rewards + gamma * min_max_normalized - min_value) / (max_value - min_value)
-
     return prior_score + value_score
 
 
 @torch.no_grad()
 def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     agent.eval()
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(
-        0
-    )
+    torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(0)
+    """
     while not done:
         # Act greedly through the environment
         node = Node(prior=0, image=next_obs)
@@ -285,6 +289,7 @@ def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+    """
 
 
 class MCTS:
@@ -314,7 +319,7 @@ class MCTS:
             device = self.device
             # the data storage of hidden states: storing the states of all the tree nodes
             hidden_state_pool = [hidden_state_roots]
-            # 1 x batch x 64
+            # 1 x batch x embedding_size
 
             # the index of each layer in the tree
             hidden_state_index_x = 0
@@ -350,17 +355,17 @@ class MCTS:
                 #         model.recurrent_inference(last_actions, hidden_states)
                 # else:
                 hidden_state_nodes, reward, policy_logits, value = model.recurrent_inference(
-                    last_actions, hidden_states
+                    last_actions.view(num, 1), hidden_states
                 )
 
                 value_pool = (
-                    inverse_symsqrt(support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support_range))
+                    support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support_range)
                     .reshape(-1)
                     .tolist()
                 )
                 policy_logits_pool = policy_logits.tolist()
                 reward_pool = (
-                    inverse_symsqrt(support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_range))
+                    support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_range)
                     .reshape(-1)
                     .tolist()
                 )

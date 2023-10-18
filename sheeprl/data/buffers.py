@@ -391,7 +391,7 @@ class EpisodeBuffer:
                 " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
                 UserWarning,
             )
-        else:
+        elif memmap_dir is not None:
             self._memmap_dir = Path(self._memmap_dir)
             self._memmap_dir.mkdir(parents=True, exist_ok=True)
         self._chunk_length = torch.arange(sequence_length, device=self.device).reshape(1, -1)
