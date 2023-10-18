@@ -110,7 +110,7 @@ def test_memmap_array_set_from_np_memmap():
     os.close(tmpfd)
     memmap = np.memmap(filename, shape=a.shape, dtype=a.dtype)
     memmap[:] = a[:]
-    m = MemmapArray(memmap.dtype, memmap.shape)
+    m = MemmapArray(dtype=memmap.dtype, shape=memmap.shape)
     assert m.has_ownership
     m.array = memmap
     m.array[:] = m.array * 2
@@ -126,7 +126,7 @@ def test_memmap_array_set_from_np_memmap():
 def test_memmap_array_set_from_memmap_array():
     a = np.ones((10,)) * 2
     m1 = MemmapArray.from_array(a)
-    m2 = MemmapArray(m1.dtype, m1.shape, mode=m1.mode)
+    m2 = MemmapArray(dtype=m1.dtype, shape=m1.shape, mode=m1.mode)
     filename = m1.filename
     assert m2.has_ownership
     with pytest.raises(
@@ -143,6 +143,22 @@ def test_memmap_array_set_from_memmap_array():
     assert (m1.array == 4).all()
     del m1
     assert not os.path.isfile(filename)
+
+
+def test_memmap_from_array_memmap_array_different_filename():
+    a = np.ones((10,)) * 2
+    m1 = MemmapArray.from_array(a)
+    m2 = MemmapArray.from_array(m1)
+    m1_filename = m1.filename
+    m2_filename = m2.filename
+    assert m1.has_ownership
+    assert m2.has_ownership
+    assert m1_filename != m2_filename
+    assert (m1.array == m2.array).all()
+    del m1
+    del m2
+    assert not os.path.isfile(m1_filename)
+    assert not os.path.isfile(m2_filename)
 
 
 def test_memmap_from_array_memmap_array():
