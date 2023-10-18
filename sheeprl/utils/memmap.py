@@ -24,20 +24,43 @@ def is_shared(array: np.ndarray) -> bool:
 class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def __init__(
         self,
-        dtype: DTypeLike,
         shape: None | int | Tuple[int, ...],
+        dtype: DTypeLike = None,
         mode: str = "r+",
         reset: bool = False,
         filename: str | os.PathLike | None = None,
     ):
+        """Create a memory-mapped array. The memory-mapped array is stored in a file on disk and is
+        lazily loaded on demand. The array can be modified in-place and is automatically flushed to
+        disk when the array is deleted. The ownership of the file can be transferred only when:
+
+        * the array is created from an already mamory-mapped array (i.e., `MemmapArray.from_array`)
+        * the array is set from an already memory-mapped array (i.e., `MemmapArray.array = ...`)
+
+        Args:
+            dtype (DTypeLike): the data type of the array.
+            shape (None | int | Tuple[int, ...]): the shape of the array.
+            mode (str, optional): the mode to open the file with. Defaults to "r+".
+            reset (bool, optional): whether to reset the opened array to 0s. Defaults to False.
+            filename (str | os.PathLike | None, optional): an optional filename. If the filename is None,
+                then a temporary file will be opened.
+                Defaults to None.
+        """
         if filename is None:
-            fd, self._filename = tempfile.mkstemp(".memmap")
-            self._file = _TemporaryFileWrapper(open(fd, mode="r+"), self._filename, delete=False)
+            fd, path = tempfile.mkstemp(".memmap")
+            self._filename = Path(path).absolute()
+            self._file = _TemporaryFileWrapper(open(fd, mode="r+"), path, delete=False)
         else:
-            path = Path(filename)
+            path = Path(filename).absolute()
+            if os.path.exists(path):
+                warnings.warn(
+                    "The specified filename already exists. "
+                    "Please be aware that any modification will be possibly reflected.",
+                    category=UserWarning,
+                )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
-            self._filename = path.resolve()
+            self._filename = path
             self._file = open(path, mode="r+")
         os.close(self._file.fileno())
         self._dtype = dtype
@@ -57,34 +80,42 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
 
     @property
     def filename(self) -> Path:
+        """Return the filename of the memory-mapped array."""
         return self._filename
 
     @property
     def file(self) -> TextIOWrapper:
+        """Return the file object of the memory-mapped array."""
         return self._file
 
     @property
     def dtype(self) -> DTypeLike:
+        """Return the data type of the memory-mapped array."""
         return self._dtype
 
     @property
     def mode(self) -> str:
+        """Return the mode of the memory-mapped array that has been opened with."""
         return self._mode
 
     @property
     def shape(self) -> None | int | Tuple[int, ...]:
+        """Return the shape of the memory-mapped array."""
         return self._shape
 
     @property
     def has_ownership(self) -> bool:
+        """Return whether the memory-mapped array has ownership of the file."""
         return self._has_ownership
 
     @has_ownership.setter
     def has_ownership(self, value: bool):
+        """Set whether the memory-mapped array has ownership of the file."""
         self._has_ownership = value
 
     @property
     def array(self) -> np.memmap:
+        """Return the memory-mapped array."""
         if not os.path.isfile(self._filename):
             self._array = None
         if self._array is None:
@@ -98,6 +129,18 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
 
     @array.setter
     def array(self, v: np.memmap | np.ndarray):
+        """Set the memory-mapped array. If the array to be set is already memory-mapped, then the ownership of the
+        file will not be transferred to this memory-mapped array; this instance will lose previous
+        ownership on its memory mapped file. Otherwise, the array will be copied into
+        the memory-mapped array. In this last case, the shape of the array to be set must be the same as the
+        shape of the memory-mapped array.
+
+        Args:
+            v (np.memmap | np.ndarray): the array to be set.
+
+        Raises:
+            ValueError: if the value to be set is not an instance of `np.memmap` or `np.ndarray`.
+        """
         if not isinstance(v, (np.memmap, np.ndarray)):
             raise ValueError(f"The value to be set must be an instance of 'np.memmap' or 'np.ndarray', got '{type(v)}'")
         if is_shared(v):
@@ -118,26 +161,45 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
                 mode=self._mode,
             )
         else:
+            if self._array.size != v.size:
+                raise ValueError(
+                    "The shape of the value to be set must be the same as the shape of the memory-mapped array. "
+                    f"Got {v.shape} and {self._shape}"
+                )
             reshaped_v = np.reshape(v, self._shape)
             self._array[:] = reshaped_v
+            self._array.flush()
 
     @classmethod
     def from_array(
         cls,
         array: np.ndarray | np.memmap | MemmapArray,
         mode: str = "r+",
-        reset: bool = False,
         filename: str | os.PathLike | None = None,
     ) -> MemmapArray:
+        """Create a memory-mapped array from an array. If the array is already memory-mapped, then the ownership of
+        the file will not be transferred to this memory-mapped array; this instance will lose previous ownership on
+        its memory mapped file. Otherwise, the array will be copied into the memory-mapped array. In this last case,
+        the shape of the array to be set must be the same as the shape of the memory-mapped array.
+
+        Args:
+            array (np.ndarray | np.memmap | MemmapArray): the array to be set.
+            mode (str, optional): the mode to open the file with. Defaults to "r+".
+            filename (str | os.PathLike | None, optional): the filename. Defaults to None.
+
+        Returns:
+            MemmapArray: the memory-mapped array.
+        """
+        filename = Path(filename).absolute() if filename is not None else None
         is_memmap_array = isinstance(array, MemmapArray)
         is_shared_array = is_shared(array)
         if isinstance(array, (np.ndarray, MemmapArray)):
-            out = cls(filename=filename, dtype=array.dtype, shape=array.shape, mode=mode, reset=reset)
+            out = cls(filename=filename, dtype=array.dtype, shape=array.shape, mode=mode, reset=False)
             if is_memmap_array or is_shared_array:
                 if is_memmap_array:
                     array = array.array
-                if Path(filename).absolute() == Path(array.filename).absolute():
-                    out.array = array  # Lose ownership
+                if filename is not None and filename == Path(array.filename).absolute():
+                    out.array = array  # Lose previous ownership
                 else:
                     out.array[:] = array[:]
             else:
@@ -147,11 +209,18 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
                         "Please be aware that any modification will be possibly reflected.",
                         category=UserWarning,
                     )
-                out.array[:] = array[:]
+                out.array = array
             return out
 
     def __del__(self) -> None:
+        """Delete the memory-mapped array. If the memory-mapped array has ownership of the file and no other
+        reference to the memory-mapped array exists or the OS is Windows-based,
+        then the memory-mapped array will be flushed to disk and both the memory-mapped array and
+        the file will be closed. If the memory-mapped array is mapped to a temporary file then the file is
+        removed.
+        """
         if (self._has_ownership and getrefcount(self._file) <= 2) or _IS_WINDOWS:
+            self._array.flush()
             self._array._mmap.close()
             del self._array._mmap
             self._array = None

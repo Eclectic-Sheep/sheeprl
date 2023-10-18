@@ -93,6 +93,17 @@ def test_memmap_array_set_from_numpy():
     del m1
 
 
+def test_memmap_array_set_from_numpy_wrong_shape():
+    a = np.ones((10,)) * 2
+    m1 = MemmapArray.from_array(a)
+    a = np.ones((11,))
+    with pytest.raises(
+        ValueError, match="The shape of the value to be set must be the same as the shape of the memory-mapped array. "
+    ):
+        m1.array = a
+    del m1
+
+
 def test_memmap_array_set_from_np_memmap():
     a = np.ones((10,)) * 2
     tmpfd, filename = tempfile.mkstemp(".memmap")
