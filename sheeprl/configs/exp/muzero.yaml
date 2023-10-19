@@ -22,6 +22,7 @@ buffer:
 algo:
   support_size: 20
   gamma: 0.999
+  nstep_horizon: 10
 
 env:
   id: LunarLander-v2

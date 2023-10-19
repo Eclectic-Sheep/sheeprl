@@ -354,6 +354,7 @@ class MCTS:
                 #         hidden_state_nodes, reward, policy_logits, value =
                 #         model.recurrent_inference(last_actions, hidden_states)
                 # else:
+                hidden_states = (hidden_states - hidden_states.min()) / (hidden_states.max() - hidden_states.min())
                 hidden_state_nodes, reward, policy_logits, value = model.recurrent_inference(
                     last_actions.view(num, 1), hidden_states
                 )
