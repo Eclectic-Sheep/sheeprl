@@ -28,6 +28,13 @@ def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Tuple[Opti
         )
         logger = None
         log_dir = os.path.join(root_dir, run_name)
+        if os.path.isdir(log_dir):
+            versions = [d for d in os.listdir(log_dir) if "version" in d]
+            version = len(versions)
+        else:
+            version = 0
+        log_dir = os.path.join(log_dir, f"version_{version}")
+
         if cfg.metric.log_level > 0:
             logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
             log_dir = logger.log_dir

@@ -999,7 +999,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     final=cfg.algo.player.expl_min,
                     max_decay_steps=max_step_expl_decay,
                 )
-            aggregator.update("Params/exploration_amout", player.expl_amount)
+            if aggregator and not aggregator.disabled:
+                aggregator.update("Params/exploration_amout", player.expl_amount)
 
         # Log metrics
         if (

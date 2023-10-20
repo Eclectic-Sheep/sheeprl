@@ -18,7 +18,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric, SumMetric
+from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
@@ -29,7 +29,7 @@ from sheeprl.utils.env import make_env
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import create_aggregator, dotdict, gae, normalize_tensor, polynomial_decay
 
 
 @torch.no_grad()
@@ -37,7 +37,17 @@ def player(
     fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
     # Initialize the fabric object
-    logger = fabric.logger
+    logger = None
+    log_dir = os.path.join("logs", "runs", cfg.root_dir, cfg.run_name)
+    if os.path.isdir(log_dir):
+        versions = [d for d in os.listdir(log_dir) if "version" in d]
+        version = len(versions)
+    else:
+        version = 0
+    log_dir = os.path.join(log_dir, f"version_{version}")
+    if len(fabric.loggers) > 0:
+        logger = fabric.logger
+        log_dir = logger.log_dir
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -62,7 +72,7 @@ def player(
                 cfg,
                 cfg.seed + i,
                 0,
-                logger.log_dir,
+                log_dir,
                 "train",
                 vector_env_idx=i,
             )
@@ -122,9 +132,9 @@ def player(
     torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
-    aggregator = MetricAggregator(
-        {"Rewards/rew_avg": MeanMetric(sync_on_compute=False), "Game/ep_len_avg": MeanMetric(sync_on_compute=False)}
-    ).to(device)
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     rb = ReplayBuffer(
@@ -132,7 +142,7 @@ def player(
         cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(logger.log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
@@ -145,7 +155,7 @@ def player(
     num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
@@ -228,7 +238,7 @@ def player(
                                 torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
-                        vals = agent.module.get_value(real_next_obs).cpu().numpy()
+                        vals = agent.get_value(real_next_obs).cpu().numpy()
                         rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
@@ -258,13 +268,14 @@ def player(
                 step_data[k] = torch_obs
                 next_obs[k] = torch_obs
 
-            if "final_info" in info:
+            if cfg.metric.log_level > 0 and "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
                     if agent_ep_info is not None:
                         ep_rew = agent_ep_info["episode"]["r"]
                         ep_len = agent_ep_info["episode"]["l"]
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                            aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -299,7 +310,7 @@ def player(
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
             # Gather metrics from the trainers
             metrics = [None]
             player_trainer_collective.broadcast_object_list(metrics, src=1)
@@ -307,17 +318,19 @@ def player(
 
             # Log metrics
             fabric.log_dict(metrics, policy_step)
-            fabric.log_dict(aggregator.compute(), policy_step)
-            aggregator.reset()
+            if aggregator and not aggregator.disabled:
+                fabric.log_dict(aggregator.compute(), policy_step)
+                aggregator.reset()
 
             # Sync timers
-            timer_metrics = timer.compute()
-            fabric.log(
-                "Time/sps_env_interaction",
-                ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
-                policy_step,
-            )
-            timer.reset()
+            if not timer.disabled:
+                timer_metrics = timer.compute()
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
+                timer.reset()
 
             # Reset counters
             last_log = policy_step
@@ -325,7 +338,7 @@ def player(
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
             last_checkpoint = policy_step
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_player",
                 fabric=fabric,
@@ -336,17 +349,18 @@ def player(
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
 
     # Last Checkpoint
-    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
-    fabric.call(
-        "on_checkpoint_player",
-        fabric=fabric,
-        player_trainer_collective=player_trainer_collective,
-        ckpt_path=ckpt_path,
-    )
+    if cfg.checkpoint.save_last:
+        ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+        fabric.call(
+            "on_checkpoint_player",
+            fabric=fabric,
+            player_trainer_collective=player_trainer_collective,
+            ckpt_path=ckpt_path,
+        )
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent, fabric, cfg)
+        test(agent, fabric, cfg, log_dir)
 
 
 def trainer(
@@ -414,13 +428,9 @@ def trainer(
             scheduler.load_state_dict(state["scheduler"])
 
     # Metrics
-    aggregator = MetricAggregator(
-        {
-            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
-            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
-            "Loss/entropy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg),
-        }
-    ).to(device)
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Start training
     last_train = 0
@@ -443,7 +453,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1:
+            if global_rank == 1 and cfg.checkpoint.save_last:
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -516,9 +526,10 @@ def trainer(
                         optimizer.step()
 
                         # Update metrics
-                        aggregator.update("Loss/policy_loss", pg_loss.detach())
-                        aggregator.update("Loss/value_loss", v_loss.detach())
-                        aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Loss/policy_loss", pg_loss.detach())
+                            aggregator.update("Loss/value_loss", v_loss.detach())
+                            aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
         if global_rank == 1:
             player_trainer_collective.broadcast(
@@ -526,15 +537,18 @@ def trainer(
                 src=1,
             )
 
-        if policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
             # Sync distributed metrics
-            metrics = aggregator.compute()
-            aggregator.reset()
+            metrics = {}
+            if aggregator and not aggregator.disabled:
+                metrics.update(aggregator.compute())
+                aggregator.reset()
 
             # Sync distributed timers
-            timers = timer.compute()
-            metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
-            timer.reset()
+            if not timer.disabled:
+                timers = timer.compute()
+                metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
+                timer.reset()
 
             # Send metrics to the player
             if global_rank == 1:

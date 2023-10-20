@@ -814,9 +814,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             or cfg.dry_run
         ):
             # Sync distributed metrics
-            metrics_dict = aggregator.compute()
-            fabric.log_dict(metrics_dict, policy_step)
-            aggregator.reset()
+            if aggregator and not aggregator.disabled:
+                metrics_dict = aggregator.compute()
+                fabric.log_dict(metrics_dict, policy_step)
+                aggregator.reset()
 
             # Sync distributed timers
             if not timer.disabled:
