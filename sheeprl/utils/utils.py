@@ -1,6 +1,9 @@
-import os
-from typing import Optional, Sequence, Tuple, Union
+from __future__ import annotations
 
+import os
+from typing import Any, Dict, Optional, Sequence, Set, Tuple, Union
+
+import hydra
 import rich.syntax
 import rich.tree
 import torch
@@ -8,6 +11,8 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
+
+from sheeprl.utils.metric import MetricAggregator
 
 
 class dotdict(dict):
@@ -155,3 +160,15 @@ def print_config(
     if cfg_save_path is not None:
         with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
             rich.print(tree, file=fp)
+
+
+def create_aggregator(
+    aggregator_cfg: Dict[str, Any], aggregator_keys: Set[str], device: str | torch.device = "cpu"
+) -> MetricAggregator:
+    aggregator = None
+    keys_to_remove = set(aggregator_cfg.metrics) - aggregator_keys
+    for k in keys_to_remove:
+        aggregator_cfg.metrics.pop(k, None)
+    aggregator: MetricAggregator = hydra.utils.instantiate(aggregator_cfg).to(device)
+    aggregator.disabled = len(aggregator_cfg.metrics) == 0
+    return aggregator

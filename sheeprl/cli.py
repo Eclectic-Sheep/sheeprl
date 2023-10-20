@@ -12,7 +12,9 @@ from lightning.fabric.strategies.ddp import DDPStrategy
 from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import tasks
+from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
 
@@ -24,7 +26,8 @@ def run(cfg: DictConfig):
             "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
             "`python sheeprl.py fabric.strategy=...`"
         )
-    print_config(cfg)
+    if cfg.metric.log_level > 0:
+        print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
 
     # Given the algorithm's name, retrieve the module where
@@ -60,8 +63,10 @@ def run(cfg: DictConfig):
         run_name = (
             cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-        logger.log_hyperparams(cfg)
+        logger = None
+        if cfg.metric.log_level > 0:
+            logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+            logger.log_hyperparams(cfg)
         fabric = Fabric(**cfg.fabric, loggers=logger, callbacks=[CheckpointCallback()])
     else:
         if "sac_ae" in module:
@@ -81,4 +86,7 @@ def run(cfg: DictConfig):
             fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
+
+    timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
+    MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
     fabric.launch(command, cfg)

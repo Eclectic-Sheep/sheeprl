@@ -26,8 +26,11 @@ def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Tuple[Opti
         run_name = (
             cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-        log_dir = logger.log_dir
+        logger = None
+        log_dir = os.path.join(root_dir, run_name)
+        if cfg.metric.log_level > 0:
+            logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+            log_dir = logger.log_dir
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
     else:
