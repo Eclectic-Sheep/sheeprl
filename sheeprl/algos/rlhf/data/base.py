@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict, load_dataset
@@ -33,13 +34,13 @@ class DataProcessor:
         dataset_name (str): The name of the dataset to load.
         root_dir (str): The directory where the processed data will be saved.
         tokenizer_name (str): The name of the tokenizer to use.
-        max_length (int, optional): The maximum length of the input sequences. Defaults to 512.
-        max_prompt_length (int, optional): The maximum length of the prompt sequences. Defaults to 512.
+        max_length (int, optional): The maximum length of the input tokens. Defaults to 512.
+        max_prompt_length (int, optional): The maximum length of the prompt tokens. Defaults to 512.
         num_samples (int, optional): The number of samples to use. Defaults to None.
         ignore_index (int, optional): The index to use for ignored tokens. Defaults to -1.
         remove_same_responses (bool, optional): Whether to remove samples with the same response. Defaults to True.
         remove_same_inputs (bool, optional): Whether to remove samples with the same input. Defaults to True.
-        minimum_response_length (int, optional): The minimum length of the response sequences. Defaults to 2.
+        minimum_response_length (int, optional): The minimum length of the response tokens. Defaults to 2.
         save_skipped_examples (bool, optional): Whether to save skipped examples. Defaults to False.
         validation_split (float, optional): The validation split. Defaults to 0.1.
         reward_model_split (float, optional): The reward model split. Defaults to 0.5.
@@ -164,17 +165,6 @@ class DataProcessor:
                 skipped_samples.append(skipped_dataframe)
                 print(f"Removed {len(duplicate_filter[duplicate_filter])} duplicate samples")
 
-            too_short_chosen_filter = dataframe.apply(lambda x: len(x["chosen"]) < self.minimum_response_length, axis=1)
-            too_short_rejected_filter = dataframe.apply(
-                lambda x: len(x["rejected"]) < self.minimum_response_length, axis=1
-            )
-            too_short_filter = too_short_chosen_filter | too_short_rejected_filter
-            dataframe.loc[too_short_filter, "skip_reason"] = "too short"
-            skipped_dataframe = dataframe[too_short_filter]
-            skipped_samples.append(skipped_dataframe)
-            print(f"Removed {len(too_short_filter[too_short_filter])} too short responses")
-            dataframe = dataframe[~too_short_filter]
-
             encoded_prompts = self.tokenizer(
                 dataframe["prompt"].tolist(),
                 padding=False,
@@ -191,19 +181,35 @@ class DataProcessor:
             skipped_samples.append(skipped_dataframe)
             print(f"Removed {len(too_long_filter[too_long_filter])} too long prompts")
             dataframe = dataframe[~too_long_filter]
-
-            dataframe.loc[:, "encoded_chosen"] = self.tokenizer(
+            encoded_chosen = self.tokenizer(
                 dataframe["chosen"].tolist(),
                 max_length=self.max_length,
                 truncation=True,
                 add_special_tokens=False,
             )["input_ids"]
-            dataframe.loc[:, "encoded_rejected"] = self.tokenizer(
+            encoded_rejected = self.tokenizer(
                 dataframe["rejected"].tolist(),
                 max_length=self.max_length,
                 truncation=True,
                 add_special_tokens=False,
             )["input_ids"]
+            dataframe.loc[:, "encoded_chosen"] = encoded_chosen
+            dataframe.loc[:, "chosen_len"] = dataframe["encoded_chosen"].apply(lambda x: len(x))
+            dataframe.loc[:, "encoded_rejected"] = encoded_rejected
+            dataframe.loc[:, "rejected_len"] = dataframe["encoded_rejected"].apply(lambda x: len(x))
+
+            too_short_chosen_filter = dataframe.apply(lambda x: x["chosen_len"] < self.minimum_response_length, axis=1)
+            too_short_rejected_filter = dataframe.apply(
+                lambda x: x["rejected_len"] < self.minimum_response_length, axis=1
+            )
+
+            too_short_filter = too_short_chosen_filter | too_short_rejected_filter
+            dataframe.loc[too_short_filter, "skip_reason"] = "too short"
+            skipped_dataframe = dataframe[too_short_filter]
+            skipped_samples.append(skipped_dataframe)
+            print(f"Removed {len(too_short_filter[too_short_filter])} too short responses")
+            dataframe = dataframe[~too_short_filter]
+
             dataframe = dataframe.assign(chosen_input_ids=lambda x: x["encoded_prompt"] + x["encoded_chosen"])
             dataframe = dataframe.assign(rejected_input_ids=lambda x: x["encoded_prompt"] + x["encoded_rejected"])
 
@@ -237,6 +243,12 @@ class DataProcessor:
                     num_validation_samples = int(len(data) * self.validation_split)
                     validation_data = data[:num_validation_samples]
                     train_data = data[num_validation_samples:]
+                    train_fig = plt.figure()
+                    train_data.boxplot(column=["prompt_len", "chosen_len", "rejected_len"])
+                    train_fig.savefig(full_path / f"{data_name}_train_token_stats.png")
+                    validation_fig = plt.figure()
+                    validation_data.boxplot(column=["prompt_len", "chosen_len", "rejected_len"])
+                    validation_fig.savefig(full_path / f"{data_name}_validation_token_stats.png")
                     print(
                         f"Saving {len(train_data)} training samples and "
                         f"{len(validation_data)} validation samples for {data_name}"
@@ -249,6 +261,9 @@ class DataProcessor:
                 for data_name, data in output_data.items():
                     print(f"Saving {len(data)} {split} samples for {data_name}")
                     data.reset_index(inplace=True, drop=True)
+                    data_fig = plt.figure()
+                    data.boxplot(column=["prompt_len", "chosen_len", "rejected_len"])
+                    data_fig.savefig(full_path / f"{data_name}_{split}_token_stats.png")
                     data.to_pickle(full_path / f"{data_name}_{split}.pkl")
             if self.save_skipped_examples:
                 all_skipped_samples.to_json(full_path / f"{split}_skipped.json", orient="records", indent=4)
