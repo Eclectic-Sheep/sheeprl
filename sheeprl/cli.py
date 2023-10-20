@@ -19,7 +19,7 @@ from sheeprl.utils.utils import dotdict, print_config
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
-    if cfg.fabric.strategy == "fsdp":
+    if "rlhf" not in str.lower(cfg.algo.name) and cfg.fabric.strategy == "fsdp":
         raise ValueError(
             "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
             "`python sheeprl.py fabric.strategy=...`"
