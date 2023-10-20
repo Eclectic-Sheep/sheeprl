@@ -23,7 +23,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac.utils import AGGREGATOR_KEYS, test
+from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -188,7 +188,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 1

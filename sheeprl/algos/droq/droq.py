@@ -24,7 +24,6 @@ from sheeprl.algos.droq.agent import DROQAgent, DROQCritic
 from sheeprl.algos.sac.agent import SACActor
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.sac import test
-from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -244,7 +243,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1

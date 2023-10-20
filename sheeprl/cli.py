@@ -53,6 +53,7 @@ def run(cfg: DictConfig):
             "no entrypoint has been found to be imported."
         )
     task = importlib.import_module(f"{module}.{algo_name}")
+    utils = importlib.import_module(f"{module}.utils")
     command = task.__dict__[entrypoint]
     if decoupled:
         root_dir = (
@@ -88,5 +89,8 @@ def run(cfg: DictConfig):
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
 
     timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
+    keys_to_remove = set(cfg.metric.aggregator.metrics) - utils.AGGREGATOR_KEYS
+    for k in keys_to_remove:
+        cfg.metric.aggregator.metrics.pop(k, None)
     MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
     fabric.launch(command, cfg)

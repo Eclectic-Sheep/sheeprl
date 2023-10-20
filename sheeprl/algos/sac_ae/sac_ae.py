@@ -35,7 +35,7 @@ from sheeprl.algos.sac_ae.agent import (
     SACAECritic,
     SACAEQFunction,
 )
-from sheeprl.algos.sac_ae.utils import AGGREGATOR_KEYS, preprocess_obs, test_sac_ae
+from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
@@ -335,7 +335,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1

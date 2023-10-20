@@ -8,6 +8,10 @@ from sheeprl.utils.env import make_env
 if TYPE_CHECKING:
     from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 
+from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
+
+AGGREGATOR_KEYS = ppo_aggregator_keys
+
 
 @torch.no_grad()
 def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):

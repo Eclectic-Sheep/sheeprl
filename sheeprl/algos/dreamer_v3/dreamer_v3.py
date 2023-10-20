@@ -27,7 +27,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import AGGREGATOR_KEYS, Moments, compute_lambda_values, test
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
@@ -488,7 +488,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2

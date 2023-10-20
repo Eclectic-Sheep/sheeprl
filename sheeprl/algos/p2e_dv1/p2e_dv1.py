@@ -27,7 +27,6 @@ from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstructio
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_models
-from sheeprl.algos.p2e_dv1.utils import AGGREGATOR_KEYS
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.env import make_env
@@ -581,7 +580,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4

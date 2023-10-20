@@ -21,7 +21,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS, test
+from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
@@ -210,7 +210,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     if cfg.buffer.size < cfg.algo.rollout_steps:

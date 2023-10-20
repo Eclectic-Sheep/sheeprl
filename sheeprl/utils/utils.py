@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import hydra
 import rich.syntax
@@ -162,13 +162,6 @@ def print_config(
             rich.print(tree, file=fp)
 
 
-def create_aggregator(
-    aggregator_cfg: Dict[str, Any], aggregator_keys: Set[str], device: str | torch.device = "cpu"
-) -> MetricAggregator:
-    aggregator = None
-    keys_to_remove = set(aggregator_cfg.metrics) - aggregator_keys
-    for k in keys_to_remove:
-        aggregator_cfg.metrics.pop(k, None)
+def create_aggregator(aggregator_cfg: Dict[str, Any], device: str | torch.device = "cpu") -> MetricAggregator:
     aggregator: MetricAggregator = hydra.utils.instantiate(aggregator_cfg).to(device)
-    aggregator.disabled = len(aggregator_cfg.metrics) == 0
     return aggregator

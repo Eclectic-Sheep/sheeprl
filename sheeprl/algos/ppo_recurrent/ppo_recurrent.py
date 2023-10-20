@@ -21,7 +21,6 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -219,7 +218,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, AGGREGATOR_KEYS, device)
+        aggregator = create_aggregator(cfg.metric.aggregator, device)
 
     # Local data
     rb = ReplayBuffer(
