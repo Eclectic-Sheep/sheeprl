@@ -124,9 +124,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
 
     # Setup Model
-    model = RewardModel.from_checkpoint(
-        device=fabric.device, model_cfg=ckpt_model_cfg, freeze=True, path=checkpoint_path
-    )
+    with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+        model = RewardModel.from_checkpoint(
+            device=fabric.device, model_cfg=ckpt_model_cfg, freeze=True, path=checkpoint_path
+        )
     setup_finetuning(fabric=fabric, model=model, model_cfg=model_cfg)
     model = model.to(fabric.device)
     trainable_parameter_summary(model, show_names=False, fabric=fabric)

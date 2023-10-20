@@ -145,7 +145,8 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
-    agent = DPOAgent(fabric=fabric, model_cfg=model_cfg, sft_experiment_dir=sft_experiment_dir)
+    with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+        agent = DPOAgent(fabric=fabric, model_cfg=model_cfg, sft_experiment_dir=sft_experiment_dir)
 
     # Setup Generation Config
     generation_config = prepare_generation_config(

@@ -134,9 +134,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
     # Setup Model
-    model = CasualModel.from_checkpoint(device=fabric.device, model_cfg=model_cfg, freeze=True)
+    with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+        model = CasualModel.from_checkpoint(device=fabric.device, model_cfg=model_cfg, freeze=True)
     setup_finetuning(fabric, model, model_cfg=model_cfg)
-    model = model.to(fabric.device)
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
 
     # Setup Generation Config
