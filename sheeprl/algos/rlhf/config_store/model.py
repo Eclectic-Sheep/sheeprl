@@ -48,6 +48,7 @@ class ModelConfig:
     finetune_mode: FINETUNE_MODE = FINETUNE_MODE.ALL
     lora_cfg: Optional[LORAConfig] = None
     use_attention_mask: bool = True
+    fabric_empty_init: bool = True
 
     def __post_init__(self):
         if isinstance(self.finetune_mode, str):
