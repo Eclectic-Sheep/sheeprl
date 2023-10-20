@@ -4,10 +4,13 @@ from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
-from lightning.fabric.utilities.distributed import _distributed_available
 from torch import Tensor
 from torch.distributed.distributed_c10d import ProcessGroup
 from torchmetrics import Metric
+
+def _distributed_available() -> bool:
+    import torch.distributed as dist
+    return dist.is_available() and dist.is_initialized()
 
 
 class MetricAggregatorException(Exception):
