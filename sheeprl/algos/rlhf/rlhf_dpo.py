@@ -40,8 +40,7 @@ __all__ = ["main"]
 
 @torch.inference_mode()
 def evaluate(
-    actor_model: CasualModel,
-    ref_model: CasualModel,
+    agent: DPOAgent,
     algo_cfg: DPOAlgoConfig,
     data_cfg: DataConfig,
     val_dataloader: DataLoader,
@@ -59,8 +58,7 @@ def evaluate(
 
         loss, chosen_rewards, rejected_rewards = dpo_loss(
             batch=batch,
-            actor_model=actor_model,
-            ref_model=ref_model,
+            agent=agent,
             beta=algo_cfg.beta,
             ignore_index=data_cfg.ignore_index,
             reference_free=algo_cfg.reference_free,
@@ -232,8 +230,7 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
             val_loss, val_acc = evaluate(
-                actor_model=agent.actor,
-                ref_model=agent.reference,
+                agent=agent,
                 algo_cfg=algo_cfg,
                 data_cfg=data_cfg,
                 val_dataloader=val_dataloader,
