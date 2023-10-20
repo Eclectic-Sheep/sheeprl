@@ -167,3 +167,4 @@ pytest_*
 !sheeprl/configs/env
 .diambra*
 .hydra
+rlhf_data
