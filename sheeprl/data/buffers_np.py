@@ -31,7 +31,8 @@ class ReplayBuffer:
         **kwargs,
     ):
         """A standard replay buffer implementation. Internally this is represented by a
-        dictionary mapping string to numpy arrays.
+        dictionary mapping string to numpy arrays. The first dimension of the arrays is the
+        buffer size, while the second dimension is the number of environments.
 
         Args:
             buffer_size (int): the buffer size.
@@ -43,6 +44,7 @@ class ReplayBuffer:
             memmap_mode (str, optional): memory-map mode.
                 Possible values are: "r+", "w+", "c", "copyonwrite", "readwrite", "write".
                 Defaults to "r+".
+            kwargs: additional keyword arguments.
         """
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
@@ -120,6 +122,8 @@ class ReplayBuffer:
                 Defaults to False.
             device (str | torch.dtype, optional): the torch device to move the tensors to.
                 Defaults to "cpu".
+            from_numpy (bool, optional): whether to convert the numpy arrays to torch tensors
+                with the 'torch.from_numpy' function. Defaults to False.
 
         Returns:
             Dict[str, Tensor]: the converted buffer.
@@ -138,18 +142,17 @@ class ReplayBuffer:
         ...
 
     def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray], validate_args: bool = False) -> None:
-        """_summary_
+        """Add data to the replay buffer. If the replay buffer is full, then the oldest data is overwritten.
 
         Args:
-            data (ReplayBuffer | Dict[str, np.ndarray]): _description_
-            validate_args (bool, optional): _description_. Defaults to False.
+            data (ReplayBuffer | Dict[str, np.ndarray]): the data to add to the replay buffer.
+            validate_args (bool, optional): whether to validate the arguments. Defaults to False.
 
         Raises:
-            ValueError: _description_
-            ValueError: _description_
-            ValueError: _description_
-            RuntimeError: _description_
-            RuntimeError: _description_
+            ValueError: if the data is not a dictionary containing numpy arrays.
+            ValueError: if the data is not a dictionary containing numpy arrays.
+            RuntimeError: if the data does not have at least 2 dimensions.
+            RuntimeError: if the data is not congruent in the first 2 dimensions.
         """
         if isinstance(data, ReplayBuffer):
             data = data.buffer
@@ -218,20 +221,21 @@ class ReplayBuffer:
     def sample(
         self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, n_samples: int = 1, **kwargs
     ) -> Dict[str, np.ndarray]:
-        """Sample elements from the replay buffer.
-
-        Custom sampling when using memory efficient variant,
-        as we should not sample the element with index 'self.pos'
+        """Sample elements from the replay buffer. If the replay buffer is not full, then the samples are taken
+        from the first 'self.pos' elements. Otherwise, the samples are taken from all the elements.
+        When 'sample_next_obs' is True we sample until 'self.pos - 1' to avoid sampling the last observation,
+        which would be invalid.
         See https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
 
         Args:
             batch_size (int): Number of element to sample
-            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
+            sample_next_obs (bool): whether to sample the next observations from the 'self.obs_keys' keys.
                 Defaults to False.
+            clone (bool): whether to clone the sampled numpy arrays. Defaults to False.
+            n_samples (int): the number of samples to perform. Defaults to 1.
 
         Returns:
-            sample: the sampled dictionary, containing the sampled array,
-            one for every key, with a shape of [batch_size, 1]
+            Dict[str, np.ndarray]: the sampled dictionary with a shape of [n_samples, batch_size, ...].
         """
         if batch_size <= 0 or n_samples <= 0:
             raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
@@ -293,6 +297,25 @@ class ReplayBuffer:
         from_numpy: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
+        """Sample elements from the replay buffer and convert them to torch tensors.
+
+        Args:
+            batch_size (int): Number of elements to sample.
+            clone (bool): whether to clone the sampled numpy arrays. Defaults to False.
+            sample_next_obs (bool): whether to sample the next observations from the 'self.obs_keys' keys.
+                Defaults to False.
+            dtype (Optional[torch.dtype], optional): the torch dtype to convert the arrays to. If None,
+                then the dtypes of the numpy arrays is maintained. Defaults to None.
+            device (str | torch.dtype, optional): the torch device to move the tensors to. Defaults to "cpu".
+            from_numpy (bool, optional): whether to convert the numpy arrays to torch tensors
+                with the 'torch.from_numpy' function. If False, then the numpy arrays are converted
+                with the 'torch.as_tensor' function. Defaults to False.
+            kwargs: additional keyword arguments to be passed to the 'self.sample' method.
+
+        Returns:
+            Dict[str, Tensor]: the sampled dictionary, containing the sampled array,
+            one for every key, with a shape of [n_samples, batch_size, ...]
+        """
         samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
         return {
             k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
@@ -334,13 +357,6 @@ class ReplayBuffer:
 
 
 class SequentialReplayBuffer(ReplayBuffer):
-    """A replay buffer which internally uses a TensorDict and returns sequential samples.
-
-    Args:
-        buffer_size (int): The buffer size.
-        n_envs (int, optional): The number of environments. Defaults to 1.
-    """
-
     batch_axis: int = 2
 
     def __init__(
@@ -353,6 +369,11 @@ class SequentialReplayBuffer(ReplayBuffer):
         memmap_mode: str = "r+",
         **kwargs,
     ):
+        """A sequential replay buffer implementation. Internally this is represented by a
+        dictionary mapping string to numpy arrays. The first dimension of the arrays is the
+        buffer length, while the second dimension is the number of environments. The sequentiality comes
+        from the fact that the samples are sampled as sequences of consecutive elements.
+        """
         super().__init__(buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, **kwargs)
 
     def sample(
