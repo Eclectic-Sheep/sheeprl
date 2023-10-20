@@ -45,8 +45,8 @@ def evaluate(
     data_cfg: DataConfig,
     val_dataloader: DataLoader,
 ) -> float:
-    actor_model.eval()
-    ref_model.eval()
+    agent.actor.eval()
+    agent.reference.eval()
     eval_counter = 0
     total_loss = 0.0
     total_acc = 0.0
@@ -72,8 +72,8 @@ def evaluate(
             break
     average_loss = total_loss / eval_counter
     average_acc = total_acc / eval_counter
-    actor_model.train()
-    ref_model.train()
+    agent.actor.train()
+    agent.reference.train()
     return average_loss, average_acc
 
 
