@@ -26,6 +26,7 @@ from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
+from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -36,17 +37,7 @@ from sheeprl.utils.utils import create_aggregator, dotdict
 def player(
     fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
-    logger = None
-    log_dir = os.path.join("logs", "runs", cfg.root_dir, cfg.run_name)
-    if os.path.isdir(log_dir):
-        versions = [d for d in os.listdir(log_dir) if "version" in d]
-        version = len(versions)
-    else:
-        version = 0
-    log_dir = os.path.join(log_dir, f"version_{version}")
-    if len(fabric.loggers) > 0:
-        logger = fabric.logger
-        log_dir = logger.log_dir
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
     rank = fabric.global_rank
     device = fabric.device
     fabric.seed_everything(cfg.seed)
@@ -97,6 +88,8 @@ def player(
                 "Only environments with vector-only observations are supported by the SAC agent. "
                 f"Provided environment: {cfg.env.id}"
             )
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
     world_collective.broadcast_object_list([cfg], src=0)
@@ -259,7 +252,7 @@ def player(
             torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
             # Logs trainers-only metrics
-            if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+            if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
                 # Gather metrics from the trainers
                 metrics = [None]
                 player_trainer_collective.broadcast_object_list(metrics, src=1)
@@ -268,7 +261,7 @@ def player(
                 fabric.log_dict(metrics[0], policy_step)
 
         # Logs player-only metrics
-        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
             if aggregator and not aggregator.disabled:
                 fabric.log_dict(aggregator.compute(), policy_step)
                 aggregator.reset()
@@ -291,7 +284,7 @@ def player(
             update >= learning_starts  # otherwise the processes end up deadlocked
             and cfg.checkpoint.every > 0
             and policy_step - last_checkpoint >= cfg.checkpoint.every
-        ) or cfg.dry_run:
+        ):
             last_checkpoint = policy_step
             ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
@@ -427,7 +420,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and cfg.checkpoint.save_last:
+            if global_rank == 1 and (cfg.checkpoint.save_last):
                 state = {
                     "agent": agent.state_dict(),
                     "qf_optimizer": qf_optimizer.state_dict(),
@@ -468,7 +461,7 @@ def trainer(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.actor.parameters()), src=1
             )
 
-        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
             # Sync distributed metrics
             metrics = {}
             if aggregator and not aggregator.disabled:
@@ -491,7 +484,7 @@ def trainer(
             last_train = train_step
 
         # Checkpoint model on rank-0: send it everything
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
+        if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
             if global_rank == 1:
                 state = {

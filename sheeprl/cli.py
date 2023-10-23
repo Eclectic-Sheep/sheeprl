@@ -26,6 +26,7 @@ def run(cfg: DictConfig):
             "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
             "`python sheeprl.py fabric.strategy=...`"
         )
+
     if cfg.metric.log_level > 0:
         print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))

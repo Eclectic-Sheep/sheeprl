@@ -39,7 +39,7 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger
+from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -168,7 +168,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -212,10 +213,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "The MLP keys of the decoder must be contained in the encoder ones. "
             f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
         )
-    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
-    fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+        fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
+        fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -511,11 +513,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 train_step += world_size
 
         # Log metrics
-        if (
-            cfg.metric.log_level
-            and (policy_step - last_log >= cfg.metric.log_every or update == num_updates)
-            or cfg.dry_run
-        ):
+        if cfg.metric.log_level and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -545,10 +543,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             last_train = train_step
 
         # Checkpoint model
-        if (
-            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
-            or cfg.dry_run
-            or (update == num_updates and cfg.checkpoint.save_last)
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
+            update == num_updates and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {

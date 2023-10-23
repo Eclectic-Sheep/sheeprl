@@ -26,6 +26,7 @@ from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
+from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -37,17 +38,7 @@ def player(
     fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
     # Initialize the fabric object
-    logger = None
-    log_dir = os.path.join("logs", "runs", cfg.root_dir, cfg.run_name)
-    if os.path.isdir(log_dir):
-        versions = [d for d in os.listdir(log_dir) if "version" in d]
-        version = len(versions)
-    else:
-        version = 0
-    log_dir = os.path.join(log_dir, f"version_{version}")
-    if len(fabric.loggers) > 0:
-        logger = fabric.logger
-        log_dir = logger.log_dir
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -88,8 +79,9 @@ def player(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
-    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
@@ -310,7 +302,7 @@ def player(
         # Convert back the parameters
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
-        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
             # Gather metrics from the trainers
             metrics = [None]
             player_trainer_collective.broadcast_object_list(metrics, src=1)
@@ -336,7 +328,7 @@ def player(
             last_log = policy_step
 
         # Checkpoint model
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
+        if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
             ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
@@ -453,7 +445,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and cfg.checkpoint.save_last:
+            if global_rank == 1 and (cfg.checkpoint.save_last):
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -537,7 +529,7 @@ def trainer(
                 src=1,
             )
 
-        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every or cfg.dry_run:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
             # Sync distributed metrics
             metrics = {}
             if aggregator and not aggregator.disabled:
@@ -580,7 +572,7 @@ def trainer(
             )
 
         # Checkpoint model on rank-0: send it everything
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or cfg.dry_run:
+        if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
             if global_rank == 1:
                 state = {
