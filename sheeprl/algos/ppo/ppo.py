@@ -28,7 +28,7 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import create_aggregator, dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -212,7 +212,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Local data
     if cfg.buffer.size < cfg.algo.rollout_steps:

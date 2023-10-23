@@ -30,7 +30,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import create_aggregator, dotdict
+from sheeprl.utils.utils import dotdict
 
 
 @torch.no_grad()
@@ -117,7 +117,7 @@ def player(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // cfg.env.num_envs if not cfg.dry_run else 1
@@ -396,7 +396,7 @@ def trainer(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator = create_aggregator(cfg.metric.aggregator, device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Receive data from player reagrding the:
     # * update
