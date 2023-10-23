@@ -22,6 +22,18 @@ def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Tuple[Opti
 
 
 def get_log_dir(fabric: Fabric, root_dir: str, run_name: str, share: bool = True) -> str:
+    """Return and, if necessary, create the log directory. If there are more than one processes,
+    the rank-0 process shares the directory to the others (if the `share` parameter is set to `True`).
+
+    Args:
+        fabric (Fabric): the fabric instance.
+        root_dir (str): the root directory of the experiment.
+        run_name (str): the name of the experiment.
+        share (bool): whether or not to share the `log_dir` among processes.
+
+    Returns:
+        The log directory of the experiment.
+    """
     world_collective = TorchCollective()
     if fabric.world_size > 1 and share:
         world_collective.setup()
