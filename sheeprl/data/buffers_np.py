@@ -658,7 +658,6 @@ class EnvIndependentReplayBuffer:
         sample_next_obs: bool = False,
         clone: bool = False,
         n_samples: int = 1,
-        sequence_length: int = 1,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Samples data from the buffer. The returned samples are sampled given the 'buffer_cls' class
@@ -669,7 +668,6 @@ class EnvIndependentReplayBuffer:
             sample_next_obs (bool): Whether to sample the next observation or the current observation.
             clone (bool): Whether to clone the data or return a reference to the original data.
             n_samples (int): The number of samples to draw for each batch element.
-            sequence_length (int): The number of consecutive samples to draw for each batch element.
             **kwargs: Additional keyword arguments to pass to the underlying buffer's `sample` method.
 
         Returns:
@@ -689,7 +687,7 @@ class EnvIndependentReplayBuffer:
                 sample_next_obs=sample_next_obs,
                 clone=clone,
                 n_samples=n_samples,
-                sequence_length=sequence_length,
+                **kwargs,
             )
             for b, bs in zip(self._buf, bs_per_buf)
             if bs > 0
@@ -706,7 +704,6 @@ class EnvIndependentReplayBuffer:
         sample_next_obs: bool = False,
         clone: bool = False,
         n_samples: int = 1,
-        sequence_length: int = 1,
         dtype: Optional[torch.dtype] = None,
         device: str | torch.dtype = "cpu",
         from_numpy: bool = False,
@@ -720,7 +717,6 @@ class EnvIndependentReplayBuffer:
                 Defaults to False.
             clone (bool): whether to clone the sampled tensors.
             n_samples (int): the number of samples per batch_size to retrieve. Defaults to 1.
-            sequence_length (int): the length of the sequence of each element. Defaults to 1.
             dtype (Optional[torch.dtype], optional): the torch dtype to convert the arrays to. If None,
                 then the dtypes of the numpy arrays is maintained. Defaults to None.
             device (str | torch.dtype, optional): the torch device to move the tensors to. Defaults to "cpu".
@@ -739,7 +735,6 @@ class EnvIndependentReplayBuffer:
             sample_next_obs=sample_next_obs,
             clone=clone,
             n_samples=n_samples,
-            sequence_length=sequence_length,
             **kwargs,
         )
         return {
