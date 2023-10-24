@@ -8,6 +8,7 @@ The main properties/methods that the environment has to provide are the followin
 * A `close` function that closes the environment.
 * An `action_space` property indicating the valid actions, i.e., all the valid actions should be contained in that space. For more info, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
 * An `observation_space` property indicating all the valid observation that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary.
+* A `reward_range` (not mandatory), to specify the range that the agent can receive in a single step.
 
 > **Note**
 >
