@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional, SupportsFloat, Tuple
 import gymnasium as gym
 import minedojo
 import numpy as np
-from gymnasium import core
 from minedojo.sim import ALL_CRAFT_SMELT_ITEMS, ALL_ITEMS
 
 N_ALL_ITEMS = len(ALL_ITEMS)
@@ -48,7 +47,7 @@ ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
 # 7: destroy
 
 
-class MineDojoWrapper(core.Env):
+class MineDojoWrapper(gym.Wrapper):
     def __init__(
         self,
         id: str,
@@ -76,7 +75,7 @@ class MineDojoWrapper(core.Env):
                 f"The initial position must respect the pitch limits {self._pitch_limits}, given {self._pos['pitch']}"
             )
 
-        self._env = minedojo.make(
+        env = minedojo.make(
             task_id=id,
             image_size=(height, width),
             world_seed=seed,
@@ -86,6 +85,7 @@ class MineDojoWrapper(core.Env):
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
+        super().__init__(env)
         self._inventory = {}
         self._inventory_names = None
         self._inventory_max = np.zeros(N_ALL_ITEMS)
@@ -94,7 +94,7 @@ class MineDojoWrapper(core.Env):
         )
         self.observation_space = gym.spaces.Dict(
             {
-                "rgb": gym.spaces.Box(0, 255, self._env.observation_space["rgb"].shape, np.uint8),
+                "rgb": gym.spaces.Box(0, 255, self.env.observation_space["rgb"].shape, np.uint8),
                 "inventory": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
                 "inventory_max": gym.spaces.Box(0.0, np.inf, (N_ALL_ITEMS,), np.float32),
                 "inventory_delta": gym.spaces.Box(-np.inf, np.inf, (N_ALL_ITEMS,), np.float32),
@@ -106,11 +106,15 @@ class MineDojoWrapper(core.Env):
                 "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), bool),
             }
         )
-        self.render_mode: str = "rgb_array"
+        self._render_mode: str = "rgb_array"
         self.seed(seed=seed)
 
+    @property
+    def render_mode(self) -> str | None:
+        return self._render_mode
+
     def __getattr__(self, name):
-        return getattr(self._env, name)
+        return getattr(self.env, name)
 
     def _convert_inventory(self, inventory: Dict[str, Any]) -> np.ndarray:
         # the inventory counts, as a vector with one entry for each Minecraft item
@@ -235,7 +239,7 @@ class MineDojoWrapper(core.Env):
         if not (self._pitch_limits[0] <= next_pitch <= self._pitch_limits[1]):
             action[3] = 12
 
-        obs, reward, done, info = self._env.step(action)
+        obs, reward, done, info = self.env.step(action)
         self._pos = {
             "x": float(obs["location_stats"]["pos"][0]),
             "y": float(obs["location_stats"]["pos"][1]),
@@ -258,7 +262,7 @@ class MineDojoWrapper(core.Env):
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        obs = self._env.reset()
+        obs = self.env.reset()
         self._pos = {
             "x": float(obs["location_stats"]["pos"][0]),
             "y": float(obs["location_stats"]["pos"][1]),
@@ -280,5 +284,5 @@ class MineDojoWrapper(core.Env):
         }
 
     def close(self):
-        self._env.close()
+        self.env.close()
         return super().close()

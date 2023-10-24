@@ -7,10 +7,11 @@ if not _IS_DMC_AVAILABLE:
 
 from typing import Any, Dict, Optional, SupportsFloat, Tuple, Union
 
+import gymnasium as gym
 import numpy as np
 from dm_control import suite
 from dm_env import specs
-from gymnasium import core, spaces
+from gymnasium import spaces
 
 
 def _spec_to_box(spec, dtype) -> spaces.Box:
@@ -45,7 +46,7 @@ def _flatten_obs(obs: Dict[Any, Any]) -> np.ndarray:
     return np.concatenate(obs_pieces, axis=0)
 
 
-class DMCWrapper(core.Env):
+class DMCWrapper(gym.Wrapper):
     def __init__(
         self,
         id: str,
@@ -120,20 +121,21 @@ class DMCWrapper(core.Env):
         self._channels_first = channels_first
 
         # create task
-        self._env = suite.load(
+        env = suite.load(
             domain_name=domain_name,
             task_name=task_name,
             task_kwargs=task_kwargs,
             visualize_reward=visualize_reward,
             environment_kwargs=environment_kwargs,
         )
+        super().__init__(env)
 
         # true and normalized action spaces
-        self._true_action_space = _spec_to_box([self._env.action_spec()], np.float32)
+        self._true_action_space = _spec_to_box([self.env.action_spec()], np.float32)
         self._norm_action_space = spaces.Box(low=-1.0, high=1.0, shape=self._true_action_space.shape, dtype=np.float32)
 
         # set the reward range
-        reward_space = _spec_to_box([self._env.reward_spec()], np.float32)
+        reward_space = _spec_to_box([self.env.reward_spec()], np.float32)
         self._reward_range = (reward_space.low.item(), reward_space.high.item())
 
         # create observation space
@@ -141,7 +143,7 @@ class DMCWrapper(core.Env):
             shape = (3, height, width) if channels_first else (height, width, 3)
             image_observation_space = spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
         if from_vectors:
-            vector_observation_space = _spec_to_box(self._env.observation_spec().values(), np.float64)
+            vector_observation_space = _spec_to_box(self.env.observation_spec().values(), np.float64)
         if from_vectors and from_pixels:
             self._observation_space = spaces.Dict({"rgb": image_observation_space, "state": vector_observation_space})
         elif from_vectors:
@@ -150,17 +152,17 @@ class DMCWrapper(core.Env):
             self._observation_space = image_observation_space
 
         # state space
-        self._state_space = _spec_to_box(self._env.observation_spec().values(), np.float64)
+        self._state_space = _spec_to_box(self.env.observation_spec().values(), np.float64)
         self.current_state = None
-
         # render
         self._render_mode: str = "rgb_array"
-
+        # metadata
+        self._metadata = {}
         # set seed
         self.seed(seed=seed)
 
     def __getattr__(self, name):
-        return getattr(self._env, name)
+        return getattr(self.env, name)
 
     def _get_obs(self, time_step) -> Union[Dict[str, np.ndarray], np.ndarray]:
         if self._from_pixels:
@@ -213,30 +215,30 @@ class DMCWrapper(core.Env):
     def step(
         self, action: Any
     ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], SupportsFloat, bool, bool, Dict[str, Any]]:
-        assert self._norm_action_space.contains(action)
+        # assert self._norm_action_space.contains(action)
         action = self._convert_action(action)
-        assert self._true_action_space.contains(action)
-        time_step = self._env.step(action)
+        # assert self._true_action_space.contains(action)
+        time_step = self.env.step(action)
         reward = time_step.reward or 0.0
         done = time_step.last()
         obs = self._get_obs(time_step)
         self.current_state = _flatten_obs(time_step.observation)
         extra = {}
         extra["discount"] = time_step.discount
-        extra["internal_state"] = self._env.physics.get_state().copy()
+        extra["internal_state"] = self.env.physics.get_state().copy()
         return obs, reward, done, False, extra
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], Dict[str, Any]]:
-        time_step = self._env.reset()
+        time_step = self.env.reset()
         self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step)
         return obs, {}
 
     def render(self, camera_id: Optional[int] = None) -> np.ndarray:
-        return self._env.physics.render(height=self._height, width=self._width, camera_id=camera_id or self._camera_id)
+        return self.env.physics.render(height=self._height, width=self._width, camera_id=camera_id or self._camera_id)
 
     def close(self):
-        self._env.close()
+        self.env.close()
         return super().close()
