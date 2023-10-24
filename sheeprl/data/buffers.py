@@ -469,15 +469,18 @@ class EpisodeBuffer:
             if self._memmap_dir is not None:
                 episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
                 episode_dir.mkdir(parents=True, exist_ok=True)
+            episode_to_add: TensorDict = episode.empty(recurse=True)
             for k, v in episode.items():
-                episode[k] = MemmapTensor.from_tensor(
+                episode_to_add[k] = MemmapTensor.from_tensor(
                     v,
                     filename=None if episode_dir is None else episode_dir / f"{k}.memmap",
                     transfer_ownership=False,
                 )
-            episode.memmap_(prefix=episode_dir)
-        episode.to(self.device)
-        self._buf.append(episode)
+            episode_to_add.memmap_(prefix=episode_dir)
+            self._buf.append(episode_to_add)
+        else:
+            episode.to(self.device)
+            self._buf.append(episode)
 
     def sample(
         self,
