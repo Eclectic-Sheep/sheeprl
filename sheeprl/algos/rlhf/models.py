@@ -127,7 +127,7 @@ class CriticModel(torch.nn.Module):
                 )
         else:
             self.transformer = getattr(model, model_cfg.transformer_name)
-                
+
         self.head = torch.nn.Linear(embedding_dim, 1, bias=False)
         self.head.apply(self.init_normal)
 
@@ -167,8 +167,10 @@ class CriticModel(torch.nn.Module):
         else:
             embedding_dim = getattr(transformer_config, model_cfg.embedding_dim_name, None)
             if embedding_dim is None:
-                raise ValueError(f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in "\
-                                 "`transformer_config` from hugginface library")
+                raise ValueError(
+                    f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in "
+                    "`transformer_config` from hugginface library"
+                )
         model = cls(model=model, model_cfg=model_cfg, embedding_dim=embedding_dim).to(device)
         if path is not None:
             sd = torch.load(path, map_location=device)

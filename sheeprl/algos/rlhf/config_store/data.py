@@ -1,7 +1,8 @@
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
-import warnings
+
 from hydra.core.config_store import ConfigStore
 from omegaconf import II, MISSING
 
@@ -50,10 +51,12 @@ class SummarizationConfig(DataConfig):
 
     def __post_init__(self) -> None:
         if self.remove_same_inputs:
-            warnings.warn("`remove_same_inputs` is set to True. This means only one example per duplicated " \
-                          "input will be kept. This may result in a smaller dataset than expected " \
-                          "because this dataset may contain many negative (rejected) examples from " \
-                          "the same (chosen) input.")
+            warnings.warn(
+                "`remove_same_inputs` is set to True. This means only one example per duplicated "
+                "input will be kept. This may result in a smaller dataset than expected "
+                "because this dataset may contain many negative (rejected) examples from "
+                "the same (chosen) input."
+            )
 
 
 @dataclass

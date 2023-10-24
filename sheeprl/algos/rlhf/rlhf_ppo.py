@@ -6,7 +6,6 @@ from typing import Dict
 import hydra
 import lightning as L
 import torch
-from dotenv import load_dotenv
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 

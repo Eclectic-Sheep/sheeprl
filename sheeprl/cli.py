@@ -5,12 +5,12 @@ import time
 import warnings
 
 import hydra
+import torch
 from lightning import Fabric
 from lightning.fabric.accelerators.tpu import TPUAccelerator
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from lightning.fabric.strategies.ddp import DDPStrategy
 from omegaconf import DictConfig, OmegaConf
-import torch
 
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.registry import tasks
@@ -26,7 +26,7 @@ def run(cfg: DictConfig):
             "`python sheeprl.py fabric.strategy=...`"
         )
     if "rlhf" in str.lower(cfg.algo.name):
-        torch.set_float32_matmul_precision('high')
+        torch.set_float32_matmul_precision("high")
     print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
 
