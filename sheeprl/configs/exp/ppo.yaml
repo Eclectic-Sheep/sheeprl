@@ -2,7 +2,7 @@
 
 defaults:
   - override /algo: ppo
-  - override /env: gym
+  - override /env: crafter
   - _self_
 
 # Experiment
@@ -13,3 +13,6 @@ per_rank_batch_size: 64
 buffer:
   share_data: False
   size: ${algo.rollout_steps}
+
+cnn_keys:
+  encoder: [rgb]

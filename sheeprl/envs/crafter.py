@@ -5,8 +5,9 @@ from sheeprl.utils.imports import _IS_CRAFTER_AVAILABLE
 if not _IS_CRAFTER_AVAILABLE:
     raise ModuleNotFoundError(_IS_CRAFTER_AVAILABLE)
 
-from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
+import crafter
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -14,7 +15,12 @@ from gymnasium.core import RenderFrame
 
 
 class CrafterWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, seed: int | None = None) -> None:
+    def __init__(self, id: str, screen_size: Sequence[int, int] | int, seed: int | None = None) -> None:
+        assert id in {"crafter_reward", "crafter_nonreward"}
+        if isinstance(screen_size, int):
+            screen_size = (screen_size,) * 2
+
+        env = crafter.Env(size=screen_size, seed=seed, reward=(id == "crafter_reward"))
         super().__init__(env)
         self.observation_space = spaces.Dict(
             {
@@ -56,4 +62,4 @@ class CrafterWrapper(gym.Wrapper):
         return self.env.render()
 
     def close(self) -> None:
-        return super().close()
+        return

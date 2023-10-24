@@ -77,27 +77,32 @@ Finally, you can define the other functions to make the environment compatible w
 
 The following is the example, we implemented the wrapper for the [Crafter](https://github.com/danijar/crafter) environment. As one can notice, the observations are converted by the `_convert_obs` function. Moreover, in the `step` function, the `truncated` is always set to `False`, since the original environment does not provide this information. Finally, in the `__init__` function the `reward_range`, `observation_space`, `action_space`, `render_mode`, and `metadata` properties are redefined.
 ```python
+from __future__ import annotations
+
 from sheeprl.utils.imports import _IS_CRAFTER_AVAILABLE
 
 if not _IS_CRAFTER_AVAILABLE:
     raise ModuleNotFoundError(_IS_CRAFTER_AVAILABLE)
 
-from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
-import numpy as np
+import crafter
 import gymnasium as gym
+import numpy as np
 from gymnasium import spaces
 from gymnasium.core import RenderFrame
 
 
 class CrafterWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, seed: int | None = None) -> None:
+    def __init__(self, id: str, screen_size: Sequence[int, int] | int, seed: int | None = None) -> None:
+        assert id in {"crafter_reward", "crafter_nonreward"}
+        if isinstance(screen_size, int):
+            screen_size = (screen_size,) * 2
+
+        env = crafter.Env(size=screen_size, seed=seed, reward=(id == "crafter_reward"))
         super().__init__(env)
-        # We know by the documentation that the observation of the environment is a single image.
-        # So we convert it in a dictionary containing only that observation. 
         self.observation_space = spaces.Dict(
             {
-                # convert from gym to gymnasium
                 "rgb": spaces.Box(
                     self.env.observation_space.low,
                     self.env.observation_space.high,
@@ -106,7 +111,6 @@ class CrafterWrapper(gym.Wrapper):
                 )
             }
         )
-        # convert from gym to gymnasium
         self.action_space = spaces.Discrete(self.env.action_space.n)
         self.reward_range = self.env.reward_range or (-np.inf, np.inf)
         self.observation_space.seed(seed)
@@ -137,7 +141,7 @@ class CrafterWrapper(gym.Wrapper):
         return self.env.render()
 
     def close(self) -> None:
-        return super().close()
+        return
 ```
 
 ## Add Config File
@@ -159,17 +163,8 @@ reward_as_observation: True
 
 # Wrapper to be instantiated
 wrapper:
-  # the custom wrapper is instantiated and the original environment
-  # is passed as argument.
   _target_: sheeprl.envs.crafter.CrafterWrapper
-  env:
-    # creation of the original environment.
-    _target_: crafter.Env
-    reward: True
-    size: 
-      - ${env.screen_size}
-      - ${env.screen_size}
-    seed: ${seed}
+  id: ${env.id}
+  screen_size: ${env.screen_size}
   seed: ${seed}
 ```
-In this case, the main environment is instantiated, then it is passed to the wrapper.
