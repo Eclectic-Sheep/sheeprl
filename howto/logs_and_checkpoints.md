@@ -37,7 +37,7 @@ where
 * `disable_timer` is a boolean flag that enables/disables the timer to measure both the time spent in the environment and the time spent during the agent training. The timer class used can be found [here](/sheeprl/utils/timer.py).
 * `log_level` is the level of logging: $0$ means no log (it disables also the timer), $1$ means log everything.
 * `sync_on_compute` is a boolean flag that enables/disables the synchronization of the metrics on compute.
-* `aggregator` is the aggregator of the metrics, `raise_on_missing` is a boolean flag that enables/disables the raising of an exception when a metric is missing, and `metrics` is a dictionary that contains the metrics to log. Every metric should be an instance of a class that inherits from `torchmetrics.Metric` (for more information, check [here](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric)).
+* `aggregator` is the aggregator of the metrics, `raise_on_missing` is a boolean flag that enables/disables the raising of an exception when a metric to be logged is missing, and `metrics` is a dictionary that contains the metrics to log. Every metric should be an instance of a class that inherits from `torchmetrics.Metric` (for more information, check [here](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric)).
 
 So, if one want to disable everything related to logging, he/she can set `log_level` to $0$ if one wants to disable the timer, he/she can set `disable_timer` to `True`.
 
@@ -66,9 +66,9 @@ AGGREGATOR_KEYS = {
 }
 ```
 
-These keys refer to the metrics that will be update in the code (i.e., `aggregator.update(key, value)`). Moreover, these keys will be used as filter for the metrics specified in the `metric.log.aggregator.metrics` config. In particular, all the metrics added in the config that are not present in the `AGGREGATOR_KEYS` set will be removed from the configs.
+These keys refer to the metrics that will be updated in the code (i.e., `aggregator.update(key, value)`). Moreover, these keys will be used as filter for the metrics specified in the `metric.log.aggregator.metrics` config. In particular, only the metrics present in both the `metric.log.aggregator.metrics` and the `AGGREGATOR_KEYS` will be logged.
 
-For example, let suppose to define these metrics in the config file:
+For example, let suppose we have defined the following metrics in the config file:
 ```yaml
 aggregator:
   _target_: sheeprl.utils.metric.MetricAggregator
@@ -93,7 +93,23 @@ aggregator:
 
 And the `AGGREGATOR_KEYS` set of the algorithm is defined as follows:
 ```python
-AGGREGATOR_KEYS = {"key0", "key2". "key5"}
+AGGREGATOR_KEYS = {"key0", "key2", "key5"}
 ```
 
 Then, the metrics that will be logged are the `key0` and the `key2`. The `key5` is not logged because it is not in the configs; instead, the `key1`, `key3`, and `key4` are not logged because they are not in the `AGGREGATOR_KEYS` set of the algorithm.
+
+## Checkpointing
+
+By default the checkpointing is enabled with the following settings:
+
+```yaml
+every: 100
+resume_from: null
+save_last: True
+```
+
+meaning that:
+
+* `every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environment per process then the policy steps are 2*4=8) between two consecutive checkpointing operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
+* `resume_from` is the path of the checkpoint to resume from. If `null`, then the checkpointing is not resumed.
+* `save_last` is a boolean flag that enables/disables the saving of the last checkpoint.
