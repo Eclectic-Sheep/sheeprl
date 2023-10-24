@@ -41,14 +41,13 @@ from sheeprl.utils.registry import register_algorithm
 register_configs()
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def evaluate(
     model: CasualModel,
     algo_cfg: SFTAlgoConfig,
     data_cfg: DataConfig,
     val_dataloader: DataLoader,
 ) -> float:
-    model.eval()
     eval_counter = 0
     total_loss = 0.0
     eval_iters = algo_cfg.eval_iters
@@ -67,11 +66,10 @@ def evaluate(
         if eval_iters is not None and eval_counter >= eval_iters:
             break
     average_loss = total_loss / eval_counter
-    model.train()
     return average_loss
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def generate(
     model: CasualModel,
     tokenizer: PreTrainedTokenizer,
@@ -79,14 +77,12 @@ def generate(
     example_prompt: Dict[str, torch.Tensor],
     device: torch.device,
 ) -> str:
-    model.eval()
     generated = model.generate(
         input_ids=example_prompt["input_ids"].to(device),
         attention_mask=example_prompt["attention_mask"].to(device),
         generation_config=generation_config,
     )
     generated_text = tokenizer.decode(generated[0])
-    model.train()
     return generated_text
 
 
@@ -164,9 +160,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         lr_decay_steps=num_training_steps,
     )
     model, optimizer = fabric.setup(model, optimizer)
-
+    model.eval()
     gen_text = generate(
-        model=model.module,
+        model=model,
         tokenizer=tokenizer,
         generation_config=generation_config,
         example_prompt=example_prompt,
@@ -177,6 +173,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     data_iterator = iter(train_dataloader)
     for k in iterator:
+        model.train()
         # Setup counters and data
         if k % len(train_dataloader) == 0:
             data_iterator = iter(train_dataloader)
@@ -223,6 +220,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             metrics.info_padding_percentage.update(padding_pct)
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
+            model.eval()
             val_loss = evaluate(
                 model=model,
                 algo_cfg=algo_cfg,
@@ -237,7 +235,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             if fabric.is_global_zero:
                 gen_text = generate(
-                    model=model.module,
+                    model=model,
                     tokenizer=tokenizer,
                     generation_config=generation_config,
                     example_prompt=example_prompt,
