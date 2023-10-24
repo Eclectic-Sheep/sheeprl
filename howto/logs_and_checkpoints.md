@@ -34,7 +34,7 @@ aggregator:
 where 
 
 * `log_every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environment per process then the policy steps are 2*4=8) between two consecutive logging operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
-* `disable_timer` is a boolean flag that enables/disables the timer to measure both the time spent in the environment and the time spent during the agent training. The timer class used can be found [here](/sheeprl/utils/timer.py).
+* `disable_timer` is a boolean flag that enables/disables the timer to measure both the time spent in the environment and the time spent during the agent training. The timer class used can be found [here](../sheeprl/utils/timer.py).
 * `log_level` is the level of logging: $0$ means no log (it disables also the timer), $1$ means log everything.
 * `sync_on_compute` is a boolean flag that enables/disables the synchronization of the metrics on compute.
 * `aggregator` is the aggregator of the metrics, `raise_on_missing` is a boolean flag that enables/disables the raising of an exception when a metric to be logged is missing, and `metrics` is a dictionary that contains the metrics to log. Every metric should be an instance of a class that inherits from `torchmetrics.Metric` (for more information, check [here](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric)).
