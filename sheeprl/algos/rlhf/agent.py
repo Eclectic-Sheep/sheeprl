@@ -43,20 +43,22 @@ class PPOAgent:
         rm_model_name = rm_ckpt_model_cfg.name
 
         fabric.print("Loading reference model")
-        self._reference = ActorModel.from_checkpoint(
-            device=fabric.device,
-            model_cfg=sft_ckpt_model_cfg,
-            path=sft_checkpoint_path,
-            freeze=True,
-        )
+        with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+            self._reference = ActorModel.from_checkpoint(
+                device=fabric.device,
+                model_cfg=sft_ckpt_model_cfg,
+                path=sft_checkpoint_path,
+                freeze=True,
+            )
         # Reward model
         fabric.print("Loading reward model")
-        self._reward = RewardModel.from_checkpoint(
-            device=fabric.device,
-            model_cfg=rm_ckpt_model_cfg,
-            path=rm_checkpoint_path,
-            freeze=True,
-        )
+        with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+            self._reward = RewardModel.from_checkpoint(
+                device=fabric.device,
+                model_cfg=rm_ckpt_model_cfg,
+                path=rm_checkpoint_path,
+                freeze=True,
+            )
 
         lora_enabled = model_cfg.finetune_mode == FINETUNE_MODE.LORA
         lora_cfg = model_cfg.lora_cfg
@@ -72,26 +74,29 @@ class PPOAgent:
             else:
                 # Actor and critic cannot be shared, we fallback to the default behavior
                 fabric.print("Loading actor model")
-                actor_model = ActorModel.from_checkpoint(
-                    device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
-                )
+                with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+                    actor_model = ActorModel.from_checkpoint(
+                        device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
+                    )
                 setup_finetuning(fabric, actor_model, model_cfg)
                 trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
                 self._actor = fabric.setup_module(actor_model)
 
                 fabric.print("Loading critic model from sft model")
-                critic_model = CriticModel.from_checkpoint(
-                    device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_ckpt_model_cfg, freeze=True
-                )
+                with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+                    critic_model = CriticModel.from_checkpoint(
+                        device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_ckpt_model_cfg, freeze=True
+                    )
                 setup_finetuning(fabric, critic_model, model_cfg)
                 trainable_parameter_summary(model=critic_model, show_names=False, fabric=fabric)
                 self._critic = fabric.setup_module(critic_model)
         else:
             # here we have critic model initialized with reward model so we need separete actor model
             fabric.print("Loading actor model")
-            actor_model = ActorModel.from_checkpoint(
-                device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
-            )
+            with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+                actor_model = ActorModel.from_checkpoint(
+                    device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
+                )
             setup_finetuning(fabric, actor_model, model_cfg)
             trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
             self._actor = fabric.setup_module(actor_model)
@@ -165,12 +170,14 @@ class DPOAgent:
         sft_checkpoint_path = get_last_checkpoint_path(sft_experiment_dir)
 
         fabric.print("Loading reference model")
-        self._reference = ActorModel.from_checkpoint(
-            device=fabric.device,
-            model_cfg=sft_ckpt_model_cfg,
-            path=sft_checkpoint_path,
-            freeze=True,
-        )
+
+        with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+            self._reference = ActorModel.from_checkpoint(
+                device=fabric.device,
+                model_cfg=sft_ckpt_model_cfg,
+                path=sft_checkpoint_path,
+                freeze=True,
+            )
         self._finetune_mode = model_cfg.finetune_mode
         lora_enabled = model_cfg.finetune_mode == FINETUNE_MODE.LORA
         lora_cfg = model_cfg.lora_cfg
@@ -181,9 +188,10 @@ class DPOAgent:
             self._reference = fabric.setup_module(self._reference)
         else:
             fabric.print("Loading actor model")
-            actor_model = ActorModel.from_checkpoint(
-                device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
-            )
+            with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
+                actor_model = ActorModel.from_checkpoint(
+                    device=fabric.device, model_cfg=sft_ckpt_model_cfg, path=sft_checkpoint_path, freeze=True
+                )
             setup_finetuning(fabric, actor_model, model_cfg)
             trainable_parameter_summary(model=actor_model, show_names=False, fabric=fabric)
             self._actor = fabric.setup_module(actor_model)

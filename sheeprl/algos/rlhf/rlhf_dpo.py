@@ -73,7 +73,6 @@ def evaluate(
     average_loss = total_loss / eval_counter
     average_acc = total_acc / eval_counter
     agent.actor.train()
-    agent.reference.train()
     return average_loss, average_acc
 
 
@@ -143,8 +142,7 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
     val_dataloader = fabric.setup_dataloaders(val_dataloader)
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
-    with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
-        agent = DPOAgent(fabric=fabric, model_cfg=model_cfg, sft_experiment_dir=sft_experiment_dir)
+    agent = DPOAgent(fabric=fabric, model_cfg=model_cfg, sft_experiment_dir=sft_experiment_dir)
 
     # Setup Generation Config
     generation_config = prepare_generation_config(
@@ -180,6 +178,7 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
     iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
 
     data_iterator = iter(train_dataloader)
+    agent.reference.eval()
     agent.actor.train()
     for k in iterator:
         # Setup counters and data

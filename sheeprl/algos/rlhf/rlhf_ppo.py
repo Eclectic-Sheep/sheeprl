@@ -102,14 +102,13 @@ def main(fabric: L.Fabric, cfg: Dict):
     train_dataloader = fabric.setup_dataloaders(train_dataloader)
     example_prompt = torch.load(dataset_path / "example_prompt.pt")
 
-    with fabric.init_module(empty_init=model_cfg.fabric_empty_init):
-        agent = PPOAgent(
-            fabric=fabric,
-            model_cfg=model_cfg,
-            init_critic_with_rm=algo_cfg.init_critic_with_rm,
-            sft_experiment_dir=algo_cfg.sft_experiment_dir,
-            rm_experiment_dir=algo_cfg.rm_experiment_dir,
-        )
+    agent = PPOAgent(
+        fabric=fabric,
+        model_cfg=model_cfg,
+        init_critic_with_rm=algo_cfg.init_critic_with_rm,
+        sft_experiment_dir=algo_cfg.sft_experiment_dir,
+        rm_experiment_dir=algo_cfg.rm_experiment_dir,
+    )
 
     # Setup Generation Configs
     generation_config = prepare_generation_config(
@@ -301,11 +300,3 @@ def main(fabric: L.Fabric, cfg: Dict):
                 step=k,
             )
     fabric.print("Experiment output folder: ", experiment_dir)
-
-
-if __name__ == "__main__":
-    # Uncomment this line if you see an error: "Expected is_sm80 to be true, but got false"
-    # torch.backends.cuda.enable_flash_sdp(False)
-    torch.set_float32_matmul_precision("high")
-    load_dotenv()
-    main()
