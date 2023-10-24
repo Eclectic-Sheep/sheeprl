@@ -105,23 +105,29 @@ class ActorModel(CasualModel):
 
 
 class CriticModel(torch.nn.Module):
-    def __init__(self, model, model_cfg: ModelConfig, embedding_dim: int, transformer_name: Optional[str] = None):
+    def __init__(self, model, model_cfg: ModelConfig, embedding_dim: int):
         super().__init__()
         self.model_cfg = model_cfg
-        if transformer_name is None:
-            # If any transformer name is provided, we search for common attribute names usually
-            # avaliable inside huggingface library.
+        if model_cfg.transformer_name is None:
+            # If any transformer name is not provided, we search for common attribute names usually
+            # avaliable inside huggingface library or already tested model's attribute names.
+            model_type_str = str(type(model))
             if hasattr(model, "transformer"):
                 self.transformer = model.transformer
             elif hasattr(model, "model"):
                 self.transformer = model.model
+            elif hasattr(model, "layers") and "MixFormerSequentialForCausalLM" in model_type_str:
+                # it is the phi model we remove the last layer
+                model.layers = model.layers[:-1]
+                self.transformer = model
             else:
                 raise ValueError(
                     f"{model} Could not find transformer, searched for 'transformer' and 'model' attributes, "
                     "if your model has a different attribute name, please specify it in `transformer_name`"
                 )
         else:
-            self.transformer = getattr(model, transformer_name)
+            self.transformer = getattr(model, model_cfg.transformer_name)
+                
         self.head = torch.nn.Linear(embedding_dim, 1, bias=False)
         self.head.apply(self.init_normal)
 
@@ -161,8 +167,9 @@ class CriticModel(torch.nn.Module):
         else:
             embedding_dim = getattr(transformer_config, model_cfg.embedding_dim_name, None)
             if embedding_dim is None:
-                raise ValueError(f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in transformer_config")
-        model = cls(model=model, embedding_dim=embedding_dim, transformer_name=model_cfg.transformer_name).to(device)
+                raise ValueError(f"`embedding_dim_name={model_cfg.embedding_dim_name}` not found in "\
+                                 "`transformer_config` from hugginface library")
+        model = cls(model=model, model_cfg=model_cfg, embedding_dim=embedding_dim).to(device)
         if path is not None:
             sd = torch.load(path, map_location=device)
             new_sd = {}
@@ -199,8 +206,8 @@ class CriticModel(torch.nn.Module):
 
 
 class RewardModel(CriticModel):
-    def __init__(self, model, embedding_dim, transformer_name):
-        super().__init__(model, embedding_dim, transformer_name)
+    def __init__(self, model: PreTrainedModel, model_cfg: ModelConfig, embedding_dim: int):
+        super().__init__(model, model_cfg, embedding_dim)
         self.gain = torch.nn.Parameter(torch.tensor(1.0), requires_grad=True)
         self.bias = torch.nn.Parameter(torch.tensor(0.0), requires_grad=True)
         self._disable_bias_gain = False
