@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
-
+import warnings
 from hydra.core.config_store import ConfigStore
 from omegaconf import II, MISSING
 
@@ -45,8 +45,15 @@ class SummarizationConfig(DataConfig):
     _target_: str = "sheeprl.algos.rlhf.data.SummarizationData"
     name: str = "summarization"
     dataset_name: str = "CarperAI/openai_summarize_comparisons"
-    max_length: int = 384
-    max_prompt_length: int = 256
+    max_length: int = 512
+    max_prompt_length: int = 384
+
+    def __post_init__(self) -> None:
+        if self.remove_same_inputs:
+            warnings.warn("`remove_same_inputs` is set to True. This means only one example per duplicated " \
+                          "input will be kept. This may result in a smaller dataset than expected " \
+                          "because this dataset may contain many negative (rejected) examples from " \
+                          "the same (chosen) input.")
 
 
 @dataclass
