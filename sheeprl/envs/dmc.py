@@ -139,17 +139,14 @@ class DMCWrapper(gym.Wrapper):
         self._reward_range = (reward_space.low.item(), reward_space.high.item())
 
         # create observation space
+        # at least one between from_pixels and from_vectors is True
+        obs_space = {}
         if from_pixels:
             shape = (3, height, width) if channels_first else (height, width, 3)
-            image_observation_space = spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+            obs_space["rgb"] = spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
         if from_vectors:
-            vector_observation_space = _spec_to_box(self.env.observation_spec().values(), np.float64)
-        if from_vectors and from_pixels:
-            self._observation_space = spaces.Dict({"rgb": image_observation_space, "state": vector_observation_space})
-        elif from_vectors:
-            self._observation_space = vector_observation_space
-        else:
-            self._observation_space = image_observation_space
+            obs_space["state"] = _spec_to_box(self.env.observation_spec().values(), np.float64)
+        self._observation_space = spaces.Dict(obs_space)
 
         # state space
         self._state_space = _spec_to_box(self.env.observation_spec().values(), np.float64)
@@ -164,19 +161,18 @@ class DMCWrapper(gym.Wrapper):
     def __getattr__(self, name):
         return getattr(self.env, name)
 
-    def _get_obs(self, time_step) -> Union[Dict[str, np.ndarray], np.ndarray]:
+    def _get_obs(self, time_step) -> Dict[str, np.ndarray]:
+        obs = {}
+        # at least one between from_pixels and from_vectors is True
         if self._from_pixels:
             rgb_obs = self.render(camera_id=self._camera_id)
             if self._channels_first:
                 rgb_obs = rgb_obs.transpose(2, 0, 1).copy()
+            obs["rgb"] = rgb_obs
         if self._from_vectors:
             vec_obs = _flatten_obs(time_step.observation)
-        if self._from_vectors and self._from_pixels:
-            return {"rgb": rgb_obs, "state": vec_obs}
-        elif self._from_vectors:
-            return vec_obs
-        else:
-            return rgb_obs
+            obs["state"] = vec_obs
+        return obs
 
     def _convert_action(self, action) -> np.ndarray:
         action = action.astype(np.float64)
@@ -215,9 +211,7 @@ class DMCWrapper(gym.Wrapper):
     def step(
         self, action: Any
     ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], SupportsFloat, bool, bool, Dict[str, Any]]:
-        # assert self._norm_action_space.contains(action)
         action = self._convert_action(action)
-        # assert self._true_action_space.contains(action)
         time_step = self.env.step(action)
         reward = time_step.reward or 0.0
         done = time_step.last()
