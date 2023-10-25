@@ -2,7 +2,7 @@
 
 > **Warning**
 >
-> The `Categorical` PyTorch distribution does not work correctly when some probabilities are set to $0$ (the probs set to zero can be sampled anyway). This can cause some errors when filtering actions with the action masks provided by MineDojo. This error is sporadic, so, we are waiting that the issue is fixed by PyTorch.
+> The `Categorical` PyTorch distribution does not work correctly when some probabilities are set to $0$ (the probs set to zero can be sampled anyway). This can cause some errors when filtering actions with the action masks provided by MineDojo. This error is sporadic, so, we are waiting that the issue is fixed by PyTorch. One can track the issue here: https://github.com/pytorch/pytorch/issues/91863
 
 First you need to install the JDK 1.8, on Debian based systems you can run the following:
 
