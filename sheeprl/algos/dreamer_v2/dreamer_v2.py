@@ -634,15 +634,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Get the first environment observation and start the optimization
     episode_steps = [[] for _ in range(cfg.env.num_envs)]
     o = envs.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in obs_keys:
-            torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
-            if k in cfg.mlp_keys.encoder:
-                # Images stay uint8 to save space
-                torch_obs = torch_obs.float()
-            step_data[k] = torch_obs
-            obs[k] = torch_obs
+    obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
+    for k in obs_keys:
+        torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
+        if k in cfg.mlp_keys.encoder:
+            # Images stay uint8 to save space
+            torch_obs = torch_obs.float()
+        step_data[k] = torch_obs
+        obs[k] = torch_obs
     step_data["dones"] = torch.zeros(cfg.env.num_envs, 1)
     step_data["actions"] = torch.zeros(cfg.env.num_envs, sum(actions_dim))
     step_data["rewards"] = torch.zeros(cfg.env.num_envs, 1)
@@ -665,7 +664,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             if (
                 update <= learning_starts
                 and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.algo.actor.cls.lower()
+                and "minedojo" not in cfg.env.wrapper._target_.lower()
             ):
                 real_actions = actions = np.array(envs.action_space.sample())
                 if not is_continuous:
@@ -717,7 +716,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs: Dict[str, Tensor] = {}
+        next_obs: Dict[str, Tensor] = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             if k in obs_keys:
                 next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
