@@ -1,4 +1,3 @@
-import os
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import gymnasium as gym
@@ -15,6 +14,26 @@ from sheeprl.utils.env import make_env
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v1.agent import PlayerDV1
     from sheeprl.algos.dreamer_v2.agent import PlayerDV2
+
+
+AGGREGATOR_KEYS = {
+    "Rewards/rew_avg",
+    "Game/ep_len_avg",
+    "Loss/world_model_loss",
+    "Loss/value_loss",
+    "Loss/policy_loss",
+    "Loss/observation_loss",
+    "Loss/reward_loss",
+    "Loss/state_loss",
+    "Loss/continue_loss",
+    "State/post_entropy",
+    "State/prior_entropy",
+    "State/kl",
+    "Params/exploration_amout",
+    "Grads/world_model",
+    "Grads/actor",
+    "Grads/critic",
+}
 
 
 def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True, validate_args=False) -> Tensor:
@@ -85,21 +104,22 @@ def test(
     player: Union["PlayerDV2", "PlayerDV1"],
     fabric: Fabric,
     cfg: Dict[str, Any],
+    log_dir: str,
     test_name: str = "",
     sample_actions: bool = False,
 ):
     """Test the model on the environment with the frozen model.
 
     Args:
-        player (PlayerDV2): the agent which contains all the models needed to play.
+        player (PlayerDV2 | PlayerDV1): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
-        args (Union[DreamerV3Args, DreamerV2Args, DreamerV1Args]): the hyper-parameters.
-        cnn_keys (Sequence[str]): the keys encoded by the cnn encoder.
-        mlp_keys (Sequence[str]): the keys encoded by the mlp encoder.
+        cfg (Dict[str, Any]): the hyper-parameters.
+        log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
+        sample_actoins (bool): whether or not to sample actions.
+            Default to False.
     """
-    log_dir = fabric.logger.log_dir if len(fabric.loggers) > 0 else os.getcwd()
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
@@ -132,6 +152,6 @@ def test(
         done = done or truncated or cfg.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
-    if len(fabric.loggers) > 0:
+    if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
         fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()

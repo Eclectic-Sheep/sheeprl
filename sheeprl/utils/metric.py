@@ -20,10 +20,16 @@ class MetricAggregator:
         metrics (Optional[Dict[str, Metric]]): Dict of metrics to aggregate.
     """
 
-    def __init__(self, metrics: Optional[Dict[str, Metric]] = None):
+    disabled: bool = False
+
+    def __init__(self, metrics: Optional[Dict[str, Metric]] = None, raise_on_missing: bool = False):
         self.metrics: Dict[str, Metric] = {}
         if metrics is not None:
             self.metrics = metrics
+        self._raise_on_missing = raise_on_missing
+
+    def __iter__(self):
+        return iter(self.metrics.keys())
 
     def add(self, name: str, metric: Metric):
         """Add a metric to the aggregator
@@ -35,10 +41,16 @@ class MetricAggregator:
         Raises:
             MetricAggregatorException: If the metric already exists.
         """
-        if name not in self.metrics:
-            self.metrics.setdefault(name, metric)
-        else:
-            raise MetricAggregatorException(f"Metric {name} already exists")
+        if not self.disabled:
+            if name not in self.metrics:
+                self.metrics.setdefault(name, metric)
+            else:
+                if self._raise_on_missing:
+                    raise MetricAggregatorException(f"Metric {name} already exists")
+                else:
+                    warnings.warn(
+                        f"The key '{name}' is already in the metric aggregator. Nothing will be added.", UserWarning
+                    )
 
     @torch.no_grad()
     def update(self, name: str, value: Any) -> None:
@@ -51,32 +63,47 @@ class MetricAggregator:
         Raises:
             MetricAggregatorException: If the metric does not exist.
         """
-        if name not in self.metrics:
-            raise MetricAggregatorException(f"Metric {name} does not exist")
-        self.metrics[name].update(value)
+        if not self.disabled:
+            if name not in self.metrics:
+                if self._raise_on_missing:
+                    raise MetricAggregatorException(f"Metric {name} does not exist")
+                else:
+                    warnings.warn(
+                        f"The key '{name}' is missing from the metric aggregator. Nothing will be added.", UserWarning
+                    )
+            else:
+                self.metrics[name].update(value)
 
     def pop(self, name: str) -> None:
         """Remove a metric from the aggregator with the given name
         Args:
             name (str): Name of the metric
         """
-        if name not in self.metrics:
-            raise MetricAggregatorException(f"Metric {name} does not exist")
-        self.metrics.pop(name)
+        if not self.disabled:
+            if name not in self.metrics:
+                if self._raise_on_missing:
+                    raise MetricAggregatorException(f"Metric {name} does not exist")
+                else:
+                    warnings.warn(
+                        f"The key '{name}' is missing from the metric aggregator. Nothing will be popped.", UserWarning
+                    )
+            self.metrics.pop(name, None)
 
     def reset(self):
         """Reset all metrics to their initial state"""
-        for metric in self.metrics.values():
-            metric.reset()
+        if not self.disabled:
+            for metric in self.metrics.values():
+                metric.reset()
 
     def to(self, device: Union[str, torch.device] = "cpu") -> "MetricAggregator":
         """Move all metrics to the given device
         Args:
             device (Union[str, torch.device], optional): Device to move the metrics to. Defaults to "cpu".
         """
-        if self.metrics:
-            for k, v in self.metrics.items():
-                self.metrics[k] = v.to(device)
+        if not self.disabled:
+            if self.metrics:
+                for k, v in self.metrics.items():
+                    self.metrics[k] = v.to(device)
         return self
 
     @torch.no_grad()
@@ -86,32 +113,33 @@ class MetricAggregator:
             Reduced metrics
         """
         reduced_metrics = {}
-        if self.metrics:
-            for k, v in self.metrics.items():
-                reduced = v.compute()
-                is_tensor = torch.is_tensor(reduced)
-                if is_tensor and reduced.numel() == 1:
-                    reduced_metrics[k] = reduced.item()
-                else:
-                    if not is_tensor:
-                        warnings.warn(
-                            f"The reduced metric {k} is not a scalar tensor: type={type(reduced)}. "
-                            "This may create problems during the logging phase.",
-                            category=RuntimeWarning,
-                        )
+        if not self.disabled:
+            if self.metrics:
+                for k, v in self.metrics.items():
+                    reduced = v.compute()
+                    is_tensor = torch.is_tensor(reduced)
+                    if is_tensor and reduced.numel() == 1:
+                        reduced_metrics[k] = reduced.item()
                     else:
-                        warnings.warn(
-                            f"The reduced metric {k} is not a scalar: size={v.size()}. "
-                            "This may create problems during the logging phase.",
-                            category=RuntimeWarning,
-                        )
-                    reduced_metrics[k] = reduced
+                        if not is_tensor:
+                            warnings.warn(
+                                f"The reduced metric {k} is not a scalar tensor: type={type(reduced)}. "
+                                "This may create problems during the logging phase.",
+                                category=RuntimeWarning,
+                            )
+                        else:
+                            warnings.warn(
+                                f"The reduced metric {k} is not a scalar: size={v.size()}. "
+                                "This may create problems during the logging phase.",
+                                category=RuntimeWarning,
+                            )
+                        reduced_metrics[k] = reduced
 
-                is_tensor = torch.is_tensor(reduced_metrics[k])
-                if (is_tensor and torch.isnan(reduced_metrics[k]).any()) or (
-                    not is_tensor and isnan(reduced_metrics[k])
-                ):
-                    reduced_metrics.pop(k, None)
+                    is_tensor = torch.is_tensor(reduced_metrics[k])
+                    if (is_tensor and torch.isnan(reduced_metrics[k]).any()) or (
+                        not is_tensor and isnan(reduced_metrics[k])
+                    ):
+                        reduced_metrics.pop(k, None)
         return reduced_metrics
 
 
