@@ -5,15 +5,18 @@ import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
 
+from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
 from sheeprl.utils.env import make_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.sac_ae.agent import SACAEContinuousActor
 
+AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
+
 
 @torch.no_grad()
-def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any]):
-    env = make_env(cfg, cfg.seed, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
+def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+    env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys
     actor.eval()
@@ -52,7 +55,8 @@ def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, An
         if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
-    fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+    if cfg.metric.log_level > 0:
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
 
 
