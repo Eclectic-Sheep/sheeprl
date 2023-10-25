@@ -585,7 +585,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]
-    obs = {}
+    obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
     for k in obs_keys:
         torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
         if k in cfg.mlp_keys.encoder:
@@ -605,7 +605,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             # Sample an action given the observation received by the environment
-            if update <= learning_starts and cfg.checkpoint.resume_from is None and "minedojo" not in cfg.env.id:
+            if (
+                update <= learning_starts
+                and cfg.checkpoint.resume_from is None
+                and "minedojo" not in cfg.env.wrapper._target_.lower()
+            ):
                 real_actions = actions = np.array(envs.action_space.sample())
                 if not is_continuous:
                     actions = np.concatenate(
@@ -653,8 +657,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs = {}
-        for k in real_next_obs.keys():  # [N_envs, N_obs]
+        next_obs = {
+            k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")
+        }
+        for k in obs_keys:  # [N_envs, N_obs]
             next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
             step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.env.num_envs, *real_next_obs[k].shape[1:])
             if k in cfg.mlp_keys.encoder:
@@ -677,7 +683,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
-            for k in next_obs.keys():
+            for k in obs_keys:
                 reset_data[k] = next_obs[k][dones_idxes]
             reset_data["dones"] = torch.zeros(reset_envs, 1)
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim))

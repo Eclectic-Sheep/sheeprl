@@ -552,7 +552,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]
-    obs = {}
+    obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
     for k in obs_keys:
         torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
         if k in cfg.mlp_keys.encoder:
@@ -576,7 +576,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             if (
                 update <= learning_starts
                 and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.algo.actor.cls.lower()
+                and "minedojo" not in cfg.env.wrapper._target_.lower()
             ):
                 real_actions = actions = np.array(envs.action_space.sample())
                 if not is_continuous:
@@ -640,7 +640,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs: Dict[str, Tensor] = {}
+        next_obs: Dict[str, Tensor] = {
+            k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")
+        }
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             if k in obs_keys:
                 next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
@@ -661,11 +663,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
-            for k in real_next_obs.keys():
-                if k in obs_keys:
-                    reset_data[k] = real_next_obs[k][dones_idxes]
-                    if k in cfg.mlp_keys.encoder:
-                        reset_data[k] = reset_data[k].float()
+            for k in obs_keys:
+                reset_data[k] = real_next_obs[k][dones_idxes]
+                if k in cfg.mlp_keys.encoder:
+                    reset_data[k] = reset_data[k].float()
             reset_data["dones"] = torch.ones(reset_envs, 1).float()
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
             reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
