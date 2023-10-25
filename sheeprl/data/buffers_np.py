@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import shutil
 import typing
 import uuid
 from itertools import compress
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Type
+from typing import Dict, List, Optional, Sequence, Type
 
 import numpy as np
 import torch
@@ -1146,6 +1147,86 @@ class EpisodeBuffer:
         return {
             k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
         }
+
+
+class Trajectory(dict[str, np.ndarray]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __len__(self):
+        if len(self.keys()) == 0:
+            return 0
+        first_key = next(iter(self.keys()))
+        return self[first_key].shape[0]
+
+    def sample(self, position: int, chunk_len: int) -> Optional[np.ndarray]:
+        if len(self) < position + chunk_len:
+            return
+        samples = {k: v[position : position + chunk_len] for k, v in self.items()}
+        return samples
+
+
+class TrajectoryReplayBuffer:
+    def __init__(self, max_num_trajectories: int, memmap: bool = False):
+        self._buf: List[Trajectory] = []
+        self.max_num_trajectories = max_num_trajectories
+        # self._memmap = memmap
+
+    @property
+    def buffer(self):
+        return self._buf
+
+    def __len__(self):
+        return len(self._buf)
+
+    def __getitem__(self, index: int):
+        return self._buf[index]
+
+    def num_samples(self):
+        return sum(len(t) for t in self._buf)
+
+    def add(self, trajectory: Optional[Trajectory]):
+        if trajectory is None:
+            return
+        if not isinstance(trajectory, dict):
+            raise TypeError("Trajectory must be an instance of dict")
+        trajectory = Trajectory(trajectory)
+        # if self._memmap:
+        #     trajectory.memmap_()
+        self._buf.append(trajectory)
+        if len(self) > self.max_num_trajectories:
+            self._buf.pop(0)
+
+    def sample(self, batch_size: int, sequence_length: int) -> Trajectory:
+        """Sample a batch of trajectories of length `sequence_length`.
+
+        Args:
+            batch_size (int): Number of trajectories to sample
+            sequence_length (int): Length of the trajectories to sample
+
+        Returns:
+            LazyStackedTensorDict: the sampled trajectories with shape [batch_size, sequence_length, ...]
+        """
+        valid_trajectories: list[Trajectory] = [t for t in self.buffer if len(t) >= sequence_length]
+        if len(valid_trajectories) == 0:
+            raise RuntimeError("No trajectories of length {} found".format(sequence_length))
+
+        if "weights" not in valid_trajectories[0].keys():
+            trajectories = random.choices(valid_trajectories, k=batch_size)
+            positions = [random.randint(0, len(t) - sequence_length) for t in trajectories]
+
+        else:
+            weights = [t["weights"].mean() for t in valid_trajectories]
+            trajectories = random.choices(valid_trajectories, k=batch_size, weights=weights)
+            positions = [
+                random.choices(
+                    range(len(t) - sequence_length + 1), k=1, weights=t["weights"][: len(t) - sequence_length + 1]
+                )[0]
+                for t in trajectories
+            ]
+        all_samples = [t.sample(p, sequence_length) for t, p in zip(trajectories, positions)]
+        samples = {k: np.stack([s[k] for s in all_samples], axis=1) for k in all_samples[0].keys()}
+        return Trajectory(samples)
 
 
 def get_tensor(
