@@ -909,6 +909,7 @@ def build_models(
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=eval(world_model_cfg.representation_model.dense_act),
+        layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
@@ -920,6 +921,7 @@ def build_models(
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
         activation=eval(world_model_cfg.transition_model.dense_act),
+        layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
@@ -968,6 +970,7 @@ def build_models(
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
+        layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
         if world_model_cfg.reward_model.layer_norm
@@ -984,6 +987,7 @@ def build_models(
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=eval(world_model_cfg.discount_model.dense_act),
+        layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
         if world_model_cfg.discount_model.layer_norm
@@ -1021,6 +1025,7 @@ def build_models(
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=eval(critic_cfg.dense_act),
+        layer_args={"bias": not critic_cfg.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
