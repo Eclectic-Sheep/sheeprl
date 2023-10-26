@@ -182,6 +182,8 @@ def test_ppo(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
+        "cnn_keys.encoder=[rgb]",
+        "mlp_keys.encoder=[]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -207,6 +209,8 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
+        "cnn_keys.encoder=[rgb]",
+        "mlp_keys.encoder=[]",
     ]
 
     with mock.patch.object(sys, "argv", args):

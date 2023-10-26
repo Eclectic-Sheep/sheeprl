@@ -29,4 +29,3 @@ metric:
 
 mlp_keys:
   encoder: [state]
-  decoder: [state]
