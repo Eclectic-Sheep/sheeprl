@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - ppo
+  - override /env: gym
+  - _self_
+
+dry_run: True
+
+fabric:
+  devices: 1
+  strategy:
+    _target_: lightning.fabric.strategies.dp.DataParallelStrategy
+    parallel_devices: 1
+    accelerator: "cpu"
+    precision: "32-true"

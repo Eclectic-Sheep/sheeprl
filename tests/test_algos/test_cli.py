@@ -3,8 +3,12 @@ import shutil
 import subprocess
 import sys
 import warnings
+from unittest import mock
 
 import pytest
+
+from sheeprl import ROOT_DIR
+from sheeprl.cli import run
 
 
 def test_fsdp_strategy_fail():
@@ -13,6 +17,36 @@ def test_fsdp_strategy_fail():
             sys.executable + " sheeprl.py exp=ppo fabric.strategy=fsdp",
             shell=True,
             check=True,
+        )
+
+
+def test_strategy_instance_fail():
+    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_strategy_instance"]
+    with pytest.raises(
+        ValueError,
+        match=r"\w+ is currently not supported. "
+        r"Please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`",
+    ):
+        with mock.patch.object(sys, "argv", args):
+            run()
+
+
+def test_auto_strategy_warning():
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=ppo",
+        "fabric.strategy=auto",
+        "fabric.devices=1",
+        "dry_run=True",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        with pytest.warns(UserWarning) as record:
+            run()
+        assert len(record) >= 1
+        assert (
+            record[0].message.args[0] == "The 'auto' strategy is unsafe. If you run into any problems, "
+            "please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`"
         )
 
 
