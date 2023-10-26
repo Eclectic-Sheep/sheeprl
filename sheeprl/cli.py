@@ -31,8 +31,7 @@ def run_algorithm(cfg: DictConfig):
             "`python sheeprl.py fabric.strategy=...`"
         )
 
-    if cfg.metric.log_level > 0:
-        print_config(cfg)
+    print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
 
     # Given the algorithm's name, retrieve the module where
@@ -93,11 +92,14 @@ def run_algorithm(cfg: DictConfig):
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
 
-    timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
-    keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - utils.AGGREGATOR_KEYS
-    for k in keys_to_remove:
-        cfg.metric.aggregator.metrics.pop(k, None)
-    MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
+    if "rlhf" in algo_name:
+        cfg.metric = dotdict({"log_level": 1})
+    else:
+        timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
+        keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - utils.AGGREGATOR_KEYS
+        for k in keys_to_remove:
+            cfg.metric.aggregator.metrics.pop(k, None)
+        MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
     fabric.launch(command, cfg)
 
 
