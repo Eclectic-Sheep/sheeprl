@@ -21,7 +21,7 @@ class DiambraWrapper(gym.Wrapper):
     def __init__(
         self,
         id: str,
-        action_space: str = "discrete",
+        action_space: str = "diambra.arena.SpaceTypes.DISCRETE",
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
         repeat_action: int = 1,
@@ -41,6 +41,7 @@ class DiambraWrapper(gym.Wrapper):
             warnings.warn("The DIAMBRA n_players setting is disabled")
 
         role = diambra_settings.pop("role", None)
+        self._action_type = "discrete" if "diambra.arena.SpaceTypes.DISCRETE" == action_space else "multi-discrete"
         settings = EnvironmentSettings(
             **diambra_settings,
             **{
@@ -117,6 +118,9 @@ class DiambraWrapper(gym.Wrapper):
         }
 
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        if self._action_type == "discrete" and isinstance(action, np.ndarray):
+            action = action.squeeze()
+            action = action.item()
         obs, reward, done, truncated, infos = self.env.step(action)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done or infos.get("env_done", False), truncated, infos
