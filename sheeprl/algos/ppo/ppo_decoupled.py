@@ -24,7 +24,6 @@ from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
@@ -369,11 +368,12 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(
-        strategy=DDPStrategy(process_group=optimization_pg),
-        devices=cfg.fabric.devices,
-        callbacks=[CheckpointCallback()],
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
     )
+    fabric.launch()
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -591,6 +591,8 @@ def trainer(
 
 @register_algorithm(decoupled=True)
 def main(fabric: Fabric, cfg: Dict[str, Any]):
+    print("RANK:", fabric.global_rank)
+    print("WORLD_SIZE:", fabric.world_size)
     if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "

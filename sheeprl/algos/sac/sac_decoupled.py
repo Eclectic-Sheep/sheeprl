@@ -24,7 +24,6 @@ from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
@@ -327,11 +326,12 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(
-        strategy=DDPStrategy(process_group=optimization_pg),
-        devices=cfg.fabric.devices,
-        callbacks=[CheckpointCallback()],
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
     )
+    fabric.launch()
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
