@@ -130,7 +130,3 @@ class DiambraWrapper(gym.Wrapper):
         obs, infos = self.env.reset(seed=seed, options=options)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), infos
-
-    def close(self) -> None:
-        self.env.close()
-        super().close()

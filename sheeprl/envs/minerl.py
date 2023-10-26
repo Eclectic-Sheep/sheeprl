@@ -319,7 +319,3 @@ class MineRLWrapper(gym.Wrapper):
 
     def render(self, mode: Optional[str] = "rgb_array"):
         return self.env.render(self.render_mode)
-
-    def close(self):
-        self.env.close()
-        return super().close()
