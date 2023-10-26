@@ -55,7 +55,7 @@ class CasualModel(torch.nn.Module):
         freeze: bool = False,
     ):
         model = load_hf_transformer(model_cfg)
-        model = cls(model=model, model_cfg=model_cfg).to(device)
+        model = cls(model=model, model_cfg=model_cfg)
         if path is not None:
             sd = torch.load(path, map_location=device)
             if model_cfg.finetune_mode == FINETUNE_MODE.LAST_LAYER:

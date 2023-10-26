@@ -38,7 +38,7 @@ from sheeprl.utils.registry import register_algorithm
 __all__ = ["main"]
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def generate(
     agent: PPOAgent,
     tokenizer: PreTrainedTokenizer,
@@ -46,7 +46,6 @@ def generate(
     example_prompt: Dict[str, torch.Tensor],
     device: torch.device,
 ):
-    agent.actor.eval()
     generated_input_ids = agent.actor.module.generate(
         input_ids=example_prompt["input_ids"].to(device),
         attention_mask=example_prompt["attention_mask"].to(device),
@@ -60,7 +59,6 @@ def generate(
     action_mask = (generated_input_ids != generation_config.pad_token_id).int()[:, prompt_length:]
     last_token_idx = torch.argmax(torch.cumsum(action_mask, dim=1) * action_mask, dim=1, keepdim=True)
     reward_score = torch.gather(reward, dim=-1, index=last_token_idx).squeeze(-1)
-    agent.actor.train()
     return tokenizer.decode(generated_input_ids[0], skip_special_tokens=True), reward_score.item()
 
 
@@ -265,6 +263,8 @@ def main(fabric: L.Fabric, cfg: Dict):
             metrics.info_kl_coeff.update(kl_controller.value)
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
+            agent.actor.eval()
+            agent.critic.eval()
             if fabric.is_global_zero:
                 gen_text, score = generate(
                     agent=agent,

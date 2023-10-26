@@ -40,9 +40,8 @@ from sheeprl.utils.registry import register_algorithm
 register_configs()
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def evaluate(model: RewardModel, val_dataloader: DataLoader, loss: Callable, pad_token_id: int, eval_iters: int):
-    model.eval()
     eval_counter = 0
     average_acc = 0
     average_loss = 0
@@ -64,7 +63,6 @@ def evaluate(model: RewardModel, val_dataloader: DataLoader, loss: Callable, pad
             break
     average_acc /= eval_counter
     average_loss /= eval_counter
-    model.train()
     return (
         average_loss,
         average_acc,
@@ -157,6 +155,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     iterator = tqdm(range(num_training_steps), disable=not fabric.is_global_zero)
     data_iterator = iter(train_dataloader)
     for k in iterator:
+        model.train()
         # Setup counters and data
         if k % len(train_dataloader) == 0 or data_iterator is None:
             data_iterator = iter(train_dataloader)
@@ -208,6 +207,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             metrics.train_acc.update(train_acc)
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
+            model.eval()
             val_loss, val_acc = evaluate(
                 model=model,
                 val_dataloader=val_dataloader,

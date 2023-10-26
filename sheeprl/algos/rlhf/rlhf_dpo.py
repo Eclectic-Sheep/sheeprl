@@ -38,15 +38,13 @@ from sheeprl.utils.registry import register_algorithm
 __all__ = ["main"]
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def evaluate(
     agent: DPOAgent,
     algo_cfg: DPOAlgoConfig,
     data_cfg: DataConfig,
     val_dataloader: DataLoader,
 ) -> float:
-    agent.actor.eval()
-    agent.reference.eval()
     eval_counter = 0
     total_loss = 0.0
     total_acc = 0.0
@@ -72,11 +70,10 @@ def evaluate(
             break
     average_loss = total_loss / eval_counter
     average_acc = total_acc / eval_counter
-    agent.actor.train()
     return average_loss, average_acc
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def generate(
     model: CasualModel,
     tokenizer: PreTrainedTokenizer,
@@ -84,14 +81,12 @@ def generate(
     example_prompt: Dict[str, torch.Tensor],
     device: torch.device,
 ) -> str:
-    model.eval()
     generated = model.generate(
         input_ids=example_prompt["input_ids"].to(device),
         attention_mask=example_prompt["attention_mask"].to(device),
         generation_config=generation_config,
     )
     generated_text = tokenizer.decode(generated[0])
-    model.train()
     return generated_text
 
 
@@ -179,8 +174,8 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
 
     data_iterator = iter(train_dataloader)
     agent.reference.eval()
-    agent.actor.train()
     for k in iterator:
+        agent.actor.train()
         # Setup counters and data
         if k % len(train_dataloader) == 0:
             data_iterator = iter(train_dataloader)
@@ -228,6 +223,8 @@ def main(fabric: L.Fabric, cfg: Dict[str, Any]):
             metrics.train_acc.update(train_acc)
 
         if k > 0 and (k % algo_cfg.eval_interval == 0 or last_step):
+            agent.actor.eval()
+            agent.reference.eval()
             val_loss, val_acc = evaluate(
                 agent=agent,
                 algo_cfg=algo_cfg,
