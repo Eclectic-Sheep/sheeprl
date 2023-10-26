@@ -5,7 +5,6 @@ import time
 import warnings
 
 import hydra
-import torch
 from lightning import Fabric
 from lightning.fabric.accelerators.tpu import TPUAccelerator
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
