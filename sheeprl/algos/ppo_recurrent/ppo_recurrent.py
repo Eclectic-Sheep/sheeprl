@@ -147,11 +147,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
     logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
