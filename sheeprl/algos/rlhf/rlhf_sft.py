@@ -134,7 +134,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         model = CasualModel.from_checkpoint(device=fabric.device, model_cfg=model_cfg, freeze=True)
     setup_finetuning(fabric, model, model_cfg=model_cfg)
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
-
+    model = fabric.setup_module(model)
+    
     # Setup Generation Config
     generation_config = prepare_generation_config(
         tokenizer=tokenizer,
@@ -159,10 +160,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         warmup_steps=algo_cfg.lr_warmup_steps,
         lr_decay_steps=num_training_steps,
     )
-    model, optimizer = fabric.setup(model, optimizer)
+    optimizer = fabric.setup_optimizers(optimizer)
     model.eval()
     gen_text = generate(
-        model=model,
+        model=model.module,
         tokenizer=tokenizer,
         generation_config=generation_config,
         example_prompt=example_prompt,
