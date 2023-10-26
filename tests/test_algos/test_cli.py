@@ -24,8 +24,8 @@ def test_strategy_instance_fail():
     args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_strategy_instance"]
     with pytest.raises(
         ValueError,
-        match=r"\w+ is currently not supported. "
-        r"Please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`",
+        match=r"\w+ is currently not supported. Please launch the script with a 'DDP' strategy with "
+        r"'python sheeprl.py fabric.strategy=ddp' or the 'auto' one with 'python sheeprl.py fabric.strategy=auto'",
     ):
         with mock.patch.object(sys, "argv", args):
             run()
