@@ -557,15 +557,49 @@ class PlayerDV3(nn.Module):
             expl_actions = [self.actions]
         else:
             expl_actions = []
-            for act in actions:
+            functional_action = actions[0].argmax(dim=-1)
+            for i, act in enumerate(actions):
+                logits = torch.zeros_like(act)
+                # Exploratory action must respect the constraints of the environment
+                if mask is not None:
+                    if i == 0:
+                        logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
+                    elif i == 1:
+                        mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
+                        for t in range(functional_action.shape[0]):
+                            for b in range(functional_action.shape[1]):
+                                sampled_action = functional_action[t, b].item()
+                                if sampled_action == 15:  # Craft action
+                                    logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
+                    elif i == 2:
+                        mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                        mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
+                        for t in range(functional_action.shape[0]):
+                            for b in range(functional_action.shape[1]):
+                                sampled_action = functional_action[t, b].item()
+                                if sampled_action in {16, 17}:  # Equip/Place action
+                                    logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
+                                elif sampled_action == 18:  # Destroy action
+                                    logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
                 sample = (
                     OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
                     .sample()
                     .to(self.device)
                 )
+                expl_amount = self.expl_amount
+                # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
+                # to satisfy the constraints of the environment
+                if (
+                    i in {1, 2}
+                    and actions[0].argmax() != expl_actions[0].argmax()
+                    and expl_actions[0].argmax().item() in {15, 16, 17, 18}
+                ):
+                    expl_amount = 2
                 expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
+                    torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act)
                 )
+                if mask is not None and i == 0:
+                    functional_action = expl_actions[0].argmax(dim=-1)
             self.actions = torch.cat(expl_actions, -1)
         return tuple(expl_actions)
 
@@ -757,9 +791,10 @@ class MinedojoActor(Actor):
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 1024,
-        dense_act: nn.Module = nn.SiLU,
+        activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
         layer_norm: bool = True,
+        unimix: float = 0.01,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -769,9 +804,10 @@ class MinedojoActor(Actor):
             init_std=init_std,
             min_std=min_std,
             dense_units=dense_units,
-            dense_act=dense_act,
+            activation=activation,
             mlp_layers=mlp_layers,
             layer_norm=layer_norm,
+            unimix=unimix,
         )
 
     def forward(
@@ -789,7 +825,7 @@ class MinedojoActor(Actor):
             The distribution of the actions
         """
         out: Tensor = self.model(state)
-        actions_logits: List[Tensor] = [head(out) for head in self.mlp_heads]
+        actions_logits: List[Tensor] = [self._uniform_mix(head(out)) for head in self.mlp_heads]
         actions_dist: List[Distribution] = []
         actions: List[Tensor] = []
         functional_action = None
@@ -806,12 +842,12 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
                     mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                    mask["mask_equip/place"] = mask["mask_equip/place"].expand_as(logits)
+                    mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
                             sampled_action = functional_action[t, b].item()
                             if sampled_action in (16, 17):  # Equip/Place action
-                                logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
+                                logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(
@@ -909,6 +945,7 @@ def build_models(
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=eval(world_model_cfg.representation_model.dense_act),
+        layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
@@ -920,6 +957,7 @@ def build_models(
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
         activation=eval(world_model_cfg.transition_model.dense_act),
+        layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
@@ -968,6 +1006,7 @@ def build_models(
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
+        layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
         if world_model_cfg.reward_model.layer_norm
@@ -984,6 +1023,7 @@ def build_models(
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=eval(world_model_cfg.discount_model.dense_act),
+        layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
         if world_model_cfg.discount_model.layer_norm
@@ -1021,6 +1061,7 @@ def build_models(
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=eval(critic_cfg.dense_act),
+        layer_args={"bias": not critic_cfg.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]

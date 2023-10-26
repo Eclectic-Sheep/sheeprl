@@ -4,6 +4,19 @@
   <img src="./assets/images/logo.svg" style="width:40%">
 </p>
 
+<div align="center">
+  <table>
+    <tr>
+      <td><img src="https://github.com/Eclectic-Sheep/sheeprl/assets/18405289/6efd09f0-df91-4da0-971d-92e0213b8835" width="200px"></td>
+      <td><img src="https://github.com/Eclectic-Sheep/sheeprl/assets/18405289/dbba57db-6ef5-4db4-9c53-d7b5f303033a" width="200px"></td>
+    </tr>
+    <tr>
+      <td><img src="https://github.com/Eclectic-Sheep/sheeprl/assets/18405289/3f38e5eb-aadd-4402-a698-695d1f99c048" width="200px"></td>
+      <td><img src="https://github.com/Eclectic-Sheep/sheeprl/assets/18405289/93749119-fe61-44f1-94bb-fdb89c1869b5" width="200px"></td>
+    </tr>
+  </table>
+</div>
+
 ## What
 
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
@@ -171,12 +184,12 @@ That's all it takes to train an agent with SheepRL! 🎉
 >
 > Before you start using the SheepRL framework, it is **highly recommended** that you read the following instructional documents:
 > 
-> 1. How to [run experiments](./howto/run_experiments.md)
-> 2. How to [modify the default configs](./howto/configs.md)
-> 3. How to [work with steps](./howto/work_with_steps.md)
-> 4. How to [select observations](./howto/select_observations.md)
+> 1. How to [run experiments](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/run_experiments.md)
+> 2. How to [modify the default configs](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/configs.md)
+> 3. How to [work with steps](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/work_with_steps.md)
+> 4. How to [select observations](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md)
 >
-> Moreover, there are other useful documents in the [`howto` folder](./howto/), which containes some guidance on how to properly use the framework.
+> Moreover, there are other useful documents in the [`howto` folder](https://github.com/Eclectic-Sheep/sheeprl/tree/main/howto), which containes some guidance on how to properly use the framework.
 
 ### :chart_with_upwards_trend: Check your results
 

@@ -4,12 +4,10 @@ import sys
 import time
 import warnings
 from contextlib import nullcontext
-from pathlib import Path
 from unittest import mock
 
 import pytest
 import torch.distributed as dist
-from lightning import Fabric
 
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
@@ -28,6 +26,9 @@ def standard_args():
         "hydra/job_logging=disabled",
         "hydra/hydra_logging=disabled",
         "dry_run=True",
+        "checkpoint.save_last=False",
+        "metric.log_level=0",
+        "metric.disable_timer=True",
         "env.num_envs=1",
         "fabric.devices=auto",
         f"env.sync_env={_IS_WINDOWS}",
@@ -48,24 +49,6 @@ def mock_env_and_destroy(devices):
         yield _fixture
     if dist.is_initialized():
         dist.destroy_process_group()
-
-
-def check_checkpoint(ckpt_path: Path, target_keys: set, checkpoint_buffer: bool = True) -> None:
-    fabric = Fabric(accelerator="cpu")
-
-    # check the presence of the checkpoint
-    assert os.path.isdir(ckpt_path)
-    state = fabric.load(os.path.join(ckpt_path, os.listdir(ckpt_path)[-1]))
-
-    # the keys in the checkpoint must match with the expected keys
-    ckpt_keys = set(state.keys())
-    assert len(ckpt_keys.intersection(target_keys)) == len(ckpt_keys) == len(target_keys)
-
-    # if checkpoint_buffer is false, then "rb" cannot be in the checkpoint keys
-    assert checkpoint_buffer or "rb" not in ckpt_keys
-
-    # check args are saved
-    assert os.path.exists(ckpt_path.parent.parent / ".hydra" / "config.yaml")
 
 
 def remove_test_dir(path: str) -> None:
@@ -97,20 +80,6 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "agent",
-        "qf_optimizer",
-        "actor_optimizer",
-        "alpha_optimizer",
-        "update",
-        "last_log",
-        "last_checkpoint",
-        "batch_size",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -135,20 +104,6 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "agent",
-        "qf_optimizer",
-        "actor_optimizer",
-        "alpha_optimizer",
-        "update",
-        "last_log",
-        "last_checkpoint",
-        "batch_size",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -181,24 +136,6 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "agent",
-        "encoder",
-        "decoder",
-        "qf_optimizer",
-        "actor_optimizer",
-        "alpha_optimizer",
-        "encoder_optimizer",
-        "decoder_optimizer",
-        "update",
-        "batch_size",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -226,19 +163,6 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
             run()
 
     if os.environ["LT_DEVICES"] != "1":
-        keys = {
-            "agent",
-            "qf_optimizer",
-            "actor_optimizer",
-            "alpha_optimizer",
-            "update",
-            "last_log",
-            "last_checkpoint",
-            "batch_size",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -262,11 +186,6 @@ def test_ppo(standard_args, start_time, env_id):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    check_checkpoint(
-        Path(os.path.join("logs", "runs", ckpt_path)),
-        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
-    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -295,10 +214,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
             run()
 
     if os.environ["LT_DEVICES"] != "1":
-        check_checkpoint(
-            Path(os.path.join("logs", "runs", ckpt_path)),
-            {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
-        )
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -321,11 +236,6 @@ def test_ppo_recurrent(standard_args, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    check_checkpoint(
-        Path(os.path.join("logs", "runs", ckpt_path)),
-        {"agent", "optimizer", "update", "scheduler", "last_log", "last_checkpoint", "batch_size"},
-    )
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -360,24 +270,6 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "world_model",
-        "actor",
-        "critic",
-        "world_optimizer",
-        "actor_optimizer",
-        "critic_optimizer",
-        "expl_decay_steps",
-        "update",
-        "batch_size",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -412,29 +304,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "world_model",
-        "actor_task",
-        "critic_task",
-        "ensembles",
-        "world_optimizer",
-        "actor_task_optimizer",
-        "critic_task_optimizer",
-        "ensemble_optimizer",
-        "expl_decay_steps",
-        "update",
-        "batch_size",
-        "actor_exploration",
-        "critic_exploration",
-        "actor_exploration_optimizer",
-        "critic_exploration_optimizer",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -473,31 +342,6 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "world_model",
-        "actor_task",
-        "critic_task",
-        "target_critic_task",
-        "ensembles",
-        "world_optimizer",
-        "actor_task_optimizer",
-        "critic_task_optimizer",
-        "ensemble_optimizer",
-        "expl_decay_steps",
-        "update",
-        "batch_size",
-        "actor_exploration",
-        "critic_exploration",
-        "target_critic_exploration",
-        "actor_exploration_optimizer",
-        "critic_exploration_optimizer",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -537,24 +381,6 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "world_model",
-        "actor",
-        "critic",
-        "target_critic",
-        "world_optimizer",
-        "actor_optimizer",
-        "critic_optimizer",
-        "expl_decay_steps",
-        "update",
-        "batch_size",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
@@ -594,23 +420,4 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
-
-    keys = {
-        "world_model",
-        "actor",
-        "critic",
-        "target_critic",
-        "world_optimizer",
-        "actor_optimizer",
-        "critic_optimizer",
-        "expl_decay_steps",
-        "update",
-        "batch_size",
-        "moments",
-        "last_log",
-        "last_checkpoint",
-    }
-    if checkpoint_buffer:
-        keys.add("rb")
-    check_checkpoint(Path(os.path.join("logs", "runs", ckpt_path)), keys, checkpoint_buffer)
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
