@@ -285,7 +285,3 @@ class MineDojoWrapper(gym.Wrapper):
             "location_stats": copy.deepcopy(self._pos),
             "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
-
-    def close(self):
-        self.env.close()
-        return super().close()
