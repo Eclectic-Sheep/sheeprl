@@ -99,10 +99,8 @@ def check_configs(cfg: Dict[str, Any]):
     strategy = cfg.fabric.strategy
     if isinstance(strategy, str):
         strategy = strategy.lower()
-        if (
-            strategy != "auto"
-            and strategy in STRATEGY_REGISTRY.available_strategies()
-            and not strategy.lower().startswith("ddp")
+        if strategy != "auto" and not (
+            strategy in STRATEGY_REGISTRY.available_strategies() and strategy.startswith("ddp")
         ):
             raise ValueError(
                 f"{strategy} is currently not supported. Please launch the script with a DDP strategy: "
@@ -114,14 +112,18 @@ def check_configs(cfg: Dict[str, Any]):
                 "please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`",
                 UserWarning,
             )
-    elif "_target_" in strategy and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy):
-        if not issubclass(strategy, (SingleDeviceStrategy, DDPStrategy)) or issubclass(
-            strategy, SingleDeviceXLAStrategy
-        ):
-            raise ValueError(
-                f"{strategy.__qualname__} is currently not supported. Please launch the script with a DDP strategy: "
-                "`python sheeprl.py fabric.strategy=ddp`"
-            )
+    elif (
+        "_target_" in strategy
+        and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy)
+        and (
+            not issubclass(strategy, (SingleDeviceStrategy, DDPStrategy))
+            or issubclass(strategy, SingleDeviceXLAStrategy)
+        )
+    ):
+        raise ValueError(
+            f"{strategy.__qualname__} is currently not supported. Please launch the script with a 'DDP' strategy with "
+            "'python sheeprl.py fabric.strategy=ddp' or the 'auto' one with 'python sheeprl.py fabric.strategy=auto'"
+        )
     else:
         raise TypeError(
             f"The strategy must be a string or a `lightning.fabric.strategies.Strategy` instance, found {strategy}"
