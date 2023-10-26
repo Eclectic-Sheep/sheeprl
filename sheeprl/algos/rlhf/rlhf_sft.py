@@ -135,7 +135,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     setup_finetuning(fabric, model, model_cfg=model_cfg)
     trainable_parameter_summary(model, show_names=False, fabric=fabric)
     model = fabric.setup_module(model)
-    
+
     # Setup Generation Config
     generation_config = prepare_generation_config(
         tokenizer=tokenizer,
