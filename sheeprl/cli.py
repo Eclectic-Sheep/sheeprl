@@ -18,9 +18,12 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
-def run(cfg: DictConfig):
-    """SheepRL zero-code command line utility."""
+def run_algorithm(cfg: DictConfig):
+    """Run the algorithm specified in the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration.
+    """
     if cfg.fabric.strategy == "fsdp":
         raise ValueError(
             "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
@@ -29,7 +32,7 @@ def run(cfg: DictConfig):
 
     if cfg.metric.log_level > 0:
         print_config(cfg)
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -95,3 +98,18 @@ def run(cfg: DictConfig):
         cfg.metric.aggregator.metrics.pop(k, None)
     MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
     fabric.launch(command, cfg)
+
+
+def check_configs(cfg: DictConfig):
+    """Check the validity of the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration to check.
+    """
+
+
+@hydra.main(version_base="1.13", config_path="configs", config_name="config")
+def run(cfg: DictConfig):
+    """SheepRL zero-code command line utility."""
+    check_configs(cfg)
+    run_algorithm(cfg)
