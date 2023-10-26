@@ -3,37 +3,32 @@ import importlib
 import os
 import time
 import warnings
+from typing import Any, Dict
 
 import hydra
 from lightning import Fabric
-from lightning.fabric.accelerators.tpu import TPUAccelerator
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
-from lightning.fabric.strategies.ddp import DDPStrategy
+from lightning.fabric.strategies import (
+    STRATEGY_REGISTRY,
+    DDPStrategy,
+    SingleDeviceStrategy,
+    SingleDeviceXLAStrategy,
+    Strategy,
+)
 from omegaconf import DictConfig, OmegaConf
 
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import tasks
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
 
-def run_algorithm(cfg: DictConfig):
+def run_algorithm(cfg: Dict[str, Any]):
     """Run the algorithm specified in the configuration.
 
     Args:
-        cfg (DictConfig): the loaded configuration.
+        cfg (Dict[str, Any]): the loaded configuration.
     """
-    if cfg.fabric.strategy == "fsdp":
-        raise ValueError(
-            "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
-            "`python sheeprl.py fabric.strategy=...`"
-        )
-
-    if cfg.metric.log_level > 0:
-        print_config(cfg)
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
-
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
     # `register_algorithm`-decorated entrypoint;
@@ -72,25 +67,20 @@ def run_algorithm(cfg: DictConfig):
         if cfg.metric.log_level > 0:
             logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
             logger.log_hyperparams(cfg)
-        fabric = Fabric(**cfg.fabric, loggers=logger, callbacks=[CheckpointCallback()])
+        fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
+        fabric._loggers = fabric._loggers.extend([logger]) if logger is not None else fabric._loggers
     else:
         if "sac_ae" in module:
             strategy = cfg.fabric.strategy
-            is_tpu_available = TPUAccelerator.is_available()
             if strategy is not None:
                 warnings.warn(
                     "You are running the SAC-AE algorithm you have specified a strategy different than `ddp`: "
                     f"`python sheeprl.py fabric.strategy={strategy}`. This algorithm is run with the "
-                    "`lightning.fabric.strategies.DDPStrategy` strategy, unless a TPU is available."
+                    "`lightning.fabric.strategies.DDPStrategy` strategy."
                 )
-            if is_tpu_available:
-                strategy = "auto"
-            else:
-                strategy = DDPStrategy(find_unused_parameters=True)
-            cfg.fabric.pop("strategy", None)
-            fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
-        else:
-            fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
+            strategy = DDPStrategy(find_unused_parameters=True)
+            cfg.fabric.strategy = strategy
+        fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
 
     timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
     keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - utils.AGGREGATOR_KEYS
@@ -100,16 +90,49 @@ def run_algorithm(cfg: DictConfig):
     fabric.launch(command, cfg)
 
 
-def check_configs(cfg: DictConfig):
+def check_configs(cfg: Dict[str, Any]):
     """Check the validity of the configuration.
 
     Args:
-        cfg (DictConfig): the loaded configuration to check.
+        cfg (Dict[str, Any]): the loaded configuration to check.
     """
+    strategy = cfg.fabric.strategy
+    if isinstance(strategy, str):
+        strategy = strategy.lower()
+        if (
+            strategy != "auto"
+            and strategy in STRATEGY_REGISTRY.available_strategies()
+            and not strategy.lower().startswith("ddp")
+        ):
+            raise ValueError(
+                f"{strategy} is currently not supported. Please launch the script with a DDP strategy: "
+                "`python sheeprl.py fabric.strategy=ddp`"
+            )
+        elif strategy == "auto":
+            warnings.warn(
+                "The 'auto' strategy is unsafe. If you run into any problems, "
+                "please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`",
+                UserWarning,
+            )
+    elif "_target_" in strategy and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy):
+        if not issubclass(strategy, (SingleDeviceStrategy, DDPStrategy)) or issubclass(
+            strategy, SingleDeviceXLAStrategy
+        ):
+            raise ValueError(
+                f"{strategy.__qualname__} is currently not supported. Please launch the script with a DDP strategy: "
+                "`python sheeprl.py fabric.strategy=ddp`"
+            )
+    else:
+        raise TypeError(
+            f"The strategy must be a string or a `lightning.fabric.strategies.Strategy` instance, found {strategy}"
+        )
 
 
 @hydra.main(version_base="1.13", config_path="configs", config_name="config")
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
+    if cfg.metric.log_level > 0:
+        print_config(cfg)
+    cfg = dotdict(OmegaConf.to_object(cfg))
     check_configs(cfg)
     run_algorithm(cfg)
