@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import os
 import pathlib
@@ -17,14 +19,14 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
-from torchmetrics import MeanMetric, SumMetric
+from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger
+from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -38,7 +40,7 @@ def train(
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
     data: TensorDictBase,
-    aggregator: MetricAggregator,
+    aggregator: MetricAggregator | None,
     update: int,
     cfg: Dict[str, Any],
     policy_steps_per_update: int,
@@ -53,7 +55,6 @@ def train(
     qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
-    aggregator.update("Loss/value_loss", qf_loss)
 
     # Update the target networks with EMA
     if update % (cfg.algo.critic.target_network_frequency // policy_steps_per_update + 1) == 0:
@@ -67,7 +68,6 @@ def train(
     actor_optimizer.zero_grad(set_to_none=True)
     fabric.backward(actor_loss)
     actor_optimizer.step()
-    aggregator.update("Loss/policy_loss", actor_loss)
 
     # Update the entropy value
     alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
@@ -75,7 +75,11 @@ def train(
     fabric.backward(alpha_loss)
     agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
     alpha_optimizer.step()
-    aggregator.update("Loss/alpha_loss", alpha_loss)
+
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/value_loss", qf_loss)
+        aggregator.update("Loss/policy_loss", actor_loss)
+        aggregator.update("Loss/alpha_loss", alpha_loss)
 
 
 @register_algorithm()
@@ -112,8 +116,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg)
-    if fabric.is_global_zero:
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    logger = create_tensorboard_logger(fabric, cfg)
+    if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
 
@@ -125,7 +130,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,
-                logger.log_dir if rank == 0 else None,
+                log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
@@ -146,6 +151,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "Only environments with vector-only observations are supported by the SAC agent. "
                 f"Provided environment: {cfg.env.id}"
             )
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
     # Define the agent and the optimizer and setup sthem with Fabric
     act_dim = prod(action_space.shape)
@@ -182,15 +189,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Create a metric aggregator to log the metrics
-    aggregator = MetricAggregator(
-        {
-            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/alpha_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-        }
-    ).to(device)
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 1
@@ -225,7 +226,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         learning_starts += start_step
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
@@ -263,13 +264,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             dones = np.logical_or(dones, truncated)
 
-        if "final_info" in infos:
+        if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
                 if agent_ep_info is not None:
                     ep_rew = agent_ep_info["episode"]["r"]
                     ep_len = agent_ep_info["episode"]["l"]
-                    aggregator.update("Rewards/rew_avg", ep_rew)
-                    aggregator.update("Game/ep_len_avg", ep_len)
+                    if aggregator and not aggregator.disabled:
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
@@ -348,38 +350,38 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 train_step += world_size
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
             # Sync distributed metrics
-            metrics_dict = aggregator.compute()
-            fabric.log_dict(metrics_dict, policy_step)
-            aggregator.reset()
+            if aggregator and not aggregator.disabled:
+                metrics_dict = aggregator.compute()
+                fabric.log_dict(metrics_dict, policy_step)
+                aggregator.reset()
 
             # Sync distributed timers
-            timer_metrics = timer.compute()
-            if "Time/train_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_train",
-                    (train_step - last_train) / timer_metrics["Time/train_time"],
-                    policy_step,
-                )
-            if "Time/env_interaction_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_env_interaction",
-                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                    / timer_metrics["Time/env_interaction_time"],
-                    policy_step,
-                )
-            timer.reset()
+            if not timer.disabled:
+                timer_metrics = timer.compute()
+                if "Time/train_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_train",
+                        (train_step - last_train) / timer_metrics["Time/train_time"],
+                        policy_step,
+                    )
+                if "Time/env_interaction_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_env_interaction",
+                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        / timer_metrics["Time/env_interaction_time"],
+                        policy_step,
+                    )
+                timer.reset()
 
             # Reset counters
             last_log = policy_step
             last_train = train_step
 
         # Checkpoint model
-        if (
-            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
-            or cfg.dry_run
-            or update == num_updates
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
+            update == num_updates and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {
@@ -403,4 +405,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero:
-        test(agent.actor.module, fabric, cfg)
+        test(agent.actor.module, fabric, cfg, log_dir)
