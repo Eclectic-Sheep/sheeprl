@@ -591,8 +591,6 @@ def trainer(
 
 @register_algorithm(decoupled=True)
 def main(fabric: Fabric, cfg: Dict[str, Any]):
-    print("RANK:", fabric.global_rank)
-    print("WORLD_SIZE:", fabric.world_size)
     if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
