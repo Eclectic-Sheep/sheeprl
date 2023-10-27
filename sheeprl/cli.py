@@ -102,17 +102,11 @@ def check_configs(cfg: Dict[str, Any]):
     if decoupled:
         if isinstance(strategy, str):
             strategy = strategy.lower()
-            if strategy != "auto" and not (strategy in available_strategies and "ddp" in strategy):
+            if not (strategy in available_strategies and "ddp" in strategy):
                 raise ValueError(
                     f"{strategy} is currently not supported for decoupled algorithm. "
                     "Please launch the script with a DDP strategy: "
                     "'python sheeprl.py fabric.strategy=ddp'"
-                )
-            elif strategy == "auto":
-                warnings.warn(
-                    "The 'auto' strategy is unsafe for decoupled algorithms. If you run into any problems, "
-                    "please launch the script with a DDP strategy: 'python sheeprl.py fabric.strategy=ddp'",
-                    UserWarning,
                 )
         elif (
             "_target_" in strategy
@@ -121,8 +115,7 @@ def check_configs(cfg: Dict[str, Any]):
         ):
             raise ValueError(
                 f"{strategy.__qualname__} is currently not supported for decoupled algorithms. "
-                "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' or "
-                "the 'auto' one with 'python sheeprl.py fabric.strategy=auto'"
+                "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp'"
             )
     else:
         if isinstance(strategy, str):

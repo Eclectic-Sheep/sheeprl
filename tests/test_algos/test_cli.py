@@ -53,13 +53,12 @@ def test_dp_strategy_instance_warning():
         )
 
 
-def test_strategy_instance_fail():
+def test_decoupled_strategy_instance_fail():
     args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_decoupled_strategy_instance"]
     with pytest.raises(
         ValueError,
         match=r"\w+ is currently not supported for decoupled algorithms. "
-        "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' or "
-        "the 'auto' one with 'python sheeprl.py fabric.strategy=auto'",
+        "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp'",
     ):
         with mock.patch.object(sys, "argv", args):
             run()
