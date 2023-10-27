@@ -124,7 +124,7 @@ markers = ["benchmark: mark test as a benchmark"]
 
 # Pytest coverage
 [tool.coverage.run]
-omit = []
+omit = ["./sheeprl/envs/*"]
 
 [tool.prettier]
 tab_width = 2
