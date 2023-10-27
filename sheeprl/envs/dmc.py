@@ -232,7 +232,3 @@ class DMCWrapper(gym.Wrapper):
 
     def render(self, camera_id: Optional[int] = None) -> np.ndarray:
         return self.env.physics.render(height=self._height, width=self._width, camera_id=camera_id or self._camera_id)
-
-    def close(self):
-        self.env.close()
-        return super().close()
