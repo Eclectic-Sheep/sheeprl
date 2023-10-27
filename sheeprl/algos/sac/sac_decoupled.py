@@ -91,6 +91,7 @@ def player(
         fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -431,7 +432,14 @@ def trainer(
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
             return
         data = make_tensordict(data, device=device)
         sampler = BatchSampler(range(len(data)), batch_size=cfg.per_rank_batch_size, drop_last=False)
@@ -497,7 +505,14 @@ def trainer(
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
 
         # Update counters
         update += 1

@@ -62,7 +62,8 @@ def run_algorithm(cfg: Dict[str, Any]):
             logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
             logger.log_hyperparams(cfg)
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
-        fabric._loggers = fabric._loggers.extend([logger]) if logger is not None else fabric._loggers
+        if logger is not None:
+            fabric._loggers.extend([logger])
     else:
         if "sac_ae" in module:
             strategy = cfg.fabric.strategy
