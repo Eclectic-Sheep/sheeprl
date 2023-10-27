@@ -77,13 +77,13 @@ def main(cfg: DictConfig) -> None:
     fabric.print(f"Fabric Rank: {fabric.global_rank}")
     fabric.print(f"Evaluation Experiment: {experiment_dir}")
 
-    model = CasualModel.from_checkpoint(
-        device=fabric.device,
-        model_cfg=ckpt_model_cfg,
-        path=checkpoint_path,
-        freeze=True,
-    )
-    model.to(fabric.device)
+    with fabric.init_module(empty_init=ckpt_model_cfg.fabric_empty_init):
+        model = CasualModel.from_checkpoint(
+            device=fabric.device,
+            model_cfg=ckpt_model_cfg,
+            path=checkpoint_path,
+            freeze=True,
+        )
     model.eval()
     fabric.print("Model loaded")
 
