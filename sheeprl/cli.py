@@ -1,6 +1,7 @@
 import datetime
 import importlib
 import os
+import pathlib
 import time
 import warnings
 
@@ -13,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.registry import tasks
+from sheeprl.utils.registry import evaluation_registry, tasks
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
@@ -100,6 +101,57 @@ def run_algorithm(cfg: DictConfig):
     fabric.launch(command, cfg)
 
 
+def eval_algorithm(cfg: DictConfig):
+    """Run the algorithm specified in the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration.
+    """
+    if cfg.checkpoint_path is None:
+        raise ValueError("You must specify the evaluation checkpoint path")
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+    capture_video = cfg.env.capture_video
+
+    fabric = Fabric(**cfg.fabric, devices=1)
+
+    state = fabric.load(cfg.checkpoint_path)
+    ckpt_path = pathlib.Path(cfg.checkpoint_path)
+    cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
+    cfg.run_name = str(
+        os.path.join(
+            os.path.basename(ckpt_path.parent.parent.parent), os.path.basename(ckpt_path.parent.parent), "evaluation"
+        )
+    )
+    cfg.checkpoint_path = str(ckpt_path)
+    cfg.env.num_envs = 1
+    cfg.env.capture_video = capture_video
+
+    # Given the algorithm's name, retrieve the module where
+    # 'cfg.algo.name'.py is contained; from there retrieve the
+    # `register_algorithm`-decorated entrypoint;
+    # the entrypoint will be launched by Fabric with `fabric.launch(entrypoint)`
+    module = None
+    entrypoint = None
+    algo_name = cfg.algo.name.replace("_decoupled", "")
+    for _module, _algos in evaluation_registry.items():
+        for _algo in _algos:
+            if algo_name == _algo["name"]:
+                module = _module
+                entrypoint = _algo["entrypoint"]
+                break
+    if module is None:
+        raise RuntimeError(f"Given the algorithm named `{algo_name}`, no module has been found to be imported.")
+    if entrypoint is None:
+        raise RuntimeError(
+            f"Given the module and algorithm named `{module}` and `{algo_name}` respectively, "
+            "no entrypoint has been found to be imported."
+        )
+    task = importlib.import_module(f"{module}.evaluate")
+    command = task.__dict__[entrypoint]
+
+    fabric.launch(command, cfg, state)
+
+
 def check_configs(cfg: DictConfig):
     """Check the validity of the configuration.
 
@@ -113,3 +165,8 @@ def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
     check_configs(cfg)
     run_algorithm(cfg)
+
+
+@hydra.main(version_base="1.13", config_path="configs", config_name="eval_config")
+def evaluation(cfg: DictConfig):
+    eval_algorithm(cfg)

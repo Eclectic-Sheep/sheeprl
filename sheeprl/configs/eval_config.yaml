@@ -1,0 +1,17 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: logs/runs/
+
+fabric:
+  accelerator: cpu
+
+env:
+  capture_video: True
+
+checkpoint_path: ???
