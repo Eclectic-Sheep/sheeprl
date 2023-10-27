@@ -107,8 +107,6 @@ def eval_algorithm(cfg: DictConfig):
     Args:
         cfg (DictConfig): the loaded configuration.
     """
-    if cfg.checkpoint_path is None:
-        raise ValueError("You must specify the evaluation checkpoint path")
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     capture_video = cfg.env.capture_video
 
@@ -160,6 +158,11 @@ def check_configs(cfg: DictConfig):
     """
 
 
+def check_configs_evaluation(cfg: DictConfig):
+    if cfg.checkpoint_path is None:
+        raise ValueError("You must specify the evaluation checkpoint path")
+
+
 @hydra.main(version_base="1.13", config_path="configs", config_name="config")
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
@@ -169,4 +172,5 @@ def run(cfg: DictConfig):
 
 @hydra.main(version_base="1.13", config_path="configs", config_name="eval_config")
 def evaluation(cfg: DictConfig):
+    check_configs_evaluation(cfg)
     eval_algorithm(cfg)
