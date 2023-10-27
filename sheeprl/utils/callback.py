@@ -87,5 +87,6 @@ class CheckpointCallback:
     def on_checkpoint_trainer(
         self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
     ):
-        player_trainer_collective.broadcast_object_list([state], src=1)
+        if fabric.global_rank == 1:
+            player_trainer_collective.broadcast_object_list([state], src=1)
         fabric.save(ckpt_path, state)

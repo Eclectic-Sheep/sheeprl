@@ -446,7 +446,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and (cfg.checkpoint.save_last):
+            if cfg.checkpoint.save_last:
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -582,24 +582,23 @@ def trainer(
         # Checkpoint model on rank-0: send it everything
         if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
-            if global_rank == 1:
-                state = {
-                    "agent": agent.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                    "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
-                    "last_log": last_log,
-                    "last_checkpoint": last_checkpoint,
-                }
-                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
-                fabric.call(
-                    "on_checkpoint_trainer",
-                    fabric=fabric,
-                    player_trainer_collective=player_trainer_collective,
-                    ckpt_path=ckpt_path,
-                    state=state,
-                )
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                "update": update,
+                "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
+            }
+            ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            fabric.call(
+                "on_checkpoint_trainer",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                state=state,
+            )
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
