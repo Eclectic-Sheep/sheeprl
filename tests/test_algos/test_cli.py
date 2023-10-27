@@ -18,7 +18,7 @@ def test_dp_strategy_str_warning():
         "fabric.strategy=dp",
         "fabric.devices=1",
         "dry_run=True",
-        "algo.rollout_steps=4",
+        "algo.rollout_steps=1",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -38,7 +38,7 @@ def test_dp_strategy_instance_warning():
         os.path.join(ROOT_DIR, "__main__.py"),
         "exp=test_decoupled_strategy_instance",
         "algo=ppo",
-        "algo.rollout_steps=4",
+        "algo.rollout_steps=1",
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -71,8 +71,8 @@ def test_auto_strategy_warning():
         "fabric.strategy=auto",
         "fabric.devices=1",
         "dry_run=True",
+        "algo.rollout_steps=1",
     ]
-
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
             run()
