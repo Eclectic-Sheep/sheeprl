@@ -8,13 +8,7 @@ from typing import Any, Dict
 import hydra
 from lightning import Fabric
 from lightning.fabric.loggers.tensorboard import TensorBoardLogger
-from lightning.fabric.strategies import (
-    STRATEGY_REGISTRY,
-    DDPStrategy,
-    SingleDeviceStrategy,
-    SingleDeviceXLAStrategy,
-    Strategy,
-)
+from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.metric import MetricAggregator
@@ -31,8 +25,8 @@ def run_algorithm(cfg: Dict[str, Any]):
     """
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
-    # `register_algorithm`-decorated entrypoint;
-    # the entrypoint will be launched by Fabric with `fabric.launch(entrypoint)`
+    # 'register_algorithm'-decorated entrypoint;
+    # the entrypoint will be launched by Fabric with 'fabric.launch(entrypoint)'
     module = None
     decoupled = False
     entrypoint = None
@@ -45,10 +39,10 @@ def run_algorithm(cfg: Dict[str, Any]):
                 decoupled = _algo["decoupled"]
                 break
     if module is None:
-        raise RuntimeError(f"Given the algorithm named `{algo_name}`, no module has been found to be imported.")
+        raise RuntimeError(f"Given the algorithm named '{algo_name}', no module has been found to be imported.")
     if entrypoint is None:
         raise RuntimeError(
-            f"Given the module and algorithm named `{module}` and `{algo_name}` respectively, "
+            f"Given the module and algorithm named '{module}' and '{algo_name}' respectively, "
             "no entrypoint has been found to be imported."
         )
     task = importlib.import_module(f"{module}.{algo_name}")
@@ -74,9 +68,9 @@ def run_algorithm(cfg: Dict[str, Any]):
             strategy = cfg.fabric.strategy
             if strategy is not None:
                 warnings.warn(
-                    "You are running the SAC-AE algorithm you have specified a strategy different than `ddp`: "
-                    f"`python sheeprl.py fabric.strategy={strategy}`. This algorithm is run with the "
-                    "`lightning.fabric.strategies.DDPStrategy` strategy."
+                    "You are running the SAC-AE algorithm you have specified a strategy different than 'ddp': "
+                    f"'python sheeprl.py fabric.strategy={strategy}'. This algorithm is run with the "
+                    "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
             strategy = DDPStrategy(find_unused_parameters=True)
             cfg.fabric.strategy = strategy
@@ -96,38 +90,64 @@ def check_configs(cfg: Dict[str, Any]):
     Args:
         cfg (Dict[str, Any]): the loaded configuration to check.
     """
+    decoupled = False
+    algo_name = cfg.algo.name
+    for _, _algos in tasks.items():
+        for _algo in _algos:
+            if algo_name == _algo["name"]:
+                decoupled = _algo["decoupled"]
+                break
     strategy = cfg.fabric.strategy
-    if isinstance(strategy, str):
-        strategy = strategy.lower()
-        if strategy != "auto" and not (
-            strategy in STRATEGY_REGISTRY.available_strategies() and strategy.startswith("ddp")
+    available_strategies = STRATEGY_REGISTRY.available_strategies()
+    if decoupled:
+        if isinstance(strategy, str):
+            strategy = strategy.lower()
+            if strategy != "auto" and not (strategy in available_strategies and "ddp" in strategy):
+                raise ValueError(
+                    f"{strategy} is currently not supported for decoupled algorithm. "
+                    "Please launch the script with a DDP strategy: "
+                    "'python sheeprl.py fabric.strategy=ddp'"
+                )
+            elif strategy == "auto":
+                warnings.warn(
+                    "The 'auto' strategy is unsafe for decoupled algorithms. If you run into any problems, "
+                    "please launch the script with a DDP strategy: 'python sheeprl.py fabric.strategy=ddp'",
+                    UserWarning,
+                )
+        elif (
+            "_target_" in strategy
+            and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy)
+            and not issubclass(strategy, DDPStrategy)
         ):
             raise ValueError(
-                f"{strategy} is currently not supported. Please launch the script with a DDP strategy: "
-                "`python sheeprl.py fabric.strategy=ddp`"
+                f"{strategy.__qualname__} is currently not supported for decoupled algorithms. "
+                "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' or "
+                "the 'auto' one with 'python sheeprl.py fabric.strategy=auto'"
             )
-        elif strategy == "auto":
+    else:
+        if isinstance(strategy, str):
+            strategy = strategy.lower()
+            if not (strategy in available_strategies and "ddp" in strategy):
+                warnings.warn(
+                    f"Running an algorithm with a strategy ({strategy}) "
+                    "different than 'auto' or 'dpp' can cause unexpected problems. "
+                    "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
+                    "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems.",
+                    UserWarning,
+                )
+        elif (
+            "_target_" in strategy
+            and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy)
+            and not issubclass(strategy, (DDPStrategy, SingleDeviceStrategy))
+        ):
             warnings.warn(
-                "The 'auto' strategy is unsafe. If you run into any problems, "
-                "please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`",
+                f"Running an algorithm with a strategy ({strategy.__qualname__}) "
+                "different than 'SingleDeviceStrategy' or 'DDPStrategy' can cause unexpected problems. "
+                "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
+                "or with a single device with 'python sheeprl.py fabric.strategy=auto fabric.devices=1' "
+                "if you run into any problems.",
                 UserWarning,
             )
-    elif (
-        "_target_" in strategy
-        and issubclass((strategy := hydra.utils.get_class(strategy._target_)), Strategy)
-        and (
-            not issubclass(strategy, (SingleDeviceStrategy, DDPStrategy))
-            or issubclass(strategy, SingleDeviceXLAStrategy)
-        )
-    ):
-        raise ValueError(
-            f"{strategy.__qualname__} is currently not supported. Please launch the script with a 'DDP' strategy with "
-            "'python sheeprl.py fabric.strategy=ddp' or the 'auto' one with 'python sheeprl.py fabric.strategy=auto'"
-        )
-    else:
-        raise TypeError(
-            f"The strategy must be a string or a `lightning.fabric.strategies.Strategy` instance, found {strategy}"
-        )
 
 
 @hydra.main(version_base="1.13", config_path="configs", config_name="config")
@@ -135,6 +155,6 @@ def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
     if cfg.metric.log_level > 0:
         print_config(cfg)
-    cfg = dotdict(OmegaConf.to_object(cfg))
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     check_configs(cfg)
     run_algorithm(cfg)

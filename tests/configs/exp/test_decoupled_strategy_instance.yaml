@@ -1,7 +1,7 @@
 # @package _global_
 
 defaults:
-  - ppo
+  - ppo_decoupled
   - override /env: gym
   - _self_
 
@@ -9,8 +9,9 @@ dry_run: True
 
 fabric:
   devices: 1
+  accelerator: "cpu"
   strategy:
     _target_: lightning.fabric.strategies.dp.DataParallelStrategy
-    parallel_devices: 1
-    accelerator: "cpu"
-    precision: "32-true"
+
+algo:
+  rollout_steps: 4

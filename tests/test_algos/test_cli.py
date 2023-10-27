@@ -11,21 +11,55 @@ from sheeprl import ROOT_DIR
 from sheeprl.cli import run
 
 
-def test_fsdp_strategy_fail():
-    with pytest.raises(subprocess.CalledProcessError):
-        subprocess.run(
-            sys.executable + " sheeprl.py exp=ppo fabric.strategy=fsdp",
-            shell=True,
-            check=True,
+def test_dp_strategy_str_warning():
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=ppo",
+        "fabric.strategy=dp",
+        "fabric.devices=1",
+        "dry_run=True",
+        "algo.rollout_steps=4",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        with pytest.warns(UserWarning) as record:
+            run()
+        assert len(record) >= 1
+        assert (
+            record[0].message.args[0] == "Running an algorithm with a strategy (dp) different "
+            "than 'auto' or 'dpp' can cause unexpected problems. "
+            "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
+            "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
+        )
+
+
+def test_dp_strategy_instance_warning():
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=test_decoupled_strategy_instance",
+        "algo=ppo",
+        "algo.rollout_steps=4",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        with pytest.warns(UserWarning) as record:
+            run()
+        assert len(record) >= 1
+        assert (
+            record[0].message.args[0] == "Running an algorithm with a strategy (DataParallelStrategy) "
+            "different than 'SingleDeviceStrategy' or 'DDPStrategy' can cause unexpected problems. "
+            "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
+            "or with a single device with 'python sheeprl.py fabric.strategy=auto fabric.devices=1' "
+            "if you run into any problems."
         )
 
 
 def test_strategy_instance_fail():
-    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_strategy_instance"]
+    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_decoupled_strategy_instance"]
     with pytest.raises(
         ValueError,
-        match=r"\w+ is currently not supported. Please launch the script with a 'DDP' strategy with "
-        r"'python sheeprl.py fabric.strategy=ddp' or the 'auto' one with 'python sheeprl.py fabric.strategy=auto'",
+        match=r"\w+ is currently not supported for decoupled algorithms. "
+        "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' or "
+        "the 'auto' one with 'python sheeprl.py fabric.strategy=auto'",
     ):
         with mock.patch.object(sys, "argv", args):
             run()
@@ -45,8 +79,10 @@ def test_auto_strategy_warning():
             run()
         assert len(record) >= 1
         assert (
-            record[0].message.args[0] == "The 'auto' strategy is unsafe. If you run into any problems, "
-            "please launch the script with a DDP strategy: `python sheeprl.py fabric.strategy=ddp`"
+            record[0].message.args[0] == "Running an algorithm with a strategy (auto) "
+            "different than 'auto' or 'dpp' can cause unexpected problems. "
+            "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
+            "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
         )
 
 
