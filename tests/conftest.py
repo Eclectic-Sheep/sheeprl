@@ -6,12 +6,8 @@ import pytest
 import torch.distributed
 from unittest import mock
 
-
-@pytest.fixture(autouse=True)
-def mock_rlhf_modules():
-    with mock.patch("sheeprl.algos.rlhf") as _fixture:
-        yield _fixture
-
+def pytest_configure(config):
+    os.environ["SHEEPRL_TEST"] = "1"
 
 @pytest.fixture(autouse=True)
 def preserve_global_rank_variable():

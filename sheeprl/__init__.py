@@ -1,17 +1,17 @@
-import os
 
-ROOT_DIR = os.path.dirname(__file__)
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
 
-# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+ROOT_DIR = os.path.dirname(__file__)
+
+
 import numpy as np
 
 from sheeprl.algos.dreamer_v1 import dreamer_v1 as dreamer_v1
@@ -31,6 +31,7 @@ from sheeprl.algos.sac import sac as sac
 from sheeprl.algos.sac import sac_decoupled as sac_decoupled
 from sheeprl.algos.sac_ae import sac_ae as sac_ae
 
+# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
 np.float = np.float32
 np.int = np.int64
 np.bool = bool
