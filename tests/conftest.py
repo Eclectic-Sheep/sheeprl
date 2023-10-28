@@ -1,10 +1,10 @@
 """Adapted from: https://github.com/Lightning-AI/lightning/blob/master/tests/tests_fabric/conftest.py"""
 
 import os
+from unittest import mock
 
 import pytest
 import torch.distributed
-from unittest import mock
 
 
 @pytest.fixture(autouse=True)
