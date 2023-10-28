@@ -8,7 +8,9 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.utilities.cloud_io import _is_dir, get_filesystem
 
 
-def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any], override_log_level: bool = False) -> Tuple[Optional[TensorBoardLogger]]:
+def create_tensorboard_logger(
+    fabric: Fabric, cfg: Dict[str, Any], override_log_level: bool = False
+) -> Tuple[Optional[TensorBoardLogger]]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.
