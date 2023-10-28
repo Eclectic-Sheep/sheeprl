@@ -4,6 +4,13 @@ import os
 
 import pytest
 import torch.distributed
+from unittest import mock
+
+
+@pytest.fixture(autouse=True)
+def mock_rlhf_modules():
+    with mock.patch("sheeprl.algos.rlhf") as _fixture:
+        yield _fixture
 
 
 @pytest.fixture(autouse=True)
