@@ -4,10 +4,11 @@ import os
 
 import pytest
 import torch.distributed
-from unittest import mock
+
 
 def pytest_configure(config):
     os.environ["SHEEPRL_TEST"] = "1"
+
 
 @pytest.fixture(autouse=True)
 def preserve_global_rank_variable():
