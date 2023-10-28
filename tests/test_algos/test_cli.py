@@ -72,11 +72,11 @@ def test_decoupled_strategy_instance_fail():
             run()
 
 
-def test_auto_strategy_warning():
+def test_strategy_warning():
     args = [
         os.path.join(ROOT_DIR, "__main__.py"),
         "exp=ppo",
-        "fabric.strategy=auto",
+        "fabric.strategy=dp",
         "fabric.devices=1",
         "dry_run=True",
         "algo.rollout_steps=1",
@@ -86,7 +86,7 @@ def test_auto_strategy_warning():
             run()
         assert len(record) >= 1
         assert (
-            record[0].message.args[0] == "Running an algorithm with a strategy (auto) "
+            record[0].message.args[0] == "Running an algorithm with a strategy (dp) "
             "different than 'auto' or 'dpp' can cause unexpected problems. "
             "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
             "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
