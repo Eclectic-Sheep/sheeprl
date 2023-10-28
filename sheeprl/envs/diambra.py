@@ -14,15 +14,14 @@ import diambra.arena
 import gymnasium as gym
 import numpy as np
 from diambra.arena import EnvironmentSettings, WrappersSettings
-from gymnasium import core
 from gymnasium.core import RenderFrame
 
 
-class DiambraWrapper(core.Env):
+class DiambraWrapper(gym.Wrapper):
     def __init__(
         self,
         id: str,
-        action_space: str = "discrete",
+        action_space: str = "diambra.arena.SpaceTypes.DISCRETE",
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
         repeat_action: int = 1,
@@ -33,8 +32,6 @@ class DiambraWrapper(core.Env):
         log_level: int = 0,
         increase_performance: bool = True,
     ) -> None:
-        super().__init__()
-
         if isinstance(screen_size, int):
             screen_size = (screen_size,) * 2
 
@@ -44,6 +41,7 @@ class DiambraWrapper(core.Env):
             warnings.warn("The DIAMBRA n_players setting is disabled")
 
         role = diambra_settings.pop("role", None)
+        self._action_type = "discrete" if "diambra.arena.SpaceTypes.DISCRETE" == action_space else "multi-discrete"
         settings = EnvironmentSettings(
             **diambra_settings,
             **{
@@ -79,34 +77,39 @@ class DiambraWrapper(core.Env):
             settings.frame_shape = screen_size + (int(grayscale),)
         else:
             wrappers.frame_shape = screen_size + (int(grayscale),)
-        self._env = diambra.arena.make(id, settings, wrappers, rank=rank, render_mode=render_mode, log_level=log_level)
+        env = diambra.arena.make(id, settings, wrappers, rank=rank, render_mode=render_mode, log_level=log_level)
+        super().__init__(env)
 
         # Observation and action space
-        self.action_space = self._env.action_space
+        self.action_space = self.env.action_space
         obs = {}
-        for k in self._env.observation_space.spaces.keys():
-            if isinstance(self._env.observation_space[k], gym.spaces.Discrete):
+        for k in self.env.observation_space.spaces.keys():
+            if isinstance(self.env.observation_space[k], gym.spaces.Discrete):
                 low = 0
-                high = self._env.observation_space[k].n - 1
+                high = self.env.observation_space[k].n - 1
                 shape = (1,)
                 dtype = np.int32
-            elif isinstance(self._env.observation_space[k], gym.spaces.MultiDiscrete):
-                low = np.zeros_like(self._env.observation_space[k].nvec)
-                high = self._env.observation_space[k].nvec - 1
+            elif isinstance(self.env.observation_space[k], gym.spaces.MultiDiscrete):
+                low = np.zeros_like(self.env.observation_space[k].nvec)
+                high = self.env.observation_space[k].nvec - 1
                 shape = (len(high),)
                 dtype = np.int32
-            elif not isinstance(self._env.observation_space[k], gym.spaces.Box):
-                raise RuntimeError(f"Invalid observation space, got: {type(self._env.observation_space[k])}")
+            elif not isinstance(self.env.observation_space[k], gym.spaces.Box):
+                raise RuntimeError(f"Invalid observation space, got: {type(self.env.observation_space[k])}")
             obs[k] = (
-                self._env.observation_space[k]
-                if isinstance(self._env.observation_space[k], gym.spaces.Box)
+                self.env.observation_space[k]
+                if isinstance(self.env.observation_space[k], gym.spaces.Box)
                 else gym.spaces.Box(low, high, shape, dtype)
             )
         self.observation_space = gym.spaces.Dict(obs)
-        self.render_mode = render_mode
+        self._render_mode = render_mode
+
+    @property
+    def render_mode(self) -> str | None:
+        return self._render_mode
 
     def __getattr__(self, name):
-        return getattr(self._env, name)
+        return getattr(self.env, name)
 
     def _convert_obs(self, obs: Dict[str, Union[int, np.ndarray]]) -> Dict[str, np.ndarray]:
         return {
@@ -115,20 +118,19 @@ class DiambraWrapper(core.Env):
         }
 
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, truncated, infos = self._env.step(action)
+        if self._action_type == "discrete" and isinstance(action, np.ndarray):
+            action = action.squeeze()
+            action = action.item()
+        obs, reward, done, truncated, infos = self.env.step(action)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), reward, done or infos.get("env_done", False), truncated, infos
 
     def render(self, mode: str = "rgb_array", **kwargs) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
-        return self._env.render()
+        return self.env.render()
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
-        obs, infos = self._env.reset(seed=seed, options=options)
+        obs, infos = self.env.reset(seed=seed, options=options)
         infos["env_domain"] = "DIAMBRA"
         return self._convert_obs(obs), infos
-
-    def close(self) -> None:
-        self._env.close()
-        super().close()

@@ -12,20 +12,27 @@ from lightning.fabric.strategies.ddp import DDPStrategy
 from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import tasks
+from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
-def run(cfg: DictConfig):
-    """SheepRL zero-code command line utility."""
+def run_algorithm(cfg: DictConfig):
+    """Run the algorithm specified in the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration.
+    """
     if cfg.fabric.strategy == "fsdp":
         raise ValueError(
             "FSDPStrategy is currently not supported. Please launch the script with another strategy: "
             "`python sheeprl.py fabric.strategy=...`"
         )
-    print_config(cfg)
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+
+    if cfg.metric.log_level > 0:
+        print_config(cfg)
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -50,6 +57,7 @@ def run(cfg: DictConfig):
             "no entrypoint has been found to be imported."
         )
     task = importlib.import_module(f"{module}.{algo_name}")
+    utils = importlib.import_module(f"{module}.utils")
     command = task.__dict__[entrypoint]
     if decoupled:
         root_dir = (
@@ -60,8 +68,10 @@ def run(cfg: DictConfig):
         run_name = (
             cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
         )
-        logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-        logger.log_hyperparams(cfg)
+        logger = None
+        if cfg.metric.log_level > 0:
+            logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
+            logger.log_hyperparams(cfg)
         fabric = Fabric(**cfg.fabric, loggers=logger, callbacks=[CheckpointCallback()])
     else:
         if "sac_ae" in module:
@@ -81,4 +91,25 @@ def run(cfg: DictConfig):
             fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
+
+    timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
+    keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - utils.AGGREGATOR_KEYS
+    for k in keys_to_remove:
+        cfg.metric.aggregator.metrics.pop(k, None)
+    MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
     fabric.launch(command, cfg)
+
+
+def check_configs(cfg: DictConfig):
+    """Check the validity of the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration to check.
+    """
+
+
+@hydra.main(version_base="1.13", config_path="configs", config_name="config")
+def run(cfg: DictConfig):
+    """SheepRL zero-code command line utility."""
+    check_configs(cfg)
+    run_algorithm(cfg)

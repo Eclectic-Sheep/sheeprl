@@ -1,6 +1,7 @@
 [virtualenvs]
 create = true
 in-project = true
+
 [build-system]
 requires = ["setuptools >= 61.0.0", "swig==4.*"]
 build-backend = "setuptools.build_meta"
@@ -39,7 +40,8 @@ dynamic = ["version"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["sheeprl", "sheeprl.*"]
+include = ["sheeprl", "sheeprl.*", "hydra_plugins"]
+exclude = ["tests*", "build*", "dist*", "notebooks*"]
 
 [project.scripts]
 sheeprl = "sheeprl.cli:run"
@@ -124,7 +126,7 @@ markers = ["benchmark: mark test as a benchmark"]
 
 # Pytest coverage
 [tool.coverage.run]
-omit = []
+omit = ["./sheeprl/envs/*", "./sheeprl/available_agents.py"]
 
 [tool.prettier]
 tab_width = 2

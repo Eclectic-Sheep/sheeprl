@@ -5,6 +5,25 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
+AGGREGATOR_KEYS = {
+    "Rewards/rew_avg",
+    "Game/ep_len_avg",
+    "Loss/world_model_loss",
+    "Loss/value_loss",
+    "Loss/policy_loss",
+    "Loss/observation_loss",
+    "Loss/reward_loss",
+    "Loss/state_loss",
+    "Loss/continue_loss",
+    "State/post_entropy",
+    "State/prior_entropy",
+    "State/kl",
+    "Params/exploration_amout",
+    "Grads/world_model",
+    "Grads/actor",
+    "Grads/critic",
+}
+
 
 def compute_lambda_values(
     rewards: Tensor,

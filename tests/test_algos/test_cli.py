@@ -19,8 +19,9 @@ def test_fsdp_strategy_fail():
 def test_run_decoupled_algo():
     subprocess.run(
         sys.executable + " sheeprl.py exp=ppo_decoupled fabric.strategy=ddp fabric.devices=2 "
-        "exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
-        "env.capture_video=False",
+        "dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
+        "env.capture_video=False checkpoint.save_last=False metric.log_level=0 "
+        "metric.disable_timer=True",
         shell=True,
         check=True,
     )
@@ -30,7 +31,8 @@ def test_run_algo():
     subprocess.run(
         sys.executable
         + " sheeprl.py exp=ppo dry_run=True algo.rollout_steps=1 cnn_keys.encoder=[rgb] mlp_keys.encoder=[state] "
-        "env.capture_video=False",
+        "env.capture_video=False checkpoint.save_last=False metric.log_level=0 "
+        "metric.disable_timer=True",
         shell=True,
         check=True,
     )
@@ -40,16 +42,16 @@ def test_resume_from_checkpoint():
     root_dir = "pytest_test_ckpt"
     run_name = "test_ckpt"
     subprocess.run(
-        sys.executable
-        + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
-        + "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
-        + "cnn_keys.encoder=[rgb] cnn_keys.decoder=[rgb] "
-        + "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
-        + "algo.world_model.recurrent_model.recurrent_state_size=8 "
-        + "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
-        + "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        + "algo.layer_norm=True per_rank_batch_size=1 per_rank_sequence_length=1 "
-        + f"algo.train_every=1 root_dir={root_dir} run_name={run_name}",
+        sys.executable + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
+        "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
+        "cnn_keys.encoder=[rgb] cnn_keys.decoder=[rgb] "
+        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
+        "algo.world_model.recurrent_model.recurrent_state_size=8 "
+        "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
+        "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
+        "algo.layer_norm=True per_rank_batch_size=1 per_rank_sequence_length=1 "
+        f"algo.train_every=1 root_dir={root_dir} run_name={run_name} "
+        "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
         check=True,
     )
