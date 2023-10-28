@@ -20,7 +20,6 @@ def test_dp_strategy_str_warning():
         "dry_run=True",
         "algo.rollout_steps=1",
     ]
-
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
             run()
@@ -31,6 +30,15 @@ def test_dp_strategy_str_warning():
             "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
             "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
         )
+
+
+def test_module_not_found():
+    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=ppo", "algo.name=not_found"]
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(
+            RuntimeError, match="Given the algorithm named 'not_found', no module has been found to be imported."
+        ):
+            run()
 
 
 def test_dp_strategy_instance_warning():

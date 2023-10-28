@@ -121,7 +121,7 @@ def check_configs(cfg: Dict[str, Any]):
     else:
         if isinstance(strategy, str):
             strategy = strategy.lower()
-            if strategy == "auto" or not (strategy in available_strategies and "ddp" in strategy):
+            if strategy != "auto" or not (strategy in available_strategies and "ddp" in strategy):
                 warnings.warn(
                     f"Running an algorithm with a strategy ({strategy}) "
                     "different than 'auto' or 'dpp' can cause unexpected problems. "
