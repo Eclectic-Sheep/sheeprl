@@ -77,11 +77,18 @@ def run_algorithm(cfg: Dict[str, Any]):
             cfg.fabric.strategy = strategy
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
 
-    if "rlhf" in algo_name:
-        cfg.metric = dotdict({"log_level": 1})
-    else:
+    if hasattr(cfg, "metric") and cfg.metric is not None:
+        predefined_metric_keys = set()
+        if not hasattr(utils, "AGGREGATOR_KEYS"):
+            warnings.warn(
+                f"No 'AGGREGATOR_KEYS' set found for the {algo_name} algorithm under the {module} module. "
+                "No metric will be logged.",
+                UserWarning,
+            )
+        else:
+            predefined_metric_keys = utils.AGGREGATOR_KEYS
         timer.disabled = cfg.metric.log_level == 0 or cfg.metric.disable_timer
-        keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - utils.AGGREGATOR_KEYS
+        keys_to_remove = set(cfg.metric.aggregator.metrics.keys()) - predefined_metric_keys
         for k in keys_to_remove:
             cfg.metric.aggregator.metrics.pop(k, None)
         MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
@@ -124,7 +131,7 @@ def check_configs(cfg: Dict[str, Any]):
     else:
         if isinstance(strategy, str):
             strategy = strategy.lower()
-            if strategy != "auto" or not (strategy in available_strategies and "ddp" in strategy):
+            if strategy != "auto" and not (strategy in available_strategies and "ddp" in strategy):
                 warnings.warn(
                     f"Running an algorithm with a strategy ({strategy}) "
                     "different than 'auto' or 'dpp' can cause unexpected problems. "
