@@ -73,7 +73,7 @@ def main(fabric: L.Fabric, cfg: Dict):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = create_tensorboard_logger(fabric, cfg, override_log_level=True)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
