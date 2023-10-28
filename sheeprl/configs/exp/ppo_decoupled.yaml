@@ -7,4 +7,5 @@ defaults:
   - _self_
 
 fabric:
+  strategy: ddp
   devices: 2
