@@ -25,7 +25,7 @@ def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
     old_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
     if old_cfg.env.id != cfg.env.id:
         raise ValueError(
-            "This experiment is run with a different environment than the one of the experiment you want to restart. "
+            "This experiment is run with a different environment from the one of the experiment you want to restart. "
             f"Got '{cfg.env.id}', but the environment of the experiment of the checkpoint was {old_cfg.env.id}. "
             "Set properly the environment for restarting the experiment."
         )
