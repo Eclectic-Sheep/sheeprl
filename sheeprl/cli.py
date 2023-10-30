@@ -135,7 +135,7 @@ def eval_algorithm(cfg: DictConfig):
     # the entrypoint will be launched by Fabric with `fabric.launch(entrypoint)`
     module = None
     entrypoint = None
-    algo_name = cfg.algo.name.replace("_decoupled", "")
+    algo_name = cfg.algo.name
     for _module, _algos in evaluation_registry.items():
         for _algo in _algos:
             if algo_name == _algo["name"]:
