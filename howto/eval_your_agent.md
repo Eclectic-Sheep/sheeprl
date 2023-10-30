@@ -7,8 +7,13 @@ python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt
 ```
 
 The agent and the configs used during the traning are loaded automatically. The user can modify only few parameters for evaluation:
+
 1. `fabric.accelerator`: you can use the accelerator you want for evaluating the agent, you just need specify it in the command. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu` for evaluating the agent on the gpu. If you want to choose the GPU, then you need to define the `CUDA_VISIBLE_DEVICES` environment variable in the `.env` file or set it before running the script. For example, you can execute the following command to evaluate your agent on the GPU with index 2: `CUDA_VISIBLE_DEVICES="2" python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu`.
 2. `env.capture_video`: you can decide to caputre the video of the episode during the evaluation or not. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt env.capture_video=Ture` for capturing the video of the evaluation.
+
+All the other parameters are loaded from the config file used during the training. Moreover, the following parameters are automatically set during the evaluation:
+
+* `cfg.env.num_envs`: the number of environments used during the evaluation is set to 1
 
 > **Note**
 >
