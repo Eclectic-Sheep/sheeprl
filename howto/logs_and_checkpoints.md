@@ -116,4 +116,4 @@ meaning that:
 
 > **Note**
 >
-> When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as argument the same configurations of the experiment you want to restart. This is due to the way hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the name of the log directory could be misleading).
+> When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as argument the same configurations of the experiment you want to restart. This is due to the way hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the folder is created in the wrong folder).
