@@ -113,3 +113,7 @@ meaning that:
 * `every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environment per process then the policy steps are 2*4=8) between two consecutive checkpointing operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
 * `resume_from` is the path of the checkpoint to resume from. If `null`, then the checkpointing is not resumed.
 * `save_last` is a boolean flag that enables/disables the saving of the last checkpoint.
+
+> **Note**
+>
+> When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as argument the same configurations of the experiment you want to restart. This is due to the way hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the name of the log directory could be misleading).

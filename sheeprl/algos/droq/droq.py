@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-import pathlib
 import warnings
 from math import prod
 from typing import Any, Dict
@@ -13,7 +12,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -30,7 +28,6 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict
 
 
 def train(
@@ -148,15 +145,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     if len(cfg.cnn_keys.encoder) > 0:
         warnings.warn("DroQ algorithm cannot allow to use images as observations, the CNN keys will be ignored")
