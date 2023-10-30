@@ -104,13 +104,8 @@ def eval_algorithm(cfg: DictConfig):
     """
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     capture_video = cfg.env.capture_video
-
-    # TODO: change the number of devices when FSDP will be supported
-    fabric = Fabric(**cfg.fabric, devices=1)
-
-    # Load the checkpoint
-    state = fabric.load(cfg.checkpoint_path)
     ckpt_path = pathlib.Path(cfg.checkpoint_path)
+    accelerator = cfg.fabric.get("accelerator", "auto")
 
     # Load the configuration
     cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
@@ -122,6 +117,17 @@ def eval_algorithm(cfg: DictConfig):
     cfg.checkpoint_path = str(ckpt_path)
     cfg.env.num_envs = 1
     cfg.env.capture_video = capture_video
+
+    # TODO: change the number of devices when FSDP will be supported
+    cfg.fabric.pop("devices", None)
+    cfg.fabric.pop("strategy", None)
+    cfg.fabric.pop("num_nodes", None)
+    cfg.fabric.pop("callbacks", None)
+    cfg.fabric.pop("accelerator", None)
+    fabric = Fabric(**cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1)
+
+    # Load the checkpoint
+    state = fabric.load(cfg.checkpoint_path)
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
