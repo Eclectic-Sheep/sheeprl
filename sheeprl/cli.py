@@ -124,7 +124,9 @@ def eval_algorithm(cfg: DictConfig):
     cfg.fabric.pop("num_nodes", None)
     cfg.fabric.pop("callbacks", None)
     cfg.fabric.pop("accelerator", None)
-    fabric = Fabric(**cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1, _convert_="all"
+    )
 
     # Load the checkpoint
     state = fabric.load(cfg.checkpoint_path)
