@@ -12,7 +12,7 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(name="ppo_recurrent")
+@register_evaluation(algorithms="ppo_recurrent")
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:

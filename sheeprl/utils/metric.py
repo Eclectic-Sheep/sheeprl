@@ -1,12 +1,12 @@
+from __future__ import annotations
+
 import warnings
 from math import isnan
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-import torch.distributed as dist
-from lightning.fabric.utilities.distributed import _distributed_available
+from lightning import Fabric
 from torch import Tensor
-from torch.distributed.distributed_c10d import ProcessGroup
 from torchmetrics import Metric
 
 
@@ -95,10 +95,10 @@ class MetricAggregator:
             for metric in self.metrics.values():
                 metric.reset()
 
-    def to(self, device: Union[str, torch.device] = "cpu") -> "MetricAggregator":
+    def to(self, device: str | torch.device = "cpu") -> "MetricAggregator":
         """Move all metrics to the given device
         Args:
-            device (Union[str, torch.device], optional): Device to move the metrics to. Defaults to "cpu".
+            device (str |torch.device, optional): Device to move the metrics to. Defaults to "cpu".
         """
         if not self.disabled:
             if self.metrics:
@@ -107,7 +107,7 @@ class MetricAggregator:
         return self
 
     @torch.no_grad()
-    def compute(self) -> Dict[str, List]:
+    def compute(self) -> Dict[str, Any]:
         """Reduce the metrics to a single value
         Returns:
             Reduced metrics
@@ -146,52 +146,46 @@ class MetricAggregator:
 class RankIndependentMetricAggregator:
     def __init__(
         self,
-        metrics: Union[Dict[str, Metric], MetricAggregator],
-        process_group: Optional[ProcessGroup] = None,
+        fabric: Fabric,
+        metrics: Dict[str, Metric] | MetricAggregator,
     ) -> None:
-        """Rank-independent MetricAggregator.
-        This metric is useful when one wants to maintain per-rank-independent metrics of some quantities,
-        while still being able to broadcast them to all the processes in a `torch.distributed` group.
+        """This metric is useful when one wants to maintain per-rank-independent metrics of some quantities,
+        while still being able to broadcast them to all the processes in a `torch.distributed` group. Internally,
+        this metric uses a `MetricAggregator` to keep track of the metrics, and then broadcasts the metrics
+        to all the processes thanks to Fabric.
 
         Args:
+            fabric (Fabric): the fabric object.
             metrics (Sequence[str]): the metrics.
-            process_group (Optional[ProcessGroup], optional): the distributed process group.
-                Defaults to None.
         """
         super().__init__()
+        self._fabric = fabric
         self._aggregator = metrics
         if isinstance(metrics, dict):
             self._aggregator = MetricAggregator(metrics)
         for m in self._aggregator.metrics.values():
             m._to_sync = False
             m.sync_on_compute = False
-        self._process_group = process_group if process_group is not None else torch.distributed.group.WORLD
-        self._distributed_available = _distributed_available()
-        self._world_size = dist.get_world_size(self._process_group) if self._distributed_available else 1
 
-    def update(self, name: str, value: Union[float, Tensor]) -> None:
+    def update(self, name: str, value: float | Tensor) -> None:
         self._aggregator.update(name, value)
 
     @torch.no_grad()
-    def compute(self) -> List[Dict[str, Tensor]]:
+    def compute(self) -> Tensor | Dict | List | Tuple:
         """Compute the means, one for every metric. The metrics are first broadcasted
 
         Returns:
-            List[Dict[str, List]]: the computed metrics, broadcasted from and to every processes.
-            The list of the data returned is equal to the number of processes in the process group.
+            the computed metrics, broadcasted from and to every processes.
         """
         computed_metrics = self._aggregator.compute()
-        if not self._distributed_available:
-            return [computed_metrics]
-        gathered_data = [None for _ in range(self._world_size)]
-        dist.all_gather_object(gathered_data, computed_metrics, group=self._process_group)
+        gathered_data = self._fabric.all_gather(computed_metrics)
         return gathered_data
 
-    def to(self, device: Union[str, torch.device] = "cpu") -> "RankIndependentMetricAggregator":
+    def to(self, device: str | torch.device = "cpu") -> "RankIndependentMetricAggregator":
         """Move all metrics to the given device
 
         Args:
-            device (Union[str, torch.device], optional): Device to move the metrics to. Defaults to "cpu".
+            device (str |torch.device, optional): Device to move the metrics to. Defaults to "cpu".
         """
         self._aggregator.to(device)
         return self

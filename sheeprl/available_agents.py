@@ -2,7 +2,7 @@ if __name__ == "__main__":
     from rich.console import Console
     from rich.table import Table
 
-    from sheeprl.utils.registry import tasks
+    from sheeprl.utils.registry import algorithm_registry
 
     table = Table(title="SheepRL Agents")
     table.add_column("Module")
@@ -10,7 +10,7 @@ if __name__ == "__main__":
     table.add_column("Entrypoint")
     table.add_column("Decoupled")
 
-    for module, implementations in tasks.items():
+    for module, implementations in algorithm_registry.items():
         for algo in implementations:
             table.add_row(module, algo["name"], algo["entrypoint"], str(algo["decoupled"]))
 

@@ -24,7 +24,6 @@ from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
@@ -92,6 +91,7 @@ def player(
         fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Define the agent and the optimizer and setup them with Fabric
@@ -327,11 +327,12 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(
-        strategy=DDPStrategy(process_group=optimization_pg),
-        devices=cfg.fabric.devices,
-        callbacks=[CheckpointCallback()],
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
     )
+    fabric.launch()
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -420,7 +421,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and (cfg.checkpoint.save_last):
+            if cfg.checkpoint.save_last:
                 state = {
                     "agent": agent.state_dict(),
                     "qf_optimizer": qf_optimizer.state_dict(),
@@ -431,7 +432,14 @@ def trainer(
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
             return
         data = make_tensordict(data, device=device)
         sampler = BatchSampler(range(len(data)), batch_size=cfg.per_rank_batch_size, drop_last=False)
@@ -486,18 +494,24 @@ def trainer(
         # Checkpoint model on rank-0: send it everything
         if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
-            if global_rank == 1:
-                state = {
-                    "agent": agent.state_dict(),
-                    "qf_optimizer": qf_optimizer.state_dict(),
-                    "actor_optimizer": actor_optimizer.state_dict(),
-                    "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
-                    "last_log": last_log,
-                    "last_checkpoint": last_checkpoint,
-                }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+            state = {
+                "agent": agent.state_dict(),
+                "qf_optimizer": qf_optimizer.state_dict(),
+                "actor_optimizer": actor_optimizer.state_dict(),
+                "alpha_optimizer": alpha_optimizer.state_dict(),
+                "update": update,
+                "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
+            }
+            ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            fabric.call(
+                "on_checkpoint_trainer",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                state=state,
+            )
 
         # Update counters
         update += 1
