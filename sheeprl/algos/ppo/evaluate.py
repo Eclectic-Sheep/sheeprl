@@ -12,8 +12,8 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(algorithms=["ppo", "ppo_decoupled"])
-def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
+@register_evaluation(algorithms=["ppo"])
+def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
@@ -61,5 +61,11 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         is_continuous=is_continuous,
     )
     agent.load_state_dict(state["agent"])
-
+    agent = fabric.setup_module(agent)
     test(agent, fabric, cfg, log_dir)
+
+
+# This is just for showcase
+@register_evaluation(algorithms=["ppo_decoupled"])
+def evaluate_ppo_decoupled(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
+    evaluate_ppo(fabric, cfg, state)

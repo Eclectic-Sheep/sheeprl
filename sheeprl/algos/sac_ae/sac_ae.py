@@ -268,6 +268,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
+    if cfg.checkpoint.resume_from:
+        encoder.load_state_dict(state["encoder"])
+        decoder.load_state_dict(state["decoder"])
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
@@ -307,8 +310,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if cfg.checkpoint.resume_from:
         agent.load_state_dict(state["agent"])
-        encoder.load_state_dict(state["encoder"])
-        decoder.load_state_dict(state["decoder"])
         qf_optimizer.load_state_dict(state["qf_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         alpha_optimizer.load_state_dict(state["alpha_optimizer"])

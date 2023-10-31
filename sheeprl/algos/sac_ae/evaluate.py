@@ -83,6 +83,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    encoder.load_state_dict(state["encoder"])
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
@@ -113,6 +114,5 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         device=fabric.device,
     )
     agent.load_state_dict(state["agent"])
-    encoder.load_state_dict(state["encoder"])
-
+    agent.actor = fabric.setup_module(agent.actor)
     test_sac_ae(agent.actor, fabric, cfg, log_dir)
