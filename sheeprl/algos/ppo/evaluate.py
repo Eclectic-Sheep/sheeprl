@@ -61,5 +61,5 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         is_continuous=is_continuous,
     )
     agent.load_state_dict(state["agent"])
-
+    agent = fabric.setup_module(agent)
     test(agent, fabric, cfg, log_dir)

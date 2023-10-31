@@ -71,5 +71,5 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
     )
     agent.load_state_dict(state["agent"])
-
+    agent = fabric.setup_module(agent)
     test(agent.actor, fabric, cfg, log_dir)
