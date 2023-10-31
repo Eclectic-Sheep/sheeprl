@@ -1,7 +1,6 @@
 import datetime
 import importlib
 import os
-import pathlib
 import time
 import warnings
 from pathlib import Path
@@ -104,13 +103,7 @@ def eval_algorithm(cfg: DictConfig):
         cfg (DictConfig): the loaded configuration.
     """
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
-    capture_video = cfg.env.capture_video
-    ckpt_path = pathlib.Path(cfg.checkpoint_path)
     accelerator = cfg.fabric.get("accelerator", "auto")
-
-    cfg.checkpoint_path = str(ckpt_path)
-    cfg.env.num_envs = 1
-    cfg.env.capture_video = capture_video
 
     # TODO: change the number of devices when FSDP will be supported
     cfg.fabric.pop("devices", None)
@@ -233,7 +226,16 @@ def evaluation(cfg: DictConfig):
     from omegaconf import open_dict
 
     with open_dict(cfg):
+        # Remove env related parameters
+        capture_video = getattr(cfg.env, "capture_video", True)
+        cfg.env = {"capture_video": capture_video, "num_envs": 1}
+        cfg.exp = {}
+        cfg.algo = {}
+
+        # Merge configs
         ckpt_cfg.merge_with(cfg)
+
+        # Update values after merge
         ckpt_cfg.run_name = str(
             os.path.join(
                 os.path.basename(checkpoint_path.parent.parent.parent),
