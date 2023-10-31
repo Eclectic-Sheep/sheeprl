@@ -103,14 +103,9 @@ def eval_algorithm(cfg: DictConfig):
         cfg (DictConfig): the loaded configuration.
     """
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
-    accelerator = cfg.fabric.get("accelerator", "auto")
 
     # TODO: change the number of devices when FSDP will be supported
-    cfg.fabric.pop("devices", None)
-    cfg.fabric.pop("strategy", None)
-    cfg.fabric.pop("num_nodes", None)
-    cfg.fabric.pop("callbacks", None)
-    cfg.fabric.pop("accelerator", None)
+    accelerator = cfg.fabric.get("accelerator", "auto")
     fabric: Fabric = hydra.utils.instantiate(
         cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1, _convert_="all"
     )
@@ -226,11 +221,16 @@ def evaluation(cfg: DictConfig):
     from omegaconf import open_dict
 
     with open_dict(cfg):
-        # Remove env related parameters
         capture_video = getattr(cfg.env, "capture_video", True)
         cfg.env = {"capture_video": capture_video, "num_envs": 1}
         cfg.exp = {}
         cfg.algo = {}
+        cfg.fabric = {
+            "devices": 1,
+            "num_nodes": 1,
+            "strategy": "auto",
+            "accelerator": getattr(cfg.fabric, "accelerator", "auto"),
+        }
 
         # Merge configs
         ckpt_cfg.merge_with(cfg)
