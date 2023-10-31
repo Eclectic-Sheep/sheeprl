@@ -4,6 +4,7 @@ import os
 import pathlib
 import time
 import warnings
+from pathlib import Path
 from typing import Any, Dict
 
 import hydra
@@ -13,7 +14,7 @@ from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDe
 from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.registry import tasks
+from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
 
@@ -58,7 +59,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     decoupled = False
     entrypoint = None
     algo_name = cfg.algo.name
-    for _module, _algos in tasks.items():
+    for _module, _algos in algorithm_registry.items():
         for _algo in _algos:
             if algo_name == _algo["name"]:
                 module = _module
@@ -155,6 +156,48 @@ def run_algorithm(cfg: Dict[str, Any]):
     fabric.launch(command, cfg, **kwargs)
 
 
+def eval_algorithm(cfg: DictConfig):
+    """Run the algorithm specified in the configuration.
+
+    Args:
+        cfg (DictConfig): the loaded configuration.
+    """
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+
+    # TODO: change the number of devices when FSDP will be supported
+    accelerator = cfg.fabric.get("accelerator", "auto")
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1, _convert_="all"
+    )
+
+    # Load the checkpoint
+    state = fabric.load(cfg.checkpoint_path)
+
+    # Given the algorithm's name, retrieve the module where
+    # 'cfg.algo.name'.py is contained; from there retrieve the
+    # `register_algorithm`-decorated entrypoint;
+    # the entrypoint will be launched by Fabric with `fabric.launch(entrypoint)`
+    module = None
+    entrypoint = None
+    algo_name = cfg.algo.name
+    for _module, _algos in evaluation_registry.items():
+        for _algo in _algos:
+            if algo_name == _algo["name"]:
+                module = _module
+                entrypoint = _algo["entrypoint"]
+                break
+    if module is None:
+        raise RuntimeError(f"Given the algorithm named `{algo_name}`, no module has been found to be imported.")
+    if entrypoint is None:
+        raise RuntimeError(
+            f"Given the module and algorithm named `{module}` and `{algo_name}` respectively, "
+            "no entrypoint has been found to be imported."
+        )
+    task = importlib.import_module(f"{module}.evaluate")
+    command = task.__dict__[entrypoint]
+    fabric.launch(command, cfg, state)
+
+
 def check_configs(cfg: Dict[str, Any]):
     """Check the validity of the configuration.
 
@@ -163,7 +206,7 @@ def check_configs(cfg: Dict[str, Any]):
     """
     decoupled = False
     algo_name = cfg.algo.name
-    for _, _algos in tasks.items():
+    for _, _algos in algorithm_registry.items():
         for _algo in _algos:
             if algo_name == _algo["name"]:
                 decoupled = _algo["decoupled"]
@@ -214,13 +257,55 @@ def check_configs(cfg: Dict[str, Any]):
             )
 
 
+def check_configs_evaluation(cfg: DictConfig):
+    if cfg.checkpoint_path is None:
+        raise ValueError("You must specify the evaluation checkpoint path")
+
+
 @hydra.main(version_base="1.13", config_path="configs", config_name="config")
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
-    if cfg.metric.log_level > 0:
-        print_config(cfg)
+    print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     if cfg.checkpoint.resume_from:
         cfg = resume_from_checkpoint(cfg)
     check_configs(cfg)
     run_algorithm(cfg)
+
+
+@hydra.main(version_base="1.13", config_path="configs", config_name="eval_config")
+def evaluation(cfg: DictConfig):
+    # Load the checkpoint configuration
+    checkpoint_path = Path(cfg.checkpoint_path)
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
+
+    # Merge the two configs
+    from omegaconf import open_dict
+
+    with open_dict(cfg):
+        capture_video = getattr(cfg.env, "capture_video", True)
+        cfg.env = {"capture_video": capture_video, "num_envs": 1}
+        cfg.exp = {}
+        cfg.algo = {}
+        cfg.fabric = {
+            "devices": 1,
+            "num_nodes": 1,
+            "strategy": "auto",
+            "accelerator": getattr(cfg.fabric, "accelerator", "auto"),
+        }
+
+        # Merge configs
+        ckpt_cfg.merge_with(cfg)
+
+        # Update values after merge
+        ckpt_cfg.run_name = str(
+            os.path.join(
+                os.path.basename(checkpoint_path.parent.parent.parent),
+                os.path.basename(checkpoint_path.parent.parent),
+                "evaluation",
+            )
+        )
+
+    # Check the validity of the configuration and run the evaluation
+    check_configs_evaluation(ckpt_cfg)
+    eval_algorithm(ckpt_cfg)

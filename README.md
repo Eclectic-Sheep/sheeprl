@@ -225,6 +225,16 @@ python sheeprl.py fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 ex
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
+### Evaluate your Agents
+
+You can easily evaluate your trained agents from checkpoints: tranining configurations are retrieved automatically.
+
+```bash
+python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu env.capture_video=True
+```
+
+For more information, check the corresponding [howto](./howto/eval_your_agent.md).
+
 ## :book: Repository structure
 
 The repository is structured as follows:
