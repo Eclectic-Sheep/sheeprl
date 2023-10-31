@@ -474,6 +474,8 @@ class PlayerDV3(nn.Module):
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
+        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+            Default to None
     """
 
     def __init__(
@@ -488,6 +490,7 @@ class PlayerDV3(nn.Module):
         recurrent_state_size: int,
         device: device = "cpu",
         discrete_size: int = 32,
+        actor_type: str | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -508,6 +511,7 @@ class PlayerDV3(nn.Module):
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
+        self.actor_type = actor_type
 
     @torch.no_grad()
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:

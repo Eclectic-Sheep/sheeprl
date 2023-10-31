@@ -1,14 +1,13 @@
 # @package _global_
 
 defaults:
-  - p2e_dv3
+  - p2e_dv3_exploration
   - override /env: diambra
   - _self_
 
 # Experiment
 seed: 0
 total_steps: 20000000
-exploration_steps: 15000000
 per_rank_batch_size: 4
 per_rank_sequence_length: 64
 

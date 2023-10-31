@@ -1,6 +1,7 @@
 import datetime
 import importlib
 import os
+import pathlib
 import time
 import warnings
 
@@ -56,6 +57,7 @@ def run(cfg: DictConfig):
     task = importlib.import_module(f"{module}.{algo_name}")
     utils = importlib.import_module(f"{module}.utils")
     command = task.__dict__[entrypoint]
+    kwargs = {}
     if decoupled:
         root_dir = (
             os.path.join("logs", "runs", cfg.root_dir)
@@ -86,6 +88,23 @@ def run(cfg: DictConfig):
                 strategy = DDPStrategy(find_unused_parameters=True)
             cfg.fabric.pop("strategy", None)
             fabric = Fabric(**cfg.fabric, strategy=strategy, callbacks=[CheckpointCallback()])
+        elif "finetuning" in module:
+            # Load exploration configurations
+            ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
+            exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+            exploration_cfg.pop("root_dir", None)
+            exploration_cfg.pop("run_name", None)
+            exploration_cfg = dotdict(OmegaConf.to_container(exploration_cfg, resolve=True, throw_on_missing=True))
+            if exploration_cfg.env.id != cfg.env.id:
+                raise ValueError(
+                    "This experiment is run with a different environment from "
+                    "the one of the exploration you want to finetune. "
+                    f"Got '{cfg.env.id}', but the environment used during exploration was {exploration_cfg.env.id}. "
+                    "Set properly the environment for finetuning the experiment."
+                )
+            kwargs["exploration_cfg"] = exploration_cfg
+            cfg.fabric = exploration_cfg.fabric
+            fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
         else:
             fabric = Fabric(**cfg.fabric, callbacks=[CheckpointCallback()])
 
@@ -94,4 +113,4 @@ def run(cfg: DictConfig):
     for k in keys_to_remove:
         cfg.metric.aggregator.metrics.pop(k, None)
     MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
-    fabric.launch(command, cfg)
+    fabric.launch(command, cfg, **kwargs)

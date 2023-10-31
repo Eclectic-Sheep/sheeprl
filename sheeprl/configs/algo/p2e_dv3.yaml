@@ -6,6 +6,9 @@ defaults:
 name: p2e_dv3
 intrinsic_reward_multiplier: 1
 
+player:
+  actor_type: exploration
+
 critics_exploration:
   intrinsic:
     weight: 0.1
