@@ -42,6 +42,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if resume_from_checkpoint:
         state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
         cfg.per_rank_batch_size = state["batch_size"] // world_size
+    else:
+        state = fabric.load(ckpt_path)
 
     # All the models must be equal to the ones of the exploration phase
     cfg.algo.gamma = exploration_cfg.algo.gamma
@@ -157,7 +159,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     player = PlayerDV3(
         world_model.encoder.module,
         world_model.rssm,
-        actor_exploration.module if cfg.player.actor_type == "exploration" else actor_task.module,
+        actor_exploration.module if cfg.algo.player.actor_type == "exploration" else actor_task.module,
         actions_dim,
         cfg.algo.player.expl_amount,
         cfg.env.num_envs,
@@ -165,7 +167,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
-        actor_type=cfg.player.actor_type,
+        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers

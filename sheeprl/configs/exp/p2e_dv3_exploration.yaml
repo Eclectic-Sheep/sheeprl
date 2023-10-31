@@ -5,6 +5,9 @@ defaults:
   - override /algo: p2e_dv3
   - _self_
 
+algo:
+  name: p2e_dv3_exploration
+
 metric:
   aggregator:
     metrics:
