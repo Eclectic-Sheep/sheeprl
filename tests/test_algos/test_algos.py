@@ -62,9 +62,6 @@ def remove_test_dir(path: str) -> None:
 def test_droq(standard_args, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=droq",
         "per_rank_batch_size=1",
@@ -86,9 +83,6 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
 def test_sac(standard_args, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=sac",
         "per_rank_batch_size=1",
@@ -110,9 +104,6 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 def test_sac_ae(standard_args, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=sac_ae",
         "per_rank_batch_size=1",
@@ -142,9 +133,6 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
 def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=sac_decoupled",
         "per_rank_batch_size=1",
@@ -169,9 +157,6 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
 def test_ppo(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo",
         "env=dummy",
@@ -194,9 +179,6 @@ def test_ppo(standard_args, start_time, env_id):
 def test_ppo_decoupled(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_ppo_decoupled"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_decoupled",
         "env=dummy",
@@ -223,9 +205,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_recurrent",
         "algo.rollout_steps=2",
@@ -247,9 +226,6 @@ def test_ppo_recurrent(standard_args, start_time):
 def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=dreamer_v1",
         "env=dummy",
@@ -281,9 +257,6 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
 def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=p2e_dv1",
         "env=dummy",
@@ -315,9 +288,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=p2e_dv2",
         "env=dummy",
@@ -353,9 +323,6 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
 def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=dreamer_v2",
         "env=dummy",
@@ -390,11 +357,8 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
-    root_dir = os.path.join("pytest_" + start_time, "dreamer_v3", os.environ["LT_DEVICES"])
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=dreamer_v3",
         "env=dummy",
@@ -429,13 +393,13 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 @pytest.mark.parametrize("checkpoint_buffer", [True, False])
 def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
-    root_dir = os.path.join("pytest_" + start_time, "p2e_dv3", os.environ["LT_DEVICES"])
+    root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])
     run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
     ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        "exp=p2e_dv3",
+        "exp=p2e_dv3_exploration",
         "env=dummy",
         "per_rank_batch_size=1",
         "per_rank_sequence_length=1",
@@ -456,8 +420,42 @@ def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
         f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
+        "checkpoint.save_last=True",
     ]
 
+    with mock.patch.object(sys, "argv", args):
+        run()
+
+    ckpt_path = os.path.join("logs", "runs", ckpt_path)
+    checkpoints = os.listdir(ckpt_path)
+    if len(checkpoints) > 0:
+        ckpt_path = os.path.join(ckpt_path, checkpoints[-1])
+    else:
+        raise RuntimeError("No exploration checkpoints")
+    args = standard_args + [
+        "exp=p2e_dv3_finetuning",
+        f"checkpoint.exploration_ckpt_path={ckpt_path}",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env=dummy",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        f"buffer.checkpoint={checkpoint_buffer}",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
+    ]
     with mock.patch.object(sys, "argv", args):
         run()
 
