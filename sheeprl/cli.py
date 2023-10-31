@@ -233,8 +233,8 @@ def evaluation(cfg: DictConfig):
     from omegaconf import open_dict
 
     with open_dict(cfg):
-        cfg.merge_with(ckpt_cfg)
-        cfg.run_name = str(
+        ckpt_cfg.merge_with(cfg)
+        ckpt_cfg.run_name = str(
             os.path.join(
                 os.path.basename(checkpoint_path.parent.parent.parent),
                 os.path.basename(checkpoint_path.parent.parent),
@@ -243,5 +243,5 @@ def evaluation(cfg: DictConfig):
         )
 
     # Check the validity of the configuration and run the evaluation
-    check_configs_evaluation(cfg)
-    eval_algorithm(cfg)
+    check_configs_evaluation(ckpt_cfg)
+    eval_algorithm(ckpt_cfg)
