@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-import pathlib
 import warnings
 from typing import Any, Dict
 
@@ -14,7 +13,6 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from lightning.pytorch.utilities.seed import isolate_rng
-from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
@@ -34,7 +32,7 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, init_weights, polynomial_decay
+from sheeprl.utils.utils import init_weights, polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -425,15 +423,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64
@@ -441,11 +432,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
     logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv

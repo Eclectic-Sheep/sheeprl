@@ -7,7 +7,6 @@ from contextlib import nullcontext
 from unittest import mock
 
 import pytest
-import torch.distributed as dist
 
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
@@ -43,12 +42,11 @@ def start_time():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}, clear=False) as _fixture:
-        if _IS_WINDOWS and devices != "1":
-            pytest.skip()
-        yield _fixture
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    os.environ["LT_ACCELERATOR"] = "cpu"
+    os.environ["LT_DEVICES"] = str(devices)
+    if _IS_WINDOWS and devices != "1":
+        pytest.skip()
+    yield
 
 
 def remove_test_dir(path: str) -> None:

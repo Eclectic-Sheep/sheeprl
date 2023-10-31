@@ -1,6 +1,5 @@
 import copy
 import os
-import pathlib
 import warnings
 from datetime import timedelta
 from typing import Any, Dict
@@ -13,7 +12,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
@@ -24,13 +22,12 @@ from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 @torch.no_grad()
@@ -45,15 +42,8 @@ def player(
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -93,6 +83,7 @@ def player(
     )
 
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Create the actor and critic models
@@ -369,11 +360,12 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(
-        strategy=DDPStrategy(process_group=optimization_pg),
-        devices=cfg.fabric.devices,
-        callbacks=[CheckpointCallback()],
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
     )
+    fabric.launch()
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -445,7 +437,7 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and (cfg.checkpoint.save_last):
+            if cfg.checkpoint.save_last:
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -455,7 +447,14 @@ def trainer(
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
             return
         data = make_tensordict(data, device=device)
 
@@ -574,17 +573,23 @@ def trainer(
         # Checkpoint model on rank-0: send it everything
         if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
-            if global_rank == 1:
-                state = {
-                    "agent": agent.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                    "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
-                    "last_log": last_log,
-                    "last_checkpoint": last_checkpoint,
-                }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                "update": update,
+                "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
+            }
+            ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            fabric.call(
+                "on_checkpoint_trainer",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                state=state,
+            )
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
