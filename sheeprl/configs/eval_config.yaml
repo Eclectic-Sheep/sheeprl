@@ -5,8 +5,7 @@ defaults:
   - _self_
 
 hydra:
-  run:
-    dir: logs/runs/
+  output_subdir: null
 
 fabric:
   accelerator: cpu

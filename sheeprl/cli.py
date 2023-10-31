@@ -4,6 +4,7 @@ import os
 import pathlib
 import time
 import warnings
+from pathlib import Path
 from typing import Any, Dict
 
 import hydra
@@ -107,13 +108,6 @@ def eval_algorithm(cfg: DictConfig):
     ckpt_path = pathlib.Path(cfg.checkpoint_path)
     accelerator = cfg.fabric.get("accelerator", "auto")
 
-    # Load the configuration
-    cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-    cfg.run_name = str(
-        os.path.join(
-            os.path.basename(ckpt_path.parent.parent.parent), os.path.basename(ckpt_path.parent.parent), "evaluation"
-        )
-    )
     cfg.checkpoint_path = str(ckpt_path)
     cfg.env.num_envs = 1
     cfg.env.capture_video = capture_video
@@ -231,5 +225,23 @@ def run(cfg: DictConfig):
 
 @hydra.main(version_base="1.13", config_path="configs", config_name="eval_config")
 def evaluation(cfg: DictConfig):
+    # Load the checkpoint configuration
+    checkpoint_path = Path(cfg.checkpoint_path)
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
+
+    # Merge the two configs
+    from omegaconf import open_dict
+
+    with open_dict(cfg):
+        cfg.merge_with(ckpt_cfg)
+        cfg.run_name = str(
+            os.path.join(
+                os.path.basename(checkpoint_path.parent.parent.parent),
+                os.path.basename(checkpoint_path.parent.parent),
+                "evaluation",
+            )
+        )
+
+    # Check the validity of the configuration and run the evaluation
     check_configs_evaluation(cfg)
     eval_algorithm(cfg)
