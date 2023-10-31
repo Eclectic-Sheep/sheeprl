@@ -29,6 +29,12 @@ def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
             f"Got '{cfg.env.id}', but the environment of the experiment of the checkpoint was {old_cfg.env.id}. "
             "Set properly the environment for restarting the experiment."
         )
+    if old_cfg.algo.name != cfg.algo.name:
+        raise ValueError(
+            "This experiment is run with a different algorithm from the one of the experiment you want to restart. "
+            f"Got '{cfg.algo.name}', but the algorithm of the experiment of the checkpoint was {old_cfg.algo.name}. "
+            "Set properly the algorithm name for restarting the experiment."
+        )
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
     cfg = dotdict(old_cfg)
