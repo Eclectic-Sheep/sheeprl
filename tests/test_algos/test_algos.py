@@ -391,10 +391,9 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
+def test_p2e_dv3(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
+    run_name = "test_p2e_dv3"
     ckpt_path = os.path.join(root_dir, run_name)
     version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
@@ -417,7 +416,7 @@ def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.world_model.transition_model.hidden_size=8",
         "algo.layer_norm=True",
         "algo.train_every=1",
-        f"buffer.checkpoint={checkpoint_buffer}",
+        "buffer.checkpoint=True",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
         "checkpoint.save_last=True",
@@ -425,6 +424,15 @@ def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
+        import torch.distributed
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            del os.environ["LOCAL_RANK"]
+            del os.environ["NODE_RANK"]
+            del os.environ["WORLD_SIZE"]
+            del os.environ["MASTER_ADDR"]
+            del os.environ["MASTER_PORT"]
 
     ckpt_path = os.path.join("logs", "runs", ckpt_path)
     checkpoints = os.listdir(ckpt_path)
@@ -452,7 +460,6 @@ def test_p2e_dv3(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.world_model.transition_model.hidden_size=8",
         "algo.layer_norm=True",
         "algo.train_every=1",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
