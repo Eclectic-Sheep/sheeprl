@@ -58,13 +58,9 @@ def remove_test_dir(path: str) -> None:
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_droq(standard_args, checkpoint_buffer, start_time):
+def test_droq(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_droq"
     args = standard_args + [
         "exp=droq",
         "per_rank_batch_size=1",
@@ -73,7 +69,6 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
         "algo.per_rank_gradient_steps=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        f"buffer.checkpoint={checkpoint_buffer}",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -82,13 +77,9 @@ def test_droq(standard_args, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac(standard_args, checkpoint_buffer, start_time):
+def test_sac(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_sac"
     args = standard_args + [
         "exp=sac",
         "per_rank_batch_size=1",
@@ -97,7 +88,6 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
         "algo.per_rank_gradient_steps=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        f"buffer.checkpoint={checkpoint_buffer}",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -106,13 +96,9 @@ def test_sac(standard_args, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_ae(standard_args, checkpoint_buffer, start_time):
+def test_sac_ae(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_sac_ae"
     args = standard_args + [
         "exp=sac_ae",
         "per_rank_batch_size=1",
@@ -129,7 +115,6 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
         "algo.cnn_channels_multiplier=2",
         "algo.actor.network_frequency=1",
         "algo.decoder.update_freq=1",
-        f"buffer.checkpoint={checkpoint_buffer}",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -138,13 +123,9 @@ def test_sac_ae(standard_args, checkpoint_buffer, start_time):
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
+def test_sac_decoupled(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_sac_decoupled"
     args = standard_args + [
         "exp=sac_decoupled",
         "per_rank_batch_size=1",
@@ -153,7 +134,6 @@ def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
         f"fabric.devices={os.environ['LT_DEVICES']}",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        f"buffer.checkpoint={checkpoint_buffer}",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -239,13 +219,9 @@ def test_ppo_recurrent(standard_args, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
+def test_dreamer_v1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_dreamer_v1"
     args = standard_args + [
         "exp=dreamer_v1",
         "env=dummy",
@@ -261,7 +237,6 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.dense_units=8",
         "algo.world_model.encoder.cnn_channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
@@ -273,13 +248,9 @@ def test_dreamer_v1(standard_args, env_id, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
+def test_p2e_dv1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_p2e_dv1"
     args = standard_args + [
         "exp=p2e_dv1",
         "env=dummy",
@@ -295,7 +266,6 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.dense_units=8",
         "algo.world_model.encoder.cnn_channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
@@ -307,13 +277,9 @@ def test_p2e_dv1(standard_args, env_id, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
+def test_p2e_dv2(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_p2e_dv2"
     args = standard_args + [
         "exp=p2e_dv2",
         "env=dummy",
@@ -333,7 +299,6 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
         "algo.world_model.transition_model.hidden_size=8",
         "cnn_keys.encoder=[rgb]",
         "algo.per_rank_pretrain_steps=1",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
@@ -345,13 +310,9 @@ def test_p2e_dv2(standard_args, env_id, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
+def test_dreamer_v2(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    run_name = "test_dreamer_v2"
     args = standard_args + [
         "exp=dreamer_v2",
         "env=dummy",
@@ -372,7 +333,6 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
         "cnn_keys.encoder=[rgb]",
         "algo.per_rank_pretrain_steps=1",
         "algo.layer_norm=True",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
@@ -384,13 +344,9 @@ def test_dreamer_v2(standard_args, env_id, checkpoint_buffer, start_time):
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
-    root_dir = os.path.join("pytest_" + start_time, "dreamer_v3", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+def test_dreamer_v3(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
+    run_name = "test_dreamer_v3"
     args = standard_args + [
         "exp=dreamer_v3",
         "env=dummy",
@@ -411,7 +367,6 @@ def test_dreamer_v3(standard_args, env_id, checkpoint_buffer, start_time):
         "cnn_keys.encoder=[rgb]",
         "algo.layer_norm=True",
         "algo.train_every=1",
-        f"buffer.checkpoint={checkpoint_buffer}",
         "cnn_keys.encoder=[rgb]",
         "cnn_keys.decoder=[rgb]",
     ]
