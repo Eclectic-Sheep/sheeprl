@@ -1,6 +1,5 @@
 import copy
 import os
-import pathlib
 import warnings
 from datetime import timedelta
 from math import prod
@@ -14,7 +13,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from omegaconf import OmegaConf
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
@@ -29,7 +27,6 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict
 
 
 @torch.no_grad()
@@ -44,15 +41,8 @@ def player(
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     if len(cfg.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -340,10 +330,6 @@ def trainer(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv

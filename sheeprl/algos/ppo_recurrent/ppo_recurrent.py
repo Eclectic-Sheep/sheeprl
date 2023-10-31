@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import itertools
 import os
-import pathlib
 import warnings
 from contextlib import nullcontext
 from typing import Any, Dict, List
@@ -13,7 +12,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from omegaconf import OmegaConf
 from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
 from torch.distributed.algorithms.join import Join
@@ -29,7 +27,7 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -135,15 +133,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
