@@ -1,6 +1,7 @@
 import datetime
 import importlib
 import os
+import pathlib
 import time
 import warnings
 from pathlib import Path
@@ -16,6 +17,26 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
+
+
+def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
+    root_dir = cfg.root_dir
+    run_name = cfg.run_name
+    ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
+    old_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+    if old_cfg.env.id != cfg.env.id:
+        raise ValueError(
+            "This experiment is run with a different environment from the one of the experiment you want to restart. "
+            f"Got '{cfg.env.id}', but the environment of the experiment of the checkpoint was {old_cfg.env.id}. "
+            "Set properly the environment for restarting the experiment."
+        )
+    old_cfg.pop("root_dir", None)
+    old_cfg.pop("run_name", None)
+    cfg = dotdict(old_cfg)
+    cfg.checkpoint.resume_from = str(ckpt_path)
+    cfg.root_dir = root_dir
+    cfg.run_name = run_name
+    return cfg
 
 
 def run_algorithm(cfg: Dict[str, Any]):
@@ -66,8 +87,8 @@ def run_algorithm(cfg: Dict[str, Any]):
         if logger is not None:
             fabric._loggers.extend([logger])
     else:
+        strategy = cfg.fabric.pop("strategy", "auto")
         if "sac_ae" in module:
-            strategy = cfg.fabric.strategy
             if strategy is not None:
                 warnings.warn(
                     "You are running the SAC-AE algorithm you have specified a strategy different than 'ddp': "
@@ -75,8 +96,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
             strategy = DDPStrategy(find_unused_parameters=True)
-            cfg.fabric.strategy = strategy
-        fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
+        fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:
         predefined_metric_keys = set()
@@ -207,6 +227,8 @@ def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
     print_config(cfg)
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+    if cfg.checkpoint.resume_from:
+        cfg = resume_from_checkpoint(cfg)
     check_configs(cfg)
     run_algorithm(cfg)
 
