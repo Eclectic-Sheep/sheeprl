@@ -13,7 +13,7 @@ from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(algorithms="p2e_dv3")
+@register_evaluation(algorithms=["p2e_dv3_exploration", "p2e_dv3_finetuning"])
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = create_tensorboard_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
