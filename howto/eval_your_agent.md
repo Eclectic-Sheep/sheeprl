@@ -1,15 +1,15 @@
 # Evaluate your Agents
 
-In this document we give the user some advices to evaluate its agents. To evaluate an agent, it is simply necessary run the `./sheeprl_eval.py` script, by passing the path to the checkpoint of the agent you want to evaluate.
+In this document, we give the user some advice to evaluate its agents. To evaluate an agent, it is simply necessary run the `./sheeprl_eval.py` script, passing the path to the checkpoint of the agent you want to evaluate.
 
 ```bash
 python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt
 ```
 
-The agent and the configs used during the traning are loaded automatically. The user can modify only few parameters for evaluation:
+The agent and the configs used during the training are loaded automatically. The user can modify only few parameters for evaluation:
 
-1. `fabric` related ones: you can use the accelerator you want for evaluating the agent, you just need specify it in the command. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu` for evaluating the agent on the gpu. If you want to choose the GPU, then you need to define the `CUDA_VISIBLE_DEVICES` environment variable in the `.env` file or set it before running the script. For example, you can execute the following command to evaluate your agent on the GPU with index 2: `CUDA_VISIBLE_DEVICES="2" python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu`. By default the number of devices and nodes is set to 1, while the precision and the plugins are set to the ones set in the checkpoint config.
-2. `env.capture_video`: you can decide to capture the video of the episode during the evaluation or not. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt env.capture_video=Ture` for capturing the video of the evaluation.
+1. `fabric` related ones: you can use the accelerator you want for evaluating the agent, you just need to specify it in the command. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu` for evaluating the agent on the GPU. If you want to choose the GPU, then you need to define the `CUDA_VISIBLE_DEVICES` environment variable in the `.env` file or set it before running the script. For example, you can execute the following command to evaluate your agent on the GPU with index 2: `CUDA_VISIBLE_DEVICES="2" python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu`. By default, the number of devices and nodes is set to 1, while the precision and the plugins are set to the ones set in the checkpoint config.
+2. `env.capture_video`: you can decide whether to capture the video of the episode during the evaluation or not. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt env.capture_video=Ture` for capturing the video of the evaluation.
 
 All the other parameters are loaded from the checkpoint config file used during the training. Moreover, the following parameters are automatically set during the evaluation:
 
@@ -21,7 +21,7 @@ All the other parameters are loaded from the checkpoint config file used during 
 > You cannot modify the number of processes to spawn. The evaluation is made with only 1 process.
 
 ## Log Directory
-By default the evaluation logs are stored in the same folder of the experiment. Suppose to have trained a `PPO` agent in the `CartPole-v1` environment. The log directory is organized as follows:
+By default, the evaluation logs are stored in the same folder of the experiment. Suppose to have trained a `PPO` agent in the `CartPole-v1` environment. The log directory is organized as follows:
 ```tree
 logs
 └── runs
