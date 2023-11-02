@@ -61,7 +61,7 @@ def get_log_dir(fabric: Fabric, root_dir: str, run_name: str, share: bool = True
                     version = max(existing_versions) + 1
                 log_dir = os.path.join(save_dir, f"version_{version}")
             except OSError:
-                warnings.warn("Missing logger folder: %s", save_dir)
+                warnings.warn("Missing logger folder: %s" % save_dir, UserWarning)
                 log_dir = os.path.join(save_dir, f"version_{0}")
 
             os.makedirs(log_dir, exist_ok=True)

@@ -298,13 +298,15 @@ def evaluation(cfg: DictConfig):
         ckpt_cfg.merge_with(cfg)
 
         # Update values after merge
-        ckpt_cfg.run_name = str(
+        run_name = Path(
             os.path.join(
                 os.path.basename(checkpoint_path.parent.parent.parent),
                 os.path.basename(checkpoint_path.parent.parent),
                 "evaluation",
             )
         )
+        run_name.mkdir(parents=True, exist_ok=True)
+        ckpt_cfg.run_name = str(run_name)
 
     # Check the validity of the configuration and run the evaluation
     check_configs_evaluation(ckpt_cfg)
