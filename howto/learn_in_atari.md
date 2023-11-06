@@ -1,5 +1,5 @@
 ## Install Atari environments
-First we should install the Atari environments with:
+First, we should install the Atari environments with:
 
 ```bash
 pip install .[atari]

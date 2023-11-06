@@ -33,13 +33,13 @@ aggregator:
 ```
 where 
 
-* `log_every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environment per process then the policy steps are 2*4=8) between two consecutive logging operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
+* `log_every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environments per process then the policy steps are 2*4=8) between two consecutive logging operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
 * `disable_timer` is a boolean flag that enables/disables the timer to measure both the time spent in the environment and the time spent during the agent training. The timer class used can be found [here](../sheeprl/utils/timer.py).
-* `log_level` is the level of logging: $0$ means no log (it disables also the timer), $1$ means log everything.
+* `log_level` is the level of logging: $0$ means no log (it disables also the timer), whereas $1$ means logging everything.
 * `sync_on_compute` is a boolean flag that enables/disables the synchronization of the metrics on compute.
 * `aggregator` is the aggregator of the metrics, `raise_on_missing` is a boolean flag that enables/disables the raising of an exception when a metric to be logged is missing, and `metrics` is a dictionary that contains the metrics to log. Every metric should be an instance of a class that inherits from `torchmetrics.Metric` (for more information, check [here](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric)).
 
-So, if one want to disable everything related to logging, he/she can set `log_level` to $0$ if one wants to disable the timer, he/she can set `disable_timer` to `True`.
+So, if one wants to disable everything related to logging, he/she can set `log_level` to $0$ if one wants to disable the timer, he/she can set `disable_timer` to `True`.
 
 ### Logged metrics
 
@@ -66,9 +66,9 @@ AGGREGATOR_KEYS = {
 }
 ```
 
-These keys refer to the metrics that will be updated in the code (i.e., `aggregator.update(key, value)`). Moreover, these keys will be used as filter for the metrics specified in the `metric.log.aggregator.metrics` config. In particular, only the metrics present in both the `metric.log.aggregator.metrics` and the `AGGREGATOR_KEYS` will be logged.
+These keys refer to the metrics that will be updated in the code (i.e., `aggregator.update(key, value)`). Moreover, these keys will be used as filters for the metrics specified in the `metric.log.aggregator.metrics` config. In particular, only the metrics present in both the `metric.log.aggregator.metrics` and the `AGGREGATOR_KEYS` will be logged.
 
-For example, let suppose we have defined the following metrics in the config file:
+For example, let us suppose we have defined the following metrics in the config file:
 ```yaml
 aggregator:
   _target_: sheeprl.utils.metric.MetricAggregator
@@ -110,10 +110,10 @@ save_last: True
 
 meaning that:
 
-* `every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environment per process then the policy steps are 2*4=8) between two consecutive checkpointing operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
+* `every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environments per process then the policy steps are 2*4=8) between two consecutive checkpointing operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
 * `resume_from` is the path of the checkpoint to resume from. If `null`, then the checkpointing is not resumed.
 * `save_last` is a boolean flag that enables/disables the saving of the last checkpoint.
 
 > **Note**
 >
-> When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as argument the same configurations of the experiment you want to restart. This is due to the way hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the folder is created in the wrong folder).
+> When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as arguments the same configurations of the experiment you want to restart. This is due to the way Hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the folder is created in the wrong folder).
