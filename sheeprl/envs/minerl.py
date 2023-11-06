@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from sheeprl.utils.imports import _IS_MINERL_0_4_4_AVAILABLE
 
 if not _IS_MINERL_0_4_4_AVAILABLE:

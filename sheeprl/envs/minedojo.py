@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from sheeprl.utils.imports import _IS_MINEDOJO_AVAILABLE
 
 if not _IS_MINEDOJO_AVAILABLE:
