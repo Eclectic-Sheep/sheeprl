@@ -103,7 +103,7 @@ class MineDojoWrapper(gym.Wrapper):
                 "equipment": gym.spaces.Box(0.0, 1.0, (N_ALL_ITEMS,), np.int32),
                 "life_stats": gym.spaces.Box(0.0, np.array([20.0, 20.0, 300.0]), (3,), np.float32),
                 "mask_action_type": gym.spaces.Box(0, 1, (len(ACTION_MAP),), bool),
-                "mask_equip_place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
+                "mask_equip/place": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
                 "mask_destroy": gym.spaces.Box(0, 1, (N_ALL_ITEMS,), bool),
                 "mask_craft_smelt": gym.spaces.Box(0, 1, (len(ALL_CRAFT_SMELT_ITEMS),), bool),
             }
@@ -133,10 +133,7 @@ class MineDojoWrapper(gym.Wrapper):
             else:
                 self._inventory[item].append(i)
             # count the items in the inventory
-            if item == "air":
-                converted_inventory[ITEM_NAME_TO_ID[item]] += 1
-            else:
-                converted_inventory[ITEM_NAME_TO_ID[item]] += quantity
+            converted_inventory[ITEM_NAME_TO_ID[item]] += quantity
         self._inventory_max = np.maximum(converted_inventory, self._inventory_max)
         return converted_inventory
 
@@ -173,7 +170,7 @@ class MineDojoWrapper(gym.Wrapper):
         masks["action_type"][7] *= np.any(destroy_mask).item()
         return {
             "mask_action_type": np.concatenate((np.array([True] * 12), masks["action_type"][1:])),
-            "mask_equip_place": equip_mask,
+            "mask_equip/place": equip_mask,
             "mask_destroy": destroy_mask,
             "mask_craft_smelt": masks["craft_smelt"],
         }

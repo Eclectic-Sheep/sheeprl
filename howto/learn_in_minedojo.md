@@ -4,7 +4,7 @@
 >
 > The `Categorical` PyTorch distribution does not work correctly when some probabilities are set to $0$ (the probs set to zero can be sampled anyway). This can cause some errors when filtering actions with the action masks provided by MineDojo. This error is sporadic, so, we are waiting for the issue to be fixed by PyTorch. One can track the issue here: https://github.com/pytorch/pytorch/issues/91863
 
-First, you need to install JDK 1.8, on Debian based systems you can run the following:
+First you need to install the JDK 1.8, on Debian based systems you can run the following:
 
 ```bash
 sudo apt update -y
@@ -72,5 +72,6 @@ For more information about the MineDojo action space, check [here](https://docs.
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
+
 1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

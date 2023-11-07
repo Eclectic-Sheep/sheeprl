@@ -605,12 +605,12 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
                     mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                    mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
+                    mask["mask_equip/place"] = mask["mask_equip/place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
                             sampled_action = functional_action[t, b].item()
                             if sampled_action in (16, 17):  # Equip/Place action
-                                logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
+                                logits[t, b][torch.logical_not(mask["mask_equip/place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(
@@ -752,49 +752,15 @@ class PlayerDV2(nn.Module):
             expl_actions = [self.actions]
         else:
             expl_actions = []
-            functional_action = actions[0].argmax(dim=-1)
-            for i, act in enumerate(actions):
-                logits = torch.zeros_like(act)
-                # Exploratory action must respect the constraints of the environment
-                if mask is not None:
-                    if i == 0:
-                        logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
-                    elif i == 1:
-                        mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
-                        for t in range(functional_action.shape[0]):
-                            for b in range(functional_action.shape[1]):
-                                sampled_action = functional_action[t, b].item()
-                                if sampled_action == 15:  # Craft action
-                                    logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
-                    elif i == 2:
-                        mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                        mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
-                        for t in range(functional_action.shape[0]):
-                            for b in range(functional_action.shape[1]):
-                                sampled_action = functional_action[t, b].item()
-                                if sampled_action in {16, 17}:  # Equip/Place action
-                                    logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
-                                elif sampled_action == 18:  # Destroy action
-                                    logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
+            for act in actions:
                 sample = (
                     OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
                     .sample()
                     .to(self.device)
                 )
-                expl_amount = self.expl_amount
-                # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-                # to satisfy the constraints of the environment
-                if (
-                    i in {1, 2}
-                    and actions[0].argmax() != expl_actions[0].argmax()
-                    and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-                ):
-                    expl_amount = 2
                 expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act)
+                    torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
                 )
-                if mask is not None and i == 0:
-                    functional_action = expl_actions[0].argmax(dim=-1)
             self.actions = torch.cat(expl_actions, -1)
         return tuple(expl_actions)
 
