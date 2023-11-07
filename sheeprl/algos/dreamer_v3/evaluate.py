@@ -61,7 +61,6 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         world_model.rssm,
         actor.module,
         actions_dim,
-        cfg.algo.player.expl_amount,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
