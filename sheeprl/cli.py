@@ -265,7 +265,6 @@ def evaluation(cfg: DictConfig):
                 "evaluation",
             )
         )
-        run_name.mkdir(parents=True, exist_ok=True)
         ckpt_cfg.run_name = str(run_name)
 
     # Check the validity of the configuration and run the evaluation
