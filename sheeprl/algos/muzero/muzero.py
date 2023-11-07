@@ -12,9 +12,10 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
+from sheeprl._node import Node
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
-from sheeprl.algos.muzero.utils import MCTS, Node, make_env, test, visit_softmax_temperature
+from sheeprl.algos.muzero.utils import MCTS, make_env, test, visit_softmax_temperature
 from sheeprl.data.buffers_np import Trajectory, TrajectoryReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
@@ -161,7 +162,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             steps_data = None
             for trajectory_step in range(0, max_trajectory_len):
                 if not warm_up:
-                    node = Node(prior=0)
+                    node = Node(0.0)
 
                     # start MCTS
                     mcts.search(

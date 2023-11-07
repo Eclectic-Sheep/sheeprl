@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 load_dotenv()
 ROOT_DIR = os.path.dirname(__file__)
 
-
 from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
