@@ -2,7 +2,7 @@
 
 defaults:
   - override /algo: dreamer_v1
-  - override /env: dmc
+  - override /env: atari
   - _self_
 
 # Experiment

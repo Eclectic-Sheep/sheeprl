@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from sheeprl.utils.imports import _IS_MINERL_0_4_4_AVAILABLE
 
 if not _IS_MINERL_0_4_4_AVAILABLE:
@@ -319,7 +321,3 @@ class MineRLWrapper(gym.Wrapper):
 
     def render(self, mode: Optional[str] = "rgb_array"):
         return self.env.render(self.render_mode)
-
-    def close(self):
-        self.env.close()
-        return super().close()

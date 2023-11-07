@@ -39,27 +39,32 @@ def get_log_dir(fabric: Fabric, root_dir: str, run_name: str, share: bool = True
         world_collective.setup()
         world_collective.create_group()
     if fabric.is_global_zero:
-        save_dir = os.path.join("logs", "runs", root_dir, run_name)
-        fs = get_filesystem(root_dir)
-        try:
-            listdir_info = fs.listdir(save_dir)
-            existing_versions = []
-            for listing in listdir_info:
-                d = listing["name"]
-                bn = os.path.basename(d)
-                if _is_dir(fs, d) and bn.startswith("version_"):
-                    dir_ver = bn.split("_")[1].replace("/", "")
-                    existing_versions.append(int(dir_ver))
-            if len(existing_versions) == 0:
-                version = 0
-            else:
-                version = max(existing_versions) + 1
-            log_dir = os.path.join(save_dir, f"version_{version}")
-        except OSError:
-            warnings.warn("Missing logger folder: %s", save_dir)
-            log_dir = os.path.join(save_dir, f"version_{0}")
+        # If the logger was instantiated, then take the log_dir from it
+        if len(fabric.loggers) > 0:
+            log_dir = fabric.logger.log_dir
+        else:
+            # Otherwise the rank-zero process creates the log_dir
+            save_dir = os.path.join("logs", "runs", root_dir, run_name)
+            fs = get_filesystem(root_dir)
+            try:
+                listdir_info = fs.listdir(save_dir)
+                existing_versions = []
+                for listing in listdir_info:
+                    d = listing["name"]
+                    bn = os.path.basename(d)
+                    if _is_dir(fs, d) and bn.startswith("version_"):
+                        dir_ver = bn.split("_")[1].replace("/", "")
+                        existing_versions.append(int(dir_ver))
+                if len(existing_versions) == 0:
+                    version = 0
+                else:
+                    version = max(existing_versions) + 1
+                log_dir = os.path.join(save_dir, f"version_{version}")
+            except OSError:
+                warnings.warn("Missing logger folder: %s" % save_dir, UserWarning)
+                log_dir = os.path.join(save_dir, f"version_{0}")
 
-        os.makedirs(log_dir, exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
         if fabric.world_size > 1 and share:
             world_collective.broadcast_object_list([log_dir], src=0)
     else:
