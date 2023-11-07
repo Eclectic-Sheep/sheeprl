@@ -107,6 +107,9 @@ actor:
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
   expl_amount: 0.0
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 0
   
   # Disttributed percentile model (used to scale the values)
   moments:
@@ -141,7 +144,4 @@ critic:
 
 # Player agent (it interacts with the environment)
 player:
-  expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
   discrete_size: ${algo.world_model.discrete_size}

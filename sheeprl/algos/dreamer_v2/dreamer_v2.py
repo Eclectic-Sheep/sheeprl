@@ -585,12 +585,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
+    max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
     if cfg.checkpoint.resume_from:
         actor.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.actor.expl_amount,
-            final=cfg.algo.player.expl_min,
+            final=cfg.algo.actor.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
 
@@ -789,12 +789,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     per_rank_gradient_steps += 1
                 train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
-            if cfg.algo.player.expl_decay:
+            if cfg.algo.actor.expl_decay:
                 expl_decay_steps += 1
                 actor.expl_amount = polynomial_decay(
                     expl_decay_steps,
                     initial=cfg.algo.actor.expl_amount,
-                    final=cfg.algo.player.expl_min,
+                    final=cfg.algo.actor.expl_min,
                     max_decay_steps=max_step_expl_decay,
                 )
             if aggregator and not aggregator.disabled:
