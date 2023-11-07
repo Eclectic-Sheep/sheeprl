@@ -525,7 +525,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_model.rssm.representation_model.module,
         actor.module,
         actions_dim,
-        cfg.algo.player.expl_amount,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
@@ -597,9 +596,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         learning_starts += start_step
     max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
     if cfg.checkpoint.resume_from:
-        player.expl_amount = polynomial_decay(
+        actor.expl_amount = polynomial_decay(
             expl_decay_steps,
-            initial=cfg.algo.player.expl_amount,
+            initial=cfg.algo.actor.expl_amount,
             final=cfg.algo.player.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
@@ -675,7 +674,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
+                    real_actions = actions = player.get_exploration_action(preprocessed_obs, mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, -1).cpu().numpy()
@@ -801,14 +800,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.player.expl_decay:
                 expl_decay_steps += 1
-                player.expl_amount = polynomial_decay(
+                actor.expl_amount = polynomial_decay(
                     expl_decay_steps,
-                    initial=cfg.algo.player.expl_amount,
+                    initial=cfg.algo.actor.expl_amount,
                     final=cfg.algo.player.expl_min,
                     max_decay_steps=max_step_expl_decay,
                 )
             if aggregator and not aggregator.disabled:
-                aggregator.update("Params/exploration_amout", player.expl_amount)
+                aggregator.update("Params/exploration_amout", actor.expl_amount)
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):

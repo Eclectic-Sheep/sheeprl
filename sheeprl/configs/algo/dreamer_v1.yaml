@@ -91,6 +91,7 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  expl_amount: 0.3
 
   # Actor optimizer
   optimizer:
@@ -114,6 +115,5 @@ critic:
 # Player agent (it interacts with the environment)
 player:
   expl_min: 0.0
-  expl_amount: 0.3
   expl_decay: False
   max_step_expl_decay: 200000
