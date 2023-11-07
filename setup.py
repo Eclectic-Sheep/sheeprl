@@ -82,7 +82,7 @@ def get_extensions():
     extensions_dir = os.path.join(this_dir, "sheeprl", "csrc")
     extension_sources = {os.path.join(extensions_dir, p) for p in glob.glob(os.path.join(extensions_dir, "*.cpp"))}
     sources = list(extension_sources)
-    sources = ["./sheeprl/csrc/foo/foo.cpp", "./sheeprl/csrc/bar/bar.cpp", "./sheeprl/csrc/bind.cpp"]
+    sources = ["./sheeprl/csrc/node/node.cpp", "./sheeprl/csrc/bind.cpp"]
 
     ext_modules = [
         extension(

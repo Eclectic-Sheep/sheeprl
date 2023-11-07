@@ -14,7 +14,7 @@ from torchmetrics import MeanMetric
 
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
-from sheeprl.algos.muzero.utils import Node, make_env, test, visit_softmax_temperature
+from sheeprl.algos.muzero.utils import MCTS, Node, make_env, test, visit_softmax_temperature
 from sheeprl.data.buffers_np import Trajectory, TrajectoryReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
@@ -142,6 +142,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     buffer_size = buffer_capacity // int(fabric.world_size) if not dry_run else 1
     rb = TrajectoryReplayBuffer(max_num_trajectories=buffer_size, memmap=memmap_buffer)
 
+    # Initialize MCTS
+    mcts = MCTS(agent, num_simulations, gamma, dirichlet_alpha, exploration_fraction, support_size)
     # Global variables
     start_time = time.perf_counter()
     num_updates = int(total_steps // int(fabric.world_size)) if not dry_run else 1
@@ -159,21 +161,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             steps_data = None
             for trajectory_step in range(0, max_trajectory_len):
                 if not warm_up:
-                    node = Node(prior=0, device=device)
+                    node = Node(prior=0)
 
                     # start MCTS
-                    node.mcts(
-                        agent,
+                    mcts.search(
+                        node,
                         obs,
-                        num_simulations,
-                        gamma,
-                        dirichlet_alpha,
-                        exploration_fraction,
-                        support_size=support_size,
                     )
 
                     # Select action based on the visit count distribution and the temperature
-                    visits_count = np.array([child.visit_count for child in node.children.values()])
+                    visits_count = np.array([child.visit_count for child in node.children])
                     temperature = visit_softmax_temperature(training_steps=update_step)
                     visit_probs = visits_count / num_simulations
                     visit_probs = np.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])

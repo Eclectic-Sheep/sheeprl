@@ -107,11 +107,11 @@ class Node:
         reward (float): The reward of the node.
         value_sum (float): The sum of the values of the node.
         visit_count (int): The number of times the node has been visited.
-        children (dict[int, Node]): The children of the node, one for each action where actions are represented
+        children (list[Node]): The children of the node, one for each action where actions are represented
             as integers running from 0 to num_actions - 1.
     """
 
-    def __init__(self, prior: float, device=torch.device):
+    def __init__(self, prior: float):
         """A Node in the MCTS tree.
 
         Args:
@@ -121,12 +121,11 @@ class Node:
                 Hence, it is needed only for the starting node of every MCTS search.
         """
         self.prior: float = prior
-        self.device = device
         self.hidden_state: Optional[torch.Tensor] = None
         self.reward: float = 0.0
         self.value_sum: float = 0.0
         self.visit_count: int = 0
-        self.children: dict[int, Node] = {}
+        self.children: list[Node] = []
 
     def expanded(self) -> bool:
         """Returns True if the node is already expanded, False otherwise.
@@ -143,102 +142,126 @@ class Node:
             return self.value_sum
         return self.value_sum / self.visit_count
 
+    def expand(self, normalized_policy_list: list[float]):
+        """Expands the node by creating all its children.
+
+        Args:
+            normalized_policy (torch.Tensor): The policy output of the network, normalized to be a probability
+                distribution.
+        """
+        for prior in normalized_policy_list:
+            self.children.append(Node(prior))
+
     def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
         """Add exploration noise to the prior probabilities."""
-        actions = list(self.children.keys())
+        actions = list(range(len(self.children)))
         noise = np.random.dirichlet([dirichlet_alpha] * len(actions))
         frac = exploration_fraction
         for a, n in zip(actions, noise):
             self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
 
-    def mcts(
+
+class MCTS:
+    def __init__(
         self,
-        agent: torch.nn.Module,
-        observation: np.ndarray,
+        agent: MuzeroAgent,
         num_simulations: int,
         gamma: float = 0.997,
         dirichlet_alpha: float = 0.25,
         exploration_fraction: float = 0.25,
         support_size: int = 300,
+        pb_c_base: float = 19652.0,
+        pb_c_init: float = 1.25,
     ):
-        """Runs MCTS for num_simulations"""
+        self.agent = agent
+        self.num_simulations = num_simulations
+        self.gamma = gamma
+        self.dirichlet_alpha = dirichlet_alpha
+        self.exploration_fraction = exploration_fraction
+        self.support_size = support_size
+        self.pb_c_base = pb_c_base
+        self.pb_c_init = pb_c_init
+
+    def search(self, root, observation: np.ndarray):
+        """Runs MCTS for num_simulations and modifies the root node in place with the result."""
         # Initialize the hidden state and compute the actor's policy logits
-        hidden_state, policy_logits, _ = agent.initial_inference(
-            torch.as_tensor(observation, device=self.device)
-        )  # TODO move outside mcts?
-        self.hidden_state = hidden_state.reshape(1, 1, -1)
+        hidden_state, policy_logits, _ = self.agent.initial_inference(torch.as_tensor(observation))
+        root.hidden_state = hidden_state.reshape(1, 1, -1)
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
         normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
-        for action in range(normalized_policy.numel()):
-            self.children[action] = Node(normalized_policy[action].item(), device=self.device)
-        self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
+        root.expand(normalized_policy.squeeze().tolist())
+        root.add_exploration_noise(self.dirichlet_alpha, self.exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
         min_max_stats = MinMaxStats()
 
-        for _ in range(num_simulations):
-            node = self
-            search_path = [node]
-
-            while node.expanded():
-                # Select the child with the highest UCB score
-                ucb_scores = ucb_score(
-                    parent=node,
-                    min_max_stats=min_max_stats,
-                    gamma=gamma,
-                    pb_c_base=19652,
-                    pb_c_init=1.25,
-                )
-
-                ucb_scores = ucb_scores + 1e-7 * np.random.random(
-                    ucb_scores.shape
-                )  # Add tiny bit of randomness for tie break
-                imagined_action = np.argmax(ucb_scores)
-                child = node.children[imagined_action]
-                search_path.append(child)
-                node = child
+        for _ in range(self.num_simulations):
+            search_path, imagined_action = self.rollout(root, min_max_stats)
 
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
+            node = search_path[-1]
             parent = search_path[-2]
-            hidden_state, reward, policy_logits, value = agent.recurrent_inference(
+            hidden_state, reward, policy_logits, value = self.agent.recurrent_inference(
                 torch.tensor([imagined_action]).view(1, 1).to(device=parent.hidden_state.device, dtype=torch.float32),
                 parent.hidden_state,
             )
-            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size).item()
+            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support_size).item()
             node.hidden_state = hidden_state
-            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), support_size).item()
+            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_size).item()
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             for action in range(normalized_policy.numel()):
-                node.children[action] = Node(
-                    normalized_policy.squeeze()[action].item(), device=normalized_policy.device
-                )
+                node.children.append(Node(normalized_policy.squeeze()[action].item()))
 
             # Backpropagate the search path to update the nodes' statistics
-            for visited_node in reversed(search_path):
-                visited_node.value_sum += value
-                visited_node.visit_count += 1
-                min_max_stats.update(visited_node.value())
-                value = visited_node.reward + gamma * value
+            self.backpropagate(search_path, value, min_max_stats)
 
+    def rollout(self, root: Node, min_max_stats: MinMaxStats) -> tuple[list[Node], int]:
+        if not root.expanded():
+            raise RuntimeError("Cannot rollout from an unexpanded root!")
+        search_path = [root]
+        node = root
+        while node.expanded():
+            # Select the child with the highest UCB score
+            ucb_scores = self.ucb_score(
+                parent=node,
+                min_max_stats=min_max_stats,
+            )
 
-def ucb_score(parent: Node, min_max_stats: MinMaxStats, gamma: float, pb_c_base: float, pb_c_init: float) -> float:
-    """Computes the UCB score of a child node relative to its parent, using the min-max bounds on the value function to
-    normalize the node value."""
-    children_visit_counts = np.array([child.visit_count for child in parent.children.values()])
-    children_values = np.array([child.value() for child in parent.children.values()])
-    children_priors = np.array([child.prior for child in parent.children.values()])
-    children_rewards = np.array([child.reward for child in parent.children.values()])
-    pb_c = math.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
-    pb_c *= math.sqrt(parent.visit_count) / (children_visit_counts + 1)
+            ucb_scores = ucb_scores + 1e-7 * np.random.random(
+                ucb_scores.shape
+            )  # Add tiny bit of randomness for tie break
+            imagined_action = np.argmax(ucb_scores)
+            child = node.children[imagined_action]
+            search_path.append(child)
+            node = child
+        return search_path, imagined_action
 
-    prior_score = pb_c * children_priors
-    value_score = children_rewards + gamma * min_max_stats.normalize(children_values)
-    min_value = np.min(value_score)
-    max_value = np.max(value_score) + 1e-7
-    value_score = (value_score - min_value) / (max_value - min_value)  # Normalize to be in [0, 1] range
-    return prior_score + value_score
+    def ucb_score(self, parent: Node, min_max_stats: MinMaxStats) -> np.ndarray:
+        """Computes the UCB score of a child node relative to its parent,
+        using the min-max bounds on the value function to
+        normalize the node value."""
+        children_visit_counts = np.array([child.visit_count for child in parent.children])
+        children_values = np.array([child.value() for child in parent.children])
+        children_priors = np.array([child.prior for child in parent.children])
+        children_rewards = np.array([child.reward for child in parent.children])
+        pb_c = math.log((parent.visit_count + self.pb_c_base + 1) / self.pb_c_base) + self.pb_c_init
+        pb_c *= math.sqrt(parent.visit_count) / (children_visit_counts + 1)
+
+        prior_score = pb_c * children_priors
+        value_score = children_rewards + self.gamma * min_max_stats.normalize(children_values)
+        min_value = np.min(value_score)
+        max_value = np.max(value_score) + 1e-7
+        value_score = (value_score - min_value) / (max_value - min_value)  # Normalize to be in [0, 1] range
+        return prior_score + value_score
+
+    def backpropagate(self, search_path: list[Node], value: float, min_max_stats: MinMaxStats):
+        for visited_node in reversed(search_path):
+            visited_node.value_sum += value
+            visited_node.visit_count += 1
+            min_max_stats.update(visited_node.value())
+            value = visited_node.reward + self.gamma * value
 
 
 @torch.no_grad()
