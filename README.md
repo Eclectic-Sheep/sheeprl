@@ -17,6 +17,66 @@
   </table>
 </div>
 
+<div align="center">
+  <table>
+<thead>
+  <tr>
+    <th>Environment</th>
+    <th>Total frames</th>
+    <th>Training time</th>
+    <th>Test reward</th>
+    <th>Paper reward</th>
+    <th>GPUs</th>
+  </tr>
+</thead>
+<tbody>
+  <tr>
+    <td>Crafter</td>
+    <td>1M</td>
+    <td>1d 3h</td>
+    <td>12.1</td>
+    <td>11.7</td>
+    <td>1-V100</td>
+  </tr>
+  <tr>
+    <td>Atari-MsPacman</td>
+    <td>100K</td>
+    <td>14h</td>
+    <td>1542</td>
+    <td>1327</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td> Atari-Boxing</td>
+    <td>100K</td>
+    <td>14h</td>
+    <td>84</td>
+    <td>78</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td>DOA++(w/o optimizations)<sup>1</sup></td>
+    <td>7M</td>
+    <td>18d 22h</td>
+    <td>2726/33283<sup>2</sup></td>
+    <td>N.A.</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td>Minecraft-Nav(w/o optimizations)</td>
+    <td>8M</td>
+    <td>16d 4h</td>
+    <td>27% &gt;= 70<br>14% &gt;= 100</td>
+    <td>N.A.</td>
+    <td>1-V100</td>
+  </tr>
+</tbody>
+</table>
+</div>
+
+1. For comparison: 1M in 2d 7h vs 1M in 1d 15h (before and after optimizations resp.)
+2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
+
 ## What
 
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
