@@ -103,7 +103,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
             strategy = DDPStrategy(find_unused_parameters=True)
-        elif "finetuning" in algo_name:
+        elif "finetuning" in algo_name and "p2e" in module.__name__:
             # Load exploration configurations
             ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
             exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
@@ -126,7 +126,6 @@ def run_algorithm(cfg: Dict[str, Any]):
             cfg.env.frame_stack_dilation = exploration_cfg.env.frame_stack_dilation
             cfg.env.max_episode_steps = exploration_cfg.env.max_episode_steps
             cfg.env.reward_as_observation = exploration_cfg.env.reward_as_observation
-            cfg.env.wrapper = exploration_cfg.env.wrapper
             _env_target = cfg.env.wrapper._target_.lower()
             if "minerl" in _env_target or "minedojo" in _env_target:
                 cfg.env.max_pitch = exploration_cfg.env.max_pitch
@@ -136,6 +135,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                 cfg.env.break_speed_multiplier = exploration_cfg.env.break_speed_multiplier
             kwargs["exploration_cfg"] = exploration_cfg
             cfg.fabric = exploration_cfg.fabric
+            strategy = cfg.fabric.pop("strategy", "auto")
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:
