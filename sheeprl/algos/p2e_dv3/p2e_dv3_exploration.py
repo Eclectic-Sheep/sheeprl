@@ -160,11 +160,11 @@ def train(
         }
     )
     # Compute the distribution over the rewards
-    pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
+    pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states.detach()), dims=1)
 
     # Compute the distribution over the terminal steps, if required
     pc = Independent(
-        Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+        Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
         1,
         validate_args=validate_args,
     )
