@@ -7,6 +7,7 @@ defaults:
 
 # Experiment
 seed: 0
+total_steps: 5000000
 per_rank_batch_size: 16
 per_rank_sequence_length: 64
 
@@ -30,6 +31,7 @@ env:
 # Checkpoint
 checkpoint:
   every: 100000
+  exploration_ckpt_path: /home/michele.milesi/repos/sheeprl/logs/runs/p2e_dv3/2023-10-04_11-21-17/doapp_default_0/version_0/checkpoint/ckpt_14900000_0.ckpt
 
 # Buffer
 buffer:
@@ -68,7 +70,7 @@ mlp_keys:
 
 # Algorithm
 algo:
-  learning_starts: 131072
+  learning_starts: 65536
   train_every: 1
   dense_units: 768
   mlp_layers: 4

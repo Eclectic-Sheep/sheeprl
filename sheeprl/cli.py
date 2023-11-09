@@ -103,7 +103,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
             strategy = DDPStrategy(find_unused_parameters=True)
-        elif "finetuning" in algo_name and "p2e" in module.__name__:
+        elif "finetuning" in algo_name and "p2e" in module:
             # Load exploration configurations
             ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
             exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
