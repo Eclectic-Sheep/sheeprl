@@ -149,9 +149,6 @@ def test_sac_decoupled(standard_args, start_time):
 def test_ppo(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo",
         "env=dummy",
@@ -160,6 +157,8 @@ def test_ppo(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
+        "cnn_keys.encoder=[rgb]",
+        "mlp_keys.encoder=[]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -172,9 +171,6 @@ def test_ppo(standard_args, start_time, env_id):
 def test_ppo_decoupled(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_ppo_decoupled"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_decoupled",
         "env=dummy",
@@ -185,6 +181,8 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
+        "cnn_keys.encoder=[rgb]",
+        "mlp_keys.encoder=[]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -199,9 +197,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
         "exp=ppo_recurrent",
         "algo.rollout_steps=2",
@@ -461,4 +456,84 @@ def test_dreamer_v3(standard_args, env_id, start_time):
 
     with mock.patch.object(sys, "argv", args):
         run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_p2e_dv3(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])
+    run_name = "test_p2e_dv3"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "exp=p2e_dv3_exploration",
+        "env=dummy",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        "buffer.checkpoint=True",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
+        "checkpoint.save_last=True",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+        import torch.distributed
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            del os.environ["LOCAL_RANK"]
+            del os.environ["NODE_RANK"]
+            del os.environ["WORLD_SIZE"]
+            del os.environ["MASTER_ADDR"]
+            del os.environ["MASTER_PORT"]
+
+    ckpt_path = os.path.join("logs", "runs", ckpt_path)
+    checkpoints = os.listdir(ckpt_path)
+    if len(checkpoints) > 0:
+        ckpt_path = os.path.join(ckpt_path, checkpoints[-1])
+    else:
+        raise RuntimeError("No exploration checkpoints")
+    args = standard_args + [
+        "exp=p2e_dv3_finetuning",
+        f"checkpoint.exploration_ckpt_path={ckpt_path}",
+        "per_rank_batch_size=1",
+        "per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env=dummy",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        "cnn_keys.encoder=[rgb]",
+        "cnn_keys.decoder=[rgb]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
