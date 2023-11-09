@@ -612,7 +612,7 @@ class Actor(nn.Module):
             then `p = (1 - self.unimix) * p + self.unimix * unif`,
             where `unif = `1 / self.discrete`.
             Defaults to 0.01.
-        expl_amout (float): the exploration amout to use during training.
+        expl_amount (float): the exploration amount to use during training.
             Default to 0.0.
     """
 

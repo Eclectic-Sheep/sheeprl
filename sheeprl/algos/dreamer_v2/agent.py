@@ -432,7 +432,7 @@ class Actor(nn.Module):
             Default to 4.
         layer_norm (bool): whether or not to use the layer norm.
             Default to False.
-        expl_amout (float): the exploration amout to use during training.
+        expl_amount (float): the exploration amount to use during training.
             Default to 0.0.
     """
 

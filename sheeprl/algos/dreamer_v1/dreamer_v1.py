@@ -720,7 +720,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     max_decay_steps=max_step_expl_decay,
                 )
             if aggregator:
-                aggregator.update("Params/exploration_amout", actor.expl_amount)
+                aggregator.update("Params/exploration_amount", actor.expl_amount)
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
