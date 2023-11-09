@@ -993,8 +993,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     max_decay_steps=max_step_expl_decay,
                 )
             if aggregator and not aggregator.disabled:
-                aggregator.update("Params/exploration_amout_task", actor_task.expl_amount)
-                aggregator.update("Params/exploration_amout_exploration", actor_exploration.expl_amount)
+                aggregator.update("Params/exploration_amount_task", actor_task.expl_amount)
+                aggregator.update("Params/exploration_amount_exploration", actor_exploration.expl_amount)
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
