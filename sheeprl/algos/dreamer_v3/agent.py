@@ -476,7 +476,7 @@ class PlayerDV3(nn.Module):
             stochastic state (prior or posterior).
             Defaults to 32.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
-            Default to None
+            Default to None.
     """
 
     def __init__(
