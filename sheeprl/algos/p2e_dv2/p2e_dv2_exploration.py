@@ -59,7 +59,6 @@ def train(
     critic_exploration_optimizer: _FabricOptimizer,
     is_continuous: bool,
     actions_dim: Sequence[int],
-    is_exploring: bool = True,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -236,172 +235,169 @@ def train(
             .detach(),
         )
 
-    if is_exploring:
-        # Ensemble Learning
-        loss = 0.0
-        ensemble_optimizer.zero_grad(set_to_none=True)
-        for ens in ensembles:
-            out = ens(
-                torch.cat(
-                    (
-                        posteriors.view(*posteriors.shape[:-2], -1).detach(),
-                        recurrent_states.detach(),
-                        data["actions"].detach(),
-                    ),
-                    -1,
-                )
-            )[:-1]
-            next_obs_embedding_dist = Independent(
-                Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
+    # Ensemble Learning
+    loss = 0.0
+    ensemble_optimizer.zero_grad(set_to_none=True)
+    for ens in ensembles:
+        out = ens(
+            torch.cat(
+                (
+                    posteriors.view(*posteriors.shape[:-2], -1).detach(),
+                    recurrent_states.detach(),
+                    data["actions"].detach(),
+                ),
+                -1,
             )
-            loss -= next_obs_embedding_dist.log_prob(
-                posteriors.view(sequence_length, batch_size, -1).detach()[1:]
-            ).mean()
-        loss.backward()
-        ensemble_grad = None
-        if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
-            ensemble_grad = fabric.clip_gradients(
-                module=ens,
-                optimizer=ensemble_optimizer,
-                max_norm=cfg.algo.ensembles.clip_gradients,
-                error_if_nonfinite=False,
-            )
-        ensemble_optimizer.step()
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
-            if ensemble_grad:
-                aggregator.update("Grads/ensemble", ensemble_grad.detach())
+        )[:-1]
+        next_obs_embedding_dist = Independent(
+            Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
+        )
+        loss -= next_obs_embedding_dist.log_prob(posteriors.view(sequence_length, batch_size, -1).detach()[1:]).mean()
+    loss.backward()
+    ensemble_grad = None
+    if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
+        ensemble_grad = fabric.clip_gradients(
+            module=ens,
+            optimizer=ensemble_optimizer,
+            max_norm=cfg.algo.ensembles.clip_gradients,
+            error_if_nonfinite=False,
+        )
+    ensemble_optimizer.step()
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
+        if ensemble_grad:
+            aggregator.update("Grads/ensemble", ensemble_grad.detach())
 
-        # Behaviour Learning Exploration
-        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size * discrete_size)
-        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+    # Behaviour Learning Exploration
+    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size * discrete_size)
+    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+    imagined_trajectories = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        stochastic_size * discrete_size + recurrent_state_size,
+        device=device,
+    )
+    imagined_trajectories[0] = imagined_latent_state
+    imagined_actions = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        data["actions"].shape[-1],
+        device=device,
+    )
+    imagined_actions[0] = torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1])
+
+    # imagine trajectories in the latent space
+    for i in range(1, cfg.algo.horizon + 1):
+        actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
+        imagined_actions[i] = actions
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_prior = imagined_prior.view(1, -1, stochastic_size * discrete_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories = torch.empty(
-            cfg.algo.horizon + 1,
-            batch_size * sequence_length,
-            stochastic_size * discrete_size + recurrent_state_size,
-            device=device,
-        )
-        imagined_trajectories[0] = imagined_latent_state
-        imagined_actions = torch.empty(
-            cfg.algo.horizon + 1,
-            batch_size * sequence_length,
-            data["actions"].shape[-1],
-            device=device,
-        )
-        imagined_actions[0] = torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1])
+        imagined_trajectories[i] = imagined_latent_state
+    predicted_target_values = target_critic_exploration(imagined_trajectories)
 
-        # imagine trajectories in the latent space
-        for i in range(1, cfg.algo.horizon + 1):
-            actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
-            imagined_actions[i] = actions
-            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-            imagined_prior = imagined_prior.view(1, -1, stochastic_size * discrete_size)
-            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-            imagined_trajectories[i] = imagined_latent_state
-        predicted_target_values = target_critic_exploration(imagined_trajectories)
+    # Predict intrinsic reward
+    next_obs_embedding = torch.zeros(
+        len(ensembles),
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        stochastic_size * discrete_size,
+        device=device,
+    )
+    for i, ens in enumerate(ensembles):
+        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1))
 
-        # Predict intrinsic reward
-        next_obs_embedding = torch.zeros(
-            len(ensembles),
-            cfg.algo.horizon + 1,
-            batch_size * sequence_length,
-            stochastic_size * discrete_size,
-            device=device,
-        )
-        for i, ens in enumerate(ensembles):
-            next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1))
+    # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
+    intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
-        # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
-        intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
-
-        if cfg.algo.world_model.use_continues and world_model.continue_model:
-            continues = Independent(
-                Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            ).mean
-            true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
-            continues = torch.cat((true_done, continues[1:]))
-        else:
-            continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
-
-        lambda_values = compute_lambda_values(
-            intrinsic_reward[:-1],
-            predicted_target_values[:-1],
-            continues[:-1],
-            bootstrap=predicted_target_values[-1:],
-            horizon=cfg.algo.horizon,
-            lmbda=cfg.algo.lmbda,
-        )
-
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Values_exploration/predicted_values", predicted_target_values.detach().cpu().mean())
-            aggregator.update("Values_exploration/lambda_values", lambda_values.detach().cpu().mean())
-
-        with torch.no_grad():
-            discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
-
-        actor_exploration_optimizer.zero_grad(set_to_none=True)
-        policies: Sequence[Distribution] = actor_exploration(imagined_trajectories[:-2].detach())[1]
-        if is_continuous:
-            objective = lambda_values[1:]
-        else:
-            baseline = target_critic_exploration(imagined_trajectories)
-            advantage = (lambda_values[1:] - baseline[:-2]).detach()
-            objective = (
-                torch.stack(
-                    [
-                        p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                        for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                    ],
-                    -1,
-                ).sum(-1)
-                * advantage
-            )
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
-        policy_loss_exploration = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
-        fabric.backward(policy_loss_exploration)
-        actor_exploration_grad = None
-        if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-            actor_exploration_grad = fabric.clip_gradients(
-                module=actor_exploration,
-                optimizer=actor_exploration_optimizer,
-                max_norm=cfg.algo.actor.clip_gradients,
-                error_if_nonfinite=False,
-            )
-        actor_exploration_optimizer.step()
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
-            if actor_exploration_grad:
-                aggregator.update("Grads/actor_exploration", actor_exploration_grad.detach())
-
-        qv = Independent(
-            Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
+        continues = Independent(
+            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
             1,
             validate_args=validate_args,
+        ).mean
+        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
+        continues = torch.cat((true_done, continues[1:]))
+    else:
+        continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
+
+    lambda_values = compute_lambda_values(
+        intrinsic_reward[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-1:],
+        horizon=cfg.algo.horizon,
+        lmbda=cfg.algo.lmbda,
+    )
+
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Values_exploration/predicted_values", predicted_target_values.detach().cpu().mean())
+        aggregator.update("Values_exploration/lambda_values", lambda_values.detach().cpu().mean())
+
+    with torch.no_grad():
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
+
+    actor_exploration_optimizer.zero_grad(set_to_none=True)
+    policies: Sequence[Distribution] = actor_exploration(imagined_trajectories[:-2].detach())[1]
+    if is_continuous:
+        objective = lambda_values[1:]
+    else:
+        baseline = target_critic_exploration(imagined_trajectories)
+        advantage = (lambda_values[1:] - baseline[:-2]).detach()
+        objective = (
+            torch.stack(
+                [
+                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+                ],
+                -1,
+            ).sum(-1)
+            * advantage
         )
-        critic_exploration_optimizer.zero_grad(set_to_none=True)
-        value_loss_exploration = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
-        fabric.backward(value_loss_exploration)
-        critic_exploration_grad = None
-        if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-            critic_exploration_grad = fabric.clip_gradients(
-                module=critic_exploration,
-                optimizer=critic_exploration_optimizer,
-                max_norm=cfg.algo.critic.clip_gradients,
-                error_if_nonfinite=False,
-            )
-        critic_exploration_optimizer.step()
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
-            if critic_exploration_grad:
-                aggregator.update("Grads/critic_exploration", critic_exploration_grad.detach())
+    try:
+        entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
+    except NotImplementedError:
+        entropy = torch.zeros_like(objective)
+    policy_loss_exploration = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+    fabric.backward(policy_loss_exploration)
+    actor_exploration_grad = None
+    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
+        actor_exploration_grad = fabric.clip_gradients(
+            module=actor_exploration,
+            optimizer=actor_exploration_optimizer,
+            max_norm=cfg.algo.actor.clip_gradients,
+            error_if_nonfinite=False,
+        )
+    actor_exploration_optimizer.step()
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
+        if actor_exploration_grad:
+            aggregator.update("Grads/actor_exploration", actor_exploration_grad.detach())
+
+    qv = Independent(
+        Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        1,
+        validate_args=validate_args,
+    )
+    critic_exploration_optimizer.zero_grad(set_to_none=True)
+    value_loss_exploration = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
+    fabric.backward(value_loss_exploration)
+    critic_exploration_grad = None
+    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
+        critic_exploration_grad = fabric.clip_gradients(
+            module=critic_exploration,
+            optimizer=critic_exploration_optimizer,
+            max_norm=cfg.algo.critic.clip_gradients,
+            error_if_nonfinite=False,
+        )
+    critic_exploration_optimizer.step()
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
+        if critic_exploration_grad:
+            aggregator.update("Grads/critic_exploration", critic_exploration_grad.detach())
 
     # reset the world_model gradients, to avoid interferences with task learning
     world_optimizer.zero_grad(set_to_none=True)
@@ -542,6 +538,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # These arguments cannot be changed
     cfg.env.screen_size = 64
     cfg.env.frame_stack = 1
+    cfg.algo.player.actor_type = "exploration"
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
@@ -673,6 +670,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
@@ -774,10 +772,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             max_decay_steps=max_step_expl_decay,
         )
 
-    # Exploration
-    exploration_updates = int(cfg.exploration_steps // policy_steps_per_update) if not cfg.dry_run else 4
-    exploration_updates = min(num_updates, exploration_updates)
-
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -817,16 +811,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     player.init_states()
 
     per_rank_gradient_steps = 0
-    is_exploring = True
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
-
-        if update == exploration_updates:
-            is_exploring = False
-            player.actor = actor_task.module
-            # task test zero-shot
-            if fabric.is_global_zero:
-                test(copy.deepcopy(player), fabric, cfg, log_dir, "zero-shot")
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
@@ -989,7 +975,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         critic_exploration_optimizer=critic_exploration_optimizer,
                         is_continuous=is_continuous,
                         actions_dim=actions_dim,
-                        is_exploring=is_exploring,
                     )
                 train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
@@ -1008,8 +993,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     max_decay_steps=max_step_expl_decay,
                 )
             if aggregator and not aggregator.disabled:
-                aggregator.update("Params/exploration_amout_task", actor_task.expl_amount)
-                aggregator.update("Params/exploration_amout_exploration", actor_exploration.expl_amount)
+                aggregator.update("Params/exploration_amount_task", actor_task.expl_amount)
+                aggregator.update("Params/exploration_amount_exploration", actor_exploration.expl_amount)
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
@@ -1077,7 +1062,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
 
     envs.close()
-    # task test few-shot
+    # task test zero-shot
     if fabric.is_global_zero:
         player.actor = actor_task.module
-        test(player, fabric, cfg, log_dir, "few-shot")
+        player.actor_type = "task"
+        test(player, fabric, cfg, log_dir, "zero-shot")
