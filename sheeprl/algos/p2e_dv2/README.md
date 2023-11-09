@@ -9,11 +9,11 @@ The Plan2Explore algorithm is designed to efficiently learn and exploit the dyna
 
 The algorithm implementation is organized into two scripts:
 
-1. **Exploration Script (`p2e_dv1_exploration.py`):**
+1. **Exploration Script (`p2e_dv2_exploration.py`):**
    - Used for the exploratory phase to learn the dynamics of the environment.
    - Trains the exploration actor to select actions leading to new states.
 
-2. **Fine-tuning Script (`p2e_dv1_finetuning.py`):**
+2. **Fine-tuning Script (`p2e_dv2_finetuning.py`):**
    - Utilized for fine-tuning the agent after the exploration phase.
    - Starts with a trained agent and refines its performance or learns new tasks.
    
