@@ -17,6 +17,66 @@
   </table>
 </div>
 
+<div align="center">
+  <table>
+<thead>
+  <tr>
+    <th>Environment</th>
+    <th>Total frames</th>
+    <th>Training time</th>
+    <th>Test reward</th>
+    <th>Paper reward</th>
+    <th>GPUs</th>
+  </tr>
+</thead>
+<tbody>
+  <tr>
+    <td>Crafter</td>
+    <td>1M</td>
+    <td>1d 3h</td>
+    <td>12.1</td>
+    <td>11.7</td>
+    <td>1-V100</td>
+  </tr>
+  <tr>
+    <td>Atari-MsPacman</td>
+    <td>100K</td>
+    <td>14h</td>
+    <td>1542</td>
+    <td>1327</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td> Atari-Boxing</td>
+    <td>100K</td>
+    <td>14h</td>
+    <td>84</td>
+    <td>78</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td>DOA++(w/o optimizations)<sup>1</sup></td>
+    <td>7M</td>
+    <td>18d 22h</td>
+    <td>2726/33283<sup>2</sup></td>
+    <td>N.A.</td>
+    <td>1-3080</td>
+  </tr>
+  <tr>
+    <td>Minecraft-Nav(w/o optimizations)</td>
+    <td>8M</td>
+    <td>16d 4h</td>
+    <td>27% &gt;= 70<br>14% &gt;= 100</td>
+    <td>N.A.</td>
+    <td>1-V100</td>
+  </tr>
+</tbody>
+</table>
+</div>
+
+1. For comparison: 1M in 2d 7h vs 1M in 1d 15h (before and after optimizations resp.)
+2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
+
 ## What
 
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
@@ -92,7 +152,7 @@ git clone https://github.com/Eclectic-Sheep/sheeprl.git
 cd sheeprl
 ```
 
-From inside the newly create folder run
+From inside the newly created folder run
 
 ```bash
 pip install .
@@ -111,7 +171,7 @@ If you haven't already done so, create an environment with your choice of venv o
 
 > **Note**
 >
-> The example will use Python standard's venv module, and assumes macOS or Linux.
+> The example will use Python standard's venv module and assumes macOS or Linux.
 
 ```sh
 # create a virtual environment
@@ -139,7 +199,7 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 
 > **Note**
 >
-> if you are on an M-series Mac and encounter an error attributed box2dpy during install, you need to install SWIG using the instructions shown below.
+> If you are on an M-series Mac and encounter an error attributed box2dpy during installation, you need to install SWIG using the instructions shown below.
 
 
 It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://formulae.brew.sh/formula/swig) to support [Gym](https://github.com/openai/gym).
@@ -149,7 +209,7 @@ It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 # then, do
 brew install swig
-# then attempt to pip install with the prefered method, such as
+# then attempt to pip install with the preferred method, such as
 pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
@@ -191,7 +251,7 @@ That's all it takes to train an agent with SheepRL! 🎉
 > 3. How to [work with steps](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/work_with_steps.md)
 > 4. How to [select observations](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md)
 >
-> Moreover, there are other useful documents in the [`howto` folder](https://github.com/Eclectic-Sheep/sheeprl/tree/main/howto), which containes some guidance on how to properly use the framework.
+> Moreover, there are other useful documents in the [`howto` folder](https://github.com/Eclectic-Sheep/sheeprl/tree/main/howto), these documents contain some guidance on how to properly use the framework.
 
 ### :chart_with_upwards_trend: Check your results
 
@@ -227,7 +287,7 @@ You can check the available parameters for Lightning Fabric [here](https://light
 
 ### Evaluate your Agents
 
-You can easily evaluate your trained agents from checkpoints: tranining configurations are retrieved automatically.
+You can easily evaluate your trained agents from checkpoints: training configurations are retrieved automatically.
 
 ```bash
 python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu env.capture_video=True
@@ -249,7 +309,7 @@ The repository is structured as follows:
 - `configs`: contains the default configs of the algorithms.
 - `data`: contains the implementation of the data buffers.
 - `envs`: contains the implementation of the environment wrappers.
-- `models`: contains the implementation of the some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
+- `models`: contains the implementation of some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
 - `utils`: contains utility functions for the framework.
 
 #### Coupled vs Decoupled
@@ -273,7 +333,7 @@ The algorithm is implemented in the `<algorithm>.py` file.
 There are 2 functions inside this script:
 
 - `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-- `train()`: executes the training loop. It samples a batch of data from the buffer, compute the loss and updates the parameters of the agent.
+- `train()`: executes the training loop. It samples a batch of data from the buffer, computes the loss, and updates the parameters of the agent.
 
 #### Decoupled
 
@@ -281,31 +341,31 @@ The decoupled version of an algorithm is implemented in the `<algorithm>_decoupl
 
 There are 3 functions inside this script:
 
-- `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers and calls the `player()` and `trainer()` functions.
-- `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of iteractions with the environment, the player randomly splits the collected data in almost-equal chunks and send them separately to the trainers. It then waits for the trainers to finish the agent update.
-- `trainer()`: executes the training loop. It receives a chunk of data from the player, compute the loss and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
+- `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers, and calls the `player()` and `trainer()` functions.
+- `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of interactions with the environment, the player randomly splits the collected data into almost equal chunks and sends them separately to the trainers. It then waits for the trainers to finish the agent update.
+- `trainer()`: executes the training loop. It receives a chunk of data from the player, computes the loss, and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
 
 ## Algorithms implementation
 
 You can check inside the folder of each algorithm the `README.md` file for the details about the implementation.
 
-All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related with the training loop of the algorithm.
+All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related to the training loop of the algorithm.
 
-For example, we decided to create a `models` folder with an already-made models that can be composed to create the model of the agent.
+For example, we decided to create a `models` folder with already-made models that can be composed to create the model of the agent.
 
-For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized also for the decoupled or the recurrent version of the algorithm.
+For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized for the decoupled or the recurrent version of the algorithm.
 
 ## :card_index_dividers: Buffer
 
 For the buffer implementation, we choose to use a wrapper around a [TensorDict](https://pytorch.org/rl/tensordict/reference/generated/tensordict.TensorDict.html).
 
-TensorDict comes handy since we can easily add custom fields to the buffer as if we are working with dictionaries, but we can also easily perform operations on them as if we are working with tensors.
+TensorDict comes in handy since we can easily add custom fields to the buffer as if we are working with dictionaries, but we can also easily perform operations on them as if we are working with tensors.
 
 This flexibility makes it very simple to implement, with the classes `ReplayBuffer`, `SequentialReplayBuffer`, `EpisodeBuffer`, and `AsyncReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
 
 ### :mag: Technical details
 
-The tensor's shape in the TensorDict are `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
+The tensor's shape in the TensorDict is `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
 
 For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` must be specified. For example, for PPO, the `buffer_size` must be `[T, B]`, where `T` is the number of timesteps and `B` is the number of parallel environments.
 

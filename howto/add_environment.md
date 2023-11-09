@@ -2,12 +2,12 @@
 This repository requires that the environments have certain characteristics, in particular, that they have a [gymnasium-compliant interface](https://gymnasium.farama.org/api/env/).
 
 The main properties/methods that the environment has to provide are the following:
-* A `step` function which takes in input the actions and which outputs the next observations, the reward for taking that actions, whether the environment has terminated, whether the environment was truncated, and infomration from the environment about the step.
-* A `reset` function which resets the environment and returns the initial observations and some info about the episode.
-* A `render` function that renders the environment to help visualizing what the agent sees, some possible render mode are: `human` or `rgb_array`.
+* A `step` function that takes in input the actions and outputs the next observations, the reward for taking that actions, whether the environment has terminated, whether the environment was truncated, and information from the environment about the step.
+* A `reset` function that resets the environment and returns the initial observations and some info about the episode.
+* A `render` function that renders the environment to help visualizing what the agent sees, some possible render modes are: `human` or `rgb_array`.
 * A `close` function that closes the environment.
 * An `action_space` property indicating the valid actions, i.e., all the valid actions should be contained in that space. For more info, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
-* An `observation_space` property indicating all the valid observation that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary.
+* An `observation_space` property indicating all the valid observations that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary.
 * A `reward_range` (not mandatory), to specify the range that the agent can receive in a single step.
 
 > **Note**
@@ -19,15 +19,15 @@ There are two ways to add a new environment:
 1. Create from scratch a custom environment by inheriting from the [`gymnasium.Env`](https://gymnasium.farama.org/api/env/#gymnasium-env) class.
 2. Take an existing environment and add a wrapper to be compliant with the above directives.
 
-In both cases, the environment or wrapper must be inserted in a dedicated file the `./sheeprl/envs` folder, for instance you should add the `custom_env.py` file in `./sheeprl/envs` folder.
-After that, you have to create a new config file and place it in the `./sheeprl/configs/env` folder.
+In both cases, the environment or wrapper must be inserted in a dedicated file in the `./sheeprl/envs` folder, for instance, you should add the `custom_env.py` file in `./sheeprl/envs` folder.
+After that, you must create a new config file and place it in the `./sheeprl/configs/env` folder.
 
 > **Note**
 >
-> It could be necessary to define the `metadata` property that contains some metadata information about the environment. It is used by the `gym.experimental.wrappers.RecordVideoV0` wrapper, which is responsible to capture the video of the episode.
+> It could be necessary to define the `metadata` property containing metadata information about the environment. It is used by the `gym.experimental.wrappers.RecordVideoV0` wrapper, which is responsible for capturing the video of the episode.
 
-## Crate from Scratch
-If one needs to create a custom environment, then he/she can define a class by by inheriting from the `gymnasium.Env` class. So, you need to define the `__init__` function for initializing the required properties, and then define the `step`, `reset`, `close`, and `render` functions.
+## Create from Scratch
+If one needs to create a custom environment, then he/she can define a class by inheriting from the `gymnasium.Env` class. So, you need to define the `__init__` function for initializing the required properties, then define the `step`, `reset`, `close`, and `render` functions.
 
 The following shows an example of how you can define an environment with continuous actions from scratch:
 ```python
@@ -72,7 +72,7 @@ class ContinuousDummyEnv(gym.Env):
 
 ## Define a Wrapper for existing Environments
 The second option is to create a wrapper for existing environments, so define a class that inherits from the `gymnasium.Wrapper` class.
-Then you can redefine, if necessary, the `action_space`, `observation_space`, `render_mode` and `reward_range` properties in the `__init__` function.
+Then you can redefine, if necessary, the `action_space`, `observation_space`, `render_mode`, and `reward_range` properties in the `__init__` function.
 Finally, you can define the other functions to make the environment compatible with the library.
 
 The following is the example, we implemented the wrapper for the [Crafter](https://github.com/danijar/crafter) environment. As one can notice, the observations are converted by the `_convert_obs` function. Moreover, in the `step` function, the `truncated` is always set to `False`, since the original environment does not provide this information. Finally, in the `__init__` function the `reward_range`, `observation_space`, `action_space`, `render_mode`, and `metadata` properties are redefined.

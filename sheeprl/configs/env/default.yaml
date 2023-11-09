@@ -10,3 +10,4 @@ capture_video: True
 frame_stack_dilation: 1
 max_episode_steps: null
 reward_as_observation: False
+wrapper: ???

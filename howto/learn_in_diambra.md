@@ -1,7 +1,7 @@
 ## Install DIAMBRA environments
 1. First you need to register on the [diambra website](https://diambra.ai/register/).
-2. Second, you need to install docker and check that you have permissions to run it: e.g., on Linux you can run the following command: `sudo usermod -aG docker $USER`.
-3. Install DIAMBRA with the following comand:
+2. Second, you need to install docker and check that you have permission to run it: e.g., on Linux, you can run the following command: `sudo usermod -aG docker $USER`.
+3. Install DIAMBRA with the following command:
 ```bash
 pip install -e .[diambra]
 ```
@@ -25,8 +25,8 @@ This command will return a list of games with some additional information:
 
 To install an environment you have to execute the following steps:
 1. Download the ROM file and put it in your ROMs folder.
-2. If the environment specifications (in `diambra arena list-roms`) contain notes, then apply that notes (for instance, if the ROM file must be renamed).
-3. Set the `DIAMBRAROMSPATH` variable either temporarily in your current shell/prompt session, or permanently in your profile (e.g. on linux in `~/.bashrc`): `export DIAMBRAROMSPATH=/absolute/path/to/roms/folder`
+2. If the environment specifications (in `diambra arena list-roms`) contain notes, then apply those notes (for instance, if the ROM file must be renamed).
+3. Set the `DIAMBRAROMSPATH` variable either temporarily in your current shell/prompt session or permanently in your profile (e.g. on Linux in `~/.bashrc`): `export DIAMBRAROMSPATH=/absolute/path/to/roms/folder`
 
 > **Note**
 >
@@ -35,11 +35,11 @@ To install an environment you have to execute the following steps:
 > For instance, the output of the valid ROM file of *Dead or Alive* is: `Correct ROM file for Dead Or Alive ++, sha256 = d95855c7d8596a90f0b8ca15725686567d767a9a3f93a8896b489a160e705c4e`
 
 ## Observation and Action Spaces
-The observations space is composed by a python dictionary containing the RGB/grayscale frame and other vectors with additional information. For more information about the observation space, check [here](https://docs.diambra.ai/envs/#observation-space).
+The observation space is composed of a python dictionary containing the RGB/grayscale frame and other vectors with additional information. For more information about the observation space, check [here](https://docs.diambra.ai/envs/#observation-space).
 
-The action space can be either *discrete* or *multi-discrete*, in both cases you can select whether or not to enable the *attack buttons combination* which increments the number of actions the agent can execute. For more information about the action space, check [here](https://docs.diambra.ai/envs/#action-spaces).
+The action space can be either *discrete* or *multi-discrete*, in both cases, you can select whether or not to enable the *attack buttons combination* which increments the number of actions the agent can execute. For more information about the action space, check [here](https://docs.diambra.ai/envs/#action-spaces).
 
-Each environment has its own observation and action space, so it is reccomended to check them [here](https://docs.diambra.ai/envs/games/).
+Each environment has its own observation and action space, so it is recommended to check them [here](https://docs.diambra.ai/envs/games/).
 
 > **Note**
 >
@@ -52,24 +52,24 @@ The observation space is slightly modified to be compatible with our algorithms,
 > To know more about gymnasium spaces, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
 
 ## Multi-environments / Distributed training
-In order to train your agent with multiple environments or to perform a distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch (the number of *player* processes for decoupled algorithms). Thus, in case of coupled algorithm (e.g., `dreamer_v2`), if you want distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
+In order to train your agent with multiple environments or to perform distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch (the number of *player* processes for decoupled algorithms). Thus, in the case of coupled algorithms (e.g., `dreamer_v2`), if you want to distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
 ```bash
 diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 env.sync_env=True cnn_keys.encoder=[frame] fabric.devices=2
 ```
 
 ## Args
-The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the diambra configs with the argument `env=diambra`, then set the `env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.id` argument to `doapp` (i.e., `env.id=doapp`).
+The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the DIAMBRA configs with the argument `env=diambra`, then set the `env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.id` argument to `doapp` (i.e., `env.id=doapp`).
 
 ```bash
 diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 cnn_keys.encoder=[frame]
 ```
 
-Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
+Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of a custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
 
 DIAMBRA enables to customize the environment with several [settings](https://docs.diambra.ai/envs/#general-environment-settings) and [wrappers](https://docs.diambra.ai/wrappers/).
 To modify the default settings or add other wrappers, you have to add the settings or wrappers you want in `env.wrapper.diambra_settings` or `env.wrapper.diambra_wrappers`, respectively.
 
-For insance, in the following example, we create the `custom_exp.yaml` file in the `sheeprl/configs/exp` folder where the we select the diambra environment, in addition, the player one is selected and a step ratio of $5$ is choosen. Moreover, the rewards are normalized by a factor of $0.3$.
+For instance, in the following example, we create the `custom_exp.yaml` file in the `sheeprl/configs/exp` folder where we select the DIAMBRA environment, in addition, the player one is selected and a step ratio of $5$ is chosen. Moreover, the rewards are normalized by a factor of $0.3$.
 
 
 ```yaml
@@ -115,10 +115,10 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 >
 > **Important**
 >
-> If you want to use the `AsyncVectorEnv` ([https://gymnasium.farama.org/api/vector/#async-vector-env](https://gymnasium.farama.org/api/vector/#async-vector-env)), you **must** set the **`env.wrapper.diambra_settings.splash_screen`** cli argument to **`False`**. Moreover, you must set the number of container to `env.num_envs + 1` (i.e., you must set the `-s` cli argument as specified before).
+> If you want to use the `AsyncVectorEnv` ([https://gymnasium.farama.org/api/vector/#async-vector-env](https://gymnasium.farama.org/api/vector/#async-vector-env)), you **must** set the **`env.wrapper.diambra_settings.splash_screen`** cli argument to **`False`**. Moreover, you must set the number of containers to `env.num_envs + 1` (i.e., you must set the `-s` cli argument as specified before).
 
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 cnn_keys.encoder=[frame] fabric.devices=1`
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 cnn_keys.encoder=[frame] fabric.devices=1`
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.
