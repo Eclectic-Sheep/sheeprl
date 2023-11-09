@@ -344,6 +344,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
         # Train the agent
         if update >= learning_starts and updates_before_training <= 0:
+            if player.actor_type == "exploration":
+                player.actor = actor_task.module
+                player.actor_type = "task"
             local_data = rb.sample(
                 cfg.per_rank_batch_size,
                 sequence_length=cfg.per_rank_sequence_length,
