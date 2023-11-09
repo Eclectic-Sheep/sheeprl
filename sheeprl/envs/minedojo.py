@@ -11,7 +11,9 @@ from typing import Any, Dict, Optional, SupportsFloat, Tuple
 import gymnasium as gym
 import minedojo
 import numpy as np
+from gymnasium.core import RenderFrame
 from minedojo.sim import ALL_CRAFT_SMELT_ITEMS, ALL_ITEMS
+from minedojo.sim.wrappers.ar_nn import ARNNWrapper
 
 N_ALL_ITEMS = len(ALL_ITEMS)
 ACTION_MAP = {
@@ -77,7 +79,7 @@ class MineDojoWrapper(gym.Wrapper):
                 f"The initial position must respect the pitch limits {self._pitch_limits}, given {self._pos['pitch']}"
             )
 
-        env = minedojo.make(
+        env: ARNNWrapper = minedojo.make(
             task_id=id,
             image_size=(height, width),
             world_seed=seed,
@@ -287,3 +289,13 @@ class MineDojoWrapper(gym.Wrapper):
             "location_stats": copy.deepcopy(self._pos),
             "biomeid": float(obs["location_stats"]["biome_id"].item()),
         }
+
+    def render(self) -> RenderFrame | list[RenderFrame] | None:
+        if self.render_mode == "human":
+            super().render()
+        elif self.render_mode == "rgb_array":
+            if self.env.unwrapped._prev_obs is None:
+                return None
+            else:
+                return self.env.unwrapped._prev_obs["rgb"]
+        return None

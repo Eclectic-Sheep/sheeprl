@@ -5,7 +5,7 @@ defaults:
 # Override from `minecraft` config
 id: open-ended
 action_repeat: 1
-capture_video: False
+capture_video: True
 
 # Wrapper to be instantiated
 wrapper:
