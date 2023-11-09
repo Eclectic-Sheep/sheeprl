@@ -1,3 +1,5 @@
+from sheeprl.algos.dreamer_v2.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV2
+
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",
     "Game/ep_len_avg",
@@ -24,4 +26,4 @@ AGGREGATOR_KEYS = {
     "Grads/actor_exploration",
     "Grads/critic_exploration",
     "Grads/ensemble",
-}
+}.union(AGGREGATOR_KEYS_DV2)

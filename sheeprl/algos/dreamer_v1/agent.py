@@ -228,6 +228,8 @@ class PlayerDV1(nn.Module):
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (torch.device): the device to work on.
+        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+            Default to None.
     """
 
     def __init__(
@@ -241,6 +243,7 @@ class PlayerDV1(nn.Module):
         stochastic_size: int,
         recurrent_state_size: int,
         device: torch.device,
+        actor_type: str | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -254,6 +257,7 @@ class PlayerDV1(nn.Module):
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
         self.init_states()
+        self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.

@@ -1,12 +1,12 @@
 # @package _global_
 
 defaults:
-  - dreamer_v2
-  - override /algo: p2e_dv2
+  - dreamer_v1
+  - override /algo: p2e_dv1
   - _self_
 
-# Experiment
-exploration_steps: 5000000
+algo:
+  name: p2e_dv1_exploration
 
 metric:
   aggregator:
