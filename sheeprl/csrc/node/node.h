@@ -4,13 +4,13 @@ namespace Node {
     class Node {
         public:
             int visit_count;
-            float prior;
-            float value_sum;
-            float reward;
+            double prior;
+            double value_sum;
+            double reward;
             int imagined_action;
             std::vector<Node*> children;
 
-            Node(float prior); //constructor
+            Node(double prior); //constructor
 //            ~Node(); //destructor
 
             void set_hidden_state(torch::Tensor hidden_state);
@@ -19,8 +19,8 @@ namespace Node {
 
             int expanded();
             int value();
-            void expand(std::vector<float> action_priors);
-            void add_exploration_noise(std::vector<float> noise, float exploration_fraction);
+            void expand(std::vector<double> action_priors);
+            void add_exploration_noise(std::vector<double> noise, double exploration_fraction);
     };
 
 }  // namespace Node

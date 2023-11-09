@@ -15,8 +15,11 @@ PYBIND11_MODULE(_node, m) {
 		.def("get_hidden_state", &Node::Node::get_hidden_state)
 		.def("expand", &Node::Node::expand)
 		.def("add_exploration_noise", &Node::Node::add_exploration_noise)
+		.def("value", &Node::Node::value)
 		.def_readwrite("hidden_state", &Node::Node::hidden_state)
 		.def_readwrite("prior", &Node::Node::prior)
+		.def_readwrite("reward", &Node::Node::reward)
+		.def_readwrite("visit_count", &Node::Node::visit_count)
 		.def_readwrite("children", &Node::Node::children)
 		.def_readwrite("imagined_action", &Node::Node::imagined_action);
 

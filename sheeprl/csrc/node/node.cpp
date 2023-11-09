@@ -7,7 +7,7 @@
 #include "torch/torch.h"
 
 namespace Node {
-    Node::Node(float prior){
+    Node::Node(double prior){
         this->prior = prior;
         this->reward = 0.0;
         this->value_sum = 0.0;
@@ -35,14 +35,19 @@ namespace Node {
         }
     }
 
-    void Node::expand(std::vector<float> priors){
+    void Node::expand(std::vector<double> priors){
         int num_children = priors.size();
         for (int i = 0; i < num_children; i++){
             this->children.push_back(new Node(priors[i]));
         }
+        std::cout << std::endl;
+        std::cout << "Added the following children to node " << this << std::endl;
+        for (int i = 0; i < num_children; i++){
+            std::cout << this->children[i] << std::endl;
+        }
     }
 
-    void Node::add_exploration_noise(std::vector<float> noise, float exploration_fraction){
+    void Node::add_exploration_noise(std::vector<double> noise, double exploration_fraction){
         int num_children = this->children.size();
         if (num_children > 0){
             for (int i = 0; i < num_children; i++){

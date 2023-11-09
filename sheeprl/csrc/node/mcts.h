@@ -4,16 +4,16 @@ namespace mcts {
 
     class MinMaxStats {
         public:
-            float minimum;
-            float maximum;
+            double minimum;
+            double maximum;
             MinMaxStats();
 //            ~MinMaxStats();
 
-            void update(float value);
-            float normalize(float value);
+            void update(double value);
+            double normalize(double value);
     };
 
-    std::vector<float> ucb_score(Node::Node parent, float pbc_base, float pbc_init, float gamma, MinMaxStats stats);
-    void backpropagate(std::vector<Node::Node> search_path, float value, float gamma, MinMaxStats stats);
-    std::vector<Node::Node> rollout(Node::Node root, float pbc_base, float pbc_init, float gamma, MinMaxStats stats);
+    std::vector<double> ucb_score(Node::Node* parent, double pbc_base, double pbc_init, double gamma, MinMaxStats &stats);
+    void backpropagate(std::vector<Node::Node*> &search_path, std::vector<double> priors, double value, double gamma, MinMaxStats &stats);
+    std::vector<Node::Node*> rollout(Node::Node* root, double pbc_base, double pbc_init, double gamma, MinMaxStats &stats);
 } // namespace mcts

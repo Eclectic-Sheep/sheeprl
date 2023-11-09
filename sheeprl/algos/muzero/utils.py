@@ -115,7 +115,6 @@ class MCTS:
 
         for _ in range(self.num_simulations):
             search_path = rollout(root, self.pbc_base, self.pbc_init, self.gamma, min_max_stats)
-
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             node = search_path[-1]
             parent = search_path[-2]
@@ -128,10 +127,11 @@ class MCTS:
             node.hidden_state = hidden_state
             node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_size).item()
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
-            node.expand(normalized_policy.squeeze().tolist())
+            priors = normalized_policy.squeeze().tolist()
 
             # Backpropagate the search path to update the nodes' statistics
-            backpropagate(search_path, value, self.gamma, min_max_stats)
+            backpropagate(search_path, priors, value, self.gamma, min_max_stats)
+            print("Child visit counts:", [child.visit_count for child in root.children])
 
 
 @torch.no_grad()
