@@ -222,7 +222,7 @@ def check_configs_evaluation(cfg: DictConfig):
         raise ValueError("You must specify the evaluation checkpoint path")
 
 
-@hydra.main(version_base="1.13", config_path="configs", config_name="config")
+@hydra.main(version_base="1.3", config_path="configs", config_name="config")
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
     print_config(cfg)
@@ -233,7 +233,7 @@ def run(cfg: DictConfig):
     run_algorithm(cfg)
 
 
-@hydra.main(version_base="1.13", config_path="configs", config_name="eval_config")
+@hydra.main(version_base="1.3", config_path="configs", config_name="eval_config")
 def evaluation(cfg: DictConfig):
     # Load the checkpoint configuration
     checkpoint_path = Path(cfg.checkpoint_path)

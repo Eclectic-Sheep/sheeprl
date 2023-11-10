@@ -5,7 +5,7 @@ from omegaconf import DictConfig
 from sheeprl.utils.env import make_env
 
 
-@hydra.main(version_base=None, config_path="../sheeprl/configs", config_name="env_config")
+@hydra.main(version_base="1.3", config_path="../sheeprl/configs", config_name="env_config")
 def main(cfg: DictConfig) -> None:
     cfg.env.capture_video = False
     if cfg.agent in {
