@@ -130,7 +130,10 @@ def ucb_score(parent: Node, pbc_base: float, pbc_init: float, gamma: float, min_
     return prior_score + value_score
 
 
-def backpropagate(search_path: list[Node], value: float, gamma: float, min_max_stats: MinMaxStats):
+def backpropagate(search_path: list[Node], priors: list[float], value: float, gamma: float, min_max_stats: MinMaxStats):
+    """Updates the value and visit count of the nodes in the search path."""
+    leaf = search_path[-1]
+    leaf.expand(priors)
     for visited_node in reversed(search_path):
         visited_node.value_sum += value
         visited_node.visit_count += 1

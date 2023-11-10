@@ -1,3 +1,5 @@
+USE_C = False
+
 import os
 import time
 from datetime import datetime
@@ -12,7 +14,11 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from torch.optim import Adam
 from torchmetrics import MeanMetric
 
-from sheeprl._node import Node
+if USE_C:
+    from sheeprl._node import Node
+else:
+    from sheeprl.algos.muzero.mcts_utils import Node
+
 from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
 from sheeprl.algos.muzero.utils import MCTS, make_env, test, visit_softmax_temperature

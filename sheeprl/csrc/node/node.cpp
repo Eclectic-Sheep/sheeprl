@@ -38,7 +38,8 @@ namespace Node {
     void Node::expand(std::vector<double> priors){
         int num_children = priors.size();
         for (int i = 0; i < num_children; i++){
-            this->children.push_back(new Node(priors[i]));
+            Node* child = new Node(priors[i]);
+            this->children.push_back(child);
         }
         std::cout << std::endl;
         std::cout << "Added the following children to node " << this << std::endl;

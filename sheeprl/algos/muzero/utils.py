@@ -1,3 +1,5 @@
+USE_C = False
+
 import os
 
 import gymnasium as gym
@@ -5,7 +7,10 @@ import numpy as np
 import torch
 from lightning import Fabric
 
-from sheeprl._node import MinMaxStats, backpropagate, rollout
+if USE_C:
+    from sheeprl._node import MinMaxStats, backpropagate, rollout
+else:
+    from sheeprl.algos.muzero.mcts_utils import MinMaxStats, backpropagate, rollout
 from sheeprl.algos.muzero.agent import MuzeroAgent
 from sheeprl.utils.utils import inverse_symsqrt, symsqrt, two_hot_decoder, two_hot_encoder
 
@@ -131,7 +136,7 @@ class MCTS:
 
             # Backpropagate the search path to update the nodes' statistics
             backpropagate(search_path, priors, value, self.gamma, min_max_stats)
-            print("Child visit counts:", [child.visit_count for child in root.children])
+            # print("Child visit counts:", [child.visit_count for child in root.children])
 
 
 @torch.no_grad()
