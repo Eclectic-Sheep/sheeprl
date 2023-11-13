@@ -1,12 +1,11 @@
-from sheeprl.algos.dreamer_v1.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV1
+from sheeprl.algos.dreamer_v3.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV3
 
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",
     "Game/ep_len_avg",
     "Loss/world_model_loss",
-    "Loss/value_loss_task",
     "Loss/policy_loss_task",
-    "Loss/value_loss_exploration",
+    "Loss/value_loss_task",
     "Loss/policy_loss_exploration",
     "Loss/observation_loss",
     "Loss/reward_loss",
@@ -14,17 +13,19 @@ AGGREGATOR_KEYS = {
     "Loss/continue_loss",
     "Loss/ensemble_loss",
     "State/kl",
-    "State/post_entropy",
-    "State/prior_entropy",
     "Params/exploration_amount_task",
     "Params/exploration_amount_exploration",
-    "Rewards/intrinsic",
-    "Values_exploration/predicted_values",
-    "Values_exploration/lambda_values",
+    "State/post_entropy",
+    "State/prior_entropy",
     "Grads/world_model",
     "Grads/actor_task",
     "Grads/critic_task",
     "Grads/actor_exploration",
-    "Grads/critic_exploration",
     "Grads/ensemble",
-}.union(AGGREGATOR_KEYS_DV1)
+    # General key name for the exploration critics.
+    "Loss/value_loss_exploration",
+    "Values_exploration/predicted_values",
+    "Values_exploration/lambda_values",
+    "Grads/critic_exploration",
+    "Rewards/intrinsic",
+}.union(AGGREGATOR_KEYS_DV3)

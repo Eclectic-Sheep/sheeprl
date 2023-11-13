@@ -1,3 +1,5 @@
+from sheeprl.algos.dreamer_v2.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV2
+
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",
     "Game/ep_len_avg",
@@ -12,9 +14,10 @@ AGGREGATOR_KEYS = {
     "Loss/continue_loss",
     "Loss/ensemble_loss",
     "State/kl",
-    "State/p_entropy",
-    "State/q_entropy",
-    "Params/exploration_amount",
+    "State/post_entropy",
+    "State/prior_entropy",
+    "Params/exploration_amount_task",
+    "Params/exploration_amount_exploration",
     "Rewards/intrinsic",
     "Values_exploration/predicted_values",
     "Values_exploration/lambda_values",
@@ -24,4 +27,4 @@ AGGREGATOR_KEYS = {
     "Grads/actor_exploration",
     "Grads/critic_exploration",
     "Grads/ensemble",
-}
+}.union(AGGREGATOR_KEYS_DV2)
