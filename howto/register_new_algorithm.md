@@ -56,7 +56,7 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
 
 
@@ -88,10 +88,10 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     fabric.seed_everything(cfg.seed)
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
-    if fabric.is_global_zero:
+    logger = get_logger(fabric, cfg)
+    if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)

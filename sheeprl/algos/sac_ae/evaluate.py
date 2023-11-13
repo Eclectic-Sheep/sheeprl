@@ -18,13 +18,13 @@ from sheeprl.algos.sac_ae.agent import (
 from sheeprl.algos.sac_ae.utils import test_sac_ae
 from sheeprl.models.models import MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
 @register_evaluation(algorithms="sac_ae")
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)

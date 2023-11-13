@@ -4,41 +4,35 @@ from typing import Any, Dict, Optional
 
 import hydra
 from lightning import Fabric
-from lightning.fabric.loggers import TensorBoardLogger
+from lightning.fabric.loggers.logger import Logger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.utilities.cloud_io import _is_dir, get_filesystem
-from lightning.pytorch.loggers import MLFlowLogger
 
 
-def create_tensorboard_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[TensorBoardLogger]:
+def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.
     # As a plus, rank-0 sets the time uniquely for everyone
     logger = None
     if fabric.is_global_zero and cfg.metric.log_level > 0:
-        root_dir = os.path.join("logs", "runs", cfg.root_dir)
-        if root_dir != cfg.metric.logger.tensorboard.root_dir:
-            warnings.warn(
-                "The specified root directory for the TensorBoardLogger is different from the experiment one, "
-                "so the logger one will be ignored and replaced with the experiment root directory",
-                UserWarning,
-            )
-        if cfg.run_name != cfg.metric.logger.tensorboard.name:
-            warnings.warn(
-                "The specified name for the TensorBoardLogger is different from the `run_name` of the experiment, "
-                "so the logger one will be ignored and replaced with the experiment `run_name`",
-                UserWarning,
-            )
-        logger = hydra.utils.instantiate(cfg.metric.logger.tensorboard, root_dir=root_dir, name=cfg.run_name)
-    return logger
-
-
-def create_mlflow_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[MLFlowLogger]:
-    # Set logger only on rank-0
-    logger = None
-    if fabric.is_global_zero and cfg.metric.log_level > 0:
-        logger = hydra.utils.instantiate(cfg.metric.logger.mlflow)
+        if "tensorboard" in cfg.metric.logger._target_.lower():
+            root_dir = os.path.join("logs", "runs", cfg.root_dir)
+            if root_dir != cfg.metric.logger.root_dir:
+                warnings.warn(
+                    "The specified root directory for the TensorBoardLogger is different from the experiment one, "
+                    "so the logger one will be ignored and replaced with the experiment root directory",
+                    UserWarning,
+                )
+            if cfg.run_name != cfg.metric.logger.name:
+                warnings.warn(
+                    "The specified name for the TensorBoardLogger is different from the `run_name` of the experiment, "
+                    "so the logger one will be ignored and replaced with the experiment `run_name`",
+                    UserWarning,
+                )
+            logger = hydra.utils.instantiate(cfg.metric.logger, root_dir=root_dir, name=cfg.run_name)
+        else:
+            logger = hydra.utils.instantiate(cfg.metric.logger)
     return logger
 
 

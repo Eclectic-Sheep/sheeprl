@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - /logger@logger: mlflow
+  - /logger@logger: tensorboard
 
 log_every: 5000
 disable_timer: False

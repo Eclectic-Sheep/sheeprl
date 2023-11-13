@@ -10,7 +10,7 @@ from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf
 
-from sheeprl.utils.logger import create_mlflow_logger, create_tensorboard_logger
+from sheeprl.utils.logger import get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
@@ -77,13 +77,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     kwargs = {}
     if decoupled:
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
-        if cfg.metric.logger.tensorboard is not None and cfg.metric.logger.mlflow is not None:
-            warnings.warn("Both tensorboard and mlflow loggers are defined, the mlflow logger is ignored", UserWarning)
-        logger = None
-        if cfg.metric.logger.tensorboard is not None:
-            logger = create_tensorboard_logger(fabric, cfg)
-        elif cfg.metric.logger.mlflow is not None:
-            logger = create_mlflow_logger(fabric, cfg)
+        logger = get_logger(fabric, cfg)
         if logger and fabric.is_global_zero:
             fabric._loggers = [logger]
             fabric.logger.log_hyperparams(cfg)
@@ -101,8 +95,6 @@ def run_algorithm(cfg: Dict[str, Any]):
             # Load exploration configurations
             ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
             exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
-            exploration_cfg.pop("root_dir", None)
-            exploration_cfg.pop("run_name", None)
             exploration_cfg = dotdict(OmegaConf.to_container(exploration_cfg, resolve=True, throw_on_missing=True))
             if exploration_cfg.env.id != cfg.env.id:
                 raise ValueError(

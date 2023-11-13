@@ -9,13 +9,13 @@ from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.utils import test
 from sheeprl.algos.p2e_dv3.agent import build_models
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
 @register_evaluation(algorithms=["p2e_dv3_exploration", "p2e_dv3_finetuning"])
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
