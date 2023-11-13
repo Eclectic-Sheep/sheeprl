@@ -1,18 +1,16 @@
-import datetime
 import importlib
 import os
 import pathlib
-import time
 import warnings
 from pathlib import Path
 from typing import Any, Dict
 
 import hydra
 from lightning import Fabric
-from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf
 
+from sheeprl.utils.logger import create_mlflow_logger, create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
@@ -78,21 +76,17 @@ def run_algorithm(cfg: Dict[str, Any]):
     command = task.__dict__[entrypoint]
     kwargs = {}
     if decoupled:
-        root_dir = (
-            os.path.join("logs", "runs", cfg.root_dir)
-            if cfg.root_dir is not None
-            else os.path.join("logs", "runs", algo_name, datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-        )
-        run_name = (
-            cfg.run_name if cfg.run_name is not None else f"{cfg.env.id}_{cfg.exp_name}_{cfg.seed}_{int(time.time())}"
-        )
-        logger = None
-        if cfg.metric.log_level > 0:
-            logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-            logger.log_hyperparams(cfg)
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, _convert_="all")
-        if logger is not None:
-            fabric._loggers.extend([logger])
+        if cfg.metric.logger.tensorboard is not None and cfg.metric.logger.mlflow is not None:
+            warnings.warn("Both tensorboard and mlflow loggers are defined, the mlflow logger is ignored", UserWarning)
+        logger = None
+        if cfg.metric.logger.tensorboard is not None:
+            logger = create_tensorboard_logger(fabric, cfg)
+        elif cfg.metric.logger.mlflow is not None:
+            logger = create_mlflow_logger(fabric, cfg)
+        if logger and fabric.is_global_zero:
+            fabric._loggers = [logger]
+            fabric.logger.log_hyperparams(cfg)
     else:
         strategy = cfg.fabric.pop("strategy", "auto")
         if "sac_ae" in module:

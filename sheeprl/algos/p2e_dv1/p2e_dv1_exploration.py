@@ -28,7 +28,7 @@ from sheeprl.algos.p2e_dv1.agent import build_models
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import create_mlflow_logger, create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
@@ -428,12 +428,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    if cfg.metric.logger.tensorboard is not None and cfg.metric.logger.mlflow is not None:
+        warnings.warn("Both tensorboard and mlflow loggers are defined, the mlflow logger is ignored", UserWarning)
+    logger = None
+    if cfg.metric.logger.tensorboard is not None:
+        logger = create_tensorboard_logger(fabric, cfg)
+    elif cfg.metric.logger.mlflow is not None:
+        logger = create_mlflow_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
     envs = vectorized_env(
