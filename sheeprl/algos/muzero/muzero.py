@@ -1,4 +1,4 @@
-USE_C = False
+USE_C = True
 
 import os
 import time

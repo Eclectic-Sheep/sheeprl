@@ -1,4 +1,4 @@
-USE_C = False
+USE_C = True
 
 import os
 
@@ -136,7 +136,7 @@ class MCTS:
 
             # Backpropagate the search path to update the nodes' statistics
             backpropagate(search_path, priors, value, self.gamma, min_max_stats)
-            # print("Child visit counts:", [child.visit_count for child in root.children])
+            print("Child visit counts:", [child.visit_count for child in root.children])
 
 
 @torch.no_grad()

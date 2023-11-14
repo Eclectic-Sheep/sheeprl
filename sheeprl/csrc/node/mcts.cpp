@@ -44,13 +44,14 @@ namespace mcts {
 
     void backpropagate(std::vector<Node::Node*> &search_path, std::vector<double> priors, double value, double gamma, MinMaxStats &stats) {
         std::cout << "Expanding the node" << std::endl;
+        Node::Node* visited_node;
         Node::Node* leaf = search_path.back();
         leaf->expand(priors);
         std::cout << "Starting backpropagation" << std::endl;
         int path_length = search_path.size();
         for (int i = path_length - 1; i >= 0; --i) {
             std::cout << "Visiting node in position " << i << std::endl;
-            Node::Node* visited_node = search_path[i];
+            visited_node = search_path[i];
             visited_node->value_sum += value;
             visited_node->visit_count += 1;
             stats.update(visited_node->value());
@@ -87,7 +88,8 @@ namespace mcts {
             std::cout << "Adding child to search path: " << child << std::endl;
             search_path.push_back(child);
 
-            node = child;
+            Node::Node node_cp = *child;
+            node = &node_cp;
             std::cout << "Search path: ";
             for (auto const n : search_path) {
                 std::cout << n << " ";

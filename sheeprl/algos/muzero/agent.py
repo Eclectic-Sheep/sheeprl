@@ -6,6 +6,21 @@ from sheeprl.models.models import MLP, NatureCNN
 
 
 class MuzeroAgent(torch.nn.Module):
+    """
+    Muzero agent.
+
+    Args:
+        representation: torch.nn.Module
+            Representation function, map the observation to a latent space (hidden_state).
+            Used to start the imagination process during MCTS.
+        prediction: torch.nn.Module
+            Prediction function, map the hidden state to policy logits and value.
+            Used to predict the policy and value during MCTS, based on the latent space representation of observations.
+        dynamics: torch.nn.Module
+            Dynamics function, map an action and a hidden state to the imagined reward and next hidden state.
+            Used to imagine the response (evolution) of the environment during MCTS.
+    """
+
     def __init__(
         self,
         representation: Optional[torch.nn.Module] = None,
@@ -19,6 +34,9 @@ class MuzeroAgent(torch.nn.Module):
         self.training_steps = 0
 
     def initial_inference(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the initial hidden state and the initial prediction (policy and value) from the observation.
+        To run to initialize MCTS.
+        """
         hidden_state = self.representation(observation)
         policy_logits, value = self.prediction(hidden_state)
         return hidden_state.unsqueeze(0), policy_logits, value
@@ -26,6 +44,10 @@ class MuzeroAgent(torch.nn.Module):
     def recurrent_inference(
         self, action: torch.Tensor, hidden_state: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the next hidden state and the next prediction (policy and value)
+        from the action and the previous hidden state.
+        To run at each simulation of MCTS.
+        """
         reward, next_hidden_state = self.dynamics(action, hidden_state)
         policy_logits, value = self.prediction(next_hidden_state)
         return next_hidden_state, reward, policy_logits, value
@@ -70,6 +92,8 @@ class MlpDynamics(torch.nn.Module):
         embedding_size=256,
         state_hidden_sizes=(64, 64, 16),
         rew_hidden_sizes=(64, 64, 16),
+        state_activation_fn=torch.nn.ELU,
+        rew_activation_fn=torch.nn.ELU,
         full_support_size=601,
     ):
         super().__init__()
@@ -77,12 +101,12 @@ class MlpDynamics(torch.nn.Module):
             input_dims=embedding_size + int(num_actions),
             hidden_sizes=state_hidden_sizes,
             output_dim=embedding_size,
-            activation=torch.nn.ELU,
+            activation=state_activation_fn,
         )
         self.mlp = MLP(
             input_dims=embedding_size + int(num_actions),
             hidden_sizes=rew_hidden_sizes,
-            activation=torch.nn.ELU,
+            activation=rew_activation_fn,
             output_dim=full_support_size,
         )
         self.num_actions = num_actions
@@ -126,8 +150,8 @@ class RecurrentMuzero(MuzeroAgent):
     def __init__(self, hidden_state_size=256, num_actions=4):
         super().__init__()
         self.representation = NatureCNN(in_channels=3, features_dim=hidden_state_size)
-        self.dynamics: torch.nn.Module = GruMlpDynamics(hidden_state_size=hidden_state_size)
-        self.prediction: torch.nn.Module = Predictor(hidden_state_size=hidden_state_size, num_actions=num_actions)
+        self.dynamics: torch.nn.Module = GruMlpDynamics(mlp_hidden_sizes=hidden_state_size)
+        self.prediction: torch.nn.Module = Predictor(policy_hidden_sizes=hidden_state_size, num_actions=num_actions)
 
 
 if __name__ == "__main__":
