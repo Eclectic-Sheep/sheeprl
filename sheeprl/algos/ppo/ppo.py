@@ -3,14 +3,16 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Union
+from typing import Any, Dict, Sequence, Union
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
@@ -19,14 +21,14 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.ppo.utils import get_signature, normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
 
 
 def train(
@@ -56,10 +58,7 @@ def train(
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
             batch = data[batch_idxes]
-            normalized_obs = {
-                k: batch[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else batch[k]
-                for k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder
-            }
+            normalized_obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
@@ -276,9 +275,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = {
-                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-                    }
+                    normalized_obs = normalize_obs(next_obs, cfg.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values = agent.module(normalized_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -349,9 +346,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {
-                k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-            }
+            normalized_obs = normalize_obs(next_obs, cfg.cnn_keys.encoder, obs_keys)
             next_values = agent.module.get_value(normalized_obs)
             returns, advantages = gae(
                 rb["rewards"],
@@ -452,3 +447,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(agent.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            unwrapped_agent: PPOAgent = unwrap_fabric(agent)
+            with torch.no_grad():
+                input_example = envs.single_observation_space.sample()
+                signature = get_signature(unwrapped_agent, input_example, cfg.cnn_keys.encoder, obs_keys)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                model_info = mlflow.pytorch.log_model(
+                    unwrapped_agent,
+                    artifact_path="agent",
+                    signature=signature,
+                    input_example=input_example,
+                )
+                mlflow.log_dict(cfg, "config.json")
+            return tuple([model_info])
+
+        register_model(fabric, log_models, cfg.model_manager)

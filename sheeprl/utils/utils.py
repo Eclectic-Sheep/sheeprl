@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import os
-from typing import Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
+import mlflow
 import rich.syntax
 import rich.tree
 import torch
 import torch.nn as nn
+from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
+from mlflow.models.model import ModelInfo
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
+
+from sheeprl.utils.model_manager import MlflowModelManager
 
 
 class dotdict(dict):
@@ -157,3 +163,38 @@ def print_config(
     if cfg_save_path is not None:
         with open(os.path.join(os.getcwd(), "config_tree.txt"), "w") as fp:
             rich.print(tree, file=fp)
+
+
+def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
+    if isinstance(model, _FabricModule):
+        model = model.module
+    for name, child in model.named_children():
+        setattr(model, name, unwrap_fabric(child))
+    return model
+
+
+def register_model(
+    fabric: Fabric, log_models: Callable[[str], Sequence[ModelInfo]], cfg_model_manager: Dict[str, Any], algo_name: str
+):
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI") or getattr(fabric.logger, "_tracking_uri", None)
+    if tracking_uri is None:
+        raise ValueError(
+            "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
+            "MLFLOW_TRACKING_URI environment variable."
+        )
+    run_id = None
+    if len(fabric.loggers) > 0:
+        run_id = getattr(fabric.logger, "run_id", None)
+    mlflow.set_tracking_uri(tracking_uri)
+    models_info = log_models(run_id)
+    model_manager = MlflowModelManager(fabric, tracking_uri)
+    if len(models_info) != len(cfg_model_manager.models):
+        raise RuntimeError(
+            f"The number of models of the {algo_name} agent must be equal to the number "
+            f"of models you want to register. {len(cfg_model_manager.models)} model registration "
+            f"configs are given, but the agent has {len(cfg_model_manager.models)} models"
+        )
+    for mi, cfg_model in zip(models_info, cfg_model_manager.models):
+        model_manager.register_model(
+            mi._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+        )

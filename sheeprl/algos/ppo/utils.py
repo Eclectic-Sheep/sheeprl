@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 from typing import Any, Dict
 
+import numpy as np
 import torch
+from git import Sequence
 from lightning import Fabric
+from mlflow.models import ModelSignature, infer_signature
+from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.utils.env import make_env
@@ -53,3 +59,25 @@ def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     if cfg.metric.log_level > 0:
         fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+
+
+def normalize_obs(
+    obs: Dict[str, np.ndarray | Tensor], cnn_keys: Sequence[str], obs_keys: Sequence[str]
+) -> Dict[str, np.ndarray | Tensor]:
+    return {k: obs[k] / 255 - 0.5 if k in cnn_keys else obs[k] for k in obs_keys}
+
+
+def get_signature(
+    agent: PPOAgent, input_example: Dict[str, np.ndarray], cnn_keys: Sequence[str], obs_keys: Sequence[str]
+) -> ModelSignature:
+    device = next(agent.parameters()).device
+    torch_obs = {k: torch.as_tensor(v, device=device) for k, v in input_example.items()}
+    normalized_obs: Dict[str, Tensor] = normalize_obs(torch_obs, cnn_keys, obs_keys)
+    actions, logprobs, entropies, values = agent(normalized_obs)
+    signature_out = {
+        "actions": torch.cat(actions, dim=-1).cpu().numpy(),
+        "logprobs": logprobs.cpu().numpy(),
+        "entropies": entropies.cpu().numpy(),
+        "values": values.cpu().numpy(),
+    }
+    return infer_signature(input_example, signature_out)
