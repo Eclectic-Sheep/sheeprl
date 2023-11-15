@@ -30,6 +30,12 @@ def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
             f"Got '{cfg.env.id}', but the environment of the experiment of the checkpoint was {old_cfg.env.id}. "
             "Set properly the environment for restarting the experiment."
         )
+    if old_cfg.algo.name != cfg.algo.name:
+        raise ValueError(
+            "This experiment is run with a different algorithm from the one of the experiment you want to restart. "
+            f"Got '{cfg.algo.name}', but the algorithm of the experiment of the checkpoint was {old_cfg.algo.name}. "
+            "Set properly the algorithm name for restarting the experiment."
+        )
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
     cfg = dotdict(old_cfg)
@@ -70,6 +76,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     task = importlib.import_module(f"{module}.{algo_name}")
     utils = importlib.import_module(f"{module}.utils")
     command = task.__dict__[entrypoint]
+    kwargs = {}
     if decoupled:
         root_dir = (
             os.path.join("logs", "runs", cfg.root_dir)
@@ -96,6 +103,39 @@ def run_algorithm(cfg: Dict[str, Any]):
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
             strategy = DDPStrategy(find_unused_parameters=True)
+        elif "finetuning" in algo_name and "p2e" in module:
+            # Load exploration configurations
+            ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
+            exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+            exploration_cfg.pop("root_dir", None)
+            exploration_cfg.pop("run_name", None)
+            exploration_cfg = dotdict(OmegaConf.to_container(exploration_cfg, resolve=True, throw_on_missing=True))
+            if exploration_cfg.env.id != cfg.env.id:
+                raise ValueError(
+                    "This experiment is run with a different environment from "
+                    "the one of the exploration you want to finetune. "
+                    f"Got '{cfg.env.id}', but the environment used during exploration was {exploration_cfg.env.id}. "
+                    "Set properly the environment for finetuning the experiment."
+                )
+            # Take environment configs from exploration
+            cfg.env.frame_stack = exploration_cfg.env.frame_stack
+            cfg.env.screen_size = exploration_cfg.env.screen_size
+            cfg.env.action_repeat = exploration_cfg.env.action_repeat
+            cfg.env.grayscale = exploration_cfg.env.grayscale
+            cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+            cfg.env.frame_stack_dilation = exploration_cfg.env.frame_stack_dilation
+            cfg.env.max_episode_steps = exploration_cfg.env.max_episode_steps
+            cfg.env.reward_as_observation = exploration_cfg.env.reward_as_observation
+            _env_target = cfg.env.wrapper._target_.lower()
+            if "minerl" in _env_target or "minedojo" in _env_target:
+                cfg.env.max_pitch = exploration_cfg.env.max_pitch
+                cfg.env.min_pitch = exploration_cfg.env.min_pitch
+                cfg.env.sticky_jump = exploration_cfg.env.sticky_jump
+                cfg.env.sticky_attack = exploration_cfg.env.sticky_attack
+                cfg.env.break_speed_multiplier = exploration_cfg.env.break_speed_multiplier
+            kwargs["exploration_cfg"] = exploration_cfg
+            cfg.fabric = exploration_cfg.fabric
+            strategy = cfg.fabric.pop("strategy", "auto")
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:
@@ -113,7 +153,7 @@ def run_algorithm(cfg: Dict[str, Any]):
         for k in keys_to_remove:
             cfg.metric.aggregator.metrics.pop(k, None)
         MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
-    fabric.launch(command, cfg)
+    fabric.launch(command, cfg, **kwargs)
 
 
 def eval_algorithm(cfg: DictConfig):

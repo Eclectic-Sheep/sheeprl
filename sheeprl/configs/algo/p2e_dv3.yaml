@@ -1,0 +1,30 @@
+defaults:
+  - dreamer_v3
+  - /optim@ensembles.optimizer: adam
+  - _self_
+
+name: p2e_dv3
+intrinsic_reward_multiplier: 1
+
+player:
+  actor_type: exploration
+
+critics_exploration:
+  intrinsic:
+    weight: 0.1
+    reward_type: intrinsic
+  extrinsic:
+    weight: 1.0
+    reward_type: task
+
+ensembles:
+  n: 8 # the number of the ensembles
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  dense_units: ${algo.dense_units}
+  layer_norm: ${algo.layer_norm}
+  clip_gradients: 100
+  optimizer:
+    lr: 1e-4
+    eps: 1e-5
+    weight_decay: 0

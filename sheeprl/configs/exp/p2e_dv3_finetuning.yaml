@@ -1,38 +1,34 @@
 # @package _global_
 
 defaults:
-  - override /algo: dreamer_v1
-  - override /env: atari
+  - dreamer_v3
+  - override /algo: p2e_dv3
   - _self_
 
-# Experiment
-total_steps: 5000000
-per_rank_batch_size: 50
-per_rank_sequence_length: 50
+total_steps: 1000000
 
-# Checkpoint
-checkpoint:
-  every: 100000
+algo:
+  name: p2e_dv3_finetuning
+  learning_starts: 65536
+  player:
+    actor_type: exploration
 
-# Buffer
 buffer:
-  size: 5000000
-  checkpoint: False
+  load_from_exploration: False
 
-# Distribution
-distribution:
-  type: "auto"
+checkpoint:
+  exploration_ckpt_path: ???
 
 metric:
   aggregator:
-    metrics: 
+    metrics:
       Loss/world_model_loss:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
-      Loss/value_loss:
+      Loss/policy_loss:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
-      Loss/policy_loss:
+      Loss/value_loss:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
       Loss/observation_loss:
@@ -47,16 +43,19 @@ metric:
       Loss/continue_loss:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
+      State/kl:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Params/exploration_amount_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Params/exploration_amount_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
       State/post_entropy:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
       State/prior_entropy:
-        _target_: torchmetrics.MeanMetric
-        sync_on_compute: ${metric.sync_on_compute}
-      State/kl:
-        _target_: torchmetrics.MeanMetric
-        sync_on_compute: ${metric.sync_on_compute}
-      Params/exploration_amount:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
       Grads/world_model:
@@ -68,7 +67,3 @@ metric:
       Grads/critic:
         _target_: torchmetrics.MeanMetric
         sync_on_compute: ${metric.sync_on_compute}
-
-cnn_keys:
-  encoder: [rgb]
-  decoder: [rgb]
