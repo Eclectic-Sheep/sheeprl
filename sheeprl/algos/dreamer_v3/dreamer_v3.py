@@ -10,11 +10,13 @@ from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
@@ -39,7 +41,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -779,3 +781,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(player, fabric, cfg, log_dir, sample_actions=True)
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            models_info = []
+            unwrapped_world_model: WorldModel = unwrap_fabric(world_model)
+            unwrapped_actor = unwrap_fabric(actor)
+            unwrapped_critic = unwrap_fabric(critic)
+            unwrapped_target_critic = unwrap_fabric(target_critic)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_actor, artifact_path="actor"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_critic, artifact_path="critic"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_target_critic, artifact_path="target_critic"))
+                models_info.append(mlflow.pytorch.log_model(moments, artifact_path="moments"))
+                mlflow.log_dict(cfg, "config.json")
+
+            return tuple(models_info)
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

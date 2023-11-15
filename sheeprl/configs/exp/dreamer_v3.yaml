@@ -10,6 +10,35 @@ total_steps: 5000000
 per_rank_batch_size: 16
 per_rank_sequence_length: 64
 
+model_manager:
+  models: [
+    {
+      model_name: "${exp_name}_world_model",
+      description: "DreamerV3 World Model used in ${env.id} Environment",
+      tags: {} 
+    },
+    {
+      model_name: "${exp_name}_actor",
+      description: "DreamerV3 Actor used in ${env.id} Environment",
+      tags: {} 
+    },
+    {
+      model_name: "${exp_name}_critic",
+      description: "DreamerV3 Critic in ${env.id} Environment",
+      tags: {} 
+    },
+    {
+      model_name: "${exp_name}_target_critic",
+      description: "DreamerV3 Target Critic in ${env.id} Environment",
+      tags: {} 
+    },
+    {
+      model_name: "${exp_name}_moments",
+      description: "DreamerV3 Moments in ${env.id} Environment",
+      tags: {} 
+    },
+  ]
+
 # Checkpoint
 checkpoint:
   every: 100000

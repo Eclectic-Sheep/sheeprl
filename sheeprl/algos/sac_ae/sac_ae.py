@@ -5,16 +5,18 @@ import os
 import time
 import warnings
 from math import prod
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -41,6 +43,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 def train(
@@ -564,3 +567,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            models_info = []
+            unwrapped_encoder: MultiEncoder = unwrap_fabric(encoder)
+            unwrapped_decoder: MultiDecoder = unwrap_fabric(decoder)
+            unwrapped_agent: SACAEAgent = unwrap_fabric(agent)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                models_info.append(mlflow.pytorch.log_model(unwrapped_encoder, artifact_path="encoder"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_decoder, artifact_path="decoder"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent"))
+                mlflow.log_dict(cfg, "config.json")
+
+            return tuple(models_info)
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
