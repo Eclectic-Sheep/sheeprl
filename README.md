@@ -56,7 +56,7 @@
     <td>DOA++(w/o optimizations)<sup>1</sup></td>
     <td>7M</td>
     <td>18d 22h</td>
-    <td>2726/3283<sup>2</sup></td>
+    <td>2726/3328<sup>2</sup></td>
     <td>N.A.</td>
     <td>1-3080</td>
   </tr>
