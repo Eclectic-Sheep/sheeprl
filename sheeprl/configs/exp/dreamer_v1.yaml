@@ -25,7 +25,7 @@ model_manager:
     },
     {
       model_name: "${exp_name}_critic",
-      description: "DreamerV1 Critic in ${env.id} Environment",
+      description: "DreamerV1 Critic used in ${env.id} Environment",
       tags: {} 
     },
   ]

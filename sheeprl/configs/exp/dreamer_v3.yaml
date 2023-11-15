@@ -24,17 +24,17 @@ model_manager:
     },
     {
       model_name: "${exp_name}_critic",
-      description: "DreamerV3 Critic in ${env.id} Environment",
+      description: "DreamerV3 Critic used in ${env.id} Environment",
       tags: {} 
     },
     {
       model_name: "${exp_name}_target_critic",
-      description: "DreamerV3 Target Critic in ${env.id} Environment",
+      description: "DreamerV3 Target Critic used in ${env.id} Environment",
       tags: {} 
     },
     {
       model_name: "${exp_name}_moments",
-      description: "DreamerV3 Moments in ${env.id} Environment",
+      description: "DreamerV3 Moments used in ${env.id} Environment",
       tags: {} 
     },
   ]

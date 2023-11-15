@@ -2,13 +2,15 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from torch import Tensor
 from torch.utils.data import BatchSampler
@@ -24,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 
 @register_algorithm()
@@ -496,3 +498,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "few-shot")
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            models_info = []
+            unwrapped_world_model = unwrap_fabric(world_model)
+            unwrapped_actor_task = unwrap_fabric(actor_task)
+            unwrapped_critic_task = unwrap_fabric(critic_task)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_actor_task, artifact_path="actor_task"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_critic_task, artifact_path="critic_task"))
+                models_info.append(mlflow.pytorch.log_model(target_critic_task, artifact_path="target_critic_task"))
+                models_info.append(mlflow.pytorch.log_model(moments_task, artifact_path="moments_task"))
+                mlflow.log_dict(cfg, "config.json")
+
+            return tuple(models_info)
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

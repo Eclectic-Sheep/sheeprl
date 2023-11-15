@@ -5,12 +5,14 @@ from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from lightning.pytorch.utilities.seed import isolate_rng
+from mlflow.models.model import ModelInfo
 from omegaconf import DictConfig
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -36,7 +38,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -1123,3 +1125,40 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            models_info = []
+            unwrapped_world_model = unwrap_fabric(world_model)
+            unwrapped_actor_exploration = unwrap_fabric(actor_exploration)
+            unwrapped_actor_task = unwrap_fabric(actor_task)
+            unwrapped_critic_task = unwrap_fabric(critic_task)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
+                models_info.append(
+                    mlflow.pytorch.log_model(unwrapped_actor_exploration, artifact_path="actor_exploration")
+                )
+                for k, critic in critics_exploration.items():
+                    unwrapped_critic_exploration = unwrap_fabric(critic["module"])
+                    target_critic_exploration = critic["target_module"]
+                    models_info.append(
+                        mlflow.pytorch.log_model(unwrapped_critic_exploration, artifact_path=f"critic_exploration_{k}")
+                    )
+                    models_info.append(
+                        mlflow.pytorch.log_model(
+                            target_critic_exploration, artifact_path=f"target_critic_exploration_{k}"
+                        )
+                    )
+                    models_info.append(
+                        mlflow.pytorch.log_model(moments_exploration[k], artifact_path=f"moments_exploration_{k}")
+                    )
+                models_info.append(mlflow.pytorch.log_model(unwrapped_actor_task, artifact_path="actor_task"))
+                models_info.append(mlflow.pytorch.log_model(unwrapped_critic_task, artifact_path="critic_task"))
+                models_info.append(mlflow.pytorch.log_model(target_critic_task, artifact_path="target_critic_task"))
+                models_info.append(mlflow.pytorch.log_model(moments_task, artifact_path="moments_task"))
+                mlflow.log_dict(cfg, "config.json")
+
+            return tuple(models_info)
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

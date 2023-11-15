@@ -10,6 +10,7 @@ total_steps: 5000000
 per_rank_batch_size: 16
 per_rank_sequence_length: 50
 
+# Model Manager
 model_manager:
   models: [
     {
@@ -24,12 +25,12 @@ model_manager:
     },
     {
       model_name: "${exp_name}_critic",
-      description: "DreamerV2 Critic in ${env.id} Environment",
+      description: "DreamerV2 Critic used in ${env.id} Environment",
       tags: {} 
     },
     {
       model_name: "${exp_name}_target_critic",
-      description: "DreamerV2 Target Critic in ${env.id} Environment",
+      description: "DreamerV2 Target Critic used in ${env.id} Environment",
       tags: {} 
     },
   ]

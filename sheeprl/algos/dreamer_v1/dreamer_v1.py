@@ -789,7 +789,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         def log_models(run_id: str) -> Sequence[ModelInfo]:
             models_info = []
-            unwrapped_world_model: WorldModel = unwrap_fabric(world_model)
+            unwrapped_world_model = unwrap_fabric(world_model)
             unwrapped_actor = unwrap_fabric(actor)
             unwrapped_critic = unwrap_fabric(critic)
             with mlflow.start_run(run_id=run_id, nested=True) as _:

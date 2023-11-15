@@ -786,15 +786,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         def log_models(run_id: str) -> Sequence[ModelInfo]:
             models_info = []
-            unwrapped_world_model: WorldModel = unwrap_fabric(world_model)
+            unwrapped_world_model = unwrap_fabric(world_model)
             unwrapped_actor = unwrap_fabric(actor)
             unwrapped_critic = unwrap_fabric(critic)
-            unwrapped_target_critic = unwrap_fabric(target_critic)
             with mlflow.start_run(run_id=run_id, nested=True) as _:
                 models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
                 models_info.append(mlflow.pytorch.log_model(unwrapped_actor, artifact_path="actor"))
                 models_info.append(mlflow.pytorch.log_model(unwrapped_critic, artifact_path="critic"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_target_critic, artifact_path="target_critic"))
+                models_info.append(mlflow.pytorch.log_model(target_critic, artifact_path="target_critic"))
                 models_info.append(mlflow.pytorch.log_model(moments, artifact_path="moments"))
                 mlflow.log_dict(cfg, "config.json")
 
