@@ -4,14 +4,16 @@ import copy
 import os
 import warnings
 from math import prod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -28,6 +30,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 def train(
@@ -396,3 +399,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(agent.actor.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            unwrapped_agent: SACAgent = unwrap_fabric(agent)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                mlflow.log_dict(cfg, "config.json")
+            return tuple([model_info])
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

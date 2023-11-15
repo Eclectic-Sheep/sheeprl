@@ -354,7 +354,7 @@ def player(
                 mlflow.log_dict(cfg, "config.json")
             return tuple([model_info])
 
-        register_model(fabric, log_models, cfg.model_manager)
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
 
 
 def trainer(

@@ -9,6 +9,16 @@ defaults:
 total_steps: 1000000
 per_rank_batch_size: 256
 
+# Model Manager
+model_manager:
+  models: [
+    {
+      model_name: "${exp_name}",
+      description: "SAC Agent in ${env.id} Environment",
+      tags: {} 
+    },
+  ]
+
 # Checkpoint
 checkpoint:
   every: 50000

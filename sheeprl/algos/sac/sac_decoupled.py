@@ -3,16 +3,18 @@ import os
 import warnings
 from datetime import timedelta
 from math import prod
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
@@ -27,6 +29,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 @torch.no_grad()
@@ -302,6 +305,30 @@ def player(
     if fabric.is_global_zero:
         test(actor, fabric, cfg, log_dir)
 
+    if not cfg.model_manager.disabled:
+        critics = [
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
+            for _ in range(cfg.algo.critic.n)
+        ]
+        target_entropy = -act_dim
+        agent = SACAgent(
+            actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
+        )
+        flattened_parameters = torch.empty_like(
+            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), device=device
+        )
+        player_trainer_collective.broadcast(flattened_parameters, src=1)
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            unwrapped_agent: SACAgent = unwrap_fabric(agent)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                mlflow.log_dict(cfg, "config.json")
+            return tuple([model_info])
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
+
 
 def trainer(
     world_collective: TorchCollective,
@@ -425,6 +452,10 @@ def trainer(
                     player_trainer_collective=player_trainer_collective,
                     ckpt_path=ckpt_path,
                     state=state,
+                )
+            if not cfg.model_manager.disabled:
+                player_trainer_collective.broadcast(
+                    torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
                 )
             return
         data = make_tensordict(data, device=device)

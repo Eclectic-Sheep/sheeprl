@@ -4,3 +4,13 @@ defaults:
   - sac
   - override /algo: droq
   - _self_
+
+# Model Manager
+model_manager:
+  models: [
+    {
+      model_name: "${exp_name}",
+      description: "DroQ Agent in ${env.id} Environment",
+      tags: {} 
+    },
+  ]
