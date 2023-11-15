@@ -5,13 +5,15 @@ import itertools
 import os
 import warnings
 from contextlib import nullcontext
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
 from torch.distributed.algorithms.join import Join
@@ -19,6 +21,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
+from sheeprl.algos.ppo.utils import normalize_obs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -27,7 +30,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
 
 
 def train(
@@ -271,7 +274,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         elif k in cfg.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs[None]  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
-        obs[k] = torch_obs
+        obs[k] = torch_obs[None]
 
     # Get the resetted recurrent states from the agent
     prev_states = agent.initial_states
@@ -286,9 +289,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = {
-                        k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
-                    }  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
+                    # [Seq_len, Batch_size, D] --> [1, num_envs, D]
+                    normalized_obs = normalize_obs(obs, cfg.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
                     )
@@ -357,7 +359,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 elif k in cfg.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(next_obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs[None]
-                obs[k] = torch_obs
+                obs[k] = torch_obs[None]
 
             # Reset the states if the episode is done
             if cfg.algo.reset_recurrent_state_on_done:
@@ -377,9 +379,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {
-                k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
-            }
+            normalized_obs = normalize_obs(obs, cfg.cnn_keys.encoder, obs_keys)
             feat = agent.module.feature_extractor(normalized_obs)
             rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
@@ -497,3 +497,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(agent.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled:
+
+        def log_models(run_id: str) -> Sequence[ModelInfo]:
+            unwrapped_agent: RecurrentPPOAgent = unwrap_fabric(agent)
+            with mlflow.start_run(run_id=run_id, nested=True) as _:
+                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                mlflow.log_dict(cfg, "config.json")
+            return tuple([model_info])
+
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

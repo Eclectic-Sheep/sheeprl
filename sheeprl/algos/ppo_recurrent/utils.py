@@ -1,14 +1,11 @@
-from typing import TYPE_CHECKING, Any, Dict
+from typing import Any, Dict
 
 import torch
 from lightning import Fabric
 
-from sheeprl.utils.env import make_env
-
-if TYPE_CHECKING:
-    from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
-
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = ppo_aggregator_keys
 

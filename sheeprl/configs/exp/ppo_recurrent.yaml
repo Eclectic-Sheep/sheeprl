@@ -9,6 +9,15 @@ algo:
   rollout_steps: 256
   update_epochs: 4
 
+model_manager:
+  models: [
+    {
+      model_name: "${exp_name}",
+      description: "PPO Recurrent Agent in ${env.id} Environment",
+      tags: {} 
+    },
+  ]
+
 # Experiment
 per_rank_num_batches: 4
 per_rank_sequence_length: 8

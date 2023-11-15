@@ -278,7 +278,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs (Tensor): the log probabilities of the actions w.r.t. their distributions.
             entropies (Tensor): the entropies of the actions distributions.
             values (Tensor): the state values.
-            hx (Tensor): the new recurrent state.
+            states (Tuple[Tensor, Tensor]): the new recurrent states (hx, cx).
         """
         embedded_obs = self.feature_extractor(obs)
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)

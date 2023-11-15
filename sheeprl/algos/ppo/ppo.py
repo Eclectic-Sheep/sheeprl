@@ -21,7 +21,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import get_signature, normalize_obs, test
+from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -452,17 +452,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         def log_models(run_id: str) -> Sequence[ModelInfo]:
             unwrapped_agent: PPOAgent = unwrap_fabric(agent)
-            with torch.no_grad():
-                input_example = envs.single_observation_space.sample()
-                signature = get_signature(unwrapped_agent, input_example, cfg.cnn_keys.encoder, obs_keys)
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                model_info = mlflow.pytorch.log_model(
-                    unwrapped_agent,
-                    artifact_path="agent",
-                    signature=signature,
-                    input_example=input_example,
-                )
+                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
                 mlflow.log_dict(cfg, "config.json")
             return tuple([model_info])
 
-        register_model(fabric, log_models, cfg.model_manager)
+        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

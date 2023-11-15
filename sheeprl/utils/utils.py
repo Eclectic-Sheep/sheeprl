@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
@@ -166,6 +167,7 @@ def print_config(
 
 
 def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
+    model = copy.deepcopy(model)
     if isinstance(model, _FabricModule):
         model = model.module
     for name, child in model.named_children():
