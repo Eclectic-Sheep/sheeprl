@@ -41,10 +41,10 @@ namespace Node {
             Node* child = new Node(priors[i]);
             this->children.push_back(child);
         }
-        std::cout << std::endl;
-        std::cout << "Added the following children to node " << this << std::endl;
+        //std::cout << std::endl;
+        //std::cout << "Added the following children to node " << this << std::endl;
         for (int i = 0; i < num_children; i++){
-            std::cout << this->children[i] << std::endl;
+            //std::cout << this->children[i] << std::endl;
         }
     }
 

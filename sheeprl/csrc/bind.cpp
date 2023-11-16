@@ -28,6 +28,7 @@ PYBIND11_MODULE(_node, m) {
         .def("update", &mcts::MinMaxStats::update)
         .def("normalize", &mcts::MinMaxStats::normalize);
 
-    m.def("rollout", &mcts::rollout, "Rollout function");
+    m.def("rollout", &mcts::rollout, "Rollout function", py::return_value_policy::reference);
     m.def("backpropagate", &mcts::backpropagate, "Backpropagation function");
+    m.def("forward_model", &tester::forward_model, "Forward model function");
 }

@@ -1,1 +1,26 @@
+defaults:
+  - default
+  - /optim@optimizer: adam
+  - _self_
+
 name: muzero
+
+support_size: 300
+embedding_size: 256
+max_trajectory_len: 1000
+num_simulations: 50
+gamma: 0.99
+dirichlet_alpha: 0.25
+exploration_fraction: 0.25
+chunk_sequence_len: 10
+nstep_horizon: 50
+priority_alpha: 0.5
+update_epochs: 10
+chunks_per_batch: 128
+pbc_base: 19652
+pbc_init: 1.25
+
+optimizer:
+  lr: 1e-3
+  eps: 1e-4
+  weight_decay: 1e-4

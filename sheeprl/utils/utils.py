@@ -256,20 +256,16 @@ def two_hot_encoder(array: np.ndarray, support_range: int = 300, num_buckets: Op
     return two_hot
 
 
-def two_hot_decoder(array: np.ndarray, support_range: int) -> float:
+def two_hot_decoder(array: np.ndarray, support: np.ndarray) -> np.ndarray:
     """Decode a tensor representing a two-hot vector as a tensor of floating point numbers.
 
     Args:
         array (np.ndarray): array to decode of shape (..., batch_size, support_size)
-        support_range (int): range of the support of the values, going from -support_range to support_range
+        support (np.ndarray): range of the support of the values, going from -support_range to support_range
 
     Returns:
         Tensor: tensor of shape (..., batch_size, 1)
     """
-    num_buckets = array.shape[-1]
-    if num_buckets % 2 == 0:
-        raise ValueError("support_size must be odd")
-    support = np.linspace(-support_range, support_range, num_buckets)
     return np.sum(array * support, axis=-1, keepdims=True)
 
 
@@ -278,7 +274,7 @@ def symsqrt(x: np.ndarray, eps=0.001) -> np.ndarray:
     return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + eps * x
 
 
-def inverse_symsqrt(x, eps=0.001) -> np.ndarray:
+def inverse_symsqrt(x: np.ndarray, eps=0.001) -> np.ndarray:
     """Inverts symsqrt."""
     return np.sign(x) * (((np.sqrt(1 + 4 * eps * (np.abs(x) + 1 + eps)) - 1) / (2 * eps)) ** 2 - 1)
 

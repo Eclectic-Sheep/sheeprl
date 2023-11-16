@@ -15,11 +15,11 @@ from sheeprl.algos.muzero.agent import MuzeroAgent
 from sheeprl.utils.utils import inverse_symsqrt, symsqrt, two_hot_decoder, two_hot_encoder
 
 
-def support_to_scalar(support: torch.Tensor, support_range: int) -> np.ndarray:
+def support_to_scalar(array: np.ndarray, support: np.ndarray) -> np.ndarray:
     """Converts a support representation to a scalar."""
-    if isinstance(support, torch.Tensor):
-        support = support.numpy()
-    return inverse_symsqrt(two_hot_decoder(support, support_range))
+    if isinstance(array, torch.Tensor):
+        array = array.cpu().numpy()
+    return inverse_symsqrt(two_hot_decoder(array, support))
 
 
 def scalar_to_support(scalar: np.ndarray, support_range: int) -> torch.Tensor:
@@ -101,6 +101,7 @@ class MCTS:
         self.support_size = support_size
         self.pbc_base = pbc_base
         self.pbc_init = pbc_init
+        self.support = np.linspace(-support_size, support_size, support_size * 2 + 1)
 
     def search(self, root, observation: np.ndarray):
         """Runs MCTS for num_simulations and modifies the root node in place with the result."""
@@ -128,15 +129,15 @@ class MCTS:
                 torch.tensor([imagined_action]).view(1, 1).to(device=parent.hidden_state.device, dtype=torch.float32),
                 parent.hidden_state,
             )
-            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support_size).item()
+            value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support).item()
             node.hidden_state = hidden_state
-            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_size).item()
+            node.reward = support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support).item()
             normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
             priors = normalized_policy.squeeze().tolist()
 
             # Backpropagate the search path to update the nodes' statistics
             backpropagate(search_path, priors, value, self.gamma, min_max_stats)
-            print("Child visit counts:", [child.visit_count for child in root.children])
+            # print("Child visit counts:", [child.visit_count for child in root.children])
 
 
 @torch.no_grad()
