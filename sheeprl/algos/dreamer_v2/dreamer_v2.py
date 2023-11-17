@@ -537,6 +537,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_optimizer, actor_optimizer, critic_optimizer
     )
 
+    local_vars = locals()
+
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
@@ -866,18 +868,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            models_info = []
-            unwrapped_world_model = unwrap_fabric(world_model)
-            unwrapped_actor = unwrap_fabric(actor)
-            unwrapped_critic = unwrap_fabric(critic)
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_actor, artifact_path="actor"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_critic, artifact_path="critic"))
-                models_info.append(mlflow.pytorch.log_model(target_critic, artifact_path="target_critic"))
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-
-            return tuple(models_info)
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

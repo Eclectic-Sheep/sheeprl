@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from sheeprl.algos.sac_ae.agent import SACAEContinuousActor
 
 AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
+MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
 @torch.no_grad()

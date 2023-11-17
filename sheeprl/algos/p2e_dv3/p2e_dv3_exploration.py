@@ -754,6 +754,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             m.load_state_dict(state[f"moments_exploration_{k}"])
         moments_task.load_state_dict(state["moments_task"])
 
+    local_vars = locals()
+
     # Metrics
     # Since there could be more exploration critics, the key of the critic is added
     # to the metrics that the user has selected.
@@ -1128,37 +1130,25 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            models_info = []
-            unwrapped_world_model = unwrap_fabric(world_model)
-            unwrapped_actor_exploration = unwrap_fabric(actor_exploration)
-            unwrapped_actor_task = unwrap_fabric(actor_task)
-            unwrapped_critic_task = unwrap_fabric(critic_task)
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
-                models_info.append(
-                    mlflow.pytorch.log_model(unwrapped_actor_exploration, artifact_path="actor_exploration")
-                )
-                for k, critic in critics_exploration.items():
-                    unwrapped_critic_exploration = unwrap_fabric(critic["module"])
-                    target_critic_exploration = critic["target_module"]
-                    models_info.append(
-                        mlflow.pytorch.log_model(unwrapped_critic_exploration, artifact_path=f"critic_exploration_{k}")
-                    )
-                    models_info.append(
-                        mlflow.pytorch.log_model(
-                            target_critic_exploration, artifact_path=f"target_critic_exploration_{k}"
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    if k.startswith("critic_exploration"):
+                        unwrapped_models[k] = unwrap_fabric(
+                            critics_exploration[k.replace("critic_exploration_", "")]["module"]
                         )
-                    )
-                    models_info.append(
-                        mlflow.pytorch.log_model(moments_exploration[k], artifact_path=f"moments_exploration_{k}")
-                    )
-                models_info.append(mlflow.pytorch.log_model(unwrapped_actor_task, artifact_path="actor_task"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_critic_task, artifact_path="critic_task"))
-                models_info.append(mlflow.pytorch.log_model(target_critic_task, artifact_path="target_critic_task"))
-                models_info.append(mlflow.pytorch.log_model(moments_task, artifact_path="moments_task"))
+                    elif k.startswith("target_critic_exploration"):
+                        unwrapped_models[k] = critics_exploration[k.replace("target_critic_exploration_", "")][
+                            "target_module"
+                        ]
+                    elif k.startswith("moments_exploration"):
+                        unwrapped_models[k] = unwrap_fabric(moments_exploration[k.replace("moments_exploration_", "")])
+                    else:
+                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-
-            return tuple(models_info)
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

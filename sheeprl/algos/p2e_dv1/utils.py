@@ -28,3 +28,11 @@ AGGREGATOR_KEYS = {
     "Grads/critic_exploration",
     "Grads/ensemble",
 }.union(AGGREGATOR_KEYS_DV1)
+MODELS_TO_REGISTER = {
+    "world_model",
+    "ensembles",
+    "actor_exploration",
+    "critic_exploration",
+    "actor_task",
+    "critic_task",
+}

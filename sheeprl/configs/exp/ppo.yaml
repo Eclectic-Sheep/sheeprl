@@ -9,19 +9,17 @@ defaults:
 total_steps: 65536
 per_rank_batch_size: 64
 
-model_manager:
-  models: [
-    {
-      model_name: "${exp_name}",
-      description: "PPO Agent in ${env.id} Environment",
-      tags: {} 
-    },
-  ]
-
 # Buffer
 buffer:
   share_data: False
   size: ${algo.rollout_steps}
+
+model_manager:
+  models: 
+    agent:
+      model_name: "${exp_name}"
+      description: "PPO Agent in ${env.id} Environment"
+      tags: {}
 
 metric:
   aggregator:

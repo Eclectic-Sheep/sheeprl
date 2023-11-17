@@ -4,7 +4,7 @@ import copy
 import os
 import warnings
 from math import prod
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional
 
 import gymnasium as gym
 import hydra
@@ -180,6 +180,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
         qf_optimizer, actor_optimizer, alpha_optimizer
     )
+
+    local_vars = locals()
 
     # Create a metric aggregator to log the metrics
     aggregator = None
@@ -402,11 +404,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            unwrapped_agent: SACAgent = unwrap_fabric(agent)
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-            return tuple([model_info])
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

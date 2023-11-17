@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Sequence, Union
+from typing import Any, Dict, Union
 
 import gymnasium as gym
 import hydra
@@ -189,6 +189,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Define the optimizer
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+
+    local_vars = locals()
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
@@ -450,11 +452,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            unwrapped_agent: PPOAgent = unwrap_fabric(agent)
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-            return tuple([model_info])
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

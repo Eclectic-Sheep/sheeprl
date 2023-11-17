@@ -7,10 +7,8 @@ defaults:
 
 # Model Manager
 model_manager:
-  models: [
-    {
-      model_name: "${exp_name}",
-      description: "DroQ Agent in ${env.id} Environment",
-      tags: {} 
-    },
-  ]
+  models:
+    agent:
+      model_name: "${exp_name}"
+      description: "DroQ Agent in ${env.id} Environment"
+      tags: {}

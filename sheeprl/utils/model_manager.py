@@ -100,7 +100,7 @@ class MlflowModelManager(AbstractModelManager):
             The model version.
         """
         model_version = mlflow.register_model(model_uri=model_location, name=model_name, tags=tags)
-        self.fabric.print("Registered model %s with version %s", model_name, model_version.version)
+        self.fabric.print(f"Registered model {model_name} with version {model_version.version}")
         registered_model_description = self.client.get_registered_model(model_name).description
 
         if model_version.version == "1":
@@ -152,10 +152,10 @@ class MlflowModelManager(AbstractModelManager):
             return None
 
         if previous_stage.lower() == stage.lower():
-            warnings.warn("Model %s version %s is already in stage %s", model_name, version, stage)
+            warnings.warn(f"Model {model_name} version {version} is already in stage {stage}")
             return self.client.get_model_version(model_name, version)
 
-        self.fabric.print("Transitioning model %s version %s from %s to %s", model_name, version, previous_stage, stage)
+        self.fabric.print(f"Transitioning model {model_name} version {version} from {previous_stage} to {stage}")
         model_version = self.client.transition_model_version_stage(name=model_name, version=version, stage=stage)
         new_stage = model_version.current_stage
         registered_model_description = self.client.get_registered_model(model_name).description
@@ -197,7 +197,7 @@ class MlflowModelManager(AbstractModelManager):
             warnings.warn("Model name did not match, aborting deletion")
             return
 
-        self.fabric.print("Deleting model %s version %s", model_name, version)
+        self.fabric.print(f"Deleting model {model_name} version {version}")
         self.client.delete_model_version(model_name, version)
 
         registered_model_description = self.client.get_registered_model(model_name).description
@@ -244,7 +244,7 @@ class MlflowModelManager(AbstractModelManager):
         runs = self.client.search_runs(experiment_ids=[experiment_id])
 
         if len(runs) == 0:
-            self.fabric.print("No runs found for experiment %s", experiment_name)
+            self.fabric.print(f"No runs found for experiment {experiment_name}")
             return None
 
         best_run: Run | None = None
@@ -274,7 +274,7 @@ class MlflowModelManager(AbstractModelManager):
                     best_run = run
 
         if best_run is None:
-            self.fabric.print("No runs found for experiment %s with the given metric", experiment_name)
+            self.fabric.print(f"No runs found for experiment {experiment_name} with the given metric")
             return None
 
         best_model_uri = f"runs:/{best_run.info.run_id}/{model_path}"
@@ -294,11 +294,9 @@ class MlflowModelManager(AbstractModelManager):
             output_path (str): The path to save the model to.
         """
         artifact_uri = self.client.get_model_version_download_uri(model_name, version)
-        self.fabric.print(
-            "Downloading model %s version %s from %s to %s", model_name, version, artifact_uri, output_path
-        )
+        self.fabric.print(f"Downloading model {model_name} version {version} from {artifact_uri} to {output_path}")
         if not os.path.exists(output_path):
-            self.fabric.print("Creating output path %s", output_path)
+            self.fabric.print(f"Creating output path {output_path}")
             os.makedirs(output_path)
         mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri, dst_path=output_path)
 
@@ -332,5 +330,5 @@ class MlflowModelManager(AbstractModelManager):
             model_stage = self.client.get_model_version(model_name, version).current_stage
             return model_stage
         except RestException:
-            self.fabric.print("Model named %s with version %s does not exist", model_name, version)
+            self.fabric.print(f"Model named {model_name} with version {version} does not exist")
             return None

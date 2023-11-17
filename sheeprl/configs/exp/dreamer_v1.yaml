@@ -12,24 +12,19 @@ per_rank_sequence_length: 50
 
 # Model Manager
 model_manager:
-  models: [
-    {
-      model_name: "${exp_name}_world_model",
-      description: "DreamerV1 World Model used in ${env.id} Environment",
-      tags: {} 
-    },
-    {
-      model_name: "${exp_name}_actor",
-      description: "DreamerV1 Actor used in ${env.id} Environment",
-      tags: {} 
-    },
-    {
-      model_name: "${exp_name}_critic",
-      description: "DreamerV1 Critic used in ${env.id} Environment",
-      tags: {} 
-    },
-  ]
-
+  models: 
+    world_model:
+      model_name: "${exp_name}_world_model"
+      description: "DreamerV1 World Model used in ${env.id} Environment"
+      tags: {}
+    actor:
+      model_name: "${exp_name}_actor"
+      description: "DreamerV1 Actor used in ${env.id} Environment"
+      tags: {}
+    critic:
+      model_name: "${exp_name}_critic"
+      description: "DreamerV1 Critic used in ${env.id} Environment"
+      tags: {}
 
 # Checkpoint
 checkpoint:

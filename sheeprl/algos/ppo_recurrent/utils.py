@@ -4,10 +4,12 @@ import torch
 from lightning import Fabric
 
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
+from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = ppo_aggregator_keys
+MODELS_TO_REGISTER = ppo_models_to_register
 
 
 @torch.no_grad()

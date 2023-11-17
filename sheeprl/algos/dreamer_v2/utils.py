@@ -34,6 +34,7 @@ AGGREGATOR_KEYS = {
     "Grads/actor",
     "Grads/critic",
 }
+MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic"}
 
 
 def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True, validate_args=False) -> Tensor:

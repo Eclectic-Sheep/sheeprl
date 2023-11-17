@@ -139,6 +139,22 @@ def run_algorithm(cfg: Dict[str, Any]):
         for k in keys_to_remove:
             cfg.metric.aggregator.metrics.pop(k, None)
         MetricAggregator.disabled = cfg.metric.log_level == 0 or len(cfg.metric.aggregator.metrics) == 0
+
+    # Model Manager
+    if hasattr(cfg, "model_manager") and not cfg.model_manager.disabled and cfg.model_manager.models is not None:
+        predefined_models_keys = set()
+        if not hasattr(utils, "MODELS_TO_REGISTER"):
+            warnings.warn(
+                f"No 'MODELS_TO_REGISTER' set found for the {algo_name} algorithm under the {module} module. "
+                "No model will be registered.",
+                UserWarning,
+            )
+        else:
+            predefined_models_keys = utils.MODELS_TO_REGISTER
+        keys_to_remove = set(cfg.model_manager.models.keys()) - predefined_models_keys
+        for k in keys_to_remove:
+            cfg.model_manager.models.pop(k, None)
+        cfg.model_manager.disabled == cfg.model_manager.disabled or len(cfg.model_manager.models) == 0
     fabric.launch(command, cfg, **kwargs)
 
 

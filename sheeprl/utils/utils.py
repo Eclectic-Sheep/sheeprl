@@ -176,7 +176,7 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
 
 
 def register_model(
-    fabric: Fabric, log_models: Callable[[str], Sequence[ModelInfo]], cfg_model_manager: Dict[str, Any], algo_name: str
+    fabric: Fabric, log_models: Callable[[str], Dict[str, ModelInfo]], cfg_model_manager: Dict[str, Any], algo_name: str
 ):
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI") or getattr(fabric.logger, "_tracking_uri", None)
     if tracking_uri is None:
@@ -196,7 +196,7 @@ def register_model(
             f"of models you want to register. {len(cfg_model_manager.models)} model registration "
             f"configs are given, but the agent has {len(cfg_model_manager.models)} models"
         )
-    for mi, cfg_model in zip(models_info, cfg_model_manager.models):
+    for k, cfg_model in cfg_model_manager.models.items():
         model_manager.register_model(
-            mi._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
         )

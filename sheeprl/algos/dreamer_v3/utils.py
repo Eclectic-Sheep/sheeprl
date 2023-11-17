@@ -29,6 +29,7 @@ AGGREGATOR_KEYS = {
     "Grads/actor",
     "Grads/critic",
 }
+MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}
 
 
 class Moments(nn.Module):

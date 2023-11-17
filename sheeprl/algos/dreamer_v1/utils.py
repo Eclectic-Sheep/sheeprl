@@ -23,6 +23,7 @@ AGGREGATOR_KEYS = {
     "Grads/actor",
     "Grads/critic",
 }
+MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
 
 def compute_lambda_values(

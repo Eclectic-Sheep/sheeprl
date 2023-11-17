@@ -3,7 +3,7 @@ import os
 import warnings
 from datetime import timedelta
 from math import prod
-from typing import Any, Dict, Sequence
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -320,12 +320,17 @@ def player(
         player_trainer_collective.broadcast(flattened_parameters, src=1)
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            unwrapped_agent: SACAgent = unwrap_fabric(agent)
+        local_vars = locals()
+
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                model_info = mlflow.pytorch.log_model(unwrapped_agent, artifact_path="agent")
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-            return tuple([model_info])
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
 

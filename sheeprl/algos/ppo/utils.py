@@ -12,6 +12,7 @@ from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
+MODELS_TO_REGISTER = {"agent"}
 
 
 @torch.no_grad()

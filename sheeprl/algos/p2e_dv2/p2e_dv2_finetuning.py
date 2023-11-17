@@ -4,7 +4,7 @@ import copy
 import os
 import pathlib
 import warnings
-from typing import Any, Dict, Sequence
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -180,6 +180,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     world_optimizer, actor_task_optimizer, critic_task_optimizer = fabric.setup_optimizers(
         world_optimizer, actor_task_optimizer, critic_task_optimizer
     )
+
+    local_vars = locals()
 
     # Metrics
     aggregator = None
@@ -513,18 +515,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Sequence[ModelInfo]:
-            models_info = []
-            unwrapped_world_model = unwrap_fabric(world_model)
-            unwrapped_actor_task = unwrap_fabric(actor_task)
-            unwrapped_critic_task = unwrap_fabric(critic_task)
+        def log_models(run_id: str) -> Dict[str, ModelInfo]:
             with mlflow.start_run(run_id=run_id, nested=True) as _:
-                models_info.append(mlflow.pytorch.log_model(unwrapped_world_model, artifact_path="world_model"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_actor_task, artifact_path="actor_task"))
-                models_info.append(mlflow.pytorch.log_model(unwrapped_critic_task, artifact_path="critic_task"))
-                models_info.append(mlflow.pytorch.log_model(target_critic_task, artifact_path="target_critic_task"))
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
                 mlflow.log_dict(cfg, "config.json")
-
-            return tuple(models_info)
+            return model_info
 
         register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)

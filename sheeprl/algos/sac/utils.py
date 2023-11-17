@@ -13,6 +13,7 @@ AGGREGATOR_KEYS = {
     "Loss/policy_loss",
     "Loss/alpha_loss",
 }
+MODELS_TO_REGISTER = {"agent"}
 
 
 @torch.no_grad()

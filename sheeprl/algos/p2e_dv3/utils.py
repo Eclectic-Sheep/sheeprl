@@ -29,3 +29,18 @@ AGGREGATOR_KEYS = {
     "Grads/critic_exploration",
     "Rewards/intrinsic",
 }.union(AGGREGATOR_KEYS_DV3)
+MODELS_TO_REGISTER = {
+    "world_model",
+    "ensembles",
+    "actor_exploration",
+    "critic_exploration_intrinsic",
+    "target_critic_exploration_intrinsic",
+    "moments_exploration_intrinsic",
+    "critic_exploration_extrinsic",
+    "target_critic_exploration_extrinsic",
+    "moments_exploration_extrinsic",
+    "actor_task",
+    "critic_task",
+    "target_critic_task",
+    "moments_task",
+}
