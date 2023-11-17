@@ -519,9 +519,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             with mlflow.start_run(run_id=run_id, nested=True) as _:
                 model_info = {}
                 unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                models_keys = set(cfg.model_manager.models.keys())
+                for k in models_keys:
+                    if "exploration" not in k and k != "ensembles":
+                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                        model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                    else:
+                        cfg.model_manager.models.pop(k, None)
                 mlflow.log_dict(cfg, "config.json")
             return model_info
 
