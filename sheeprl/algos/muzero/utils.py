@@ -8,9 +8,10 @@ import torch
 from lightning import Fabric
 
 if USE_C:
-    from sheeprl._node import MinMaxStats, backpropagate, rollout
+    from sheeprl._node import MinMaxStats, Node, backpropagate, rollout
 else:
-    from sheeprl.algos.muzero.mcts_utils import MinMaxStats, backpropagate, rollout
+    from sheeprl.algos.muzero.mcts_utils import Node, MinMaxStats, backpropagate, rollout
+
 from sheeprl.algos.muzero.agent import MuzeroAgent
 from sheeprl.utils.utils import inverse_symsqrt, symsqrt, two_hot_decoder, two_hot_encoder
 
@@ -103,9 +104,10 @@ class MCTS:
         self.pbc_init = pbc_init
         self.support = np.linspace(-support_size, support_size, support_size * 2 + 1)
 
-    def search(self, root, observation: np.ndarray):
+    def search(self, observation: np.ndarray) -> Node:
         """Runs MCTS for num_simulations and modifies the root node in place with the result."""
-        # Initialize the hidden state and compute the actor's policy logits
+        # Initialize the root, the hidden state and compute the actor's policy logits
+        root = Node(0.0)
         hidden_state, policy_logits, _ = self.agent.initial_inference(torch.as_tensor(observation))
         root.hidden_state = hidden_state.reshape(1, 1, -1)
 
@@ -137,7 +139,7 @@ class MCTS:
 
             # Backpropagate the search path to update the nodes' statistics
             backpropagate(search_path, priors, value, self.gamma, min_max_stats)
-            # print("Child visit counts:", [child.visit_count for child in root.children])
+        return root
 
 
 @torch.no_grad()

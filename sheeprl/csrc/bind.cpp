@@ -11,8 +11,6 @@ namespace py = pybind11;
 PYBIND11_MODULE(_node, m) {
 	py::class_<Node::Node>(m, "Node")
 		.def(py::init<const float &>())
-		.def("set_hidden_state", &Node::Node::set_hidden_state)
-		.def("get_hidden_state", &Node::Node::get_hidden_state)
 		.def("expand", &Node::Node::expand)
 		.def("add_exploration_noise", &Node::Node::add_exploration_noise)
 		.def("value", &Node::Node::value)
@@ -30,5 +28,4 @@ PYBIND11_MODULE(_node, m) {
 
     m.def("rollout", &mcts::rollout, "Rollout function", py::return_value_policy::reference);
     m.def("backpropagate", &mcts::backpropagate, "Backpropagation function");
-    m.def("forward_model", &tester::forward_model, "Forward model function");
 }

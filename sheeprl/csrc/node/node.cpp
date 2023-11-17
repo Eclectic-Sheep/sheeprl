@@ -16,9 +16,15 @@ namespace Node {
         this->imagined_action = -1;
     }
 
-    int Node::expanded(){
-	    int num_children = this->children.size();
-	    if (num_children > 0){
+    Node::~Node(){
+        for (auto & i : this->children){
+            delete i;
+        }
+    }
+
+    int Node::expanded() const{
+        int num_children = this->children.size();
+        if (num_children > 0){
             return 1;
         }
         else{
@@ -26,9 +32,9 @@ namespace Node {
         }
     }
 
-    int Node::value(){
+    double Node::value() const{
         if (this->visit_count == 0){
-            return 0;
+            return 0.0;
         }
         else{
             return this->value_sum / this->visit_count;
@@ -41,11 +47,6 @@ namespace Node {
             Node* child = new Node(priors[i]);
             this->children.push_back(child);
         }
-        //std::cout << std::endl;
-        //std::cout << "Added the following children to node " << this << std::endl;
-        for (int i = 0; i < num_children; i++){
-            //std::cout << this->children[i] << std::endl;
-        }
     }
 
     void Node::add_exploration_noise(std::vector<double> noise, double exploration_fraction){
@@ -57,6 +58,5 @@ namespace Node {
         }
     }
 
-    torch::Tensor Node::Node::get_hidden_state() { return this->hidden_state; }
-    void Node::Node::set_hidden_state(torch::Tensor hidden_state) { this->hidden_state = hidden_state; }
-};	// namespace Node
+    Node::Node() = default;
+};  // namespace Node
