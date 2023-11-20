@@ -2,7 +2,7 @@ defaults:
   - default
   - _self_
 
-  models: 
+models: 
   world_model:
     model_name: "${exp_name}_world_model"
     description: "P2E_DV3 World Model used in ${env.id} Environment"
