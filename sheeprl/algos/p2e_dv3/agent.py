@@ -10,7 +10,7 @@ from torch import nn
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
 from sheeprl.algos.dreamer_v3.agent import WorldModel
-from sheeprl.algos.dreamer_v3.agent import build_models as dv3_build_models
+from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
 
@@ -21,7 +21,7 @@ Actor = DV3Actor
 MinedojoActor = DV3MinedojoActor
 
 
-def build_models(
+def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
@@ -73,7 +73,7 @@ def build_models(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create task models
-    world_model, actor_task, critic_task, target_critic_task = dv3_build_models(
+    world_model, actor_task, critic_task, target_critic_task = dv3_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,

@@ -25,7 +25,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, test
-from sheeprl.algos.p2e_dv2.agent import build_models
+from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.models.models import MLP
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
@@ -611,7 +611,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
-    ) = build_models(
+    ) = build_agent(
         fabric,
         actions_dim,
         is_continuous,

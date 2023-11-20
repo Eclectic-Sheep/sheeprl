@@ -21,7 +21,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2
 from sheeprl.algos.dreamer_v2.dreamer_v2 import train
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.algos.p2e_dv2.agent import build_models
+from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -143,7 +143,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
-    world_model, actor_task, critic_task, target_critic_task, actor_exploration, _, _ = build_models(
+    world_model, actor_task, critic_task, target_critic_task, actor_exploration, _, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,

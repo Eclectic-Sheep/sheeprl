@@ -5,7 +5,7 @@ from typing import Any, Dict
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, build_models
+from sheeprl.algos.dreamer_v3.agent import PlayerDV3, build_agent
 from sheeprl.algos.dreamer_v3.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -47,7 +47,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models
-    world_model, actor, _, _ = build_models(
+    world_model, actor, _, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
