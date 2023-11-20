@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from math import prod
 from typing import Any, Dict, Optional
 
 import gymnasium as gym
@@ -21,7 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
+from sheeprl.algos.sac.agent import SACAgent, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -148,26 +147,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
     # Define the agent and the optimizer and setup sthem with Fabric
-    act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
+    agent = build_agent(
+        fabric, cfg, observation_space, action_space, state["agent"] if cfg.checkpoint.resume_from else None
     )
-    critics = [
-        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
-        for _ in range(cfg.algo.critic.n)
-    ]
-    target_entropy = -act_dim
-    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
-    if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
 
     # Optimizers
     qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters())

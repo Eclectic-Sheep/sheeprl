@@ -25,7 +25,7 @@ from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_models
+from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
@@ -468,7 +468,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
@@ -501,7 +501,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
-    world_model, actor, critic, target_critic = build_models(
+    world_model, actor, critic, target_critic = build_agent(
         fabric,
         actions_dim,
         is_continuous,

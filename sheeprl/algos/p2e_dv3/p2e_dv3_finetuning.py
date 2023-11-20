@@ -19,7 +19,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
-from sheeprl.algos.p2e_dv3.agent import build_models
+from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -104,7 +104,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
@@ -144,7 +144,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         target_critic_task,
         actor_exploration,
         _,
-    ) = build_models(
+    ) = build_agent(
         fabric,
         actions_dim,
         is_continuous,

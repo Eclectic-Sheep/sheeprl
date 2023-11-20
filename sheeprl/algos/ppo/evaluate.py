@@ -5,7 +5,7 @@ from typing import Any, Dict
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -42,26 +42,13 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         env.action_space.shape
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
     # Create the actor and critic models
-    agent = PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=observation_space,
-        encoder_cfg=cfg.algo.encoder,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
-        screen_size=cfg.env.screen_size,
-        distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
-    )
-    agent.load_state_dict(state["agent"])
-    agent = fabric.setup_module(agent)
+    agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
     test(agent, fabric, cfg, log_dir)
 
 

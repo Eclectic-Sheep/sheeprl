@@ -20,7 +20,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -106,7 +106,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
@@ -139,7 +139,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
-    world_model, actor_task, critic_task, actor_exploration, _ = build_models(
+    world_model, actor_task, critic_task, actor_exploration, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,

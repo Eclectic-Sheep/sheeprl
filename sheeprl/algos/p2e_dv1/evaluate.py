@@ -7,7 +7,7 @@ from lightning import Fabric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
@@ -44,11 +44,11 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models
-    world_model, actor_task, _, _, _ = build_models(
+    world_model, actor_task, _, _, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,

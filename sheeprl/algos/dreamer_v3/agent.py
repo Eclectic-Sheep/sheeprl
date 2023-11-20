@@ -897,7 +897,7 @@ class MinedojoActor(Actor):
         return tuple(expl_actions)
 
 
-def build_models(
+def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,

@@ -11,7 +11,7 @@ from torch import nn
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.agent import build_models as dv2_build_models
+from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.models.models import MLP
 from sheeprl.utils.utils import init_weights
 
@@ -22,7 +22,7 @@ Actor = DV2Actor
 MinedojoActor = DV2MinedojoActor
 
 
-def build_models(
+def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
@@ -78,7 +78,7 @@ def build_models(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration = dv2_build_models(
+    world_model, actor_exploration, critic_exploration, target_critic_exploration = dv2_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,

@@ -22,7 +22,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
@@ -178,37 +178,27 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
     # Define the agent and the optimizer
-    agent = RecurrentPPOAgent(
-        actions_dim=actions_dim,
-        obs_space=observation_space,
-        encoder_cfg=cfg.algo.encoder,
-        rnn_cfg=cfg.algo.rnn,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
-        is_continuous=is_continuous,
-        distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
-        screen_size=cfg.env.screen_size,
-        device=device,
+    agent = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        observation_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
     )
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
         optimizer.load_state_dict(state["optimizer"])
-
     # Setup agent and optimizer with Fabric
-    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     local_vars = locals()

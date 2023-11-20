@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from math import prod
 from typing import Any, Dict
 
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
+from sheeprl.algos.sac.agent import build_agent
 from sheeprl.algos.sac.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -45,22 +44,5 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
             )
     fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
 
-    act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-    critics = [
-        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
-        for _ in range(cfg.algo.critic.n)
-    ]
-    target_entropy = -act_dim
-    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
-    agent.load_state_dict(state["agent"])
-    agent = fabric.setup_module(agent)
+    agent = build_agent(fabric, cfg, observation_space, action_space, state["agent"])
     test(agent.actor, fabric, cfg, log_dir)
