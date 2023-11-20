@@ -9,7 +9,6 @@ from mlflow.models.model import ModelInfo
 from torch import Tensor
 
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
-from sheeprl.algos.sac_ae.agent import build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -95,6 +94,8 @@ def weight_init(m: nn.Module):
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
 ) -> Sequence[ModelInfo]:
+    from sheeprl.algos.sac_ae.agent import build_agent
+
     # Create the models
     agent, encoder, decoder = build_agent(
         fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]

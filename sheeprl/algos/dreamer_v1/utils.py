@@ -9,7 +9,6 @@ from mlflow.models.model import ModelInfo
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
-from sheeprl.algos.dreamer_v1.agent import build_agent
 from sheeprl.utils.utils import unwrap_fabric
 
 AGGREGATOR_KEYS = {
@@ -104,6 +103,8 @@ def compute_stochastic_state(
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
 ) -> Sequence[ModelInfo]:
+    from sheeprl.algos.dreamer_v1.agent import build_agent
+
     # Create the models
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)

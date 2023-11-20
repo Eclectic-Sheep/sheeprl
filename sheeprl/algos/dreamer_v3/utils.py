@@ -8,7 +8,6 @@ from lightning import Fabric
 from mlflow.models.model import ModelInfo
 from torch import Tensor, nn
 
-from sheeprl.algos.dreamer_v3.agent import build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -186,6 +185,8 @@ def uniform_init_weights(given_scale):
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
 ) -> Sequence[ModelInfo]:
+    from sheeprl.algos.dreamer_v3.agent import build_agent
+
     # Create the models
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
