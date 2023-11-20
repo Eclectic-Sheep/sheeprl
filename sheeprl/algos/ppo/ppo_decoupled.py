@@ -78,7 +78,7 @@ def player(
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])

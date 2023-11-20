@@ -44,7 +44,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models

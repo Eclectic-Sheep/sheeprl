@@ -110,7 +110,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
