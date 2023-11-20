@@ -19,7 +19,7 @@ from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
@@ -168,23 +168,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
     # Create the actor and critic models
-    agent = PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=observation_space,
-        encoder_cfg=cfg.algo.encoder,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
-        screen_size=cfg.env.screen_size,
-        distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
+    agent = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        observation_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
     )
 
     # Define the optimizer
@@ -194,11 +190,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
         optimizer.load_state_dict(state["optimizer"])
 
     # Setup agent and optimizer with Fabric
-    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Create a metric aggregator to log the metrics
