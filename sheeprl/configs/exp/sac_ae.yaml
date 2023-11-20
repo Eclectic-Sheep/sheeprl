@@ -3,26 +3,11 @@
 defaults:
   - sac
   - override /algo: sac_ae
+  - override /model_manager: sac_ae
   - _self_
 
 # Experiment
 per_rank_batch_size: 128
-
-# Model Manager
-model_manager:
-  models:
-    encoder:
-      model_name: "${exp_name}_encoder"
-      description: "SAC-AE Encoder used in ${env.id} Environment"
-      tags: {} 
-    decoder:
-      model_name: "${exp_name}_decoder"
-      description: "SAC-AE Decoder used in ${env.id} Environment"
-      tags: {} 
-    agent:
-      model_name: "${exp_name}_agent"
-      description: "SAC-AE Agent in ${env.id} Environment"
-      tags: {}
 
 # Environmment
 env:

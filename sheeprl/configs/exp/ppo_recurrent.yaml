@@ -3,6 +3,7 @@
 defaults:
   - ppo
   - override /algo: ppo_recurrent
+  - override /model_manager: ppo_recurrent
   - _self_
 
 algo:
@@ -22,11 +23,3 @@ env:
 
 buffer:
   memmap: False
-
-#Model Manager
-model_manager:
-  models: 
-    agent:
-      model_name: "${exp_name}"
-      description: "PPO Recurrent Agent in ${env.id} Environment"
-      tags: {}

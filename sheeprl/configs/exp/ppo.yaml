@@ -3,6 +3,7 @@
 defaults:
   - override /algo: ppo
   - override /env: gym
+  - override /model_manager: ppo
   - _self_
 
 # Experiment
@@ -13,13 +14,6 @@ per_rank_batch_size: 64
 buffer:
   share_data: False
   size: ${algo.rollout_steps}
-
-model_manager:
-  models: 
-    agent:
-      model_name: "${exp_name}"
-      description: "PPO Agent in ${env.id} Environment"
-      tags: {}
 
 metric:
   aggregator:

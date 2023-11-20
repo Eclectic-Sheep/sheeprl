@@ -3,19 +3,12 @@
 defaults:
   - override /algo: sac
   - override /env: gym
+  - override /model_manager: sac
   - _self_
 
 # Experiment
 total_steps: 1000000
 per_rank_batch_size: 256
-
-# Model Manager
-model_manager:
-  models:
-    agent:
-      model_name: "${exp_name}"
-      description: "SAC Agent in ${env.id} Environment"
-      tags: {}
 
 # Checkpoint
 checkpoint:
