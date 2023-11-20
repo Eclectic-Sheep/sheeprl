@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+import gymnasium as gym
+import mlflow
 import numpy as np
 import torch
 from git import Sequence
 from lightning import Fabric
+from mlflow.models.model import ModelInfo
 from torch import Tensor
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import PPOAgent, build_agent
 from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import unwrap_fabric
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
 MODELS_TO_REGISTER = {"agent"}
@@ -65,3 +69,23 @@ def normalize_obs(
     obs: Dict[str, np.ndarray | Tensor], cnn_keys: Sequence[str], obs_keys: Sequence[str]
 ) -> Dict[str, np.ndarray | Tensor]:
     return {k: obs[k] / 255 - 0.5 if k in cnn_keys else obs[k] for k in obs_keys}
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence[ModelInfo]:
+    # Create the models
+    is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
+    agent = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
+
+    # Log the model, create a new run if `cfg.run_id` is None.
+    model_info = {}
+    with mlflow.start_run(run_id=cfg.run_id, nested=True) as _:
+        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+    return model_info

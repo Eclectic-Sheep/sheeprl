@@ -1,0 +1,17 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+  - model_manager: ???
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+run_id: null
+checkpoint_path: ???
+tracking_uri: ${oc.env:MLFLOW_TRACKING_URI}

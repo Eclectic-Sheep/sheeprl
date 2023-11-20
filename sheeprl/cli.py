@@ -14,7 +14,7 @@ from sheeprl.utils.logger import get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, print_config
+from sheeprl.utils.utils import dotdict, print_config, register_model_from_checkpoint
 
 
 def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
@@ -312,3 +312,36 @@ def evaluation(cfg: DictConfig):
     # Check the validity of the configuration and run the evaluation
     check_configs_evaluation(ckpt_cfg)
     eval_algorithm(ckpt_cfg)
+
+
+@hydra.main(version_base="1.3", config_path="configs", config_name="model_manager_config")
+def registration(cfg: DictConfig):
+    checkpoint_path = Path(cfg.checkpoint_path)
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
+    cfg.env = ckpt_cfg.env
+    cfg.algo = ckpt_cfg.algo
+    cfg.cnn_keys = ckpt_cfg.cnn_keys
+    cfg.mlp_keys = ckpt_cfg.mlp_keys
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+
+    precision = getattr(ckpt_cfg.fabric, "precision", None)
+    fabric = Fabric(devices=1, accelerator="cpu", num_nodes=1, precision=precision)
+
+    # Load the checkpoint
+    state = fabric.load(cfg.checkpoint_path)
+    algo_name = cfg.algo.name
+    if algo_name.startswith("p2e_dv"):
+        "_".join(algo_name.split("_")[:2])
+    try:
+        log_models_from_checkpoint = importlib.import_module(
+            f"sheeprl.algos.{algo_name}.utils"
+        ).log_models_from_checkpoint
+    except Exception as e:
+        print(e)
+        raise RuntimeError(
+            "Make sure that the algorithm is defined in the `./sheeprl/algos/<algo_name>` folder "
+            "and that the `log_models_from_checkpoint` function is defined "
+            "in the `./sheeprl/algos/<algo_name>/utils.py` file."
+        )
+
+    fabric.launch(register_model_from_checkpoint, cfg, state, log_models_from_checkpoint)

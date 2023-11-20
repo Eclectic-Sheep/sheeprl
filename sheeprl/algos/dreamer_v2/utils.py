@@ -1,15 +1,19 @@
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
 
 import gymnasium as gym
+import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
+from mlflow.models.model import ModelInfo
 from torch import Tensor
 from torch.distributions import Independent
 
+from sheeprl.algos.dreamer_v2.agent import build_agent
 from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v1.agent import PlayerDV1
@@ -156,3 +160,36 @@ def test(
     if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
         fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence[ModelInfo]:
+    # Create the models
+    is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
+    world_model, actor, critic, target_critic = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        env.observation_space,
+        state["world_model"],
+        state["actor"],
+        state["critic"],
+        state["target_critic"],
+    )
+
+    # Log the model, create a new run if `cfg.run_id` is None.
+    model_info = {}
+    with mlflow.start_run(run_id=cfg.run_id, nested=True) as _:
+        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
+        model_info["actor"] = mlflow.pytorch.log_model(unwrap_fabric(actor), artifact_path="actor")
+        model_info["critic"] = mlflow.pytorch.log_model(unwrap_fabric(critic), artifact_path="critic")
+        model_info["target_critic"] = mlflow.pytorch.log_model(target_critic, artifact_path="target_critic")
+    return model_info

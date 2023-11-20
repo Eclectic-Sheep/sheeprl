@@ -4,6 +4,7 @@ import copy
 import os
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
+import gymnasium as gym
 import mlflow
 import rich.syntax
 import rich.tree
@@ -16,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
 
+from sheeprl.utils.env import make_env
 from sheeprl.utils.model_manager import MlflowModelManager
 
 
@@ -197,6 +199,53 @@ def register_model(
             f"configs are given, but the agent has {len(cfg_model_manager.models)} models"
         )
     for k, cfg_model in cfg_model_manager.models.items():
+        model_manager.register_model(
+            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+        )
+
+
+def register_model_from_checkpoint(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    state: Dict[str, Any],
+    log_models_from_checkpoint: Callable[
+        [Fabric, gym.Env | gym.Wrapper, Dict[str, Any], Dict[str, Any]], Dict[str, ModelInfo]
+    ],
+):
+    tracking_uri = getattr(cfg, "tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI")
+    if tracking_uri is None:
+        raise ValueError(
+            "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
+            "MLFLOW_TRACKING_URI environment variable."
+        )
+    env = make_env(
+        cfg,
+        cfg.seed,
+        0,
+        None,
+        "test",
+        vector_env_idx=0,
+    )()
+    observation_space = env.observation_space
+
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
+
+    mlflow.set_tracking_uri(tracking_uri)
+    models_info = log_models_from_checkpoint(fabric, env, cfg, state)
+    model_manager = MlflowModelManager(fabric, tracking_uri)
+    if len(models_info) != len(cfg.model_manager.models):
+        raise RuntimeError(
+            f"The number of models of the {cfg.algo.name} agent must be equal to the number "
+            f"of models you want to register. {len(cfg.model_manager.models)} model registration "
+            f"configs are given, but the agent has {len(cfg.model_manager.models)} models"
+        )
+    for k, cfg_model in cfg.model_manager.models.items():
         model_manager.register_model(
             models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
         )

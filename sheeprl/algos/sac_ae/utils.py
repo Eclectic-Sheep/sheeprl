@@ -1,12 +1,17 @@
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
+import gymnasium as gym
+import mlflow
 import torch
 import torch.nn as nn
 from lightning import Fabric
+from mlflow.models.model import ModelInfo
 from torch import Tensor
 
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
+from sheeprl.algos.sac_ae.agent import build_agent
 from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from sheeprl.algos.sac_ae.agent import SACAEContinuousActor
@@ -85,3 +90,20 @@ def weight_init(m: nn.Module):
         mid = m.weight.size(2) // 2
         gain = nn.init.calculate_gain("relu")
         nn.init.orthogonal_(m.weight.data[:, :, mid, mid], gain)
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence[ModelInfo]:
+    # Create the models
+    agent, encoder, decoder = build_agent(
+        fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]
+    )
+
+    # Log the model, create a new run if `cfg.run_id` is None.
+    model_info = {}
+    with mlflow.start_run(run_id=cfg.run_id, nested=True) as _:
+        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+        model_info["encoder"] = mlflow.pytorch.log_model(unwrap_fabric(encoder), artifact_path="encoder")
+        model_info["decoder"] = mlflow.pytorch.log_model(unwrap_fabric(decoder), artifact_path="decoder")
+    return model_info
