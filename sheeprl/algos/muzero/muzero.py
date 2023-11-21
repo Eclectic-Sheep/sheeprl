@@ -92,7 +92,6 @@ def train(
 def main(fabric: Fabric, cfg: Dict[str, Any]):
     ## to take from hydra
     assert cfg.env.num_envs == 1, "Only one environment is supported"
-    learning_starts = 128  # TODO confronta con ppo
 
     # Initialize Fabric
     rank = fabric.global_rank
@@ -191,7 +190,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     num_episodes_per_update = int(cfg.env.num_envs * world_size)
     num_updates = cfg.total_steps // num_episodes_per_update if not cfg.dry_run else 1
 
-    learning_starts = learning_starts // int(fabric.world_size) if not cfg.dry_run else 0  # TODO check
+    cfg.learning_starts // int(fabric.world_size) if not cfg.dry_run else 0  # TODO check
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % num_episodes_per_update != 0:
@@ -294,7 +293,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 rb.add(trajectory=steps_data)
             env_steps += trajectory_step
 
-        if len(rb) >= learning_starts:
+        if len(rb) >= cfg.learning_starts:
             warm_up = False
             print("UPDATING")
             for _ in range(cfg.algo.update_epochs):

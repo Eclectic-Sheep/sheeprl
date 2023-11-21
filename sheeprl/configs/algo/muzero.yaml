@@ -5,6 +5,7 @@ defaults:
 
 name: muzero
 
+learning_starts: 128
 support_size: 300
 embedding_size: 256
 max_trajectory_len: 1000
