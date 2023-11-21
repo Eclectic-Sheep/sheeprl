@@ -8,7 +8,7 @@ from typing import Any, Dict
 import hydra
 from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from sheeprl.utils.logger import get_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -282,8 +282,6 @@ def evaluation(cfg: DictConfig):
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
 
     # Merge the two configs
-    from omegaconf import open_dict
-
     with open_dict(cfg):
         capture_video = getattr(cfg.env, "capture_video", True)
         cfg.env = {"capture_video": capture_video, "num_envs": 1}
@@ -318,10 +316,15 @@ def evaluation(cfg: DictConfig):
 def registration(cfg: DictConfig):
     checkpoint_path = Path(cfg.checkpoint_path)
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
-    cfg.env = ckpt_cfg.env
-    cfg.algo = ckpt_cfg.algo
-    cfg.cnn_keys = ckpt_cfg.cnn_keys
-    cfg.mlp_keys = ckpt_cfg.mlp_keys
+
+    # Merge the two configs
+    with open_dict(cfg):
+        cfg.env = ckpt_cfg.env
+        cfg.exp_name = ckpt_cfg.exp_name
+        cfg.algo = ckpt_cfg.algo
+        cfg.cnn_keys = ckpt_cfg.cnn_keys
+        cfg.mlp_keys = ckpt_cfg.mlp_keys
+
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
 
     precision = getattr(ckpt_cfg.fabric, "precision", None)

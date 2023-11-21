@@ -3,9 +3,9 @@
 # specify here default training configuration
 defaults:
   - _self_
+  - model_manager: ???
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
-  - model_manager: ???
 
 hydra:
   output_subdir: null
