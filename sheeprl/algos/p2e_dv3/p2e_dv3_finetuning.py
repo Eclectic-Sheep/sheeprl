@@ -139,6 +139,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     (
         world_model,
+        _,
         actor_task,
         critic_task,
         target_critic_task,
@@ -151,6 +152,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         cfg,
         observation_space,
         state["world_model"],
+        None,
         state["actor_task"],
         state["critic_task"],
         state["target_critic_task"],

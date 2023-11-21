@@ -13,7 +13,6 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from lightning.pytorch.utilities.seed import isolate_rng
 from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -24,10 +23,9 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, init_weights, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -605,6 +603,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     (
         world_model,
+        ensembles,
         actor_task,
         critic_task,
         target_critic_task,
@@ -618,6 +617,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg,
         observation_space,
         state["world_model"] if cfg.checkpoint.resume_from else None,
+        state["ensembles"] if cfg.checkpoint.resume_from else None,
         state["actor_task"] if cfg.checkpoint.resume_from else None,
         state["critic_task"] if cfg.checkpoint.resume_from else None,
         state["target_critic_task"] if cfg.checkpoint.resume_from else None,
@@ -626,41 +626,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["target_critic_exploration"] if cfg.checkpoint.resume_from else None,
     )
 
-    # initialize the ensembles with different seeds to be sure they have different weights
-    ens_list = []
-    with isolate_rng():
-        for i in range(cfg.algo.ensembles.n):
-            fabric.seed_everything(cfg.seed + i)
-            ens_list.append(
-                MLP(
-                    input_dims=int(
-                        sum(actions_dim)
-                        + cfg.algo.world_model.recurrent_model.recurrent_state_size
-                        + cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size
-                    ),
-                    output_dim=cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size,
-                    hidden_sizes=[cfg.algo.ensembles.dense_units] * cfg.algo.ensembles.mlp_layers,
-                    activation=eval(cfg.algo.ensembles.dense_act),
-                    flatten_dim=None,
-                    norm_layer=(
-                        [nn.LayerNorm for _ in range(cfg.algo.ensembles.mlp_layers)]
-                        if cfg.algo.ensembles.layer_norm
-                        else None
-                    ),
-                    norm_args=(
-                        [
-                            {"normalized_shape": cfg.algo.ensembles.dense_units}
-                            for _ in range(cfg.algo.ensembles.mlp_layers)
-                        ]
-                        if cfg.algo.ensembles.layer_norm
-                        else None
-                    ),
-                ).apply(init_weights)
-            )
-    ensembles = nn.ModuleList(ens_list)
-    if cfg.checkpoint.resume_from:
-        ensembles.load_state_dict(state["ensembles"])
-    fabric.setup_module(ensembles)
     player = PlayerDV2(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
