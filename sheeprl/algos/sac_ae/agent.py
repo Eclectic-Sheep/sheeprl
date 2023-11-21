@@ -519,8 +519,9 @@ def build_agent(
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-    if cfg.checkpoint.resume_from:
+    if encoder_state:
         encoder.load_state_dict(encoder_state)
+    if decoder_sate:
         decoder.load_state_dict(decoder_sate)
 
     # Setup actor and critic. Those will initialize with orthogonal weights

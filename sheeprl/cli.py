@@ -324,6 +324,8 @@ def registration(cfg: DictConfig):
         cfg.algo = ckpt_cfg.algo
         cfg.cnn_keys = ckpt_cfg.cnn_keys
         cfg.mlp_keys = ckpt_cfg.mlp_keys
+        cfg.distribution = ckpt_cfg.distribution
+        cfg.seed = ckpt_cfg.seed
 
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
 
@@ -333,8 +335,10 @@ def registration(cfg: DictConfig):
     # Load the checkpoint
     state = fabric.load(cfg.checkpoint_path)
     algo_name = cfg.algo.name
+    if "decoupled" in cfg.algo.name:
+        algo_name = algo_name.replace("_decoupled", "")
     if algo_name.startswith("p2e_dv"):
-        "_".join(algo_name.split("_")[:2])
+        algo_name = "_".join(algo_name.split("_")[:2])
     try:
         log_models_from_checkpoint = importlib.import_module(
             f"sheeprl.algos.{algo_name}.utils"
@@ -342,9 +346,9 @@ def registration(cfg: DictConfig):
     except Exception as e:
         print(e)
         raise RuntimeError(
-            "Make sure that the algorithm is defined in the `./sheeprl/algos/<algo_name>` folder "
+            f"Make sure that the algorithm is defined in the `./sheeprl/algos/{algo_name}` folder "
             "and that the `log_models_from_checkpoint` function is defined "
-            "in the `./sheeprl/algos/<algo_name>/utils.py` file."
+            f"in the `./sheeprl/algos/{algo_name}/utils.py` file."
         )
 
     fabric.launch(register_model_from_checkpoint, cfg, state, log_models_from_checkpoint)
