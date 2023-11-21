@@ -13,11 +13,9 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from lightning.pytorch.utilities.seed import isolate_rng
 from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
-from torch import nn
 from torch.distributions import Bernoulli, Independent, Normal
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
@@ -28,13 +26,12 @@ from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import init_weights, polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -488,40 +485,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
-    world_model, actor_task, critic_task, actor_exploration, critic_exploration = build_agent(
+    world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration = build_agent(
         fabric,
         actions_dim,
         is_continuous,
         cfg,
         observation_space,
         state["world_model"] if cfg.checkpoint.resume_from else None,
+        state["ensembles"] if cfg.checkpoint.resume_from else None,
         state["actor_task"] if cfg.checkpoint.resume_from else None,
         state["critic_task"] if cfg.checkpoint.resume_from else None,
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
         state["critic_exploration"] if cfg.checkpoint.resume_from else None,
     )
 
-    # initialize the ensembles with different seeds to be sure they have different weights
-    ens_list = []
-    with isolate_rng():
-        for i in range(cfg.algo.ensembles.n):
-            fabric.seed_everything(cfg.seed + i)
-            ens_list.append(
-                MLP(
-                    input_dims=(
-                        int(sum(actions_dim))
-                        + cfg.algo.world_model.recurrent_model.recurrent_state_size
-                        + cfg.algo.world_model.stochastic_size
-                    ),
-                    output_dim=world_model.encoder.cnn_output_dim + world_model.encoder.mlp_output_dim,
-                    hidden_sizes=[cfg.algo.ensembles.dense_units] * cfg.algo.ensembles.mlp_layers,
-                    activation=eval(cfg.algo.ensembles.dense_act),
-                ).apply(init_weights)
-            )
-    ensembles = nn.ModuleList(ens_list)
-    if cfg.checkpoint.resume_from:
-        ensembles.load_state_dict(state["ensembles"])
-    fabric.setup_module(ensembles)
     player = PlayerDV1(
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,

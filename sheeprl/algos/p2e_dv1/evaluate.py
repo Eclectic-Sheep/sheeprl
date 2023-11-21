@@ -48,7 +48,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models
-    world_model, actor_task, _, _, _ = build_agent(
+    world_model, _, actor_task, _, _, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
