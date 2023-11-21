@@ -87,7 +87,7 @@ def log_models_from_checkpoint(
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
-    with mlflow.start_run(run_id=cfg.run_id, nested=True) as _:
+    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
         model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
         model_info["actor_task"] = mlflow.pytorch.log_model(unwrap_fabric(actor_task), artifact_path="actor_task")
         model_info["critic_task"] = mlflow.pytorch.log_model(unwrap_fabric(critic_task), artifact_path="critic_task")
