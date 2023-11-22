@@ -194,7 +194,7 @@ warn_return_any = false
 
 
 [tool.bumpver]
-current_version = "0.4.6dev1"
+current_version = "0.4.6"
 version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "v{new_version}"
