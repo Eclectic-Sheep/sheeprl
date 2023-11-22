@@ -12,10 +12,10 @@ hydra:
   run:
     dir: .
 
+checkpoint_path: ???
 run:
   id: null
   name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}
-checkpoint_path: ???
 experiment:
   id: null
   name: ${exp_name}_${now:%Y-%m-%d_%H-%M-%S}
