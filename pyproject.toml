@@ -15,21 +15,27 @@ authors = [
   { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
   { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
 ]
+maintainers = [
+  { name = "Federico Belotti", email = "federico.belotti@orobix.com" },
+  { name = "Davide Angioni", email = "davide.angioni@orobix.com" },
+  { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
+  { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
+]
 keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
 license = { file = "LICENSE" }
-readme = { file = "README.md", content-type = "text/markdown" }
+readme = { file = "docs/README.md", content-type = "text/markdown" }
 requires-python = ">=3.8,<3.11"
-classifiers = ["Programming Language :: Python"]
+classifiers = ["Programming Language :: Python", "Topic :: Scientific/Engineering :: Artificial Intelligence"]
 dependencies = [
   "gymnasium[box2d]==0.29.*",
-  "moviepy@git+https://github.com/Zulko/moviepy.git",
+  "moviepy>=1.0.3",
   "tensordict==0.2.*",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
   "lightning==2.1.*",
   "lightning-utilities<=0.9",
   "hydra-core==1.3.0",
-  "torchmetrics@git+https://github.com/Lightning-AI/torchmetrics.git",
+  "torchmetrics",
   "rich==13.5.*",
   "opencv-python==4.8.0.*",
   "torch==2.0.*"
@@ -42,6 +48,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["sheeprl", "sheeprl.*", "hydra_plugins"]
 exclude = ["tests*", "build*", "dist*", "notebooks*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sheeprl.__init__.__version__"}
+readme = {file = ["docs/README.md"], content-type = "text/markdown"}
 
 [project.scripts]
 sheeprl = "sheeprl.cli:run"
@@ -181,3 +191,25 @@ disallow_untyped_defs = false
 no_implicit_reexport = false
 # This one can be tricky to get passing if you use a lot of untyped libraries
 warn_return_any = false
+
+
+[tool.bumpver]
+current_version = "0.4.6dev1"
+version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
+commit_message = "bump version {old_version} -> {new_version}"
+tag_message = "v{new_version}"
+tag_scope = "default"
+pre_commit_hook = ""
+post_commit_hook = ""
+commit = true
+tag = true
+push = true
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+]
+"sheeprl/__init__.py" = [
+    '^__version__ = "{version}"$',
+]
+
