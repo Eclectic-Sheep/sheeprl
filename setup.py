@@ -1,7 +1,6 @@
 """Inspired by https://github.com/Farama-Foundation/Gymnasium/blob/main/setup.py"""
 
 import pathlib
-from pathlib import Path
 
 from setuptools import setup
 
@@ -19,9 +18,4 @@ def get_version():
     raise RuntimeError("Bad version data in __init__.py")
 
 
-setup(
-    name="sheeprl",
-    version=get_version(),
-    long_description=(Path(__file__).parent / "docs" / "README.md").read_text(),
-    long_description_content_type="text/markdown",
-)
+setup(name="sheeprl", version=get_version())
