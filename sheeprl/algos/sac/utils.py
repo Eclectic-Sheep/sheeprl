@@ -60,4 +60,5 @@ def log_models_from_checkpoint(
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
         model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+        mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

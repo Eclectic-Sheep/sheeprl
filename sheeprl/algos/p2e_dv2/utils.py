@@ -105,5 +105,6 @@ def log_models_from_checkpoint(
             model_info["target_critic_exploration"] = mlflow.pytorch.log_model(
                 target_critic_exploration, artifact_path="target_critic_exploration"
             )
+        mlflow.log_dict(cfg.to_log, "config.json")
 
     return model_info
