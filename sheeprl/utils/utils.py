@@ -186,6 +186,8 @@ def register_model(
             "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
             "MLFLOW_TRACKING_URI environment variable."
         )
+
+    # Retrieve run_id, if None, create a new run
     run_id = None
     if len(fabric.loggers) > 0:
         run_id = getattr(fabric.logger, "run_id", None)
@@ -196,7 +198,7 @@ def register_model(
         raise RuntimeError(
             f"The number of models of the {algo_name} agent must be equal to the number "
             f"of models you want to register. {len(cfg_model_manager.models)} model registration "
-            f"configs are given, but the agent has {len(models_info)} models"
+            f"configs are given, but the agent has {len(models_info)} models."
         )
     for k, cfg_model in cfg_model_manager.models.items():
         model_manager.register_model(
@@ -218,6 +220,7 @@ def register_model_from_checkpoint(
             "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
             "MLFLOW_TRACKING_URI environment variable."
         )
+    # Creating the environment for agent instantiation
     env = make_env(
         cfg,
         cfg.seed,
@@ -227,7 +230,6 @@ def register_model_from_checkpoint(
         vector_env_idx=0,
     )()
     observation_space = env.observation_space
-
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
@@ -237,16 +239,21 @@ def register_model_from_checkpoint(
         )
 
     mlflow.set_tracking_uri(tracking_uri)
+    # If the user does not specify the experiment, than, create a new experiment
     if cfg.experiment.id is None:
         cfg.experiment.id = mlflow.create_experiment(cfg.experiment.name)
+    # Log the models
     models_info = log_models_from_checkpoint(fabric, env, cfg, state)
     model_manager = MlflowModelManager(fabric, tracking_uri)
-    if len(models_info) != len(cfg.model_manager.models):
+    if not set(cfg.model_manager.models.keys()).issubset(models_info.keys()):
         raise RuntimeError(
-            f"The number of models of the {cfg.algo.name} agent must be equal to the number "
-            f"of models you want to register. {len(cfg.model_manager.models)} model registration "
-            f"configs are given, but the agent has {len(models_info)} models"
+            f"The models you want to register must be a subset of the models of the {cfg.algo.name} agent. "
+            f"{len(cfg.model_manager.models)} model registration "
+            f"configs are given, but the agent has {len(models_info)} models. "
+            f"\nModels specified in the configs: {cfg.model_manager.models.keys()}."
+            f"\nModels of the {cfg.algo.name} agent: {cfg.model_manager.models.keys()}."
         )
+    # Register the models specified in the configs
     for k, cfg_model in cfg.model_manager.models.items():
         model_manager.register_model(
             models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]

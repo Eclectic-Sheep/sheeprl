@@ -31,7 +31,7 @@ env:
 # Checkpoint
 checkpoint:
   every: 100000
-  exploration_ckpt_path: /home/michele.milesi/repos/sheeprl/logs/runs/p2e_dv3/2023-10-04_11-21-17/doapp_default_0/version_0/checkpoint/ckpt_14900000_0.ckpt
+  exploration_ckpt_path: ???
 
 # Buffer
 buffer:

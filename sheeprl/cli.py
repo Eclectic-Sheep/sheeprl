@@ -328,12 +328,15 @@ def registration(cfg: DictConfig):
         cfg.seed = ckpt_cfg.seed
 
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+    cfg.to_log = dotdict(OmegaConf.to_container(ckpt_cfg, resolve=True, throw_on_missing=True))
 
     precision = getattr(ckpt_cfg.fabric, "precision", None)
     fabric = Fabric(devices=1, accelerator="cpu", num_nodes=1, precision=precision)
 
     # Load the checkpoint
     state = fabric.load(cfg.checkpoint_path)
+    # Retrieve the algorithm name, used to import the custom
+    # log_models_from_checkpoint function.
     algo_name = cfg.algo.name
     if "decoupled" in cfg.algo.name:
         algo_name = algo_name.replace("_decoupled", "")
