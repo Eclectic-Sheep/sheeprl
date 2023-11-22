@@ -98,4 +98,4 @@ python sheeprl_model_manager.py model_manager=dreamer_v3 checkpoint_path=/path/t
 
 ## Delete, Transition and Download Models
 The MLFlow model manager enables the deletion of the registered models, moving them from one stage to another or downloading them.
-[This notebook](../examples/model_manager.ipynb) contains a tutorial on how to use the MLFlow model manager. We recommend taking a look to see what bees the model manager makes available.
+[This notebook](../examples/model_manager.ipynb) contains a tutorial on how to use the MLFlow model manager. We recommend taking a look to see what APIs the model manager makes available.
