@@ -1,6 +1,13 @@
 name: Publish ⚡ SheepRL 🐑 to PyPI and TestPyPI
 
-on: push
+on:
+  push:
+    branches: [main, "release/*"]
+  release:
+    types: [published]
+  pull_request:
+    branches: [main, "release/*"]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 jobs:
   build:
@@ -30,7 +37,7 @@ jobs:
   publish-to-pypi:
     name: >-
       Publish ⚡ SheepRL 🐑 to PyPI
-    if: startsWith(github.ref, 'refs/tags/')  # only publish to PyPI on tag pushes
+    if: startsWith(github.event.ref, 'refs/tags') || github.event_name == 'release'
     needs:
     - build
     runs-on: ubuntu-latest
@@ -45,24 +52,3 @@ jobs:
         path: dist/
     - name: Publish distribution 🐑 to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
-
-  publish-to-testpypi:
-    name: Publish ⚡ SheepRL 🐑 to TestPyPI
-    needs:
-    - build
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-
-    steps:
-    - name: Download all the dists
-      uses: actions/download-artifact@v3
-      with:
-        name: python-package-distributions
-        path: dist/
-    - name: Publish distribution 🐑 to TestPyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        user: __token__
-        password: ${{ secrets.PYPI_TEST_TOKEN }}
-        repository-url: https://test.pypi.org/legacy/
