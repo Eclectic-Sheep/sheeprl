@@ -65,11 +65,11 @@ default_hp_metric: True
 prefix: ""
 sub_dir: null
 ```
-As shown in the configurations, it is necessary to specify the `_target_` calss to instantiate. For the Tensorboard logger, it is necessary to specify the `name` and the `root_dir` arguments equal to the `run_name` and `logs/runs/<root_dir>` parameters, respectively, because we want that all the logs and files (configs, checkpoint, videos, ...) are under the same folder for a specific experiment.
+As shown in the configurations, it is necessary to specify the `_target_` class to instantiate. For the Tensorboard logger, it is necessary to specify the `name` and the `root_dir` arguments equal to the `run_name` and `logs/runs/<root_dir>` parameters, respectively, because we want that all the logs and files (configs, checkpoint, videos, ...) are under the same folder for a specific experiment.
 
 > **Note**
 >
-> In general we want that the path of the logs files is in the same folder created by hydra when the experiment is launched, so make sure to properly define the `root_dir` and `name` parameters of the logger so that it is within the folder created by hydra (defined by the `hydra.run.dir` parameter). The tensorboard logger will save the logs in the `<root_dir>/<name>/<version>/<sub_dir>/` folder (if `sub_dir` is defined, otherwise in the `<root_dir>/<name>/<version>/` folder).
+> In general we want the path of the logs files to be in the same folder created by Hydra when the experiment is launched, so make sure to properly define the `root_dir` and `name` parameters of the logger so that it is within the folder created by hydra (defined by the `hydra.run.dir` parameter). The tensorboard logger will save the logs in the `<root_dir>/<name>/<version>/<sub_dir>/` folder (if `sub_dir` is defined, otherwise in the `<root_dir>/<name>/<version>/` folder).
 
 The documentation of the TensorboardLogger class can be found [here](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.loggers.TensorBoardLogger.html).
 

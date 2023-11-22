@@ -10,13 +10,13 @@ The configurations of the model manager are placed in the `./sheeprl/configs/mod
 disabled: True
 models: {}
 ```
-Since the algorithms have different models, than the `models` parameter is set to an empty python dictionary, and each agent will define its own configuration. The `disabled` parameter indicates whether or not the user wants to register the agent when the training is finished (`False` means that the agent will be registered, otherwise not).
+Since the algorithms have different models, then the `models` parameter is set to an empty python dictionary, and each agent will define its own configuration. The `disabled` parameter indicates whether or not the user wants to register the agent when the training is finished (`False` means that the agent will be registered, otherwise not).
 
 > **Note**
 >
-> The model manager can be used even if the choosen logger is Tensorboard, the only requirement is that an instance of MLFlow server is running and is accessible, moreover, it is necessary to specify its uri in the `MLFLOW_TRACKING_URI` environment variable.
+> The model manager can be used even if the chosen logger is Tensorboard, the only requirement is that an instance of the MLFlow server is running and is accessible, moreover, it is necessary to specify its URI in the `MLFLOW_TRACKING_URI` environment variable.
 
-To better understand how to define the configurations of the models you want to register, take a look to the DreamerV3 model manager configuration:
+To better understand how to define the configurations of the models you want to register, take a look at the DreamerV3 model manager configuration:
 ```yaml
 # ./sheeprl/configs/model_manager/dreamer_v3.yaml
 
@@ -47,14 +47,14 @@ models:
     tags: {}
 ```
 For each model, it is necessary to define the `model_name`, the `description`, and the `tags` (i.e., a python dictionary with strings as keys and values). The keys that can be specified are defined by the `MODELS_TO_REGISTER` variable in the `./sheeprl/algos/<algo_name>/utils.py`. For DreamerV3, it is defined as follows: `MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}`.
-If you do not want to log some models, than, you just need to remove it from the configuration file.
+If you do not want to log some models, then, you just need to remove it from the configuration file.
 
 > **Note**
 >
 > Make sure that the models specified in the configuration file are a subset of the models defined by the `MODELS_TO_REGISTER` variable.
 
 ## Register models from checkpoints
-Another possibility is to register the models after the training, by manually selecting the checkpoint where to retrieve the agent. To do this, it is possible to run the `sheeprl_model_manager.py` script by properly specifing the `checkpoint_path`, the `model_manager` and the MLFlow related configurations.
+Another possibility is to register the models after the training, by manually selecting the checkpoint where to retrieve the agent. To do this, it is possible to run the `sheeprl_model_manager.py` script by properly specifying the `checkpoint_path`, the `model_manager`, and the MLFlow-related configurations.
 The default configurations are defined in the `./sheeprl/configs/model_manager_config.yaml` file, that is reported below:
 ```yaml
 # ./sheeprl/configs/model_manager_config.yaml
@@ -81,14 +81,14 @@ experiment:
 tracking_uri: ${oc.env:MLFLOW_TRACKING_URI}
 ```
 
-As before, it is necessary to specify the `model_manager` configurations (the models we want to register with names, descriptions and tags). Moreover, it is mandatory to set the `checkpoint_path`, that must be the path to the `ckpt` file created during the training. Finally, the `run` and `experiment` parameters contain the MLFlow configurations:
-* If you set the `run.id` to a value different to `null`, then all the other parameters are ignored, indeed, the models will be logged and registered under the run with the specified ID.
-* If you want to create a new run (with name equal to `run.name`) and and put it into an existing experiment, then you have to set `run.id=null` and `experiment.id=<experiment_id>`.
+As before, it is necessary to specify the `model_manager` configurations (the models we want to register with names, descriptions, and tags). Moreover, it is mandatory to set the `checkpoint_path`, which must be the path to the `ckpt` file created during the training. Finally, the `run` and `experiment` parameters contain the MLFlow configurations:
+* If you set the `run.id` to a value different from `null`, then all the other parameters are ignored, indeed, the models will be logged and registered under the run with the specified ID.
+* If you want to create a new run (with a name equal to `run.name`) and put it into an existing experiment, then you have to set `run.id=null` and `experiment.id=<experiment_id>`.
 * If you set `experiment.id=null` and `run.id=null`, then a new experiment and a new run are created with the specified names.
 
 > **Note**
 >
-> Also in this case, the models specified in the `model_manager` configuration must be a subset of the `MODELS_TO_REGISTER` variable.
+> Also, in this case, the models specified in the `model_manager` configuration must be a subset of the `MODELS_TO_REGISTER` variable.
 
 For instance, you can register the DreamerV3 models from a checkpoint with the following command:
 
@@ -97,3 +97,5 @@ python sheeprl_model_manager.py model_manager=dreamer_v3 checkpoint_path=/path/t
 ```
 
 ## Delete, Transition and Download Models
+The MLFlow model manager enables the deletion of the registered models, moving them from one stage to another or downloading them.
+[This notebook](../examples/model_manager.ipynb) contains a tutorial on how to use the MLFlow model manager. We recommend taking a look to see what bees the model manager makes available.
