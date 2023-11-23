@@ -89,7 +89,7 @@ def make_env(
         ):
             raise ValueError(
                 "`cnn_keys.encoder` and `mlp_keys.encoder` must be lists of strings, got: "
-                f"cnn encoder keys `{cfg.algo.mlp_keys.encoder}` and mlp encoder keys `{cfg.algo.cnn_keys.encoder}`. "
+                f"cnn encoder keys `{cfg.algo.cnn_keys.encoder}` and mlp encoder keys `{cfg.algo.mlp_keys.encoder}`. "
                 "Both lists must not be empty."
             )
 
