@@ -18,11 +18,11 @@ def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     o = env.reset(seed=cfg.seed)[0]
     obs = {}
     for k in o.keys():
-        if k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder:
+        if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
@@ -39,11 +39,11 @@ def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         cumulative_rew += reward
         obs = {}
         for k in o.keys():
-            if k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
                 torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-                if k in cfg.mlp_keys.encoder:
+                if k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch_obs.float()
                 obs[k] = torch_obs
 

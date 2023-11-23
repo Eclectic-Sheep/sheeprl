@@ -133,9 +133,9 @@ def test(
         # Act greedly through the environment
         preprocessed_obs = {}
         for k, v in next_obs.items():
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
-            elif k in cfg.mlp_keys.encoder:
+            elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
             preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}

@@ -36,19 +36,19 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         raise ValueError("Only continuous action space is supported for the DroQ agent")
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if len(cfg.mlp_keys.encoder) == 0:
+    if len(cfg.algo.mlp_keys.encoder) == 0:
         raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
-    for k in cfg.mlp_keys.encoder:
+    for k in cfg.algo.mlp_keys.encoder:
         if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the DroQ agent. "
                 f"Provided environment: {cfg.env.id}"
             )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
     act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
+    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,

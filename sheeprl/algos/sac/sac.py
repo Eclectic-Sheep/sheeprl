@@ -98,11 +98,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
-    if len(cfg.cnn_keys.encoder) > 0:
+    if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
-        cfg.cnn_keys.encoder = []
+        cfg.algo.cnn_keys.encoder = []
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
@@ -133,20 +133,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         raise ValueError("Only continuous action space is supported for the SAC agent")
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if len(cfg.mlp_keys.encoder) == 0:
+    if len(cfg.algo.mlp_keys.encoder) == 0:
         raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
-    for k in cfg.mlp_keys.encoder:
+    for k in cfg.algo.mlp_keys.encoder:
         if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the SAC agent. "
                 f"Provided environment: {cfg.env.id}"
             )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
     # Define the agent and the optimizer and setup sthem with Fabric
     act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.mlp_keys.encoder])
+    obs_dim = sum([prod(observation_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
@@ -210,7 +210,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
-    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
@@ -235,7 +235,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Get the first environment observation and start the optimization
         o = envs.reset(seed=cfg.seed)[0]
         obs = torch.cat(
-            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
         )  # [N_envs, N_obs]
 
     for update in range(start_step, num_updates + 1):
@@ -274,10 +274,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         with device:
             next_obs = torch.cat(
-                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
             )  # [N_envs, N_obs]
             real_next_obs = torch.cat(
-                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1
+                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
             )  # [N_envs, N_obs]
             actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
             rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)
@@ -300,7 +300,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # We sample one time to reduce the communications between processes
             sample = rb.sample(
-                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
             )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
@@ -315,11 +315,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     drop_last=False,
                 )
                 sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=range(len(gathered_data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
 
             # Start training
@@ -380,7 +380,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
                 "update": update * fabric.world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }

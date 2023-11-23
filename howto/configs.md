@@ -123,10 +123,10 @@ root_dir: ${algo.name}/${env.id}
 # Encoder and decoder keys
 cnn_keys:
   encoder: []
-  decoder: ${cnn_keys.encoder}
+  decoder: ${algo.cnn_keys.encoder}
 mlp_keys:
   encoder: []
-  decoder: ${mlp_keys.encoder}
+  decoder: ${algo.mlp_keys.encoder}
 ```
 
 ### Algorithms

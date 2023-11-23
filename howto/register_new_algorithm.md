@@ -146,7 +146,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_step = 0
     last_checkpoint = 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -170,9 +170,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     for k in o.keys():
         if k in obs_keys:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
@@ -212,9 +212,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             for k in o.keys():
                 if k in obs_keys:
                     torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-                    if k in cfg.cnn_keys.encoder:
+                    if k in cfg.algo.cnn_keys.encoder:
                         torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                    if k in cfg.mlp_keys.encoder:
+                    if k in cfg.algo.mlp_keys.encoder:
                         torch_obs = torch_obs.float()
                     step_data[k] = torch_obs
                     obs[k] = torch_obs

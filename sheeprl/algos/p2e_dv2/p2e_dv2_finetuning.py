@@ -46,7 +46,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     # Finetuning that was interrupted for some reason
     if resume_from_checkpoint:
         state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
-        cfg.per_rank_batch_size = state["batch_size"] // world_size
+        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     else:
         state = fabric.load(ckpt_path)
 
@@ -73,7 +73,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
         cfg.env.num_envs = exploration_cfg.env.num_envs
     # There must be the same cnn and mlp keys during exploration and finetuning
-    cfg.cnn_keys = exploration_cfg.cnn_keys
+    cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
     cfg.mlp_keys = exploration_cfg.mlp_keys
 
     # These arguments cannot be changed
@@ -114,32 +114,28 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
+
     if (
-        len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
-        and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
+        len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
+        and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
     ):
         raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-    if len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0:
+    if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
         raise RuntimeError(
             "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.cnn_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
         )
-    if len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0:
+    if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
         raise RuntimeError(
             "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-        fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
-        fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
-    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+        fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
+        fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     world_model, actor_task, critic_task, target_critic_task, actor_exploration, _, _ = build_models(
         fabric,
@@ -199,7 +195,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     elif buffer_type == "episode":
         rb = EpisodeBuffer(
             buffer_size,
-            sequence_length=cfg.per_rank_sequence_length,
+            sequence_length=cfg.algo.per_rank_sequence_length,
             device="cpu",
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
@@ -225,7 +221,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if resume_from_checkpoint else 0
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if resume_from_checkpoint and not cfg.buffer.checkpoint:
         learning_starts += start_step
@@ -266,7 +262,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
     for k in obs_keys:
         torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
-        if k in cfg.mlp_keys.encoder:
+        if k in cfg.algo.mlp_keys.encoder:
             # Images stay uint8 to save space
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
@@ -292,7 +288,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             with torch.no_grad():
                 preprocessed_obs = {}
                 for k, v in obs.items():
-                    if k in cfg.cnn_keys.encoder:
+                    if k in cfg.algo.cnn_keys.encoder:
                         preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
                     else:
                         preprocessed_obs[k] = v[None, ...].to(device)
@@ -336,7 +332,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         for k in obs_keys:  # [N_envs, N_obs]
             next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
             step_data[k] = torch.from_numpy(real_next_obs[k]).view(cfg.env.num_envs, *real_next_obs[k].shape[1:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
                 step_data[k] = step_data[k].float()
         actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float()
@@ -368,7 +364,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             reset_data["is_first"] = torch.ones_like(reset_data["dones"])
             if buffer_type == "episode":
                 for i, d in enumerate(dones_idxes):
-                    if len(episode_steps[d]) >= cfg.per_rank_sequence_length:
+                    if len(episode_steps[d]) >= cfg.algo.per_rank_sequence_length:
                         rb.add(torch.cat(episode_steps[d], dim=0))
                         episode_steps[d] = [reset_data[i : i + 1][None, ...]]
             else:
@@ -388,15 +384,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 player.actor_type = "task"
             if buffer_type == "sequential":
                 local_data = rb.sample(
-                    cfg.per_rank_batch_size,
-                    sequence_length=cfg.per_rank_sequence_length,
+                    cfg.algo.per_rank_batch_size,
+                    sequence_length=cfg.algo.per_rank_sequence_length,
                     n_samples=cfg.algo.per_rank_pretrain_steps
                     if update == learning_starts
                     else cfg.algo.per_rank_gradient_steps,
                 ).to(device)
             else:
                 local_data = rb.sample(
-                    cfg.per_rank_batch_size,
+                    cfg.algo.per_rank_batch_size,
                     n_samples=cfg.algo.per_rank_pretrain_steps
                     if update == learning_starts
                     else cfg.algo.per_rank_gradient_steps,
@@ -418,7 +414,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                         world_optimizer,
                         actor_task_optimizer,
                         critic_task_optimizer,
-                        local_data[i].view(cfg.per_rank_sequence_length, cfg.per_rank_batch_size),
+                        local_data[i].view(cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size),
                         aggregator,
                         cfg,
                         actions_dim=actions_dim,
@@ -488,7 +484,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 "critic_task_optimizer": critic_task_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "update": update * world_size,
-                "batch_size": cfg.per_rank_batch_size * world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * world_size,
                 "actor_exploration": actor_exploration.state_dict(),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
