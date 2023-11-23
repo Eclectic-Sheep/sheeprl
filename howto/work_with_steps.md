@@ -1,5 +1,5 @@
 # Work with steps
-In this document we want to discuss about the hyper-parameters which refer to the concept of step.
+In this document, we want to discuss the hyper-parameters that refer to the concept of step.
 There are various ways to interpret it, so it is necessary to clearly specify how to interpret it.
 
 ## Policy steps
@@ -9,14 +9,14 @@ We start from the concept of *policy step*: a policy step is the particular step
 >
 > The environment step is the step performed by the environment: the environment takes in input an action and computes the next observation and the next reward.
 
-Now that we have introduced the concept of policy step, it is necessary to clarify some aspects:
+Now that we have introduced the concept of *policy step*, it is necessary to clarify some aspects:
 
 1. When there are multiple parallel environments, the policy step is proportional to the number of parallel environments. E.g., if there are $m$ environments, then the actor has to choose $m$ actions and each environment performs an environment step: this means that $\bold{m}$ **policy steps** are performed.
-2. When there are multiple parallel processes (i.e. the script has been run with `lpython sheeprl fabric.devices>=2 ...`), the policy step it is proportional to the number of parallel processes. E.g., let us assume that there are $n$ processes each one containing one single environment: the $n$ actors select an action and a (per-process) step in the environment is performed. In this case $\bold{n}$ **policy steps** are performed.
+2. When there are multiple parallel processes (i.e. the script has been run with `python sheeprl fabric.devices>=2 ...`), the policy step it is proportional to the number of parallel processes. E.g., let us assume that there are $n$ processes each one containing one single environment: the $n$ actors select an action, and a (per-process) step in the environment is performed. In this case $\bold{n}$ **policy steps** are performed.
 
 In general, if we have $n$ parallel processes, each one with $m$ independent environments, the policy step increases **globally** by $n \cdot m$ at each iteration.
 
-The hyper-parameters which refer to the *policy steps* are:
+The hyper-parameters that refer to the *policy steps* are:
 
 * `total_steps`: the total number of policy steps to perform in an experiment. Effectively, this number will be divided in each process by $n \cdot m$ to obtain the number of training steps to be performed by each of them.
 * `exploration_steps`: the number of policy steps in which the agent explores the environment in the P2E algorithms.

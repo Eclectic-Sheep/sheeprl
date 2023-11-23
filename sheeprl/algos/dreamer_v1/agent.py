@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium
@@ -8,7 +10,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from sympy import Union
 from torch import Tensor, nn
-from torch.distributions import Normal
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
@@ -16,7 +17,6 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -226,11 +226,12 @@ class PlayerDV1(nn.Module):
         representation_model (nn.Module): the representation model.
         actor (nn.Module): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
-        expl_amout (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (torch.device): the device to work on.
+        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+            Default to None.
     """
 
     def __init__(
@@ -240,11 +241,11 @@ class PlayerDV1(nn.Module):
         representation_model: nn.Module,
         actor: nn.Module,
         actions_dim: Sequence[int],
-        expl_amount: float,
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: torch.device,
+        actor_type: str | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -252,13 +253,13 @@ class PlayerDV1(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-        self.expl_amount = expl_amount
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
         self.init_states()
+        self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -277,14 +278,11 @@ class PlayerDV1(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(
-        self, obs: Tensor, is_continuous: bool, mask: Optional[Dict[str, Tensor]] = None
-    ) -> Sequence[Tensor]:
+    def get_exploration_action(self, obs: Tensor, mask: Optional[Dict[str, Tensor]] = None) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
-            is_continuous (bool): whether or not the actions are continuous.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
@@ -292,26 +290,11 @@ class PlayerDV1(nn.Module):
             The actions the agent has to perform (Sequence[Tensor]).
         """
         actions = self.get_greedy_action(obs, mask=mask)
-        if is_continuous:
-            self.actions = torch.cat(actions, -1)
-            if self.expl_amount > 0.0:
-                self.actions = torch.clip(
-                    Normal(self.actions, self.expl_amount, validate_args=self.validate_args).sample(), -1, 1
-                )
-            expl_actions = [self.actions]
-        else:
-            expl_actions = []
-            for act in actions:
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
-                    .sample()
-                    .to(self.device)
-                )
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=self.device) < self.expl_amount, sample, act)
-                )
-            self.actions = torch.cat(expl_actions, -1)
-        return tuple(expl_actions)
+        expl_actions = None
+        if self.actor.expl_amount > 0:
+            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
+            self.actions = torch.cat(expl_actions, dim=-1)
+        return expl_actions or actions
 
     def get_greedy_action(
         self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
@@ -397,7 +380,7 @@ def build_models(
             keys=cfg.mlp_keys.encoder,
             input_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
-            dense_units=world_model_cfg.encoderdense_units,
+            dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
             layer_norm=False,
         )

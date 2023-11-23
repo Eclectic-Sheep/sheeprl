@@ -143,32 +143,29 @@ class MCTS:
 
 
 @torch.no_grad()
-def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric):  # , args: MuzeroArgs):
-    # agent.eval()
-    # done = False
-    # cumulative_rew = 0
-    # next_obs = torch.tensor(
-    #     np.array(env.reset(seed=args.seed)[0]), device=fabric.device, dtype=torch.float32
-    # ).unsqueeze(0)
-    # while not done:
-    #     # Act greedly through the environment
-    #     node = Node(prior=0, image=next_obs)
-    #
-    #     # start MCTS
-    #     node.mcts(agent, args.num_simulations, args.gamma, args.dirichlet_alpha, args.exploration_fraction)
-    #
-    #     # Select action based on the visit count distribution and the temperature
-    #     visits_count = torch.tensor([child.visit_count for child in node.children.values()])
-    #     visits_count = visits_count
-    #     action = torch.distributions.Categorical(logits=visits_count).sample()
-    #     print(f"Mcts completed, action: {action}")
-    #     # Single environment step
-    #     next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
-    #     cumulative_rew += reward
-    #
-    #     if args.dry_run:
-    #         done = True
-    # fabric.print("Test - Reward:", cumulative_rew)
-    # fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
-    # env.close()
-    pass
+def test(agent: MuzeroAgent, mcts: MCTS, fabric: Fabric, cfg):
+    env = make_env(cfg.env.id, seed=None, idx=0, capture_video=False, run_name=fabric.logger.log_dir)()
+    agent.eval()
+    done = False
+    obs: np.ndarray = env.reset(seed=cfg.seed)[0]
+    rew_sum = 0.0
+
+    while not done:
+        # start MCTS
+        node = mcts.search(obs)
+
+        # Select action based on the visit count distribution and the temperature
+        visits_count = torch.tensor([child.visit_count for child in node.children.values()])
+        visits_count = visits_count
+        action = torch.distributions.Categorical(logits=visits_count).sample()
+        print(f"Mcts completed, action: {action}")
+        # Single environment step
+        obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        rew_sum += reward
+
+        if cfg.dry_run:
+            done = True
+
+    fabric.print("Test - Reward:", rew_sum)
+    fabric.logger.log_metrics({"Test/cumulative_reward": rew_sum}, 0)
+    env.close()

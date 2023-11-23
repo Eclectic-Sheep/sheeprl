@@ -1,7 +1,7 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota` so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
 
-We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
+We start by creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
 ```bash
 algos
@@ -56,7 +56,7 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger
+from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.timer import timer
 
 
@@ -90,10 +90,11 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg)
+    logger = create_tensorboard_logger(fabric, cfg)
     if fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -111,13 +112,13 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         ]
     )
 
-    # Create the agent model: this should be a torch.nn.Module to be acceleratesd with Fabric
+    # Create the agent model: this should be a torch.nn.Module to be accelerated with Fabric
     # Given that the environment has been created with the `make_dict_env` method, the agent
     # forward method must accept as input a dictionary like {"obs1_name": obs1, "obs2_name": obs2, ...}.
     # The agent should be able to process both image and vector-like observations.
     agent = ...
 
-    # Define the agent and the optimizer and setup them with Fabric
+    # Define the agent and the optimizer and set up them with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=list(agent.parameters()))
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
@@ -284,11 +285,11 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 ```
 
 ## Config files
-Once you have written your algorithm, you need to create two configs file: one in `./sheeprl/configs/algo` and the other in `./sheeprl/configs/exp`.
+Once you have written your algorithm, you need to create two config files: one in `./sheeprl/configs/algo` and the other in `./sheeprl/configs/exp`.
 
 > **Note**
 >
-> The name of the two file should be the same of the algorithm, so in our case it is `sota.yaml`
+> The name of the two files should be the same as the algorithm, so in our case, it is `sota.yaml`
 
 ```bash
 configs
@@ -307,7 +308,7 @@ configs
 
 #### Algo configs
 In the `./sheeprl/configs/algo/sota.yaml` we need to specify all the configs needed to initialize and train your agent.
-Here an example of the `./sheeprl/configs/algo/sota.yaml` config file:
+Here is an example of the `./sheeprl/configs/algo/sota.yaml` config file:
 
 ```yaml
 defaults:
@@ -363,15 +364,15 @@ defaults:
   - /optim@encoder.optimizer: adam
   - /optim@actor.optimizer: adam
 ```
-will add two optimizers, one accesible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
+will add two optimizers, one accessible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
 
 > **Note**
 >
 > The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `sheeprl/algos/sota` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `sheeprl/algos/sota/my_sota.py`, then `algo.name="my_sota"` 
 
 #### Experiment config
-In the second file you have to specify all the elements you want in your experiment and you can override all the parameters you want.
-Here an example of the `./sheeprl/configs/exp/sota.yaml` config file:
+In the second file, you have to specify all the elements you want in your experiment and you can override all the parameters you want.
+Here is an example of the `./sheeprl/configs/exp/sota.yaml` config file:
 
 ```yaml
 # @package _global_
@@ -392,7 +393,7 @@ env:
     id: MsPacmanNoFrameskip-v4
 ```
 
-With `override /algo: sota` in `defaults` you are specifing you want to use the new `sota` algorithm, whereas, with `override /env: gym` you are specifing that you want to train your agent on an *Atari* environment.
+With `override /algo: sota` in `defaults` you are specifying you want to use the new `sota` algorithm, whereas, with `override /env: gym` you are specifying that you want to train your agent on an *Atari* environment.
 
 ## Register Algorithm
 
@@ -421,6 +422,7 @@ from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
 from sheeprl.algos.droq import droq as droq
 from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
+from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
 from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
@@ -451,6 +453,7 @@ SheepRL Agents
 │ sheeprl.algos.droq          │ droq          │ main       │ False     │
 │ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
 │ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
+│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
 │ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │

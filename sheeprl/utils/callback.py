@@ -84,5 +84,9 @@ class CheckpointCallback:
             # reinsert the true dones in the buffer
             replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
 
-    def on_checkpoint_trainer(self, player_trainer_collective: TorchCollective, state: Dict[str, Any]):
-        player_trainer_collective.broadcast_object_list([state], src=1)
+    def on_checkpoint_trainer(
+        self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
+    ):
+        if fabric.global_rank == 1:
+            player_trainer_collective.broadcast_object_list([state], src=1)
+        fabric.save(ckpt_path, state)

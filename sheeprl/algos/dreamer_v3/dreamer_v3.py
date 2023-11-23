@@ -4,7 +4,6 @@ Adapted from the original implementation from https://github.com/danijar/dreamer
 
 import copy
 import os
-import pathlib
 import warnings
 from functools import partial
 from typing import Any, Dict, Sequence
@@ -16,14 +15,13 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import OmegaConf
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
 from torch.distributions import Bernoulli, Distribution, Independent
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
-from torchmetrics import MeanMetric, SumMetric
+from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_models
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
@@ -37,11 +35,11 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger
+from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, polynomial_decay
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -76,7 +74,7 @@ def train(
         actor_optimizer (Optimizer): the actor optimizer.
         critic_optimizer (Optimizer): the critic optimizer.
         data (TensorDictBase): the batch of data to use for training.
-        aggregator (MetricAggregator): the aggregator to print the metrics.
+        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
         is_continuous (bool): whether or not the environment is continuous.
         actions_dim (Sequence[int]): the actions dimension.
@@ -185,35 +183,36 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-    aggregator.update("Loss/world_model_loss", rec_loss.detach())
-    aggregator.update("Loss/observation_loss", observation_loss.detach())
-    aggregator.update("Loss/reward_loss", reward_loss.detach())
-    aggregator.update("Loss/state_loss", state_loss.detach())
-    aggregator.update("Loss/continue_loss", continue_loss.detach())
-    aggregator.update("State/kl", kl.mean().detach())
-    aggregator.update(
-        "State/post_entropy",
-        Independent(
-            OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.mean().detach())
+        aggregator.update(
+            "State/post_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
         )
-        .entropy()
-        .mean()
-        .detach(),
-    )
-    aggregator.update(
-        "State/prior_entropy",
-        Independent(
-            OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
+        aggregator.update(
+            "State/prior_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
         )
-        .entropy()
-        .mean()
-        .detach(),
-    )
 
     # Behaviour Learning
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
@@ -321,8 +320,9 @@ def train(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
-    aggregator.update("Grads/actor", actor_grads.mean().detach())
-    aggregator.update("Loss/policy_loss", policy_loss.detach())
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Grads/actor", actor_grads.mean().detach())
+        aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values
     qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
@@ -342,8 +342,9 @@ def train(
             module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
-    aggregator.update("Grads/critic", critic_grads.mean().detach())
-    aggregator.update("Loss/value_loss", value_loss.detach())
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Grads/critic", critic_grads.mean().detach())
+        aggregator.update("Loss/value_loss", value_loss.detach())
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)
@@ -360,15 +361,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
         cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
 
     # These arguments cannot be changed
     cfg.env.frame_stack = -1
@@ -377,10 +371,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
-    logger, log_dir = create_tensorboard_logger(fabric, cfg)
-    if fabric.is_global_zero:
+    logger = create_tensorboard_logger(fabric, cfg)
+    if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -392,7 +387,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     cfg,
                     cfg.seed + rank * cfg.env.num_envs + i,
                     rank * cfg.env.num_envs,
-                    logger.log_dir if rank == 0 else None,
+                    log_dir if rank == 0 else None,
                     "train",
                     vector_env_idx=i,
                 ),
@@ -431,10 +426,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "The MLP keys of the decoder must be contained in the encoder ones. "
             f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
         )
-    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
-    fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+        fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
+        fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
     obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
 
     world_model, actor, critic, target_critic = build_models(
@@ -453,7 +449,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_model.rssm,
         actor.module,
         actions_dim,
-        cfg.algo.player.expl_amount,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
@@ -483,26 +478,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         moments.load_state_dict(state["moments"])
 
     # Metrics
-    aggregator = MetricAggregator(
-        {
-            "Rewards/rew_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Game/ep_len_avg": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/world_model_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/value_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/policy_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/observation_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/reward_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/state_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Loss/continue_loss": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "State/kl": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "State/post_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "State/prior_entropy": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Params/exploration_amout": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Grads/world_model": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Grads/actor": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-            "Grads/critic": MeanMetric(sync_on_compute=cfg.metric.sync_on_compute),
-        }
-    ).to(fabric.device)
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2
@@ -537,17 +515,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
-    max_step_expl_decay = cfg.algo.player.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
+    max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
-        player.expl_amount = polynomial_decay(
+        actor.expl_amount = polynomial_decay(
             expl_decay_steps,
-            initial=cfg.algo.player.expl_amount,
-            final=cfg.algo.player.expl_min,
+            initial=cfg.algo.actor.expl_amount,
+            final=cfg.algo.actor.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
@@ -564,7 +542,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]
-    obs = {}
+    obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
     for k in obs_keys:
         torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
         if k in cfg.mlp_keys.encoder:
@@ -588,7 +566,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             if (
                 update <= learning_starts
                 and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.algo.actor.cls.lower()
+                and "minedojo" not in cfg.env.wrapper._target_.lower()
             ):
                 real_actions = actions = np.array(envs.action_space.sample())
                 if not is_continuous:
@@ -610,7 +588,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_action(preprocessed_obs, is_continuous, mask)
+                    real_actions = actions = player.get_exploration_action(preprocessed_obs, mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
@@ -634,13 +612,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     )
                     step_data["is_first"][i] = torch.ones_like(step_data["is_first"][i])
 
-        if "final_info" in infos:
+        if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
                 if agent_ep_info is not None:
                     ep_rew = agent_ep_info["episode"]["r"]
                     ep_len = agent_ep_info["episode"]["l"]
-                    aggregator.update("Rewards/rew_avg", ep_rew)
-                    aggregator.update("Game/ep_len_avg", ep_len)
+                    if aggregator and not aggregator.disabled:
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
@@ -651,7 +630,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs: Dict[str, Tensor] = {}
+        next_obs: Dict[str, Tensor] = {
+            k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")
+        }
         for k in real_next_obs.keys():  # [N_envs, N_obs]
             if k in obs_keys:
                 next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
@@ -672,11 +653,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
             reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
-            for k in real_next_obs.keys():
-                if k in obs_keys:
-                    reset_data[k] = real_next_obs[k][dones_idxes]
-                    if k in cfg.mlp_keys.encoder:
-                        reset_data[k] = reset_data[k].float()
+            for k in obs_keys:
+                reset_data[k] = real_next_obs[k][dones_idxes]
+                if k in cfg.mlp_keys.encoder:
+                    reset_data[k] = reset_data[k].float()
             reset_data["dones"] = torch.ones(reset_envs, 1).float()
             reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
             reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
@@ -726,49 +706,50 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     per_rank_gradient_steps += 1
                 train_step += world_size
             updates_before_training = cfg.algo.train_every // policy_steps_per_update
-            if cfg.algo.player.expl_decay:
+            if cfg.algo.actor.expl_decay:
                 expl_decay_steps += 1
-                player.expl_amount = polynomial_decay(
+                actor.expl_amount = polynomial_decay(
                     expl_decay_steps,
-                    initial=cfg.algo.player.expl_amount,
-                    final=cfg.algo.player.expl_min,
+                    initial=cfg.algo.actor.expl_amount,
+                    final=cfg.algo.actor.expl_min,
                     max_decay_steps=max_step_expl_decay,
                 )
-            aggregator.update("Params/exploration_amout", player.expl_amount)
+            if aggregator and not aggregator.disabled:
+                aggregator.update("Params/exploration_amount", actor.expl_amount)
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
             # Sync distributed metrics
-            metrics_dict = aggregator.compute()
-            fabric.log_dict(metrics_dict, policy_step)
-            aggregator.reset()
+            if aggregator and not aggregator.disabled:
+                metrics_dict = aggregator.compute()
+                fabric.log_dict(metrics_dict, policy_step)
+                aggregator.reset()
 
             # Sync distributed timers
-            timer_metrics = timer.compute()
-            if "Time/train_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_train",
-                    (train_step - last_train) / timer_metrics["Time/train_time"],
-                    policy_step,
-                )
-            if "Time/env_interaction_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_env_interaction",
-                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                    / timer_metrics["Time/env_interaction_time"],
-                    policy_step,
-                )
-            timer.reset()
+            if not timer.disabled:
+                timer_metrics = timer.compute()
+                if "Time/train_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_train",
+                        (train_step - last_train) / timer_metrics["Time/train_time"],
+                        policy_step,
+                    )
+                if "Time/env_interaction_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_env_interaction",
+                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        / timer_metrics["Time/env_interaction_time"],
+                        policy_step,
+                    )
+                timer.reset()
 
             # Reset counters
             last_log = policy_step
             last_train = train_step
 
         # Checkpoint Model
-        if (
-            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
-            or cfg.dry_run
-            or update == num_updates
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
+            update == num_updates and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {
@@ -797,4 +778,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero:
-        test(player, fabric, cfg, sample_actions=True)
+        test(player, fabric, cfg, log_dir, sample_actions=True)

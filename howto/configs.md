@@ -8,7 +8,7 @@ This document explains how the configuration files and folders are structured. I
 
 > **Warning**
 >
-> For every possible hydra config, the parameters that are not specified in the config is highly probable that are passed to the object to be instantiated at runtime. If it is not the case, please let us know!
+> For every possible hydra config, the parameters that are not specified in the config is highly probable that are passed to the object to be instantiated at runtime. If this is not the case, please let us know!
 
 ## Parent Folder Structure
 ```tree
@@ -87,7 +87,7 @@ In this section, we will explain the structure of the config folders. Each folde
 
 ### config.yaml
 
-The `sheeprl/configs/config.yaml` is the main configuration, which is loaded by the training scripts. In this config one should find the deafult configurations:
+The `sheeprl/configs/config.yaml` is the main configuration, which is loaded by the training scripts. In this config one should find the default configurations:
 
 ```yaml
 # @package _global_
@@ -131,7 +131,7 @@ mlp_keys:
 
 ### Algorithms
 
-In the `algo` folder one can find all the configurations for every algorithms implemented in sheeprl. Those configs contain all the hyperparameters specific to a particular algorithm. Lets have a look at the `dreamer_v3.yaml` config for example:
+In the `algo` folder one can find all the configurations for every algorithm implemented in sheeprl. Those configs contain all the hyperparameters specific to a particular algorithm. Let us have a look at the `dreamer_v3.yaml` config for example:
 
 ```yaml
 # sheeprl/configs/algo/dreamer_v3.yaml
@@ -285,7 +285,7 @@ player:
   discrete_size: ${algo.world_model.discrete_size}
 ```
 
-The `defaults` section contains the list of the default configurations to be "imported" by hydra during the initialization. For more information check the official hydra documentation about [group defaults](https://hydra.cc/docs/1.1/tutorials/basic/your_first_app/defaults/). The semantic of the following declaration
+The `defaults` section contains the list of the default configurations to be "imported" by Hydra during the initialization. For more information check the official Hydra documentation about [group defaults](https://hydra.cc/docs/1.1/tutorials/basic/your_first_app/defaults/). The semantic of the following declaration
 
 ```yaml
 defaults:
@@ -299,7 +299,7 @@ defaults:
 is:
 
 * the content of the `sheeprl/configs/algo/default.yaml` config will be inserted in the current config and whenever a naming collision happens, for example when the same field is defined in both configurations, those will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list
-* `/optim@world_model.optimizer: adam` (and similar) means that the `adam` config, found in the `sheeprl/configs/optim` folder, will be inserted in this config under the `world_model.optimizer` field, so that one can access it at runtime as `cfg.algo.world_model.optimizer`. As in the previous point, the fields `lr`, `eps` and `weight_decay` will be overwritten by the one specified in this config
+* `/optim@world_model.optimizer: adam` (and similar) means that the `adam` config, found in the `sheeprl/configs/optim` folder, will be inserted in this config under the `world_model.optimizer` field, so that one can access it at runtime as `cfg.algo.world_model.optimizer`. As in the previous point, the fields `lr`, `eps`, and `weight_decay` will be overwritten by the one specified in this config
 
 > **Warning**
 >
@@ -307,7 +307,7 @@ is:
 
 ### Environment
 
-The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers to the following environments:
+The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers for the following environments:
 
 * [Atari](https://gymnasium.farama.org/environments/atari/)
 * [Diambra](https://docs.diambra.ai/)
@@ -316,7 +316,7 @@ The environment configs can be found under the `sheeprl/configs/env` folders. Sh
 * [MineRL (v0.4.4)](https://minerl.readthedocs.io/en/v0.4.4/)
 * [MineDojo (v0.1.0)](https://docs.minedojo.org/)
 
-In this way one can easily try out the overall framework with standard RL environments. The `default.yaml` config contains all the environment parameters shared by (possibly) all the environments:
+In this way, one can easily try out the overall framework with standard RL environments. The `default.yaml` config contains all the environment parameters shared by (possibly) all the environments:
 
 ```yaml
 id: ???
@@ -333,7 +333,7 @@ max_episode_steps: null
 reward_as_observation: False
 ```
 
-Every custom environment must then "inherit" from this default config, override the particular parameters and define the the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
+Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
 
 ```yaml
 defaults:
@@ -367,7 +367,7 @@ wrapper:
 
 ### Experiment
 
-The `experiment` configs are the main entrypoint for an experiment: it gathers all the different configurations to run a particular experiment in a single configuration file. For example, lets take a look at the `sheeprl/configs/exp/dreamer_v3_100k_ms_pacman.yaml` config:
+The `experiment` configs are the main entrypoint for an experiment: it gathers all the different configurations to run a particular experiment in a single configuration file. For example, let us take a look at the `sheeprl/configs/exp/dreamer_v3_100k_ms_pacman.yaml` config:
 
 ```yaml
 # @package _global_
@@ -421,11 +421,11 @@ python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 
 ### Fabric
 
-These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with thich precision. For more information please have a look to the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
+These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with thich precision. For more information please have a look at the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
 
 ### Hydra
 
-These configuration file manages where and how to create folders or subfolders for experiments. For more information please visit the [hydra documentation](https://hydra.cc/docs/configure_hydra/intro/). Our default hydra config is the following:
+This configuration file manages where and how to create folders or subfolders for experiments. For more information please visit the [hydra documentation](https://hydra.cc/docs/configure_hydra/intro/). Our default Hydra config is the following:
 
 ```yaml
 run:
@@ -434,7 +434,7 @@ run:
 
 ### Metric
 
-The metric config contains all the parameters related to the metrics collected by the algorithm. In sheeprl we make large use of [TorchMetrics](https://torchmetrics.readthedocs.io/en/stable/) metrics and this config we can find both the standard parameters that can be passed to every [Metric](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric) object and the logging frequency:
+The metric config contains all the parameters related to the metrics collected by the algorithm. In SheepRL we make large use of [TorchMetrics](https://torchmetrics.readthedocs.io/en/stable/) metrics and in this config we can find both the standard parameters that can be passed to every [Metric](https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric) object and the logging frequency:
 
 ```yaml
 log_every: 5000

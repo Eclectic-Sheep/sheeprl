@@ -8,10 +8,14 @@ from sheeprl.utils.env import make_env
 if TYPE_CHECKING:
     from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
 
+from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
+
+AGGREGATOR_KEYS = ppo_aggregator_keys
+
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any]):
-    env = make_env(cfg, None, 0, fabric.logger.log_dir, "test", vector_env_idx=0)()
+def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+    env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
     cumulative_rew = 0
@@ -59,5 +63,6 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any]):
         if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
-    fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+    if cfg.metric.log_level > 0:
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()

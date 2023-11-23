@@ -25,3 +25,18 @@ optimizer:
   lr: 1e-3
   eps: 1e-4
   weight_decay: 1e-4
+
+mlp_keys: ["state"]
+model:
+  hidden_state_size: 256
+  encoder:
+    mlp_layers: 0
+    dense_units: 256
+    layer_norm: False
+    activation: torch.nn.ELU
+  prediction:
+    policy_hidden_sizes: [64, 64, 16]
+    value_hidden_sizes: [64, 64, 16]
+  dynamics:
+    state_hidden_sizes: [64, 64, 16]
+    reward_hidden_sizes: [64, 64, 16]

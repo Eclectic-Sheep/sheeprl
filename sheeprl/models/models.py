@@ -487,3 +487,32 @@ class MultiDecoder(nn.Module):
         if self.mlp_decoder is not None:
             reconstructed_obs.update(self.mlp_decoder(x))
         return reconstructed_obs
+
+
+class ResidualBlock(nn.Module):
+    """A residual block, taken from https://github.com/YeWR/EfficientZero/blob/main/config/atari/model.py#L59."""
+
+    def __init__(self, in_channels, out_channels, downsample=None, stride=1, momentum=0.1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels, momentum=momentum)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels, momentum=momentum)
+        self.downsample = downsample
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = nn.functional.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = nn.functional.relu(out)
+        return out

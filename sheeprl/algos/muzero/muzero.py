@@ -12,11 +12,11 @@ from lightning.fabric.wrappers import _FabricModule
 from omegaconf import OmegaConf
 from torchmetrics import MeanMetric, SumMetric
 
-from sheeprl.algos.muzero.agent import MlpDynamics, MuzeroAgent, Predictor
+from sheeprl.algos.muzero.agent import MuzeroAgent
 from sheeprl.algos.muzero.loss import policy_loss, reward_loss, value_loss
-from sheeprl.algos.muzero.utils import MCTS, make_env, test, visit_softmax_temperature
+from sheeprl.algos.muzero.utils import MCTS, test, visit_softmax_temperature
 from sheeprl.data.buffers_np import Trajectory, TrajectoryReplayBuffer
-from sheeprl.models.models import MLP
+from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import create_tensorboard_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -46,9 +46,9 @@ def train(
     target_rewards = data["rewards"]
     target_values = data["returns"]
     target_policies = data["policies"]
-    observations: torch.Tensor = torch.as_tensor(
-        data["observations"], dtype=torch.float32
-    )  # shape should be (L, N, C, H, W)
+    obs = np.concatenate(data[k] for k in cfg.mlp_keys.encoder)
+    # preprocessed_obs = {k: torch.as_tensor(data[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder} TODO
+    observations: torch.Tensor = torch.as_tensor(obs, dtype=torch.float32)  # shape should be (L, N, C, H, W)
     actions = torch.as_tensor(data["actions"], dtype=torch.float32)
 
     hidden_states, policy_0, value_0 = agent.initial_inference(observations[0])  # in shape should be (N, C, H, W)
@@ -120,28 +120,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.logger.log_hyperparams(cfg)
 
     # Environment setup # TODO add support to parallel envs
-    env = make_env(cfg.env.id, seed=cfg.seed + rank, idx=rank, capture_video=False, run_name=logger.log_dir)()
+    env = make_env(
+        cfg,
+        cfg.seed + rank * cfg.env.num_envs + 0,
+        rank * cfg.env.num_envs,
+        logger.log_dir if rank == 0 else None,
+        "train",
+        vector_env_idx=0,
+    )()
+
     assert isinstance(env.action_space, gym.spaces.Discrete), "Only discrete action space is supported"
-    obs_shape = env.observation_space.shape
+    obs_shapes = {k: env.observation_space.spaces[k] for k in cfg.mlp_keys.encoder}
+    input_dims = [np.prod(s) for s in obs_shapes.values()]
     num_actions = env.action_space.n
 
     # Create the model
     # TODO initialize using cfg for each model
     full_support_size = 2 * cfg.algo.support_size + 1
-    agent = MuzeroAgent(
-        representation=MLP(
-            input_dims=env.observation_space.shape,
-            hidden_sizes=tuple(),
-            output_dim=cfg.algo.embedding_size,
-            activation=torch.nn.ELU,
-        ),
-        dynamics=MlpDynamics(
-            num_actions=env.action_space.n, embedding_size=cfg.algo.embedding_size, full_support_size=full_support_size
-        ),
-        prediction=Predictor(
-            embedding_size=cfg.algo.embedding_size, num_actions=env.action_space.n, full_support_size=full_support_size
-        ),
-    )
+    agent = MuzeroAgent(cfg, input_dims, num_actions, full_support_size)
 
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
@@ -190,7 +186,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     num_episodes_per_update = int(cfg.env.num_envs * world_size)
     num_updates = cfg.total_steps // num_episodes_per_update if not cfg.dry_run else 1
 
-    cfg.learning_starts // int(fabric.world_size) if not cfg.dry_run else 0  # TODO check
+    cfg.algo.learning_starts // int(fabric.world_size) if not cfg.dry_run else 0  # TODO check
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % num_episodes_per_update != 0:
@@ -222,7 +218,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.no_grad():
             # reset the episode at every update
             # Get the first environment observation and start the optimization
-            obs: np.ndarray = env.reset(seed=cfg.seed)[0]
+            obs: dict[str, np.ndarray] = env.reset(seed=cfg.seed)[0]
+            for k, v in obs.items():
+                preprocessed_obs = {
+                    k: torch.as_tensor(v[np.newaxis], dtype=torch.float32, device=device) for k in cfg.mlp_keys.encoder
+                }
             rew_sum = 0.0
 
             steps_data = None
@@ -231,7 +231,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                     if not warm_up:
                         # start MCTS
-                        node = mcts.search(obs)
+                        node = mcts.search(preprocessed_obs)
 
                         # Select action based on the visit count distribution and the temperature
                         visits_count = np.array([child.visit_count for child in node.children])
@@ -259,12 +259,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     {
                         "policies": visit_probs.reshape(1, num_actions),
                         "actions": action.reshape(1, 1),
-                        "observations": obs.reshape(1, *obs_shape),
                         "rewards": np.array(reward).reshape(1, 1),
                         "values": np.array(value).reshape(1, 1),
                         "dones": np.array(done).reshape(1, 1),
                     }
                 )
+                for k in obs:
+                    trajectory_step_data[k] = obs[k].reshape(1, *obs_shapes[k])
                 if steps_data is None:
                     steps_data = trajectory_step_data
                 else:
@@ -277,7 +278,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 else:
                     obs = next_obs
 
-            # TODO update to use the new metric system
             aggregator.update("Rewards/rew_avg", rew_sum)
             aggregator.update("Game/ep_len_avg", trajectory_step)
             # print("Finished episode")
@@ -293,7 +293,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 rb.add(trajectory=steps_data)
             env_steps += trajectory_step
 
-        if len(rb) >= cfg.learning_starts:
+        if len(rb) >= cfg.algo.learning_starts:
             warm_up = False
             print("UPDATING")
             for _ in range(cfg.algo.update_epochs):
@@ -356,4 +356,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     env.close()
     if fabric.is_global_zero:
-        test(agent.module, fabric, cfg)
+        test(agent.module, mcts, fabric, cfg)

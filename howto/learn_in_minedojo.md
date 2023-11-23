@@ -1,4 +1,9 @@
 ## Install MineDojo environment
+
+> **Warning**
+>
+> The `Categorical` PyTorch distribution does not work correctly when some probabilities are set to $0$ (the probs set to zero can be sampled anyway). This can cause some errors when filtering actions with the action masks provided by MineDojo. This error is sporadic, so, we are waiting for the issue to be fixed by PyTorch. One can track the issue here: https://github.com/pytorch/pytorch/issues/91863
+
 First you need to install the JDK 1.8, on Debian based systems you can run the following:
 
 ```bash
@@ -38,7 +43,7 @@ We slightly modified the observation space, by reshaping it (based on the idea p
 * A max inventory vector with one entry for each item which contains the maximum number of items obtained by the agent so far in the episode.
 * A delta inventory vector with one entry for each item which contains the difference of the items in the inventory after the performed action.
 * The RGB first-person camera image.
-* A vector of three elements representing the life, the food and the oxygen levels of the agent.
+* A vector of three elements representing the life, the food, and the oxygen levels of the agent.
 * A one-hot vector indicating the equipped item.
 * A mask for the action type indicating which actions can be executed.
 * A mask for the equip/place arguments indicating which elements can be equipped or placed.
@@ -50,22 +55,23 @@ For more information about the MineDojo observation space, check [here](https://
 ### Action Space
 We decided to convert the 8 multi-discrete action space into a 3 multi-discrete action space:
 1. The first maps all the actions (movement, craft, jump, camera, attack, ...).
-2. The second one maps the argument for the *craf* action.
+2. The second one maps the argument for the *craft* action.
 3. The third one maps the argument for the *equip*, *place*, and *destroy* actions. 
 
-Moreover, we restrict the look up/down actions between `min_pitch` and `max_pitch` degrees, where `min_pitch` and `max_pitch` are two parameters that can be defined through the `env.min_pitch` and `env.max_pitch` cli arguments, respectively.
-In addition, we added the forward action when the agent selects one of the follwing actions: `jump`, `sprint`, and `sneak`.
-Finally we added sticky action for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `env.sticky_jump` and `env.sticky_attack` cli arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
+Moreover, we restrict the look-up/down actions between `min_pitch` and `max_pitch` degrees, where `min_pitch` and `max_pitch` are two parameters that can be defined through the `env.min_pitch` and `env.max_pitch` cli arguments, respectively.
+In addition, we added the forward action when the agent selects one of the following actions: `jump`, `sprint`, and `sneak`.
+Finally, we added sticky actions for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `env.sticky_jump` and `env.sticky_attack` cli arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
 
 For more information about the MineDojo action space, check [here](https://docs.minedojo.org/sections/core_api/action_space.html).
 
 > **Note**
 > Since the MineDojo environments have a multi-discrete action space, the sticky actions can be easily implemented. The agent will perform the selected action and the sticky actions simultaneously.
 >
-> The action repeat in the Minecraft environments is set to 1, indedd, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).
+> The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).
 
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the train command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on an headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
+
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`, or `MINEDOJO_HEADLESS=1 python sheeprl.py exp=p2e_dv2 fabric.devices=1 env=minedojo env.id=open-ended cnn_keys.encoder=[rgb] algo.actor.cls=sheeprl.algos.p2e_dv2.agent.MinedojoActor`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

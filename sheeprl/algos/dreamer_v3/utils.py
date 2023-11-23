@@ -1,19 +1,37 @@
-import os
 from typing import TYPE_CHECKING, Any, Dict
 
 import gymnasium as gym
 import numpy as np
 import torch
 from lightning import Fabric
-from torch import Tensor
+from torch import Tensor, nn
 
 from sheeprl.utils.env import make_env
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 
+AGGREGATOR_KEYS = {
+    "Rewards/rew_avg",
+    "Game/ep_len_avg",
+    "Loss/world_model_loss",
+    "Loss/value_loss",
+    "Loss/policy_loss",
+    "Loss/observation_loss",
+    "Loss/reward_loss",
+    "Loss/state_loss",
+    "Loss/continue_loss",
+    "State/kl",
+    "State/post_entropy",
+    "State/prior_entropy",
+    "Params/exploration_amount",
+    "Grads/world_model",
+    "Grads/actor",
+    "Grads/critic",
+}
 
-class Moments(torch.nn.Module):
+
+class Moments(nn.Module):
     def __init__(
         self,
         fabric: Fabric,
@@ -60,6 +78,7 @@ def test(
     player: "PlayerDV3",
     fabric: Fabric,
     cfg: Dict[str, Any],
+    log_dir: str,
     test_name: str = "",
     sample_actions: bool = False,
 ):
@@ -69,12 +88,12 @@ def test(
         player (PlayerDV3): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
         cfg (DictConfig): the hyper-parameters.
+        log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
         sample_actions (bool): whether or not to sample the actions.
             Default to False.
     """
-    log_dir = fabric.logger.log_dir if len(fabric.loggers) > 0 else os.getcwd()
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
@@ -107,33 +126,33 @@ def test(
         done = done or truncated or cfg.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
-    if len(fabric.loggers) > 0:
+    if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
         fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
 
 
 # Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L929
 def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
+    if isinstance(m, nn.Linear):
         in_num = m.in_features
         out_num = m.out_features
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
-    elif isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.ConvTranspose2d):
+    elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         space = m.kernel_size[0] * m.kernel_size[1]
         in_num = space * m.in_channels
         out_num = space * m.out_channels
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
-    elif isinstance(m, torch.nn.LayerNorm):
+    elif isinstance(m, nn.LayerNorm):
         m.weight.data.fill_(1.0)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
@@ -142,16 +161,16 @@ def init_weights(m):
 # Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L957
 def uniform_init_weights(given_scale):
     def f(m):
-        if isinstance(m, torch.nn.Linear):
+        if isinstance(m, nn.Linear):
             in_num = m.in_features
             out_num = m.out_features
             denoms = (in_num + out_num) / 2.0
             scale = given_scale / denoms
             limit = np.sqrt(3 * scale)
-            torch.nn.init.uniform_(m.weight.data, a=-limit, b=limit)
+            nn.init.uniform_(m.weight.data, a=-limit, b=limit)
             if hasattr(m.bias, "data"):
                 m.bias.data.fill_(0.0)
-        elif isinstance(m, torch.nn.LayerNorm):
+        elif isinstance(m, nn.LayerNorm):
             m.weight.data.fill_(1.0)
             if hasattr(m.bias, "data"):
                 m.bias.data.fill_(0.0)
