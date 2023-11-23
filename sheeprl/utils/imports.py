@@ -4,6 +4,7 @@ from lightning_utilities.core.imports import RequirementCache
 
 _IS_ATARI_AVAILABLE = RequirementCache("gymnasium[atari]")
 _IS_ATARI_ROMS_AVAILABLE = RequirementCache("gymnasium[accept-rom-license]")
+_IS_BOX2D_AVAILABLE = RequirementCache("gymnasium[box2d]")
 _IS_CRAFTER_AVAILABLE = RequirementCache("crafter")
 _IS_DIAMBRA_AVAILABLE = RequirementCache("diambra")
 _IS_DIAMBRA_ARENA_AVAILABLE = RequirementCache("diambra-arena")
