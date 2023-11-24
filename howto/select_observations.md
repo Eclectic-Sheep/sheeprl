@@ -93,7 +93,7 @@ python sheeprl.py exp=sac env=gym env.id=LunarLanderContinuous-v2 algo.mlp_keys.
 It is possible to retrieve the observation space of a specific environment to easily select the observation keys you want to use in your training.
 
 ```bash
-python examples/observation_space.py env=... env.id=... agent=dreamer_v3
+python examples/observation_space.py env=... env.id=... agent=dreamer_v3 algo.cnn_keys.encoder=[...] algo.mlp_keys.encoder=[...]
 ```
 
 or for *DIAMBRA* environments:
@@ -102,11 +102,11 @@ or for *DIAMBRA* environments:
 diambra run python examples/observation_space.py env=diambra agent=dreamer_v3 env.id=doapp
 ```
 
-The env argument is the same one you use for training your agent, so it refers to the config folder `sheeprl/configs/env`, more over you can override the environment id and modify its parameters, such as the frame stack or whether or not to use grayscale observations.
+The env argument is the same one you use for training your agent, so it refers to the config folder `sheeprl/configs/env`, moreover you can override the environment id and modify its parameters, such as the frame stack or whether or not to use grayscale observations.
 You can modify the parameters as usual by specifying them as cli arguments:
 
 ```bash
-python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanNoFrameskip-v4 env.frame_stack=5 env.grayscale=True
+python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanNoFrameskip-v4 env.frame_stack=5 env.grayscale=True algo.cnn_keys.encoder=[frame]
 ```
 
 > **Note**
