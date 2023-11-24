@@ -70,7 +70,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         cfg.env.num_envs = exploration_cfg.env.num_envs
     # There must be the same cnn and mlp keys during exploration and finetuning
     cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
-    cfg.mlp_keys = exploration_cfg.mlp_keys
+    cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64

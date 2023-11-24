@@ -19,10 +19,10 @@ The algorithms that can work with both image and vector observations are specifi
 * Plan2Explore (Dreamer-V3)
 
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover, you can select all/some/none of the image observations.
-You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decoder to the script to select the vector observations and the image observations, respectively.
+You just need to pass the  `algo.mlp_keys` and  `algo.cnn_keys` of the encoder and the decoder to the script to select the vector observations and the image observations, respectively.
 > **Note**
 >
-> The `mlp_keys` and the `cnn_keys` specified for the encoder are used by default as `mlp_keys` and `cnn_keys` of the decoder, respectively.
+> The  `algo.mlp_keys` and the  `algo.cnn_keys` specified for the encoder are used by default as  `algo.mlp_keys` and  `algo.cnn_keys` of the decoder, respectively.
 
 > **Recommended**
 >
@@ -35,34 +35,34 @@ diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 al
 
 > **Note**
 >
-> By default the `mlp_keys` and `cnn_keys` arguments are set to `[]` (empty list), so no observations are selected for the training. This might raise an exception: the agent tries to automatically set the *mlp* or *cnn* keys, but it is not always possible, so it is **strongly recommended to properly set them**.
+> By default the  `algo.mlp_keys` and  `algo.cnn_keys` arguments are set to `[]` (empty list), so no observations are selected for the training. This will raise an exception: if fact, **every algorithm must specify at least one of them**.
 
 It is important to know the observations the environment provides, for instance, the *DIAMBRA* environments provide both vector observations and image observations, whereas all the atari environments provide only the image observations. 
 > **Note**
 >
-> For some environments provided by Gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the `cnn_keys` args:
+> For some environments provided by Gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the  `algo.cnn_keys` args:
 > `python sheeprl.py exp=... algo.cnn_keys.encoder=[rgb]`
 
 #### Frame Stack
-For image observations, it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
+For image observations, it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the  `algo.cnn_keys` argument are stacked.
 
 ```bash
 python sheeprl.py exp=... env=dmc algo.cnn_keys.encoder=[rgb] env.frame_stack=3
 ```
 
 #### How to choose the correct keys
-When the environment provides both the vector and image observations, you just need to specify which observations you want to use with the `mlp_keys` and `cnn_keys`, respectively.
+When the environment provides both the vector and image observations, you just need to specify which observations you want to use with the  `algo.mlp_keys` and  `algo.cnn_keys`, respectively.
 
 Instead, for those environments that natively do not support both types of observations, we provide a method to obtain the **image observations from the vector observations (NOT VICE VERSA)**. It means that if you choose an environment with only vector observations, you can get also the image observations, but if you choose an environment with only image observations, you **cannot** get the vector observations.
 
 There can be three possible scenarios:
-1. You do **not** want to **use** the **image** observations: you don't have to specify any `cnn_keys` while you have to select the `mlp_keys`:
-   1. if the environment provides more than one vector observation, then you have to choose between them;
-   2. if the environment provides only one vector observation, you can choose the name of the *mlp key* or use the default one (`state`, used when you do not specify any *mlp keys*).
-2. You want to **use only** the **image** observation: you don't have to specify any `mlp_keys` while **you must specify the name of the *cnn key*** (if the image observation has to be created from the vector one, the `make_env` function will automatically bind the observation with the specified key, otherwise you must choose a valid one).
-3. You want to **use both** the **vector** and **image** observations: You must specify the *cnn key* (as point 2). Instead, for the vector observations, you have two possibilities:
-   1. if the environment provides more than one vector observation, then you **must choose between them**; 
-   2. if the environment provides only one vector observation, you **must specify** the default vector observation key, i.e., **`state`**.
+1. You do **not** want to **use** the **image** observations: you don't have to specify any  `algo.cnn_keys` while you have to select the  `algo.mlp_keys`:
+   1. if the environment provides more than one vector observation, then you **must choose between them**;
+   2. if the environment provides only one vector observation, you can choose the name of the *mlp key*.
+2. You want to **use only** the **image** observation: you don't have to specify any  `algo.mlp_keys` while **you must specify the name of the *cnn key*** (if the image observation has to be created from the vector one, the `make_env` function will automatically bind the observation with the specified key, otherwise you must choose a valid one).
+3. You want to **use both** the **vector** and **image** observations: you must specify the *cnn key* (as point 2). Instead, for the vector observations, you have two possibilities:
+   1. if the environment provides more than one vector observation, then you **must choose between them**;
+   2. if the environment provides only one vector observation, you can choose the name of the *mlp key*.
 
 #### Different observations for the Encoder and the Decoder
 You can specify different observations for the encoder and the decoder, but there are some constraints:
