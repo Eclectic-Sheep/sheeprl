@@ -382,8 +382,10 @@ defaults:
   - override /env: atari
   - _self_
 
-total_steps: 65536
-per_rank_batch_size: 64
+algo:
+  total_steps: 65536
+  per_rank_batch_size: 64
+
 buffer:
   share_data: False
 

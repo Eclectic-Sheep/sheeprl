@@ -30,7 +30,7 @@ You just need to pass the `mlp_keys` and `cnn_keys` of the encoder and the decod
 
 For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBRA* using image observations and only the `opp_health` and `own_health` as vector observation, you have to run the following command:
 ```bash
-diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 cnn_keys.encoder=[frame] mlp_keys.encoder=[opp_health,own_health]
+diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 algo.cnn_keys.encoder=[frame] algo.mlp_keys.encoder=[opp_health,own_health]
 ```
 
 > **Note**
@@ -41,13 +41,13 @@ It is important to know the observations the environment provides, for instance,
 > **Note**
 >
 > For some environments provided by Gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the `cnn_keys` args:
-> `python sheeprl.py exp=... cnn_keys.encoder=[rgb]`
+> `python sheeprl.py exp=... algo.cnn_keys.encoder=[rgb]`
 
 #### Frame Stack
 For image observations, it is possible to stack the last $n$ observations with the argument `frame_stack`. All the observations specified in the `cnn_keys` argument are stacked.
 
 ```bash
-python sheeprl.py exp=... env=dmc cnn_keys.encoder=[rgb] env.frame_stack=3
+python sheeprl.py exp=... env=dmc algo.cnn_keys.encoder=[rgb] env.frame_stack=3
 ```
 
 #### How to choose the correct keys
@@ -71,7 +71,7 @@ You can specify different observations for the encoder and the decoder, but ther
 
 You can specify the *mlp* and *cnn* keys of the decoder as follows:
 ```bash
-python sheeprl.py exp=dreamer_v3 env=minerl env.id=custom_navigate mlp_keys.encoder=[life_stats,inventory,max_inventory] mlp_keys.decoder=[life_stats,inventory]
+python sheeprl.py exp=dreamer_v3 env=minerl env.id=custom_navigate algo.mlp_keys.encoder=[life_stats,inventory,max_inventory] algo.mlp_keys.decoder=[life_stats,inventory]
 ```
 
 ### Vector observations algorithms
@@ -85,7 +85,7 @@ For these algorithms, you have to specify the *mlp* keys you want to encode. As 
 
 For instance, you can train a SAC agent on the `LunarLanderContinuous-v2` with the following command:
 ```bash
-python sheeprl.py exp=sac env=gym env.id=LunarLanderContinuous-v2 mlp_keys.encoder=[state]
+python sheeprl.py exp=sac env=gym env.id=LunarLanderContinuous-v2 algo.mlp_keys.encoder=[state]
 ```
 
 
@@ -111,9 +111,9 @@ python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanN
 
 > **Note**
 >
-> You can try to override some *cnn* or *mlp* keys by specifying the `cnn_keys.encoder` and the `mlp_keys.encoder` arguments. **Not all** environments allow it.
+> You can try to override some *cnn* or *mlp* keys by specifying the `algo.cnn_keys.encoder` and the `algo.mlp_keys.encoder` arguments. **Not all** environments allow it.
 > 
-> For instance, the `python examples/observation_space.py env=gym agent=dreamer_v3 env.id=LunarLander-v2 cnn_keys.encoder=[custom_cnn_key] mlp_keys.encoder=[custom_mlp_key]` command will return the following observation space: 
+> For instance, the `python examples/observation_space.py env=gym agent=dreamer_v3 env.id=LunarLander-v2 algo.cnn_keys.encoder=[custom_cnn_key] algo.mlp_keys.encoder=[custom_mlp_key]` command will return the following observation space: 
 >```
 >  Observation space of `LunarLander-v2` environment for `dreamer_v3` agent:
 >  Dict(

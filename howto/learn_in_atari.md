@@ -24,5 +24,5 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
+python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 algo.cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
 ```

@@ -88,28 +88,31 @@ def make_env(
             and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder) > 0
         ):
             raise ValueError(
-                "`cnn_keys.encoder` and `mlp_keys.encoder` must be lists of strings, got: "
-                f"cnn encoder keys `{cfg.algo.cnn_keys.encoder}` and mlp encoder keys `{cfg.algo.mlp_keys.encoder}`. "
-                "Both lists must not be empty."
+                "`algo.cnn_keys.encoder` and `algo.mlp_keys.encoder` must be lists of strings, got: "
+                f"cnn encoder keys `{cfg.algo.cnn_keys.encoder}` of type `{type(cfg.algo.cnn_keys.encoder)}` "
+                f"and mlp encoder keys `{cfg.algo.mlp_keys.encoder}` of type `{type(cfg.algo.mlp_keys.encoder)}`. "
+                "Both must be non-empty lists."
             )
 
         # Create observation dict
+        encoder_cnn_keys_length = len(cfg.algo.cnn_keys.encoder)
+        encoder_mlp_keys_length = len(cfg.algo.mlp_keys.encoder)
         if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
             # Vector only observation
-            if len(cfg.algo.cnn_keys.encoder) > 0:
-                if len(cfg.algo.cnn_keys.encoder) > 1:
+            if encoder_cnn_keys_length > 0:
+                if encoder_cnn_keys_length > 1:
                     warnings.warn(
                         "Multiple cnn keys have been specified and only one pixel observation "
                         f"is allowed in {cfg.env.id}, "
                         f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
                     )
-                if len(cfg.algo.mlp_keys.encoder) > 0:
+                if encoder_mlp_keys_length > 0:
                     gym.wrappers.pixel_observation.STATE_KEY = cfg.algo.mlp_keys.encoder[0]
                 env = gym.wrappers.PixelObservationWrapper(
-                    env, pixels_only=len(cfg.algo.mlp_keys.encoder) == 0, pixel_keys=(cfg.algo.cnn_keys.encoder[0],)
+                    env, pixels_only=encoder_mlp_keys_length == 0, pixel_keys=(cfg.algo.cnn_keys.encoder[0],)
                 )
             else:
-                if len(cfg.algo.mlp_keys.encoder) > 1:
+                if encoder_mlp_keys_length > 1:
                     warnings.warn(
                         "Multiple mlp keys have been specified and only one pixel observation "
                         f"is allowed in {cfg.env.id}, "
@@ -120,13 +123,13 @@ def make_env(
                 env.observation_space = gym.spaces.Dict({mlp_key: env.observation_space})
         elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
             # Pixel only observation
-            if len(cfg.algo.cnn_keys.encoder) > 1:
+            if encoder_cnn_keys_length > 1:
                 warnings.warn(
                     "Multiple cnn keys have been specified and only one pixel observation "
                     f"is allowed in {cfg.env.id}, "
                     f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
                 )
-            elif len(cfg.algo.cnn_keys.encoder) == 0:
+            elif encoder_cnn_keys_length == 0:
                 raise ValueError(
                     "You have selected a pixel observation but no cnn key has been specified. "
                     "Please set at least one cnn key in the config file: `algo.cnn_keys.encoder=[your_cnn_key]`"

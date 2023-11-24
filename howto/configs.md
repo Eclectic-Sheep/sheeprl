@@ -106,7 +106,6 @@ defaults:
   - exp: ???
 
 num_threads: 1
-total_steps: ???
 
 # Set it to True to run a single optimization step
 dry_run: False
@@ -119,14 +118,6 @@ torch_deterministic: False
 exp_name: "default"
 run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
 root_dir: ${algo.name}/${env.id}
-
-# Encoder and decoder keys
-cnn_keys:
-  encoder: []
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  encoder: []
-  decoder: ${algo.mlp_keys.encoder}
 ```
 
 ### Algorithms
@@ -148,10 +139,17 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
+train_every: 16
 learning_starts: 65536
 per_rank_pretrain_steps: 1
 per_rank_gradient_steps: 1
-train_every: 16
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
 layer_norm: True
@@ -237,14 +235,17 @@ actor:
   ent_coef: 3e-4
   min_std: 0.1
   init_std: 0.0
-  distribution: "auto"
   objective_mix: 1.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
-  
+  expl_amount: 0.0
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 0
+
   # Disttributed percentile model (used to scale the values)
   moments:
     decay: 0.99
@@ -278,10 +279,6 @@ critic:
 
 # Player agent (it interacts with the environment)
 player:
-  expl_min: 0.0
-  expl_amount: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
   discrete_size: ${algo.world_model.discrete_size}
 ```
 
@@ -379,7 +376,6 @@ defaults:
 
 # Experiment
 seed: 5
-total_steps: 100000
 
 # Environment
 env:
@@ -399,6 +395,7 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 1024
+  total_steps: 100000
   train_every: 1
   dense_units: 512
   mlp_layers: 2
