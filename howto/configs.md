@@ -298,9 +298,23 @@ is:
 * the content of the `sheeprl/configs/algo/default.yaml` config will be inserted in the current config and whenever a naming collision happens, for example when the same field is defined in both configurations, those will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list
 * `/optim@world_model.optimizer: adam` (and similar) means that the `adam` config, found in the `sheeprl/configs/optim` folder, will be inserted in this config under the `world_model.optimizer` field, so that one can access it at runtime as `cfg.algo.world_model.optimizer`. As in the previous point, the fields `lr`, `eps`, and `weight_decay` will be overwritten by the one specified in this config
 
+The default configuration for all the algorithms is the following:
+
+```yaml
+name: ???
+total_steps: ???
+per_rank_batch_size: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  encoder: []
+mlp_keys:
+  encoder: []
+```
+
 > **Warning**
 >
-> Every algorithm config **must** contain the field `name` 
+> Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
 
 ### Environment
 
