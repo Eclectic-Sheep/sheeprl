@@ -180,7 +180,7 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
 def register_model(
     fabric: Fabric, log_models: Callable[[str], Dict[str, ModelInfo]], cfg_model_manager: Dict[str, Any], algo_name: str
 ):
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI") or getattr(fabric.logger, "_tracking_uri", None)
+    tracking_uri = getattr(fabric.logger, "_tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
     if tracking_uri is None:
         raise ValueError(
             "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
@@ -214,7 +214,7 @@ def register_model_from_checkpoint(
         [Fabric, gym.Env | gym.Wrapper, Dict[str, Any], Dict[str, Any]], Dict[str, ModelInfo]
     ],
 ):
-    tracking_uri = getattr(cfg, "tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI")
+    tracking_uri = getattr(cfg, "tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
     if tracking_uri is None:
         raise ValueError(
             "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "

@@ -129,7 +129,7 @@ class MlflowModelManager(AbstractModelManager):
         Returns:
             The model version.
         """
-        latest_version = max(int(x.version) for x in self.client.get_latest_versions("manager_model"))
+        latest_version = max(int(x.version) for x in self.client.get_latest_versions(model_name))
         model_version = self.client.get_model_version(model_name, latest_version)
 
         return model_version
