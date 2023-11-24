@@ -467,29 +467,29 @@ def build_agent(
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.cnn_keys.encoder]
-    mlp_dims = [obs_space[k].shape[0] for k in cfg.mlp_keys.encoder]
+    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
+    mlp_dims = [obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
             features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.cnn_keys.encoder,
+            keys=cfg.algo.cnn_keys.encoder,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
         )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
             sum(mlp_dims),
-            cfg.mlp_keys.encoder,
+            cfg.algo.mlp_keys.encoder,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
             eval(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -497,25 +497,25 @@ def build_agent(
         CNNDecoder(
             cnn_encoder.conv_output_shape,
             features_dim=encoder.output_dim,
-            keys=cfg.cnn_keys.decoder,
+            keys=cfg.algo.cnn_keys.decoder,
             channels=cnn_channels,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
         )
-        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
+        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
             encoder.output_dim,
             mlp_dims,
-            cfg.mlp_keys.decoder,
+            cfg.algo.mlp_keys.decoder,
             cfg.algo.decoder.dense_units,
             cfg.algo.decoder.mlp_layers,
             eval(cfg.algo.decoder.dense_act),
             cfg.algo.decoder.layer_norm,
         )
-        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
+        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)

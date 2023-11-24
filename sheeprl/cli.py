@@ -323,8 +323,6 @@ def registration(cfg: DictConfig):
         cfg.env = ckpt_cfg.env
         cfg.exp_name = ckpt_cfg.exp_name
         cfg.algo = ckpt_cfg.algo
-        cfg.cnn_keys = ckpt_cfg.cnn_keys
-        cfg.mlp_keys = ckpt_cfg.mlp_keys
         cfg.distribution = ckpt_cfg.distribution
         cfg.seed = ckpt_cfg.seed
 

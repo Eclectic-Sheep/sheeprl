@@ -211,7 +211,7 @@ def build_agent(
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> DROQAgent:
     act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.mlp_keys.encoder])
+    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,

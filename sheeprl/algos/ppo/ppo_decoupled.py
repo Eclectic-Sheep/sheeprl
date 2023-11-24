@@ -491,7 +491,7 @@ def trainer(
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
                         normalized_obs = normalize_obs(
-                            batch, cfg.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                            batch, cfg.algi.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                         )
                         _, logprobs, entropy, new_values = agent(
                             normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
