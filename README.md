@@ -180,6 +180,9 @@ source .venv/bin/activate
 pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with atari and mujuco environment support, do
 pip install "sheeprl[atari,mujoco,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with box2d environment support, do
+pip install swig
+pip install "sheeprl[box2d]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minedojo environment support, do
 pip install "sheeprl[minedojo,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minerl environment support, do
@@ -208,7 +211,7 @@ It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://
 # then, do
 brew install swig
 # then attempt to pip install with the preferred method, such as
-pip install "sheeprl[atari,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
 </details>

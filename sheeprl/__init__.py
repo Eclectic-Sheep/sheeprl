@@ -2,6 +2,7 @@ import os
 
 ROOT_DIR = os.path.dirname(__file__)
 
+import decorator
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,4 +50,37 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.4.6dev1"
+__version__ = "0.4.7"
+
+
+# Replace `moviepy.decorators.use_clip_fps_by_default` method to work with python 3.8, 3.9, and 3.10
+import moviepy.decorators
+
+
+# Taken from https://github.com/Zulko/moviepy/blob/master/moviepy/decorators.py#L118
+@decorator.decorator
+def custom_use_clip_fps_by_default(func, clip, *args, **kwargs):
+    """Will use ``clip.fps`` if no ``fps=...`` is provided in **kwargs**."""
+    import inspect
+
+    def find_fps(fps):
+        if fps is not None:
+            return fps
+        elif getattr(clip, "fps", None):
+            return clip.fps
+        raise AttributeError(
+            "No 'fps' (frames per second) attribute specified"
+            " for function %s and the clip has no 'fps' attribute. Either"
+            " provide e.g. fps=24 in the arguments of the function, or define"
+            " the clip's fps with `clip.fps=24`" % func.__name__
+        )
+
+    names = inspect.getfullargspec(func).args[1:]
+
+    new_args = [find_fps(arg) if (name == "fps") else arg for (arg, name) in zip(args, names)]
+    new_kwargs = {kwarg: find_fps(value) if kwarg == "fps" else value for (kwarg, value) in kwargs.items()}
+
+    return func(clip, *new_args, **new_kwargs)
+
+
+moviepy.decorators.use_clip_fps_by_default = custom_use_clip_fps_by_default
