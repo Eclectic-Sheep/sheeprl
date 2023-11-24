@@ -45,7 +45,7 @@ def player(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
+        cfg.algo.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -66,15 +66,15 @@ def player(
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
@@ -95,8 +95,8 @@ def player(
         "encoder_cfg": cfg.algo.encoder,
         "actor_cfg": cfg.algo.actor,
         "critic_cfg": cfg.algo.critic,
-        "cnn_keys": cfg.cnn_keys.encoder,
-        "mlp_keys": cfg.mlp_keys.encoder,
+        "cnn_keys": cfg.algo.cnn_keys.encoder,
+        "mlp_keys": cfg.algo.mlp_keys.encoder,
         "screen_size": cfg.env.screen_size,
         "distribution_cfg": cfg.distribution,
         "is_continuous": is_continuous,
@@ -139,7 +139,7 @@ def player(
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -177,9 +177,9 @@ def player(
     next_obs = {}
     for k in obs_keys:
         torch_obs = torch.as_tensor(obs[k]).to(fabric.device)
-        if k in cfg.cnn_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-        elif k in cfg.mlp_keys.encoder:
+        elif k in cfg.algo.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         next_obs[k] = torch_obs
@@ -195,7 +195,7 @@ def player(
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = normalize_obs(next_obs, cfg.cnn_keys.encoder, obs_keys)
+                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values = agent(normalized_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -219,7 +219,7 @@ def player(
                     for i, truncated_env in enumerate(truncated_envs):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.cnn_keys.encoder:
+                            if k in cfg.algo.cnn_keys.encoder:
                                 torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
@@ -245,10 +245,10 @@ def player(
             # Update the observation and dones
             next_obs = {}
             for k in obs_keys:
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device)
                     torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                elif k in cfg.mlp_keys.encoder:
+                elif k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs
                 next_obs[k] = torch_obs
@@ -264,7 +264,7 @@ def player(
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        normalized_obs = normalize_obs(next_obs, cfg.cnn_keys.encoder, obs_keys)
+        normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
         next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
             rb["rewards"],
@@ -459,7 +459,7 @@ def trainer(
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                     "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                    "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
@@ -478,7 +478,7 @@ def trainer(
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
-        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
         # Start training
         with timer(
@@ -491,7 +491,7 @@ def trainer(
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
                         normalized_obs = normalize_obs(
-                            batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder
+                            batch, cfg.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                         )
                         _, logprobs, entropy, new_values = agent(
                             normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
@@ -593,7 +593,7 @@ def trainer(
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                 "update": update,
-                "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }

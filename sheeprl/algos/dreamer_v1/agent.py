@@ -365,26 +365,26 @@ def build_agent(
     # Define models
     cnn_encoder = (
         CNNEncoder(
-            keys=cfg.cnn_keys.encoder,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.encoder],
-            image_size=obs_space[cfg.cnn_keys.encoder[0]].shape[-2:],
+            keys=cfg.algo.cnn_keys.encoder,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
+            image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=False,
             activation=eval(world_model_cfg.encoder.cnn_act),
         )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
-            keys=cfg.mlp_keys.encoder,
-            input_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.encoder],
+            keys=cfg.algo.mlp_keys.encoder,
+            input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
             layer_norm=False,
         )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -418,29 +418,29 @@ def build_agent(
     )
     cnn_decoder = (
         CNNDecoder(
-            keys=cfg.cnn_keys.decoder,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.decoder],
+            keys=cfg.algo.cnn_keys.decoder,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
             channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cfg.cnn_keys.decoder[0]].shape[-2:],
+            image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=eval(world_model_cfg.observation_model.cnn_act),
             layer_norm=False,
         )
-        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
+        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            keys=cfg.mlp_keys.decoder,
-            output_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.decoder],
+            keys=cfg.algo.mlp_keys.decoder,
+            output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=eval(world_model_cfg.observation_model.dense_act),
             layer_norm=False,
         )
-        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
+        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)

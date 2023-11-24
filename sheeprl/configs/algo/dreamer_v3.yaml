@@ -11,10 +11,17 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
+train_every: 16
 learning_starts: 65536
 per_rank_pretrain_steps: 1
 per_rank_gradient_steps: 1
-train_every: 16
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
 layer_norm: True
@@ -110,7 +117,7 @@ actor:
   expl_min: 0.0
   expl_decay: False
   max_step_expl_decay: 0
-  
+
   # Disttributed percentile model (used to scale the values)
   moments:
     decay: 0.99
