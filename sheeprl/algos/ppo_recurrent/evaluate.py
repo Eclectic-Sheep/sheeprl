@@ -32,13 +32,13 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
-    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+    fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+    fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
@@ -55,8 +55,8 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         rnn_cfg=cfg.algo.rnn,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
         is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
         num_envs=cfg.env.num_envs,

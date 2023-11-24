@@ -7,9 +7,6 @@ defaults:
 
 # Experiment
 seed: 0
-total_steps: 5000000
-per_rank_batch_size: 16
-per_rank_sequence_length: 64
 
 # Environment
 env:
@@ -37,37 +34,6 @@ checkpoint:
 buffer:
   checkpoint: True
 
-# The CNN and MLP keys of the decoder are the same as those of the encoder by default
-cnn_keys:
-  encoder: [frame]
-  decoder: [frame]
-mlp_keys:
-  encoder:
-    - own_character
-    - own_health
-    - own_side
-    - own_wins
-    - opp_character
-    - opp_health
-    - opp_side
-    - opp_wins
-    - stage
-    - timer
-    - action
-    - reward
-  decoder:
-    - own_character
-    - own_health
-    - own_side
-    - own_wins
-    - opp_character
-    - opp_health
-    - opp_side
-    - opp_wins
-    - stage
-    - timer
-    - action
-
 # Algorithm
 algo:
   learning_starts: 65536
@@ -83,6 +49,38 @@ algo:
       hidden_size: 768
     representation_model:
       hidden_size: 768
+  total_steps: 5000000
+  per_rank_batch_size: 16
+  per_rank_sequence_length: 64
+  cnn_keys:
+    encoder: [frame]
+    decoder: [frame]
+  mlp_keys:
+    encoder:
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
+      - stage
+      - timer
+      - action
+      - reward
+    decoder:
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
+      - stage
+      - timer
+      - action
 
 # Metric
 metric:

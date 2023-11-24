@@ -54,14 +54,14 @@ The observation space is slightly modified to be compatible with our algorithms,
 ## Multi-environments / Distributed training
 In order to train your agent with multiple environments or to perform distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch (the number of *player* processes for decoupled algorithms). Thus, in the case of coupled algorithms (e.g., `dreamer_v2`), if you want to distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
 ```bash
-diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 env.sync_env=True cnn_keys.encoder=[frame] fabric.devices=2
+diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 env.sync_env=True algo.cnn_keys.encoder=[frame] fabric.devices=2
 ```
 
 ## Args
 The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the DIAMBRA configs with the argument `env=diambra`, then set the `env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.id` argument to `doapp` (i.e., `env.id=doapp`).
 
 ```bash
-diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 cnn_keys.encoder=[frame]
+diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 algo.cnn_keys.encoder=[frame]
 ```
 
 Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of a custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
@@ -120,5 +120,5 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 cnn_keys.encoder=[frame] fabric.devices=1`
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 algo.cnn_keys.encoder=[frame] fabric.devices=1`
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

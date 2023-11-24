@@ -66,8 +66,8 @@ def train(
     data = data.to(fabric.device)
     normalized_obs = {}
     normalized_next_obs = {}
-    for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
-        if k in cfg.cnn_keys.encoder:
+    for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             normalized_obs[k] = data[k] / 255.0
             normalized_next_obs[k] = data[f"next_{k}"] / 255.0
         else:
@@ -117,8 +117,8 @@ def train(
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = 0
-        for k in cfg.cnn_keys.decoder + cfg.mlp_keys.decoder:
-            target = preprocess_obs(data[k], bits=5) if k in cfg.cnn_keys.decoder else data[k]
+        for k in cfg.algo.cnn_keys.decoder + cfg.algo.mlp_keys.decoder:
+            target = preprocess_obs(data[k], bits=5) if k in cfg.algo.cnn_keys.decoder else data[k]
             reconstruction_loss += (
                 F.mse_loss(target, reconstruction[k])  # Reconstruction
                 + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
@@ -151,7 +151,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64
@@ -183,31 +183,27 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
+
     if (
-        len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
-        and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
+        len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
+        and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
     ):
         raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
-    if len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0:
+    if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
         raise RuntimeError(
             "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.cnn_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
         )
-    if len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0:
+    if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
         raise RuntimeError(
             "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-        fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
-        fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+        fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
+        fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
 
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(envs.single_action_space.shape)
@@ -216,29 +212,29 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cfg.cnn_keys.encoder]
-    mlp_dims = [envs.single_observation_space[k].shape[0] for k in cfg.mlp_keys.encoder]
+    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
+    mlp_dims = [envs.single_observation_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
             features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.cnn_keys.encoder,
+            keys=cfg.algo.cnn_keys.encoder,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
         )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
             sum(mlp_dims),
-            cfg.mlp_keys.encoder,
+            cfg.algo.mlp_keys.encoder,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
             eval(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -246,25 +242,25 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         CNNDecoder(
             cnn_encoder.conv_output_shape,
             features_dim=encoder.output_dim,
-            keys=cfg.cnn_keys.decoder,
+            keys=cfg.algo.cnn_keys.decoder,
             channels=cnn_channels,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
         )
-        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
+        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
             encoder.output_dim,
             mlp_dims,
-            cfg.mlp_keys.decoder,
+            cfg.algo.mlp_keys.decoder,
             cfg.algo.decoder.dense_units,
             cfg.algo.decoder.mlp_layers,
             eval(cfg.algo.decoder.dense_act),
             cfg.algo.decoder.layer_norm,
         )
-        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
+        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
@@ -338,7 +334,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         device=fabric.device if cfg.buffer.memmap else "cpu",
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        obs_keys=cfg.cnn_keys.encoder + cfg.mlp_keys.encoder,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
@@ -358,7 +354,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     time.time()
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
@@ -383,11 +379,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     obs = {}
     for k in o.keys():
-        if k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
@@ -401,7 +397,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 actions = envs.action_space.sample()
             else:
                 with torch.no_grad():
-                    normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
+                    normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
                     actions, _ = agent.actor.module(normalized_obs)
                     actions = actions.cpu().numpy()
             o, rewards, dones, truncated, infos = envs.step(actions)
@@ -428,19 +424,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         next_obs = {}
         for k in real_next_obs.keys():
             next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 next_obs[k] = next_obs[k].view(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
 
             step_data[k] = obs[k]
             if not cfg.buffer.sample_next_obs:
                 step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
                         cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
-                if k in cfg.mlp_keys.encoder:
+                if k in cfg.algo.mlp_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
         actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float().to(fabric.device)
         rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float().to(fabric.device)
@@ -460,7 +456,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # We sample one time to reduce the communications between processes
             sample = rb.sample(
-                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
             )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
@@ -475,11 +471,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     drop_last=False,
                 )
                 sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=range(len(gathered_data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
 
             # Start training
@@ -548,7 +544,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
                 "update": update * fabric.world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }

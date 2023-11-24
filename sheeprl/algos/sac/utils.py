@@ -23,7 +23,9 @@ def test(actor: SACActor, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     cumulative_rew = 0
     with fabric.device:
         o = env.reset(seed=cfg.seed)[0]
-        next_obs = torch.cat([torch.tensor(o[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1).unsqueeze(
+        next_obs = torch.cat(
+            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
+        ).unsqueeze(
             0
         )  # [N_envs, N_obs]
     while not done:
@@ -35,7 +37,9 @@ def test(actor: SACActor, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         done = done or truncated
         cumulative_rew += reward
         with fabric.device:
-            next_obs = torch.cat([torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.mlp_keys.encoder], dim=-1)
+            next_obs = torch.cat(
+                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
+            )
 
         if cfg.dry_run:
             done = True

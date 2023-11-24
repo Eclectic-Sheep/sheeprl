@@ -39,8 +39,8 @@ def train(
     cfg: Dict[str, Any],
 ):
     num_sequences = data.shape[1]
-    if cfg.per_rank_num_batches > 0:
-        batch_size = num_sequences // cfg.per_rank_num_batches
+    if cfg.algo.per_rank_num_batches > 0:
+        batch_size = num_sequences // cfg.algo.per_rank_num_batches
         batch_size = batch_size if batch_size > 0 else num_sequences
     else:
         batch_size = 1
@@ -54,11 +54,11 @@ def train(
             for idxes in sampler:
                 batch = data[:, idxes]
                 mask = batch["mask"].unsqueeze(-1)
-                for k in cfg.cnn_keys.encoder:
+                for k in cfg.algo.cnn_keys.encoder:
                     batch[k] = batch[k] / 255.0 - 0.5
 
                 _, logprobs, entropies, values, _ = agent(
-                    {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
+                    {k: batch[k] for k in set(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)},
                     prev_actions=batch["prev_actions"],
                     prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
                     actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
@@ -134,7 +134,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Create TensorBoardLogger. This will create the logger only on the
     # rank-0 process
@@ -163,15 +163,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
@@ -189,8 +189,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         rnn_cfg=cfg.algo.rnn,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
         is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
         num_envs=cfg.env.num_envs,
@@ -224,7 +224,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data = TensorDict({}, batch_size=[1, cfg.env.num_envs], device=device)
 
     # Check that `rollout_steps` = k * `per_rank_sequence_length`
-    if cfg.algo.rollout_steps % cfg.per_rank_sequence_length != 0:
+    if cfg.algo.rollout_steps % cfg.algo.per_rank_sequence_length != 0:
         pass
 
     # Global variables
@@ -235,7 +235,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -266,9 +266,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs = {}
     for k in obs_keys:
         torch_obs = torch.as_tensor(o[k], device=fabric.device)
-        if k in cfg.cnn_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-        elif k in cfg.mlp_keys.encoder:
+        elif k in cfg.algo.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs[None]  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
         obs[k] = torch_obs
@@ -287,7 +287,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = {
-                        k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+                        k: obs[k][None] / 255.0 - 0.5 if k in cfg.algo.cnn_keys.encoder else obs[k][None]
+                        for k in obs_keys
                     }  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
@@ -315,7 +316,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for i, truncated_env in enumerate(truncated_envs):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.cnn_keys.encoder:
+                            if k in cfg.algo.cnn_keys.encoder:
                                 torch_v = torch_v.view(1, len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][0, i] = torch_v
                     with torch.no_grad():
@@ -351,10 +352,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Update the observation
             obs = {}
             for k in obs_keys:
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     torch_obs = torch.as_tensor(next_obs[k], device=device)
                     torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                elif k in cfg.mlp_keys.encoder:
+                elif k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(next_obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs[None]
                 obs[k] = torch_obs
@@ -378,7 +379,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
             normalized_obs = {
-                k: obs[k][None] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else obs[k][None] for k in obs_keys
+                k: obs[k][None] / 255.0 - 0.5 if k in cfg.algo.cnn_keys.encoder else obs[k][None] for k in obs_keys
             }
             feat = agent.module.feature_extractor(normalized_obs)
             rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
@@ -418,8 +419,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     episodes.append(episode)
                 start = stop + 1
         # 2. Split every episode into sequences of length `per_rank_sequence_length`
-        if cfg.per_rank_sequence_length is not None and cfg.per_rank_sequence_length > 0:
-            sequences = list(itertools.chain.from_iterable([ep.split(cfg.per_rank_sequence_length) for ep in episodes]))
+        if cfg.algo.per_rank_sequence_length is not None and cfg.algo.per_rank_sequence_length > 0:
+            sequences = list(
+                itertools.chain.from_iterable([ep.split(cfg.algo.per_rank_sequence_length) for ep in episodes])
+            )
         else:
             sequences = episodes
         padded_sequences = pad_sequence(sequences, batch_first=False, return_mask=True)  # [Seq_len, Num_seq, *]
@@ -487,7 +490,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                 "update": update * world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }

@@ -5,11 +5,10 @@ defaults:
   - override /algo: p2e_dv3
   - _self_
 
-total_steps: 1000000
-
 algo:
   name: p2e_dv3_finetuning
   learning_starts: 65536
+  total_steps: 1000000
   player:
     actor_type: exploration
 

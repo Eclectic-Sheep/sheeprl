@@ -43,13 +43,9 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     action_space = env.action_space
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
-    fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
+
+    fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+    fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
@@ -57,29 +53,29 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(observation_space[k].shape[:-2]) for k in cfg.cnn_keys.encoder]
-    mlp_dims = [observation_space[k].shape[0] for k in cfg.mlp_keys.encoder]
+    cnn_channels = [prod(observation_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
+    mlp_dims = [observation_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
             features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.cnn_keys.encoder,
+            keys=cfg.algo.cnn_keys.encoder,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
         )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
             sum(mlp_dims),
-            cfg.mlp_keys.encoder,
+            cfg.algo.mlp_keys.encoder,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
             eval(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
