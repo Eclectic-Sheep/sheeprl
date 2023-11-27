@@ -53,17 +53,14 @@ class AbstractModelManager(ABC):
         """Delete a model with the given version."""
 
     @abstractmethod
-    def register_best_model(
+    def register_best_models(
         self,
         experiment_name: str,
-        metric: str,
-        model_name: str,
-        description: str,
-        tags: Dict[str, Any] | None = None,
+        models_info: Dict[str, Dict[str, Any]],
+        metric: str = "Test/cumulative_reward",
         mode: Literal["max", "min"] = "max",
-        model_path: str = "deployment_model",
     ) -> Any:
-        """Register the best model from an experiment."""
+        """Register the best models from an experiment."""
 
     @abstractmethod
     def download_model(self, model_name: str, version: int, output_path: str) -> None:
@@ -209,33 +206,26 @@ class MlflowModelManager(AbstractModelManager):
 
         self.client.update_registered_model(model_name, registered_model_description + new_model_description)
 
-    def register_best_model(
+    def register_best_models(
         self,
         experiment_name: str,
-        metric: str,
-        model_name: str,
-        description: str | None = None,
-        tags: Dict[str, Any] | None = None,
+        models_info: Dict[str, Dict[str, Any]],
+        metric: str = "Test/cumulative_reward",
         mode: Literal["max", "min"] = "max",
-        model_path: str = "deployment_model",
-    ) -> ModelVersion | None:
+    ) -> Dict[str, ModelVersion] | None:
         """Register the best model from an experiment.
 
         Args:
             experiment_name (str): The name of the experiment.
+            models_info (Dict[str, Dict[str, Any]]): A dictionary containing models information
+                (path, description and tags).
             metric (str): The metric to use to determine the best model.
-            model_name (str): The name of the model after it is registered.
-            description (str, optional): A description of the model, this will be added to the model changelog.
-                Default to None.
-            tags (Dict[str, Any], optional): A dictionary of tags to add to the model.
-                Default to None.
+                Default to "Test/cumulative_reward".
             mode (Literal["max", "min"]): The mode to use to determine the best model, either "max" or "min".
                 Defaulto to "max".
-            model_path (str): The path to the model within the experiment run.
-                Default to "deployment_model".
 
         Returns:
-            The registered model version if successful, otherwise None.
+            The registered models version if successful, otherwise None.
         """
         if mode not in ["max", "min"]:
             raise ValueError(f"Mode must be either 'max' or 'min', got {mode}")
@@ -248,24 +238,18 @@ class MlflowModelManager(AbstractModelManager):
             return None
 
         best_run: Run | None = None
-
-        # We can only make comparisons if the model is on the top folder, otherwise just check if the folder exists
-        # TODO: Is there a better way to do this?
-        base_model_path = model_path.split("/")[0]
-
+        models_path = [v.path for v in models_info.values()]
         for run in runs:
-            run_artifacts = [x.path for x in self.client.list_artifacts(run.info.run_id) if x.path == base_model_path]
+            run_artifacts = [x.path for x in self.client.list_artifacts(run.info.run_id) if x.path in models_path]
 
-            if len(run_artifacts) == 0:
+            if len(run_artifacts) == 0 or run.data.metrics.get(metric) is None:
                 # If we don't find the given model path, skip this run
+                # If the run has not the target metric, skip this run
                 continue
 
             if best_run is None:
-                # If we find a run with the model it must also have the metric
-                if run.data.metrics.get(metric) is not None:
-                    best_run = run
+                best_run = run
                 continue
-
             if mode == "max":
                 if run.data.metrics[metric] > best_run.data.metrics[metric]:
                     best_run = run
@@ -277,13 +261,14 @@ class MlflowModelManager(AbstractModelManager):
             self.fabric.print(f"No runs found for experiment {experiment_name} with the given metric")
             return None
 
-        best_model_uri = f"runs:/{best_run.info.run_id}/{model_path}"
+        models_version = {}
+        for k, v in models_info.items():
+            best_model_uri = f"runs:/{best_run.info.run_id}/{v.path}"
+            models_version[k] = self.register_model(
+                model_location=best_model_uri, model_name=v.name, tags=v.tags, description=v.description
+            )
 
-        model_version = self.register_model(
-            model_location=best_model_uri, model_name=model_name, tags=tags, description=description
-        )
-
-        return model_version
+        return models_version
 
     def download_model(self, model_name: str, version: int, output_path: str) -> None:
         """Download the model with the given version to the given output path.
