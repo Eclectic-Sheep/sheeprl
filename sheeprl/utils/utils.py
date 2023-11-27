@@ -194,7 +194,8 @@ def register_model(fabric: Fabric, log_models: Callable[[str], Dict[str, ModelIn
     experiment_id = None
     run_name = None
     if run_id is None:
-        experiment_id = mlflow.create_experiment(cfg.exp_name)
+        experiment = mlflow.get_experiment_by_name(cfg.exp_name)
+        experiment_id = mlflow.create_experiment(cfg.exp_name) if experiment is None else experiment.experiment_id
         run_name = f"{cfg.algo.name}_{cfg.env.id}_{datetime.today().strftime('%Y-%m-%d %H:%M:%S')}"
     models_info = log_models(run_id, experiment_id, run_name)
     model_manager = MlflowModelManager(fabric, tracking_uri)
@@ -244,7 +245,7 @@ def register_model_from_checkpoint(
 
     mlflow.set_tracking_uri(tracking_uri)
     # If the user does not specify the experiment, than, create a new experiment
-    if cfg.experiment.id is None:
+    if cfg.run.id is None and cfg.experiment.id is None:
         cfg.experiment.id = mlflow.create_experiment(cfg.experiment.name)
     # Log the models
     models_info = log_models_from_checkpoint(fabric, env, cfg, state)

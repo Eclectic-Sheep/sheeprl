@@ -308,7 +308,7 @@ def player(
     if fabric.is_global_zero:
         test(actor, fabric, cfg, log_dir)
 
-    if not cfg.model_manager.disabled:
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
         critics = [
             SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
             for _ in range(cfg.algo.critic.n)

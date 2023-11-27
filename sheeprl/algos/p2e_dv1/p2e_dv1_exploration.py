@@ -849,7 +849,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")
 
-    if not cfg.model_manager.disabled:
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
 
         def log_models(
             run_id: str, experiment_id: str | None = None, run_name: str | None = None
