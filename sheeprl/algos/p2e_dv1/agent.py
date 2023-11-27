@@ -135,6 +135,7 @@ def build_agent(
     ensembles = nn.ModuleList(ens_list)
     if ensembles_state:
         ensembles.load_state_dict(ensembles_state)
-    fabric.setup_module(ensembles)
+    for i in range(len(ensembles)):
+        ensembles[i] = fabric.setup_module(ensembles[i])
 
     return world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration
