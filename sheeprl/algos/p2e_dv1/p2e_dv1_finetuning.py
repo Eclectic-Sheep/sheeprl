@@ -456,8 +456,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, nested=True) as _:
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
                 model_info = {}
                 unwrapped_models = {}
                 models_keys = set(cfg.model_manager.models.keys())
@@ -470,4 +472,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 mlflow.log_dict(cfg, "config.json")
             return model_info
 
-        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
+        register_model(fabric, log_models, cfg)

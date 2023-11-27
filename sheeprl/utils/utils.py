@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium as gym
@@ -177,26 +178,29 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
     return model
 
 
-def register_model(
-    fabric: Fabric, log_models: Callable[[str], Dict[str, ModelInfo]], cfg_model_manager: Dict[str, Any], algo_name: str
-):
+def register_model(fabric: Fabric, log_models: Callable[[str], Dict[str, ModelInfo]], cfg: Dict[str, Any]):
     tracking_uri = getattr(fabric.logger, "_tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
     if tracking_uri is None:
         raise ValueError(
             "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
             "MLFLOW_TRACKING_URI environment variable."
         )
-
+    cfg_model_manager = cfg.model_manager
     # Retrieve run_id, if None, create a new run
     run_id = None
     if len(fabric.loggers) > 0:
         run_id = getattr(fabric.logger, "run_id", None)
     mlflow.set_tracking_uri(tracking_uri)
-    models_info = log_models(run_id)
+    experiment_id = None
+    run_name = None
+    if run_id is None:
+        experiment_id = mlflow.create_experiment(cfg.exp_name)
+        run_name = f"{cfg.algo.name}_{cfg.env.id}_{datetime.today().strftime('%Y-%m-%d %H:%M:%S')}"
+    models_info = log_models(run_id, experiment_id, run_name)
     model_manager = MlflowModelManager(fabric, tracking_uri)
     if len(models_info) != len(cfg_model_manager.models):
         raise RuntimeError(
-            f"The number of models of the {algo_name} agent must be equal to the number "
+            f"The number of models of the {cfg.algo.name} agent must be equal to the number "
             f"of models you want to register. {len(cfg_model_manager.models)} model registration "
             f"configs are given, but the agent has {len(models_info)} models."
         )

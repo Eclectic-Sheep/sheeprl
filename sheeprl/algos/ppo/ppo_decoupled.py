@@ -349,8 +349,10 @@ def player(
 
     if not cfg.model_manager.disabled:
 
-        def log_models(run_id: str) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, nested=True) as _:
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
                 model_info = {}
                 unwrapped_models = {}
                 for k in cfg.model_manager.models.keys():
@@ -359,7 +361,7 @@ def player(
                 mlflow.log_dict(cfg, "config.json")
             return model_info
 
-        register_model(fabric, log_models, cfg.model_manager, cfg.algo.name)
+        register_model(fabric, log_models, cfg)
 
 
 def trainer(
@@ -491,7 +493,7 @@ def trainer(
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
                         normalized_obs = normalize_obs(
-                            batch, cfg.algi.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                            batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                         )
                         _, logprobs, entropy, new_values = agent(
                             normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
