@@ -51,6 +51,8 @@ If you do not want to log some models, then, you just need to remove it from the
 
 > **Note**
 >
+> The name of the models in the `MODELS_TO_REGISTER` variable is equal to the name of the variables of the models in the `./sheeprl/algos/<algo_name>/<algo_name>.py` file.
+>
 > Make sure that the models specified in the configuration file are a subset of the models defined by the `MODELS_TO_REGISTER` variable.
 
 ## Register models from checkpoints

@@ -94,7 +94,7 @@ log_model: false
 
 The parameters that can be specified for creating the MLFlow logger are explained [here](https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.loggers.mlflow.html#lightning.pytorch.loggers.mlflow.MLFlowLogger).
 
-You can specify the mlflow logger instead of the tensorboard one in the cli, by adding the `logger@metric.logger=mlflow` argument. In this way, hydra will take the configurations defined in the `./sheeprl/configs/logger/mlflow.yaml` file.
+You can specify the MLFlow logger instead of the Tensorboard one in the CLI, by adding the `logger@metric.logger=mlflow` argument. In this way, hydra will take the configurations defined in the `./sheeprl/configs/logger/mlflow.yaml` file.
 
 ```bash
 python sheeprl.py exp=ppo exp_name=ppo-cartpole logger@metric.logger=mlflow
