@@ -1,16 +1,21 @@
-from typing import TYPE_CHECKING, Any, Dict
+from __future__ import annotations
 
+from typing import Any, Dict, Sequence
+
+import gymnasium as gym
+import mlflow
 import torch
 from lightning import Fabric
-
-from sheeprl.utils.env import make_env
-
-if TYPE_CHECKING:
-    from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from mlflow.models.model import ModelInfo
 
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
+from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
+from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import unwrap_fabric
 
 AGGREGATOR_KEYS = ppo_aggregator_keys
+MODELS_TO_REGISTER = ppo_models_to_register
 
 
 @torch.no_grad()
@@ -66,3 +71,24 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_di
     if cfg.metric.log_level > 0:
         fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence[ModelInfo]:
+    # Create the models
+    is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
+    agent = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
+
+    # Log the model, create a new run if `cfg.run_id` is None.
+    model_info = {}
+    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
+        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+        mlflow.log_dict(cfg.to_log, "config.json")
+    return model_info

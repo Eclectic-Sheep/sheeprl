@@ -3,6 +3,7 @@
 defaults:
   - override /algo: ppo
   - override /env: gym
+  - override /model_manager: ppo
   - _self_
 
 # Algorithm

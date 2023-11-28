@@ -1,0 +1,25 @@
+defaults:
+  - default
+  - _self_
+
+models: 
+  world_model:
+    model_name: "${exp_name}_world_model"
+    description: "P2E_DV3 World Model used in ${env.id} Environment"
+    tags: {}
+  actor_task:
+    model_name: "${exp_name}_actor_task"
+    description: "P2E_DV3 Actor Task used in ${env.id} Environment"
+    tags: {}
+  critic_task:
+    model_name: "${exp_name}_critic_task"
+    description: "P2E_DV3 Critic Task used in ${env.id} Environment"
+    tags: {}
+  target_critic_task:
+    model_name: "${exp_name}_target_critic_task"
+    description: "P2E_DV3 Target Critic Task used in ${env.id} Environment"
+    tags: {}
+  moments_task:
+    model_name: "${exp_name}_moments_task"
+    description: "P2E_DV3 Moments Task used in ${env.id} Environment"
+    tags: {}

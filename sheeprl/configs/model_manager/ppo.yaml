@@ -1,0 +1,9 @@
+defaults:
+  - default
+  - _self_
+
+models: 
+  agent:
+    model_name: "${exp_name}"
+    description: "PPO Agent in ${env.id} Environment"
+    tags: {}

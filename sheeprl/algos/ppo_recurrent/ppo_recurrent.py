@@ -9,9 +9,11 @@ from typing import Any, Dict, List
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
 from torch.distributed.algorithms.join import Join
@@ -19,15 +21,16 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent
+from sheeprl.algos.ppo.utils import normalize_obs
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
 
 
 def train(
@@ -136,9 +139,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state = fabric.load(cfg.checkpoint.resume_from)
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -175,38 +178,30 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
     # Define the agent and the optimizer
-    agent = RecurrentPPOAgent(
-        actions_dim=actions_dim,
-        obs_space=observation_space,
-        encoder_cfg=cfg.algo.encoder,
-        rnn_cfg=cfg.algo.rnn,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
-        is_continuous=is_continuous,
-        distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
-        screen_size=cfg.env.screen_size,
-        device=device,
+    agent = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        observation_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
     )
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
         optimizer.load_state_dict(state["optimizer"])
-
     # Setup agent and optimizer with Fabric
-    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
+
+    local_vars = locals()
 
     # Create a metric aggregator to log the metrics
     aggregator = None
@@ -271,7 +266,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         elif k in cfg.algo.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs[None]  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
-        obs[k] = torch_obs
+        obs[k] = torch_obs[None]
 
     # Get the resetted recurrent states from the agent
     prev_states = agent.initial_states
@@ -286,10 +281,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = {
-                        k: obs[k][None] / 255.0 - 0.5 if k in cfg.algo.cnn_keys.encoder else obs[k][None]
-                        for k in obs_keys
-                    }  # [Seq_len, Batch_size, D] --> [1, num_envs, D]
+                    # [Seq_len, Batch_size, D] --> [1, num_envs, D]
+                    normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values, states = agent.module(
                         normalized_obs, prev_actions=prev_actions, prev_states=prev_states
                     )
@@ -358,7 +351,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 elif k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(next_obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs[None]
-                obs[k] = torch_obs
+                obs[k] = torch_obs[None]
 
             # Reset the states if the episode is done
             if cfg.algo.reset_recurrent_state_on_done:
@@ -378,9 +371,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {
-                k: obs[k][None] / 255.0 - 0.5 if k in cfg.algo.cnn_keys.encoder else obs[k][None] for k in obs_keys
-            }
+            normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
             feat = agent.module.feature_extractor(normalized_obs)
             rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
@@ -500,3 +491,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(agent.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

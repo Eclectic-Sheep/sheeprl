@@ -1,0 +1,10 @@
+_target_: lightning.pytorch.loggers.MLFlowLogger
+experiment_name: ${exp_name}
+tracking_uri: ${oc.env:MLFLOW_TRACKING_URI}
+run_name: ${algo.name}_${env.id}_${now:%Y-%m-%d_%H-%M-%S}
+tags: null
+save_dir: null
+prefix: ""
+artifact_location: null
+run_id: null
+log_model: false

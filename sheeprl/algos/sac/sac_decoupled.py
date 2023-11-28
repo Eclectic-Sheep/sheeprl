@@ -7,18 +7,20 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic
+from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -27,6 +29,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 @torch.no_grad()
@@ -305,6 +308,37 @@ def player(
     if fabric.is_global_zero:
         test(actor, fabric, cfg, log_dir)
 
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+        critics = [
+            SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
+            for _ in range(cfg.algo.critic.n)
+        ]
+        target_entropy = -act_dim
+        agent = SACAgent(
+            actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
+        )
+        flattened_parameters = torch.empty_like(
+            torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), device=device
+        )
+        player_trainer_collective.broadcast(flattened_parameters, src=1)
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
+
+        local_vars = locals()
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)
+
 
 def trainer(
     world_collective: TorchCollective,
@@ -340,27 +374,13 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    act_dim = prod(envs.single_action_space.shape)
-    obs_dim = sum([prod(envs.single_observation_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
-
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=envs.single_action_space.low,
-        action_high=envs.single_action_space.high,
+    agent = build_agent(
+        fabric,
+        cfg,
+        envs.single_observation_space,
+        envs.single_action_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
     )
-    critics = [
-        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
-        for _ in range(cfg.algo.critic.n)
-    ]
-    target_entropy = -act_dim
-    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
-    if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
 
     # Optimizers
     qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters())
@@ -428,6 +448,10 @@ def trainer(
                     player_trainer_collective=player_trainer_collective,
                     ckpt_path=ckpt_path,
                     state=state,
+                )
+            if not cfg.model_manager.disabled:
+                player_trainer_collective.broadcast(
+                    torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
                 )
             return
         data = make_tensordict(data, device=device)

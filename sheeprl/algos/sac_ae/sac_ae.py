@@ -4,17 +4,18 @@ import copy
 import os
 import time
 import warnings
-from math import prod
 from typing import Any, Dict, Optional, Union
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -23,24 +24,16 @@ from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_ae.agent import (
-    CNNDecoder,
-    CNNEncoder,
-    MLPDecoder,
-    MLPEncoder,
-    SACAEAgent,
-    SACAEContinuousActor,
-    SACAECritic,
-    SACAEQFunction,
-)
+from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
 from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 def train(
@@ -156,9 +149,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # These arguments cannot be changed
     cfg.env.screen_size = 64
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -206,95 +199,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
 
     # Define the agent and the optimizer and setup them with Fabric
-    act_dim = prod(envs.single_action_space.shape)
-    target_entropy = -act_dim
-
-    # Define the encoder and decoder and setup them with fabric.
-    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
-    # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
-    mlp_dims = [envs.single_observation_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
-    cnn_encoder = (
-        CNNEncoder(
-            in_channels=sum(cnn_channels),
-            features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.algo.cnn_keys.encoder,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
-        )
-        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            sum(mlp_dims),
-            cfg.algo.mlp_keys.encoder,
-            cfg.algo.encoder.dense_units,
-            cfg.algo.encoder.mlp_layers,
-            eval(cfg.algo.encoder.dense_act),
-            cfg.algo.encoder.layer_norm,
-        )
-        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
-    cnn_decoder = (
-        CNNDecoder(
-            cnn_encoder.conv_output_shape,
-            features_dim=encoder.output_dim,
-            keys=cfg.algo.cnn_keys.decoder,
-            channels=cnn_channels,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
-        )
-        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            encoder.output_dim,
-            mlp_dims,
-            cfg.algo.mlp_keys.decoder,
-            cfg.algo.decoder.dense_units,
-            cfg.algo.decoder.mlp_layers,
-            eval(cfg.algo.decoder.dense_act),
-            cfg.algo.decoder.layer_norm,
-        )
-        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
-        else None
-    )
-    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-    if cfg.checkpoint.resume_from:
-        encoder.load_state_dict(state["encoder"])
-        decoder.load_state_dict(state["decoder"])
-
-    # Setup actor and critic. Those will initialize with orthogonal weights
-    # both the actor and critic
-    actor = SACAEContinuousActor(
-        encoder=copy.deepcopy(encoder),
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=envs.single_action_space.low,
-        action_high=envs.single_action_space.high,
-    )
-    qfs = [
-        SACAEQFunction(
-            input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=cfg.algo.critic.hidden_size, output_dim=1
-        )
-        for _ in range(cfg.algo.critic.n)
-    ]
-    critic = SACAECritic(encoder=encoder, qfs=qfs)
-
-    # The agent will tied convolutional and linear weights between the encoder actor and critic
-    agent = SACAEAgent(
-        actor,
-        critic,
-        target_entropy,
-        alpha=cfg.algo.alpha.alpha,
-        tau=cfg.algo.tau,
-        encoder_tau=cfg.algo.encoder.tau,
-        device=fabric.device,
+    agent, encoder, decoder = build_agent(
+        fabric,
+        cfg,
+        observation_space,
+        envs.single_action_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
+        state["encoder"] if cfg.checkpoint.resume_from else None,
+        state["decoder"] if cfg.checkpoint.resume_from else None,
     )
 
     # Optimizers
@@ -305,21 +217,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     decoder_optimizer = hydra.utils.instantiate(cfg.algo.decoder.optimizer, params=decoder.parameters())
 
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
         qf_optimizer.load_state_dict(state["qf_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         alpha_optimizer.load_state_dict(state["alpha_optimizer"])
         encoder_optimizer.load_state_dict(state["encoder_optimizer"])
         decoder_optimizer.load_state_dict(state["decoder_optimizer"])
 
-    encoder = fabric.setup_module(encoder)
-    decoder = fabric.setup_module(decoder)
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critic = fabric.setup_module(agent.critic)
-
     qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
         qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer
     )
+
+    local_vars = locals()
 
     # Metrics
     aggregator = None
@@ -560,3 +468,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

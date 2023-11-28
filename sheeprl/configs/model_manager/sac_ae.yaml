@@ -1,0 +1,17 @@
+defaults:
+  - default
+  - _self_
+
+models:
+  encoder:
+    model_name: "${exp_name}_encoder"
+    description: "SAC-AE Encoder used in ${env.id} Environment"
+    tags: {} 
+  decoder:
+    model_name: "${exp_name}_decoder"
+    description: "SAC-AE Decoder used in ${env.id} Environment"
+    tags: {} 
+  agent:
+    model_name: "${exp_name}_agent"
+    description: "SAC-AE Agent in ${env.id} Environment"
+    tags: {}

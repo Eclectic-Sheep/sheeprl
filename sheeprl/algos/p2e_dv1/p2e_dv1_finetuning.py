@@ -8,9 +8,11 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
@@ -18,14 +20,14 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.algos.p2e_dv1.agent import build_models
+from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -48,7 +50,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     else:
         state = fabric.load(ckpt_path)
 
-        # All the models must be equal to the ones of the exploration phase
+    # All the models must be equal to the ones of the exploration phase
     cfg.algo.gamma = exploration_cfg.algo.gamma
     cfg.algo.lmbda = exploration_cfg.algo.lmbda
     cfg.algo.horizon = exploration_cfg.algo.horizon
@@ -76,9 +78,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     cfg.env.screen_size = 64
     cfg.env.frame_stack = 1
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -104,7 +106,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
@@ -133,13 +135,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, actor_task, critic_task, actor_exploration, _ = build_models(
+    world_model, _, actor_task, critic_task, actor_exploration, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
         cfg,
         observation_space,
         state["world_model"],
+        None,
         state["actor_task"],
         state["critic_task"],
         state["actor_exploration"],
@@ -168,6 +171,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     world_optimizer, actor_task_optimizer, critic_task_optimizer = fabric.setup_optimizers(
         world_optimizer, actor_task_optimizer, critic_task_optimizer
     )
+
+    local_vars = locals()
 
     # Metrics
     aggregator = None
@@ -448,3 +453,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "few-shot")
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                models_keys = set(cfg.model_manager.models.keys())
+                for k in models_keys:
+                    if "exploration" not in k and k != "ensembles":
+                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                        model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                    else:
+                        cfg.model_manager.models.pop(k, None)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

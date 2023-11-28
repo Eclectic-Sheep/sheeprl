@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import gymnasium
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal
 
@@ -278,7 +279,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs (Tensor): the log probabilities of the actions w.r.t. their distributions.
             entropies (Tensor): the entropies of the actions distributions.
             values (Tensor): the state values.
-            hx (Tensor): the new recurrent state.
+            states (Tuple[Tensor, Tensor]): the new recurrent states (hx, cx).
         """
         embedded_obs = self.feature_extractor(obs)
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
@@ -286,3 +287,33 @@ class RecurrentPPOAgent(nn.Module):
         pre_dist = self.get_pre_dist(out)
         actions, logprobs, entropies = self.get_sampled_actions(pre_dist, actions)
         return actions, logprobs, entropies, values, states
+
+
+def build_agent(
+    fabric: Fabric,
+    actions_dim: Sequence[int],
+    is_continuous: bool,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> RecurrentPPOAgent:
+    agent = RecurrentPPOAgent(
+        actions_dim=actions_dim,
+        obs_space=obs_space,
+        encoder_cfg=cfg.algo.encoder,
+        rnn_cfg=cfg.algo.rnn,
+        actor_cfg=cfg.algo.actor,
+        critic_cfg=cfg.algo.critic,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
+        is_continuous=is_continuous,
+        distribution_cfg=cfg.distribution,
+        num_envs=cfg.env.num_envs,
+        screen_size=cfg.env.screen_size,
+        device=fabric.device,
+    )
+    if agent_state:
+        agent.load_state_dict(agent_state)
+    agent = fabric.setup_module(agent)
+
+    return agent

@@ -7,15 +7,15 @@ from lightning import Fabric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.utils import test
-from sheeprl.algos.p2e_dv3.agent import build_models
+from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
 @register_evaluation(algorithms=["p2e_dv3_exploration", "p2e_dv3_finetuning"])
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -40,17 +40,18 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models
-    world_model, actor, _, _, _, _ = build_models(
+    world_model, _, actor, _, _, _, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
         cfg,
         observation_space,
         state["world_model"],
+        None,
         state["actor_task"],
     )
     player = PlayerDV3(

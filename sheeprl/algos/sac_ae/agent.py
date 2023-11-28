@@ -1,16 +1,18 @@
 import copy
 from math import prod
-from typing import Any, Dict, List, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
+import gymnasium
 import numpy as np
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
-from sheeprl.models.models import CNN, MLP, DeCNN, MultiEncoder
+from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -448,3 +450,115 @@ class SACAEAgent(nn.Module):
             self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters()
         ):
             target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)
+
+
+def build_agent(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    action_space: gymnasium.spaces.Box,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+    encoder_state: Optional[Dict[str, Tensor]] = None,
+    decoder_sate: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[SACAEAgent, _FabricModule, _FabricModule]:
+    act_dim = prod(action_space.shape)
+    target_entropy = -act_dim
+
+    # Define the encoder and decoder and setup them with fabric.
+    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
+    # we do not need it wrapped with the strategy inside actor and critic
+    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
+    mlp_dims = [obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
+    cnn_encoder = (
+        CNNEncoder(
+            in_channels=sum(cnn_channels),
+            features_dim=cfg.algo.encoder.features_dim,
+            keys=cfg.algo.cnn_keys.encoder,
+            screen_size=cfg.env.screen_size,
+            cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
+        )
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
+        else None
+    )
+    mlp_encoder = (
+        MLPEncoder(
+            sum(mlp_dims),
+            cfg.algo.mlp_keys.encoder,
+            cfg.algo.encoder.dense_units,
+            cfg.algo.encoder.mlp_layers,
+            eval(cfg.algo.encoder.dense_act),
+            cfg.algo.encoder.layer_norm,
+        )
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
+        else None
+    )
+    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    cnn_decoder = (
+        CNNDecoder(
+            cnn_encoder.conv_output_shape,
+            features_dim=encoder.output_dim,
+            keys=cfg.algo.cnn_keys.decoder,
+            channels=cnn_channels,
+            screen_size=cfg.env.screen_size,
+            cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
+        )
+        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
+        else None
+    )
+    mlp_decoder = (
+        MLPDecoder(
+            encoder.output_dim,
+            mlp_dims,
+            cfg.algo.mlp_keys.decoder,
+            cfg.algo.decoder.dense_units,
+            cfg.algo.decoder.mlp_layers,
+            eval(cfg.algo.decoder.dense_act),
+            cfg.algo.decoder.layer_norm,
+        )
+        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
+        else None
+    )
+    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
+    if encoder_state:
+        encoder.load_state_dict(encoder_state)
+    if decoder_sate:
+        decoder.load_state_dict(decoder_sate)
+
+    # Setup actor and critic. Those will initialize with orthogonal weights
+    # both the actor and critic
+    actor = SACAEContinuousActor(
+        encoder=copy.deepcopy(encoder),
+        action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
+        hidden_size=cfg.algo.actor.hidden_size,
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+    qfs = [
+        SACAEQFunction(
+            input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=cfg.algo.critic.hidden_size, output_dim=1
+        )
+        for _ in range(cfg.algo.critic.n)
+    ]
+    critic = SACAECritic(encoder=encoder, qfs=qfs)
+
+    # The agent will tied convolutional and linear weights between the encoder actor and critic
+    agent = SACAEAgent(
+        actor,
+        critic,
+        target_entropy,
+        alpha=cfg.algo.alpha.alpha,
+        tau=cfg.algo.tau,
+        encoder_tau=cfg.algo.encoder.tau,
+        device=fabric.device,
+    )
+
+    if agent_state:
+        agent.load_state_dict(agent_state)
+
+    encoder = fabric.setup_module(encoder)
+    decoder = fabric.setup_module(decoder)
+    agent.actor = fabric.setup_module(agent.actor)
+    agent.critic = fabric.setup_module(agent.critic)
+
+    return agent, encoder, decoder

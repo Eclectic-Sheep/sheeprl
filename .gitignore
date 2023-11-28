@@ -168,3 +168,6 @@ pytest_*
 .diambra*
 .hydra
 .pypirc
+mlruns
+mlartifacts
+examples/models

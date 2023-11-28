@@ -5,12 +5,13 @@ from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from lightning.pytorch.utilities.seed import isolate_rng
+from mlflow.models.model import ModelInfo
 from omegaconf import DictConfig
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -21,10 +22,9 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, init_weights, test
-from sheeprl.algos.p2e_dv3.agent import build_models
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
+from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.distribution import (
     MSEDistribution,
     OneHotCategoricalValidateArgs,
@@ -32,11 +32,11 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -570,9 +570,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     cfg.env.frame_stack = 1
     cfg.algo.player.actor_type = "exploration"
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -598,7 +598,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
@@ -629,18 +629,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     (
         world_model,
+        ensembles,
         actor_task,
         critic_task,
         target_critic_task,
         actor_exploration,
         critics_exploration,
-    ) = build_models(
+    ) = build_agent(
         fabric,
         actions_dim,
         is_continuous,
         cfg,
         observation_space,
         state["world_model"] if cfg.checkpoint.resume_from else None,
+        state["ensembles"] if cfg.checkpoint.resume_from else None,
         state["actor_task"] if cfg.checkpoint.resume_from else None,
         state["critic_task"] if cfg.checkpoint.resume_from else None,
         state["target_critic_task"] if cfg.checkpoint.resume_from else None,
@@ -648,38 +650,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["critics_exploration"] if cfg.checkpoint.resume_from else None,
     )
 
-    # initialize the ensembles with different seeds to be sure they have different weights
-    ens_list = []
-    cfg_ensembles = cfg.algo.ensembles
-    with isolate_rng():
-        for i in range(cfg_ensembles.n):
-            fabric.seed_everything(cfg.seed + i)
-            ens_list.append(
-                MLP(
-                    input_dims=int(
-                        sum(actions_dim)
-                        + cfg.algo.world_model.recurrent_model.recurrent_state_size
-                        + cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size
-                    ),
-                    output_dim=cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size,
-                    hidden_sizes=[cfg_ensembles.dense_units] * cfg_ensembles.mlp_layers,
-                    activation=eval(cfg_ensembles.dense_act),
-                    flatten_dim=None,
-                    layer_args={"bias": not cfg.algo.ensembles.layer_norm},
-                    norm_layer=(
-                        [nn.LayerNorm for _ in range(cfg_ensembles.mlp_layers)] if cfg_ensembles.layer_norm else None
-                    ),
-                    norm_args=(
-                        [{"normalized_shape": cfg_ensembles.dense_units} for _ in range(cfg_ensembles.mlp_layers)]
-                        if cfg_ensembles.layer_norm
-                        else None
-                    ),
-                ).apply(init_weights)
-            )
-    ensembles = nn.ModuleList(ens_list)
-    if cfg.checkpoint.resume_from:
-        ensembles.load_state_dict(state["ensembles"])
-    fabric.setup_module(ensembles)
     player = PlayerDV3(
         world_model.encoder.module,
         world_model.rssm,
@@ -748,6 +718,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k, m in moments_exploration.items():
             m.load_state_dict(state[f"moments_exploration_{k}"])
         moments_task.load_state_dict(state["moments_task"])
+
+    local_vars = locals()
 
     # Metrics
     # Since there could be more exploration critics, the key of the critic is added
@@ -1120,3 +1092,30 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    if k.startswith("critic_exploration"):
+                        unwrapped_models[k] = unwrap_fabric(
+                            critics_exploration[k.replace("critic_exploration_", "")]["module"]
+                        )
+                    elif k.startswith("target_critic_exploration"):
+                        unwrapped_models[k] = critics_exploration[k.replace("target_critic_exploration_", "")][
+                            "target_module"
+                        ]
+                    elif k.startswith("moments_exploration"):
+                        unwrapped_models[k] = unwrap_fabric(moments_exploration[k.replace("moments_exploration_", "")])
+                    else:
+                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

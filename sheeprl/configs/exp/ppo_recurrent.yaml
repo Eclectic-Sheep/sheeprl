@@ -3,6 +3,7 @@
 defaults:
   - ppo
   - override /algo: ppo_recurrent
+  - override /model_manager: ppo_recurrent
   - _self_
 
 algo:

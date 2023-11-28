@@ -3,6 +3,7 @@
 defaults:
   - dreamer_v3
   - override /algo: p2e_dv3
+  - override /model_manager: p2e_dv3_finetuning
   - _self_
 
 algo:

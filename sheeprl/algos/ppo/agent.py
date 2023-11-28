@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import gymnasium
 import torch
 import torch.nn as nn
+from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
@@ -62,7 +64,7 @@ class MLPEncoder(nn.Module):
 class PPOAgent(nn.Module):
     def __init__(
         self,
-        actions_dim: List[int],
+        actions_dim: Sequence[int],
         obs_space: gymnasium.spaces.Dict,
         encoder_cfg: Dict[str, Any],
         actor_cfg: Dict[str, Any],
@@ -194,3 +196,30 @@ class PPOAgent(nn.Module):
                     for logits in pre_dist
                 ]
             )
+
+
+def build_agent(
+    fabric: Fabric,
+    actions_dim: Sequence[int],
+    is_continuous: bool,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> _FabricModule:
+    agent = PPOAgent(
+        actions_dim=actions_dim,
+        obs_space=obs_space,
+        encoder_cfg=cfg.algo.encoder,
+        actor_cfg=cfg.algo.actor,
+        critic_cfg=cfg.algo.critic,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
+        screen_size=cfg.env.screen_size,
+        distribution_cfg=cfg.distribution,
+        is_continuous=is_continuous,
+    )
+    if agent_state:
+        agent.load_state_dict(agent_state)
+    agent = fabric.setup_module(agent)
+
+    return agent

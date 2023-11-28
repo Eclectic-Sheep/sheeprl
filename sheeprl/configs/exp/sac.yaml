@@ -3,6 +3,7 @@
 defaults:
   - override /algo: sac
   - override /env: gym
+  - override /model_manager: sac
   - _self_
 
 # Algorithm
