@@ -238,7 +238,7 @@ class MlflowModelManager(AbstractModelManager):
             return None
 
         best_run: Run | None = None
-        models_path = [v.path for v in models_info.values()]
+        models_path = [v["path"] for v in models_info.values()]
         for run in runs:
             run_artifacts = [x.path for x in self.client.list_artifacts(run.info.run_id) if x.path in models_path]
 
@@ -263,9 +263,9 @@ class MlflowModelManager(AbstractModelManager):
 
         models_version = {}
         for k, v in models_info.items():
-            best_model_uri = f"runs:/{best_run.info.run_id}/{v.path}"
+            best_model_uri = f"runs:/{best_run.info.run_id}/{v['path']}"
             models_version[k] = self.register_model(
-                model_location=best_model_uri, model_name=v.name, tags=v.tags, description=v.description
+                model_location=best_model_uri, model_name=v["name"], tags=v["tags"], description=v["description"]
             )
 
         return models_version
