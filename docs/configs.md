@@ -2,13 +2,11 @@
 
 This document explains how the configuration files and folders are structured. It will help you to understand how to use add new configuration files and where to put them. 
 
-> **Warning**
->
-> Configuration files heavily depend on the `hydra` library. If you are not familiar with `hydra`, you are strongly advised to read their [documentation](https://hydra.cc/docs/intro/) before using this library.
+!!! Warning
+    Configuration files heavily depend on the `hydra` library. If you are not familiar with `hydra`, you are strongly advised to read their [documentation](https://hydra.cc/docs/intro/) before using this library.
 
-> **Warning**
->
-> For every possible hydra config, the parameters that are not specified in the config is highly probable that are passed to the object to be instantiated at runtime. If this is not the case, please let us know!
+!!! Warning
+    For every possible hydra config, the parameters that are not specified in the config is highly probable that are passed to the object to be instantiated at runtime. If this is not the case, please let us know!
 
 ## Parent Folder Structure
 ```tree
@@ -312,9 +310,8 @@ mlp_keys:
   encoder: []
 ```
 
-> **Warning**
->
-> Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
+!!! Warning
+    Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
 
 ### Environment
 
@@ -372,9 +369,8 @@ wrapper:
   grayscale_newaxis: True
 ```
 
-> **Warning**
->
-> Every environment config **must** contain the field `env.id`, which specifies the id of the environment to be instantiated
+!!! Warning
+    Every environment config **must** contain the field `env.id`, which specifies the id of the environment to be instantiated
 
 ### Experiment
 

@@ -1,0 +1,25 @@
+site_name: ⚡ SheepRL docs 🐑
+theme:
+  name: material
+plugins:
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [sheeprl] # search packages in the src folder
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.arithmatex:
+      generic: true
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+nav:
+  - "API docs": api_docs.md
+  - "Environment":
+      - learn_in_atari.md
+      - learn_in_diambra.md
+      - learn_in_minedojo.md
+      - learn_in_minerl.md
