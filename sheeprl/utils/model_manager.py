@@ -7,8 +7,9 @@ import os
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Set
 
+from git import Sequence
 from lightning import Fabric
 
 try:
@@ -238,6 +239,7 @@ class MlflowModelManager(AbstractModelManager):
             return None
 
         best_run: Run | None = None
+        best_run_artifacts: Sequence[str] | Set[str] | None = None
         models_path = [v["path"] for v in models_info.values()]
         for run in runs:
             run_artifacts = [x.path for x in self.client.list_artifacts(run.info.run_id) if x.path in models_path]
@@ -249,6 +251,7 @@ class MlflowModelManager(AbstractModelManager):
 
             if best_run is None:
                 best_run = run
+                best_run_artifacts = set(run_artifacts)
                 continue
             if mode == "max":
                 if run.data.metrics[metric] > best_run.data.metrics[metric]:
@@ -263,10 +266,11 @@ class MlflowModelManager(AbstractModelManager):
 
         models_version = {}
         for k, v in models_info.items():
-            best_model_uri = f"runs:/{best_run.info.run_id}/{v['path']}"
-            models_version[k] = self.register_model(
-                model_location=best_model_uri, model_name=v["name"], tags=v["tags"], description=v["description"]
-            )
+            if v["path"] in best_run_artifacts:
+                best_model_uri = f"runs:/{best_run.info.run_id}/{v['path']}"
+                models_version[k] = self.register_model(
+                    model_location=best_model_uri, model_name=v["name"], tags=v["tags"], description=v["description"]
+                )
 
         return models_version
 
