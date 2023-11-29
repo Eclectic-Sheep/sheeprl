@@ -227,7 +227,7 @@ def player(
                         rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
-                rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
+                rewards = torch.as_tensor(rewards, dtype=torch.float64, device=device).view(cfg.env.num_envs, -1)
 
             # Update the step data
             step_data["dones"] = dones
@@ -236,8 +236,8 @@ def player(
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards)
-                step_data["advantages"] = torch.zeros_like(rewards)
+                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -279,6 +279,7 @@ def player(
         # Add returns and advantages to the buffer
         rb["returns"] = returns.float()
         rb["advantages"] = advantages.float()
+        rb["rewards"] = rb["rewards"].float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
