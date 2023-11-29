@@ -7,13 +7,11 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
@@ -26,11 +24,12 @@ from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.data.buffers import AsyncReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -783,6 +782,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        if not _IS_MLFLOW_AVAILABLE:
+            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+
+        import mlflow  # noqa
+        from mlflow.models.model import ModelInfo  # noqa
+
+        from sheeprl.utils.mlflow import register_model
 
         def log_models(
             run_id: str, experiment_id: str | None = None, run_name: str | None = None

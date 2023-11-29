@@ -9,11 +9,9 @@ from typing import Any, Dict, List
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
 from torch.distributed.algorithms.join import Join
@@ -26,11 +24,12 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, unwrap_fabric
 
 
 def train(
@@ -493,6 +492,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        if not _IS_MLFLOW_AVAILABLE:
+            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+
+        import mlflow  # noqa
+        from mlflow.models.model import ModelInfo  # noqa
+
+        from sheeprl.utils.mlflow import register_model
 
         def log_models(
             run_id: str, experiment_id: str | None = None, run_name: str | None = None

@@ -8,14 +8,12 @@ from typing import Any, Dict, Optional, Union
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -29,11 +27,12 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import unwrap_fabric
 
 
 def train(
@@ -470,6 +469,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        if not _IS_MLFLOW_AVAILABLE:
+            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+
+        import mlflow  # noqa
+        from mlflow.models.model import ModelInfo  # noqa
+
+        from sheeprl.utils.mlflow import register_model
 
         def log_models(
             run_id: str, experiment_id: str | None = None, run_name: str | None = None

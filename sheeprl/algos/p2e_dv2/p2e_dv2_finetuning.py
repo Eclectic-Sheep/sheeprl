@@ -8,11 +8,9 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from torch import Tensor
 from torch.utils.data import BatchSampler
@@ -24,11 +22,12 @@ from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -511,6 +510,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        if not _IS_MLFLOW_AVAILABLE:
+            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+
+        import mlflow  # noqa
+        from mlflow.models.model import ModelInfo  # noqa
+
+        from sheeprl.utils.mlflow import register_model
 
         def log_models(
             run_id: str, experiment_id: str | None = None, run_name: str | None = None

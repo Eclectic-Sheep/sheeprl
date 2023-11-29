@@ -14,7 +14,7 @@ from sheeprl.utils.logger import get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, print_config, register_model_from_checkpoint
+from sheeprl.utils.utils import dotdict, print_config
 
 
 def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
@@ -315,6 +315,8 @@ def evaluation(cfg: DictConfig):
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="model_manager_config")
 def registration(cfg: DictConfig):
+    from sheeprl.utils.mlflow import register_model_from_checkpoint
+
     checkpoint_path = Path(cfg.checkpoint_path)
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
 

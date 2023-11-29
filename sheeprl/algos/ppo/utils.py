@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import mlflow
 import numpy as np
 import torch
-from git import Sequence
 from lightning import Fabric
-from mlflow.models.model import ModelInfo
 from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOAgent, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import unwrap_fabric
+
+if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
 MODELS_TO_REGISTER = {"agent"}
@@ -73,7 +73,9 @@ def normalize_obs(
 
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
-) -> Sequence[ModelInfo]:
+) -> Sequence["ModelInfo"]:
+    import mlflow
+
     # Create the models
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
