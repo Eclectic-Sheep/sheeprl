@@ -33,7 +33,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import register_model, save_configs, unwrap_fabric
 
 
 def train(
@@ -144,7 +144,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64
@@ -228,6 +227,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Metrics
     aggregator = None
@@ -264,8 +265,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts += start_step
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:

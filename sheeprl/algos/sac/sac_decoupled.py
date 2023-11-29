@@ -29,7 +29,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import register_model, save_configs, unwrap_fabric
 
 
 @torch.no_grad()
@@ -45,7 +45,6 @@ def player(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -83,7 +82,12 @@ def player(
     if cfg.metric.log_level > 0:
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
     cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
@@ -122,12 +126,13 @@ def player(
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
-        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
-            rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], ReplayBuffer):
+        if isinstance(state["rb"], ReplayBuffer):
             rb = state["rb"]
         else:
-            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
+            raise RuntimeError(
+                "The replay buffer in the configs must be of type "
+                f"`sheeprl.data.buffers.ReplayBuffer`, got {type(state['rb'])}."
+            )
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables

@@ -26,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, register_model, save_configs, unwrap_fabric
 
 
 @register_algorithm()
@@ -43,7 +43,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     # Finetuning that was interrupted for some reason
     if resume_from_checkpoint:
         state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
-        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     else:
         state = fabric.load(ckpt_path)
 
@@ -190,6 +189,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     moments_task.load_state_dict(state["moments_task"])
 
     local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Metrics
     aggregator = None
@@ -227,10 +228,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     updates_before_training = cfg.algo.train_every // policy_steps_per_update
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    if resume_from_checkpoint and not cfg.buffer.checkpoint:
-        learning_starts += start_step
     max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if resume_from_checkpoint:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
         actor_task.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.actor.expl_amount,
@@ -243,6 +243,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             final=cfg.algo.actor.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:

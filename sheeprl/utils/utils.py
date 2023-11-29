@@ -43,6 +43,14 @@ class dotdict(dict):
     def __setstate__(self, state):
         self.update(state)
 
+    @property
+    def __dict__(self) -> Dict[str, Any]:
+        _copy = dict(self)
+        for k, v in _copy.items():
+            if isinstance(v, dotdict):
+                _copy[k] = v.__dict__
+        return _copy
+
 
 @torch.no_grad()
 def gae(
@@ -263,3 +271,7 @@ def register_model_from_checkpoint(
         model_manager.register_model(
             models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
         )
+
+
+def save_configs(cfg: Dict[str, Any], log_dir: str):
+    OmegaConf.save(cfg.__dict__, os.path.join(log_dir, "config.yaml"), resolve=True)

@@ -29,7 +29,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, save_configs, unwrap_fabric
 
 
 @torch.no_grad()
@@ -45,7 +45,6 @@ def player(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -84,10 +83,6 @@ def player(
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
-    # Send (possibly updated, by the make_env method for example) cfg to the trainers
-    cfg.checkpoint.log_dir = log_dir
-    world_collective.broadcast_object_list([cfg], src=0)
-
     # Create the actor and critic models
     agent_args = {
         "actions_dim": actions_dim,
@@ -104,6 +99,13 @@ def player(
     agent = PPOAgent(**agent_args).to(device)
 
     local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+    # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
+    cfg.checkpoint.log_dir = log_dir
+    world_collective.broadcast_object_list([cfg], src=0)
 
     # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
     world_collective.broadcast_object_list([agent_args], src=0)
