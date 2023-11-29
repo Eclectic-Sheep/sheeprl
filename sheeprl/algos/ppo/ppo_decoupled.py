@@ -227,7 +227,7 @@ def player(
                         rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated)
                 dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
-                rewards = torch.as_tensor(rewards, dtype=torch.float64, device=device).view(cfg.env.num_envs, -1)
+                rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
 
             # Update the step data
             step_data["dones"] = dones
@@ -267,7 +267,7 @@ def player(
         normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
         next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
-            rb["rewards"],
+            rb["rewards"].to(torch.float64),
             rb["values"],
             rb["dones"],
             next_values,
