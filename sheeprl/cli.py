@@ -84,7 +84,7 @@ def run_algorithm(cfg: Dict[str, Any]):
             fabric._loggers = [logger]
             fabric.logger.log_hyperparams(cfg)
     else:
-        strategy = cfg.fabric.pop("strategy", "auto")
+        strategy = cfg.fabric.get("strategy", "auto")
         if "sac_ae" in module:
             if strategy is not None:
                 warnings.warn(
@@ -92,6 +92,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                     f"'python sheeprl.py fabric.strategy={strategy}'. This algorithm is run with the "
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
+            cfg.fabric.pop("strategy", "auto")
             strategy = DDPStrategy(find_unused_parameters=True)
         elif "finetuning" in algo_name and "p2e" in module:
             # Load exploration configurations
@@ -125,7 +126,6 @@ def run_algorithm(cfg: Dict[str, Any]):
             if cfg.buffer.load_from_exploration:
                 cfg.fabric.devices = exploration_cfg.fabric.devices
                 cfg.fabric.num_nodes = exploration_cfg.fabric.num_nodes
-            strategy = cfg.fabric.pop("strategy", "auto")
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:
