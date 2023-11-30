@@ -317,8 +317,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards)
-                step_data["advantages"] = torch.zeros_like(rewards)
+                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -350,7 +350,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             next_values = agent.module.get_value(normalized_obs)
             returns, advantages = gae(
-                rb["rewards"],
+                rb["rewards"].to(torch.float64),
                 rb["values"],
                 rb["dones"],
                 next_values,
@@ -362,6 +362,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Add returns and advantages to the buffer
             rb["returns"] = returns.float()
             rb["advantages"] = advantages.float()
+            rb["rewards"] = rb["rewards"].float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)

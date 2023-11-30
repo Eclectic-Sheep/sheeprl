@@ -379,7 +379,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rnn_out, _ = agent.module.rnn(torch.cat((feat, actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
             returns, advantages = gae(
-                rb["rewards"],
+                rb["rewards"].to(torch.float64),
                 rb["values"],
                 rb["dones"],
                 next_values,
