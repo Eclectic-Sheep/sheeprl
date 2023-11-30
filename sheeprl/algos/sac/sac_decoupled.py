@@ -137,8 +137,15 @@ def player(
 
     # Global variables
     first_info_sent = False
-    start_step = state["update"] if cfg.checkpoint.resume_from else 1
-    policy_step = (state["update"] - 1) * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        state["update"] + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs)
@@ -349,14 +356,10 @@ def trainer(
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
+    cfg: Dict[str, Any],
 ):
     global_rank = world_collective.rank
     group_world_size = world_collective.world_size - 1
-
-    # Receive (possibly updated, by the make_env method for example) cfg from the player
-    data = [None]
-    world_collective.broadcast_object_list(data, src=0)
-    cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
     cfg.fabric.pop("loggers", None)
@@ -372,6 +375,11 @@ def trainer(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
+
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
+    data = [None]
+    world_collective.broadcast_object_list(data, src=0)
+    cfg: Dict[str, Any] = data[0]
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -577,4 +585,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if global_rank == 0:
         player(fabric, cfg, world_collective, player_trainer_collective)
     else:
-        trainer(world_collective, player_trainer_collective, optimization_pg)
+        trainer(world_collective, player_trainer_collective, optimization_pg, cfg)
