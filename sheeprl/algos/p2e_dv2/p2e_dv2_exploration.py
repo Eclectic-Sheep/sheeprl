@@ -1040,7 +1040,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "ensembles": ensembles,
             "actor_exploration": actor_exploration,
             "critic_exploration": critic_exploration,
+            "target_critic_exploration": target_critic_exploration,
             "actor_task": actor_task,
             "critic_task": critic_task,
+            "target_critic_task": target_critic_task,
         }
         register_model(fabric, log_models, cfg, models_to_log)

@@ -1101,12 +1101,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "actor_exploration": actor_exploration,
             "actor_task": actor_task,
             "critic_task": critic_task,
+            "target_critic_task": target_critic_task,
             "moments_task": moments_task,
         }
         critics_to_log = {}
         for k, v in critics_exploration.items():
             critics_to_log["critic_exploration_" + k] = v["module"]
-            critics_to_log["taregt_critic_exploration_" + k] = v["target_module"]
+            critics_to_log["target_critic_exploration_" + k] = v["target_module"]
         critics_moments_to_log = {}
         for k, v in moments_exploration.items():
             critics_moments_to_log["moments_exploration_" + k] = v

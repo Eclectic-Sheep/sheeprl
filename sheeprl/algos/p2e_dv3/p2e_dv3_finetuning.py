@@ -505,6 +505,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             "world_model": world_model,
             "actor_task": actor_task,
             "critic_task": critic_task,
+            "target_critic_task": target_critic_task,
             "moments_task": moments_task,
         }
         register_model(fabric, log_models, cfg, models_to_log)
