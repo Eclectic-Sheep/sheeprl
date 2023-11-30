@@ -1037,7 +1037,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         models_to_log = {
             "world_model": world_model,
-            "ensambles": ensembles,
+            "ensembles": ensembles,
             "actor_exploration": actor_exploration,
             "critic_exploration": critic_exploration,
             "actor_task": actor_task,
