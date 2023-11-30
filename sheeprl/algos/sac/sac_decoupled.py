@@ -20,15 +20,13 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
-from sheeprl.algos.sac.utils import test
+from sheeprl.algos.sac.utils import log_models, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import unwrap_fabric
 
 
 @torch.no_grad()
@@ -308,12 +306,6 @@ def player(
         test(actor, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        if not _IS_MLFLOW_AVAILABLE:
-            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-
-        import mlflow  # noqa
-        from mlflow.models.model import ModelInfo  # noqa
-
         from sheeprl.utils.mlflow import register_model
 
         critics = [
@@ -329,22 +321,7 @@ def player(
         )
         player_trainer_collective.broadcast(flattened_parameters, src=1)
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
-
-        local_vars = locals()
-
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        register_model(fabric, log_models, cfg, {"agent": agent})
 
 
 def trainer(

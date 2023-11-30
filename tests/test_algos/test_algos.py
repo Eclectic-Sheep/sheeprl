@@ -20,7 +20,7 @@ def devices(request):
 
 @pytest.fixture()
 def standard_args():
-    return [
+    args = [
         os.path.join(ROOT_DIR, "__main__.py"),
         "hydra/job_logging=disabled",
         "hydra/hydra_logging=disabled",
@@ -33,6 +33,9 @@ def standard_args():
         f"env.sync_env={_IS_WINDOWS}",
         "env.capture_video=False",
     ]
+    if os.environ["MLFLOW_TRACKING_URI"] is not None:
+        args.extend(["logger@metric.logger=mlflow", "model_manager.disabled=False", "metric.log_level=1"])
+    return args
 
 
 @pytest.fixture()

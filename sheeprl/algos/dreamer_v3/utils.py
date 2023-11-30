@@ -3,17 +3,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import mlflow
 import numpy as np
 import torch
 from lightning import Fabric
-from mlflow.models.model import ModelInfo
 from torch import Tensor, nn
 
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
+
     from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 
 AGGREGATOR_KEYS = {
@@ -186,7 +187,11 @@ def uniform_init_weights(given_scale):
 
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
-) -> Sequence[ModelInfo]:
+) -> Sequence["ModelInfo"]:
+    if not _IS_MLFLOW_AVAILABLE:
+        raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+    import mlflow  # noqa
+
     from sheeprl.algos.dreamer_v3.agent import build_agent
 
     # Create the models

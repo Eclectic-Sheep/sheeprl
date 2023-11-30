@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import mlflow
 import torch
 from lightning import Fabric
-from mlflow.models.model import ModelInfo
 
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
+
+if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
+
 
 AGGREGATOR_KEYS = ppo_aggregator_keys
 MODELS_TO_REGISTER = ppo_models_to_register
@@ -75,7 +78,11 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_di
 
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
-) -> Sequence[ModelInfo]:
+) -> Sequence["ModelInfo"]:
+    if not _IS_MLFLOW_AVAILABLE:
+        raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+    import mlflow  # noqa
+
     # Create the models
     is_continuous = isinstance(env.action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)

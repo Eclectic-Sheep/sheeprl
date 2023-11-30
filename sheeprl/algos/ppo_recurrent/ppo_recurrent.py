@@ -19,17 +19,16 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs
+from sheeprl.algos.ppo.utils import log_models, normalize_obs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
 
 
 def train(
@@ -192,6 +191,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         observation_space,
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
+    models_to_log = {"agent": agent}
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
     # Load the state from the checkpoint
@@ -199,8 +199,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         optimizer.load_state_dict(state["optimizer"])
     # Setup agent and optimizer with Fabric
     optimizer = fabric.setup_optimizers(optimizer)
-
-    local_vars = locals()
 
     # Create a metric aggregator to log the metrics
     aggregator = None
@@ -492,24 +490,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        if not _IS_MLFLOW_AVAILABLE:
-            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-
-        import mlflow  # noqa
-        from mlflow.models.model import ModelInfo  # noqa
-
         from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        register_model(fabric, log_models, cfg, models_to_log)

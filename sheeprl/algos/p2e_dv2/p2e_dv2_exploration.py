@@ -19,6 +19,7 @@ from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
+from sheeprl.algos.dreamer_v1.utils import log_models
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
@@ -26,12 +27,11 @@ from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
-from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -1033,24 +1033,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        if not _IS_MLFLOW_AVAILABLE:
-            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-
-        import mlflow  # noqa
-        from mlflow.models.model import ModelInfo  # noqa
-
         from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {
+            "world_model": world_model,
+            "ensambles": ensembles,
+            "actor_exploration": actor_exploration,
+            "critic_exploration": critic_exploration,
+            "actor_task": actor_task,
+            "critic_task": critic_task,
+        }
+        register_model(fabric, log_models, cfg, models_to_log)

@@ -23,16 +23,14 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
-from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
+from sheeprl.algos.sac_ae.utils import log_models, preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import unwrap_fabric
 
 
 def train(
@@ -225,8 +223,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
         qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer
     )
-
-    local_vars = locals()
 
     # Metrics
     aggregator = None
@@ -469,24 +465,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        if not _IS_MLFLOW_AVAILABLE:
-            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-
-        import mlflow  # noqa
-        from mlflow.models.model import ModelInfo  # noqa
-
         from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {"agent": agent, "encoder": encoder, "decoder": decoder}
+        register_model(fabric, log_models, cfg, models_to_log)

@@ -30,12 +30,11 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import make_env
-from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -1093,35 +1092,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        if not _IS_MLFLOW_AVAILABLE:
-            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-
-        import mlflow  # noqa
-        from mlflow.models.model import ModelInfo  # noqa
-
+        from sheeprl.algos.dreamer_v1.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    if k.startswith("critic_exploration"):
-                        unwrapped_models[k] = unwrap_fabric(
-                            critics_exploration[k.replace("critic_exploration_", "")]["module"]
-                        )
-                    elif k.startswith("target_critic_exploration"):
-                        unwrapped_models[k] = critics_exploration[k.replace("target_critic_exploration_", "")][
-                            "target_module"
-                        ]
-                    elif k.startswith("moments_exploration"):
-                        unwrapped_models[k] = unwrap_fabric(moments_exploration[k.replace("moments_exploration_", "")])
-                    else:
-                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {
+            "world_model": world_model,
+            "ensambles": ensembles,
+            "actor_exploration": actor_exploration,
+            "actor_task": actor_task,
+            "critic_task": critic_task,
+            "moments_task": moments_task,
+        }
+        critics_to_log = {}
+        for k, v in critics_exploration.items():
+            critics_to_log["critic_exploration_" + k] = v["module"]
+            critics_to_log["taregt_critic_exploration_" + k] = v["target_module"]
+        critics_moments_to_log = {}
+        for k, v in moments_exploration.items():
+            critics_moments_to_log["moments_exploration_" + k] = v
+        models_to_log.update(critics_to_log)
+        models_to_log.update(critics_moments_to_log)
+        register_model(fabric, log_models, cfg, models_to_log)

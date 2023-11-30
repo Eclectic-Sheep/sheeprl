@@ -10,7 +10,10 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Literal, Sequence, Set
 
 import gymnasium as gym
+import torch
 from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
+from lightning.pytorch.loggers.mlflow import MLFlowLogger
 
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
@@ -378,7 +381,20 @@ def register_model_from_checkpoint(
         )
 
 
-def register_model(fabric: Fabric, log_models: Callable[[str], Dict[str, ModelInfo]], cfg: Dict[str, Any]):
+def register_model(
+    fabric: Fabric,
+    log_models: Callable[
+        [Dict[str, Any], Dict[str, torch.nn.Module | _FabricModule], str, str | None, str | None], Dict[str, ModelInfo]
+    ],
+    cfg: Dict[str, Any],
+    models_to_log: Dict[str, torch.nn.Module | _FabricModule],
+):
+    if len(fabric.loggers) == 0:
+        raise RuntimeError("No logger is defined, try to set the `metric.log_level=1` from the CLI")
+    elif len(fabric.loggers) > 0 and not isinstance(fabric.logger, MLFlowLogger):
+        raise RuntimeError(
+            "The logger is not an mlflow logger, try to set the `logger@metric.logger=mlflow` from the CLI."
+        )
     tracking_uri = getattr(fabric.logger, "_tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
     if tracking_uri is None:
         raise ValueError(
@@ -397,7 +413,7 @@ def register_model(fabric: Fabric, log_models: Callable[[str], Dict[str, ModelIn
         experiment = mlflow.get_experiment_by_name(cfg.exp_name)
         experiment_id = mlflow.create_experiment(cfg.exp_name) if experiment is None else experiment.experiment_id
         run_name = f"{cfg.algo.name}_{cfg.env.id}_{datetime.today().strftime('%Y-%m-%d %H:%M:%S')}"
-    models_info = log_models(run_id, experiment_id, run_name)
+    models_info = log_models(cfg, models_to_log, run_id, experiment_id, run_name)
     model_manager = MlflowModelManager(fabric, tracking_uri)
     if len(models_info) != len(cfg_model_manager.models):
         raise RuntimeError(
