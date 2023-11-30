@@ -6,8 +6,11 @@ defaults:
   - _self_
 
 # Experiment
-total_steps: 65536
-per_rank_batch_size: 64
+algo:
+  total_steps: 65536
+  per_rank_batch_size: 64
+  mlp_keys:
+    encoder: [state]
 
 # Buffer
 buffer:
