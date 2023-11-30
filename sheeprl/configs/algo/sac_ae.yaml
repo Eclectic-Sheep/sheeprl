@@ -16,6 +16,12 @@ mlp_layers: 2
 dense_act: torch.nn.ReLU
 layer_norm: False
 
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
+
 # Encoder
 encoder:
   tau: 0.05

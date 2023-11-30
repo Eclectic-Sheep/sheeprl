@@ -1,5 +1,5 @@
 ## Install Atari environments
-First we should install the Atari environments with:
+First, we should install the Atari environments with:
 
 ```bash
 pip install .[atari]
@@ -16,6 +16,7 @@ The list of selectable algorithms is given below:
 * `dreamer_v3`
 * `p2e_dv1`
 * `p2e_dv2`
+* `p2e_dv3`
 * `ppo`
 * `ppo_decoupled`
 * `sac_ae`
@@ -23,5 +24,5 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
+python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 algo.cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
 ```

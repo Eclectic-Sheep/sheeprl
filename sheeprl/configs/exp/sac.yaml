@@ -3,11 +3,16 @@
 defaults:
   - override /algo: sac
   - override /env: gym
+  - override /model_manager: sac
   - _self_
 
-# Experiment
-total_steps: 1000000
-per_rank_batch_size: 256
+# Algorithm
+algo:
+  total_steps: 1000000
+  per_rank_batch_size: 256
+  mlp_keys:
+    encoder: [state]
+    decoder: [state]
 
 # Checkpoint
 checkpoint:

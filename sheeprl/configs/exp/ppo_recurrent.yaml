@@ -3,16 +3,15 @@
 defaults:
   - ppo
   - override /algo: ppo_recurrent
+  - override /model_manager: ppo_recurrent
   - _self_
 
 algo:
+  per_rank_num_batches: 4
+  per_rank_sequence_length: 8
+  total_steps: 409600
   rollout_steps: 256
   update_epochs: 4
-
-# Experiment
-per_rank_num_batches: 4
-per_rank_sequence_length: 8
-total_steps: 409600
 
 # Environment
 env:

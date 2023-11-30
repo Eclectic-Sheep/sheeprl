@@ -1,0 +1,91 @@
+# @package _global_
+
+defaults:
+  - p2e_dv3_finetuning
+  - override /env: diambra
+  - _self_
+
+# Experiment
+seed: 0
+
+# Environment
+env:
+  id: doapp
+  num_envs: 16
+  grayscale: True
+  frame_stack: 1
+  screen_size: 64
+  reward_as_observation: True
+  wrapper:
+    diambra_settings:
+      role: diambra.arena.Roles.P1
+      characters: Lei-Fang
+      difficulty: 4
+      outfits: 1
+    diambra_wrappers:
+      no_attack_buttons_combinations: False
+
+# Checkpoint
+checkpoint:
+  every: 100000
+  exploration_ckpt_path: ???
+
+# Buffer
+buffer:
+  checkpoint: True
+
+# Algorithm
+algo:
+  learning_starts: 65536
+  train_every: 1
+  dense_units: 768
+  mlp_layers: 4
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 48
+    recurrent_model:
+      recurrent_state_size: 1024
+    transition_model:
+      hidden_size: 768
+    representation_model:
+      hidden_size: 768
+  total_steps: 5000000
+  per_rank_batch_size: 16
+  per_rank_sequence_length: 64
+  cnn_keys:
+    encoder: [frame]
+    decoder: [frame]
+  mlp_keys:
+    encoder:
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
+      - stage
+      - timer
+      - action
+      - reward
+    decoder:
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
+      - stage
+      - timer
+      - action
+
+# Metric
+metric:
+  log_every: 10000
+
+fabric:
+  precision: bf16
+  accelerator: gpu

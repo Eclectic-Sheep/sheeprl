@@ -2,33 +2,33 @@ from __future__ import annotations
 
 import copy
 import os
-import pathlib
 import warnings
 from typing import Any, Dict, Union
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import OmegaConf
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
 
 
 def train(
@@ -51,17 +51,16 @@ def train(
         )
     else:
         sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=cfg.per_rank_batch_size, drop_last=False)
+    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
     for epoch in range(cfg.algo.update_epochs):
         if cfg.buffer.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
             batch = data[batch_idxes]
-            normalized_obs = {
-                k: batch[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else batch[k]
-                for k in cfg.mlp_keys.encoder + cfg.cnn_keys.encoder
-            }
+            normalized_obs = normalize_obs(
+                batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+            )
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
@@ -129,19 +128,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -166,47 +158,43 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
     # Create the actor and critic models
-    agent = PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=observation_space,
-        encoder_cfg=cfg.algo.encoder,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.cnn_keys.encoder,
-        mlp_keys=cfg.mlp_keys.encoder,
-        screen_size=cfg.env.screen_size,
-        distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
+    agent = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        observation_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
     )
 
     # Define the optimizer
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
+    local_vars = locals()
+
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
         optimizer.load_state_dict(state["optimizer"])
 
     # Setup agent and optimizer with Fabric
-    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Create a metric aggregator to log the metrics
@@ -238,7 +226,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -269,9 +257,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     next_obs = {}
     for k in obs_keys:
         torch_obs = torch.as_tensor(obs[k]).to(fabric.device)
-        if k in cfg.cnn_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-        elif k in cfg.mlp_keys.encoder:
+        elif k in cfg.algo.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         next_obs[k] = torch_obs
@@ -285,9 +273,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = {
-                        k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-                    }
+                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values = agent.module(normalized_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -311,7 +297,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for i, truncated_env in enumerate(truncated_envs):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.cnn_keys.encoder:
+                            if k in cfg.algo.cnn_keys.encoder:
                                 torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
@@ -328,8 +314,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards)
-                step_data["advantages"] = torch.zeros_like(rewards)
+                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -337,10 +323,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Update the observation and dones
             next_obs = {}
             for k in obs_keys:
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device)
                     torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                elif k in cfg.mlp_keys.encoder:
+                elif k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs
                 next_obs[k] = torch_obs
@@ -358,12 +344,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = {
-                k: next_obs[k] / 255 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-            }
+            normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             next_values = agent.module.get_value(normalized_obs)
             returns, advantages = gae(
-                rb["rewards"],
+                rb["rewards"].to(torch.float64),
                 rb["values"],
                 rb["dones"],
                 next_values,
@@ -375,6 +359,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Add returns and advantages to the buffer
             rb["returns"] = returns.float()
             rb["advantages"] = advantages.float()
+            rb["rewards"] = rb["rewards"].float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
@@ -451,7 +436,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                 "update": update * world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }
@@ -461,3 +446,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test(agent.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

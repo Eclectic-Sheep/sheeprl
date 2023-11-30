@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import copy
 import os
-import pathlib
 import time
 import warnings
-from math import prod
 from typing import Any, Dict, Optional, Union
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
-from omegaconf import OmegaConf
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.optim import Optimizer
@@ -25,25 +24,16 @@ from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_ae.agent import (
-    CNNDecoder,
-    CNNEncoder,
-    MLPDecoder,
-    MLPEncoder,
-    SACAEAgent,
-    SACAEContinuousActor,
-    SACAECritic,
-    SACAEQFunction,
-)
+from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
 from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 def train(
@@ -69,8 +59,8 @@ def train(
     data = data.to(fabric.device)
     normalized_obs = {}
     normalized_next_obs = {}
-    for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
-        if k in cfg.cnn_keys.encoder:
+    for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             normalized_obs[k] = data[k] / 255.0
             normalized_next_obs[k] = data[f"next_{k}"] / 255.0
         else:
@@ -120,8 +110,8 @@ def train(
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = 0
-        for k in cfg.cnn_keys.decoder + cfg.mlp_keys.decoder:
-            target = preprocess_obs(data[k], bits=5) if k in cfg.cnn_keys.decoder else data[k]
+        for k in cfg.algo.cnn_keys.decoder + cfg.algo.mlp_keys.decoder:
+            target = preprocess_obs(data[k], bits=5) if k in cfg.algo.cnn_keys.decoder else data[k]
             reconstruction_loss += (
                 F.mse_loss(target, reconstruction[k])  # Reconstruction
                 + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
@@ -153,22 +143,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
-        cfg.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
+    logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
@@ -193,119 +176,37 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder == [] and cfg.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
+
     if (
-        len(set(cfg.cnn_keys.encoder).intersection(set(cfg.cnn_keys.decoder))) == 0
-        and len(set(cfg.mlp_keys.encoder).intersection(set(cfg.mlp_keys.decoder))) == 0
+        len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
+        and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
     ):
         raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
-    if len(set(cfg.cnn_keys.decoder) - set(cfg.cnn_keys.encoder)) > 0:
+    if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
         raise RuntimeError(
             "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.cnn_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
         )
-    if len(set(cfg.mlp_keys.decoder) - set(cfg.mlp_keys.encoder)) > 0:
+    if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
         raise RuntimeError(
             "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.mlp_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-        fabric.print("Decoder CNN keys:", cfg.cnn_keys.decoder)
-        fabric.print("Decoder MLP keys:", cfg.mlp_keys.decoder)
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+        fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
+        fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
 
     # Define the agent and the optimizer and setup them with Fabric
-    act_dim = prod(envs.single_action_space.shape)
-    target_entropy = -act_dim
-
-    # Define the encoder and decoder and setup them with fabric.
-    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
-    # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(envs.single_observation_space[k].shape[:-2]) for k in cfg.cnn_keys.encoder]
-    mlp_dims = [envs.single_observation_space[k].shape[0] for k in cfg.mlp_keys.encoder]
-    cnn_encoder = (
-        CNNEncoder(
-            in_channels=sum(cnn_channels),
-            features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.cnn_keys.encoder,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
-        )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            sum(mlp_dims),
-            cfg.mlp_keys.encoder,
-            cfg.algo.encoder.dense_units,
-            cfg.algo.encoder.mlp_layers,
-            eval(cfg.algo.encoder.dense_act),
-            cfg.algo.encoder.layer_norm,
-        )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
-    cnn_decoder = (
-        CNNDecoder(
-            cnn_encoder.conv_output_shape,
-            features_dim=encoder.output_dim,
-            keys=cfg.cnn_keys.decoder,
-            channels=cnn_channels,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
-        )
-        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            encoder.output_dim,
-            mlp_dims,
-            cfg.mlp_keys.decoder,
-            cfg.algo.decoder.dense_units,
-            cfg.algo.decoder.mlp_layers,
-            eval(cfg.algo.decoder.dense_act),
-            cfg.algo.decoder.layer_norm,
-        )
-        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
-        else None
-    )
-    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-
-    # Setup actor and critic. Those will initialize with orthogonal weights
-    # both the actor and critic
-    actor = SACAEContinuousActor(
-        encoder=copy.deepcopy(encoder),
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=envs.single_action_space.low,
-        action_high=envs.single_action_space.high,
-    )
-    qfs = [
-        SACAEQFunction(
-            input_dim=encoder.output_dim, action_dim=act_dim, hidden_size=cfg.algo.critic.hidden_size, output_dim=1
-        )
-        for _ in range(cfg.algo.critic.n)
-    ]
-    critic = SACAECritic(encoder=encoder, qfs=qfs)
-
-    # The agent will tied convolutional and linear weights between the encoder actor and critic
-    agent = SACAEAgent(
-        actor,
-        critic,
-        target_entropy,
-        alpha=cfg.algo.alpha.alpha,
-        tau=cfg.algo.tau,
-        encoder_tau=cfg.algo.encoder.tau,
-        device=fabric.device,
+    agent, encoder, decoder = build_agent(
+        fabric,
+        cfg,
+        observation_space,
+        envs.single_action_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
+        state["encoder"] if cfg.checkpoint.resume_from else None,
+        state["decoder"] if cfg.checkpoint.resume_from else None,
     )
 
     # Optimizers
@@ -316,23 +217,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     decoder_optimizer = hydra.utils.instantiate(cfg.algo.decoder.optimizer, params=decoder.parameters())
 
     if cfg.checkpoint.resume_from:
-        agent.load_state_dict(state["agent"])
-        encoder.load_state_dict(state["encoder"])
-        decoder.load_state_dict(state["decoder"])
         qf_optimizer.load_state_dict(state["qf_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
         alpha_optimizer.load_state_dict(state["alpha_optimizer"])
         encoder_optimizer.load_state_dict(state["encoder_optimizer"])
         decoder_optimizer.load_state_dict(state["decoder_optimizer"])
 
-    encoder = fabric.setup_module(encoder)
-    decoder = fabric.setup_module(decoder)
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critic = fabric.setup_module(agent.critic)
-
     qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
         qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer
     )
+
+    local_vars = locals()
 
     # Metrics
     aggregator = None
@@ -347,7 +242,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         device=fabric.device if cfg.buffer.memmap else "cpu",
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        obs_keys=cfg.cnn_keys.encoder + cfg.mlp_keys.encoder,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
@@ -367,7 +262,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     time.time()
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    num_updates = int(cfg.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
@@ -392,11 +287,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     obs = {}
     for k in o.keys():
-        if k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             obs[k] = torch_obs
 
@@ -410,7 +305,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 actions = envs.action_space.sample()
             else:
                 with torch.no_grad():
-                    normalized_obs = {k: v / 255 if k in cfg.cnn_keys.encoder else v for k, v in obs.items()}
+                    normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
                     actions, _ = agent.actor.module(normalized_obs)
                     actions = actions.cpu().numpy()
             o, rewards, dones, truncated, infos = envs.step(actions)
@@ -437,19 +332,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         next_obs = {}
         for k in real_next_obs.keys():
             next_obs[k] = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 next_obs[k] = next_obs[k].view(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 next_obs[k] = next_obs[k].float()
 
             step_data[k] = obs[k]
             if not cfg.buffer.sample_next_obs:
                 step_data[f"next_{k}"] = torch.from_numpy(real_next_obs[k]).to(fabric.device)
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].view(
                         cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
-                if k in cfg.mlp_keys.encoder:
+                if k in cfg.algo.mlp_keys.encoder:
                     step_data[f"next_{k}"] = step_data[f"next_{k}"].float()
         actions = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float().to(fabric.device)
         rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float().to(fabric.device)
@@ -469,7 +364,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # We sample one time to reduce the communications between processes
             sample = rb.sample(
-                training_steps * cfg.algo.per_rank_gradient_steps * cfg.per_rank_batch_size,
+                training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
             )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
@@ -484,11 +379,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     drop_last=False,
                 )
                 sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=cfg.per_rank_batch_size, drop_last=False
+                    sampler=range(len(gathered_data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
 
             # Start training
@@ -557,7 +452,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
                 "update": update * fabric.world_size,
-                "batch_size": cfg.per_rank_batch_size * fabric.world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }
@@ -573,3 +468,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero:
         test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)

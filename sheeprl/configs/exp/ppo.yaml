@@ -3,11 +3,15 @@
 defaults:
   - override /algo: ppo
   - override /env: gym
+  - override /model_manager: ppo
   - _self_
 
-# Experiment
-total_steps: 65536
-per_rank_batch_size: 64
+# Algorithm
+algo:
+  total_steps: 65536
+  per_rank_batch_size: 64
+  mlp_keys:
+    encoder: [state]
 
 # Buffer
 buffer:

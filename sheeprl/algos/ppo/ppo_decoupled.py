@@ -1,19 +1,19 @@
 import copy
 import os
-import pathlib
 import warnings
 from datetime import timedelta
 from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
+import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from omegaconf import OmegaConf
+from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
@@ -22,15 +22,14 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
+from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.callback import CheckpointCallback
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
 
 
 @torch.no_grad()
@@ -45,15 +44,8 @@ def player(
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        root_dir = cfg.root_dir
-        run_name = cfg.run_name
         state = fabric.load(cfg.checkpoint.resume_from)
-        ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-        cfg = dotdict(OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml"))
-        cfg.checkpoint.resume_from = str(ckpt_path)
-        cfg.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
-        cfg.root_dir = root_dir
-        cfg.run_name = run_name
+        cfg.algo.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -74,25 +66,26 @@ def player(
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.cnn_keys.encoder + cfg.mlp_keys.encoder == []:
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.mlp_keys.encoder)
-    obs_keys = cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = (
+    actions_dim = tuple(
         envs.single_action_space.shape
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
     # Create the actor and critic models
@@ -102,13 +95,15 @@ def player(
         "encoder_cfg": cfg.algo.encoder,
         "actor_cfg": cfg.algo.actor,
         "critic_cfg": cfg.algo.critic,
-        "cnn_keys": cfg.cnn_keys.encoder,
-        "mlp_keys": cfg.mlp_keys.encoder,
+        "cnn_keys": cfg.algo.cnn_keys.encoder,
+        "mlp_keys": cfg.algo.mlp_keys.encoder,
         "screen_size": cfg.env.screen_size,
         "distribution_cfg": cfg.distribution,
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)
+
+    local_vars = locals()
 
     # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
     world_collective.broadcast_object_list([agent_args], src=0)
@@ -144,7 +139,7 @@ def player(
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -182,9 +177,9 @@ def player(
     next_obs = {}
     for k in obs_keys:
         torch_obs = torch.as_tensor(obs[k]).to(fabric.device)
-        if k in cfg.cnn_keys.encoder:
+        if k in cfg.algo.cnn_keys.encoder:
             torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-        elif k in cfg.mlp_keys.encoder:
+        elif k in cfg.algo.mlp_keys.encoder:
             torch_obs = torch_obs.float()
         step_data[k] = torch_obs
         next_obs[k] = torch_obs
@@ -200,9 +195,7 @@ def player(
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    normalized_obs = {
-                        k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys
-                    }
+                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     actions, logprobs, _, values = agent(normalized_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -226,7 +219,7 @@ def player(
                     for i, truncated_env in enumerate(truncated_envs):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.cnn_keys.encoder:
+                            if k in cfg.algo.cnn_keys.encoder:
                                 torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
@@ -243,8 +236,8 @@ def player(
             step_data["logprobs"] = logprobs
             step_data["rewards"] = rewards
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards)
-                step_data["advantages"] = torch.zeros_like(rewards)
+                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
 
             # Append data to buffer
             rb.add(step_data.unsqueeze(0))
@@ -252,10 +245,10 @@ def player(
             # Update the observation and dones
             next_obs = {}
             for k in obs_keys:
-                if k in cfg.cnn_keys.encoder:
+                if k in cfg.algo.cnn_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device)
                     torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                elif k in cfg.mlp_keys.encoder:
+                elif k in cfg.algo.mlp_keys.encoder:
                     torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
                 step_data[k] = torch_obs
                 next_obs[k] = torch_obs
@@ -271,10 +264,10 @@ def player(
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        normalized_obs = {k: next_obs[k] / 255.0 - 0.5 if k in cfg.cnn_keys.encoder else next_obs[k] for k in obs_keys}
+        normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
         next_values = agent.get_value(normalized_obs)
         returns, advantages = gae(
-            rb["rewards"],
+            rb["rewards"].to(torch.float64),
             rb["values"],
             rb["dones"],
             next_values,
@@ -286,6 +279,7 @@ def player(
         # Add returns and advantages to the buffer
         rb["returns"] = returns.float()
         rb["advantages"] = advantages.float()
+        rb["rewards"] = rb["rewards"].float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)
@@ -354,6 +348,22 @@ def player(
     if fabric.is_global_zero:
         test(agent, fabric, cfg, log_dir)
 
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)
+
 
 def trainer(
     world_collective: TorchCollective,
@@ -369,11 +379,12 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
-    fabric = Fabric(
-        strategy=DDPStrategy(process_group=optimization_pg),
-        devices=cfg.fabric.devices,
-        callbacks=[CheckpointCallback()],
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
     )
+    fabric.launch()
     device = fabric.device
     fabric.seed_everything(cfg.seed)
     torch.backends.cudnn.deterministic = cfg.torch_deterministic
@@ -445,17 +456,24 @@ def trainer(
         data = data[0]
         if not isinstance(data, TensorDictBase) and data == -1:
             # Last Checkpoint
-            if global_rank == 1 and (cfg.checkpoint.save_last):
+            if cfg.checkpoint.save_last:
                 state = {
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                     "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
+                    "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
             return
         data = make_tensordict(data, device=device)
 
@@ -463,7 +481,7 @@ def trainer(
 
         # Prepare sampler
         indexes = list(range(data.shape[0]))
-        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.per_rank_batch_size, drop_last=False)
+        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
         # Start training
         with timer(
@@ -475,10 +493,9 @@ def trainer(
                 for _ in range(cfg.algo.update_epochs):
                     for batch_idxes in sampler:
                         batch = data[batch_idxes]
-                        normalized_obs = {
-                            k: batch[k] / 255.0 - 0.5 if k in agent.feature_extractor.cnn_keys else batch[k]
-                            for k in cfg.cnn_keys.encoder + cfg.mlp_keys.encoder
-                        }
+                        normalized_obs = normalize_obs(
+                            batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                        )
                         _, logprobs, entropy, new_values = agent(
                             normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
                         )
@@ -574,17 +591,23 @@ def trainer(
         # Checkpoint model on rank-0: send it everything
         if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
             last_checkpoint = policy_step
-            if global_rank == 1:
-                state = {
-                    "agent": agent.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                    "update": update,
-                    "batch_size": cfg.per_rank_batch_size * (world_collective.world_size - 1),
-                    "last_log": last_log,
-                    "last_checkpoint": last_checkpoint,
-                }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                "update": update,
+                "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
+            }
+            ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            fabric.call(
+                "on_checkpoint_trainer",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                state=state,
+            )
         update += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 

@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - ppo_decoupled
+  - override /env: gym
+  - _self_
+
+dry_run: True
+
+fabric:
+  devices: 2
+  strategy: "ddp"
+  accelerator: "cpu"
+
+algo:
+  rollout_steps: 1

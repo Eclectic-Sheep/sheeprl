@@ -1,12 +1,17 @@
-from typing import TYPE_CHECKING, Any, Dict
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
+import mlflow
 import numpy as np
 import torch
 from lightning import Fabric
-from torch import Tensor
+from mlflow.models.model import ModelInfo
+from torch import Tensor, nn
 
 from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from sheeprl.algos.dreamer_v3.agent import PlayerDV3
@@ -24,14 +29,15 @@ AGGREGATOR_KEYS = {
     "State/kl",
     "State/post_entropy",
     "State/prior_entropy",
-    "Params/exploration_amout",
+    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
 }
+MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}
 
 
-class Moments(torch.nn.Module):
+class Moments(nn.Module):
     def __init__(
         self,
         fabric: Fabric,
@@ -107,9 +113,9 @@ def test(
         # Act greedly through the environment
         preprocessed_obs = {}
         for k, v in next_obs.items():
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device) / 255
-            elif k in cfg.mlp_keys.encoder:
+            elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
             preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
@@ -133,26 +139,26 @@ def test(
 
 # Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L929
 def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
+    if isinstance(m, nn.Linear):
         in_num = m.in_features
         out_num = m.out_features
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
-    elif isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.ConvTranspose2d):
+    elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         space = m.kernel_size[0] * m.kernel_size[1]
         in_num = space * m.in_channels
         out_num = space * m.out_channels
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        torch.nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
-    elif isinstance(m, torch.nn.LayerNorm):
+    elif isinstance(m, nn.LayerNorm):
         m.weight.data.fill_(1.0)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
@@ -161,18 +167,63 @@ def init_weights(m):
 # Adapted from: https://github.com/NM512/dreamerv3-torch/blob/main/tools.py#L957
 def uniform_init_weights(given_scale):
     def f(m):
-        if isinstance(m, torch.nn.Linear):
+        if isinstance(m, nn.Linear):
             in_num = m.in_features
             out_num = m.out_features
             denoms = (in_num + out_num) / 2.0
             scale = given_scale / denoms
             limit = np.sqrt(3 * scale)
-            torch.nn.init.uniform_(m.weight.data, a=-limit, b=limit)
+            nn.init.uniform_(m.weight.data, a=-limit, b=limit)
             if hasattr(m.bias, "data"):
                 m.bias.data.fill_(0.0)
-        elif isinstance(m, torch.nn.LayerNorm):
+        elif isinstance(m, nn.LayerNorm):
             m.weight.data.fill_(1.0)
             if hasattr(m.bias, "data"):
                 m.bias.data.fill_(0.0)
 
     return f
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence[ModelInfo]:
+    from sheeprl.algos.dreamer_v3.agent import build_agent
+
+    # Create the models
+    is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
+    world_model, actor, critic, target_critic = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        env.observation_space,
+        state["world_model"],
+        state["actor"],
+        state["critic"],
+        state["target_critic"],
+    )
+    moments = Moments(
+        fabric,
+        cfg.algo.actor.moments.decay,
+        cfg.algo.actor.moments.max,
+        cfg.algo.actor.moments.percentile.low,
+        cfg.algo.actor.moments.percentile.high,
+    )
+    moments.load_state_dict(state["moments"])
+
+    # Log the model, create a new run if `cfg.run_id` is None.
+    model_info = {}
+    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
+        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
+        model_info["actor"] = mlflow.pytorch.log_model(unwrap_fabric(actor), artifact_path="actor")
+        model_info["critic"] = mlflow.pytorch.log_model(unwrap_fabric(critic), artifact_path="critic")
+        model_info["target_critic"] = mlflow.pytorch.log_model(target_critic, artifact_path="target_critic")
+        model_info["moments"] = mlflow.pytorch.log_model(moments, artifact_path="moments")
+        mlflow.log_dict(cfg.to_log, "config.json")
+    return model_info

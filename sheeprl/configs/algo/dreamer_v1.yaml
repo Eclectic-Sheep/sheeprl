@@ -11,9 +11,16 @@ horizon: 15
 name: dreamer_v1
 
 # Training recipe
+train_every: 1000
 learning_starts: 5000
 per_rank_gradient_steps: 100
-train_every: 1000
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
 dense_units: 400
@@ -91,6 +98,10 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  expl_amount: 0.3
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 200000
 
   # Actor optimizer
   optimizer:
@@ -110,10 +121,3 @@ critic:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 0
-
-# Player agent (it interacts with the environment)
-player:
-  expl_min: 0.0
-  expl_amount: 0.3
-  expl_decay: False
-  max_step_expl_decay: 200000

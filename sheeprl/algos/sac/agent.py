@@ -1,8 +1,11 @@
 import copy
-from typing import Any, Dict, Sequence, SupportsFloat, Tuple, Union
+from math import prod
+from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
+import gymnasium
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
@@ -273,3 +276,34 @@ class SACAgent(nn.Module):
     def qfs_target_ema(self) -> None:
         for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+
+
+def build_agent(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    action_space: gymnasium.spaces.Box,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> SACAgent:
+    act_dim = prod(action_space.shape)
+    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
+    actor = SACActor(
+        observation_dim=obs_dim,
+        action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
+        hidden_size=cfg.algo.actor.hidden_size,
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+    critics = [
+        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
+        for _ in range(cfg.algo.critic.n)
+    ]
+    target_entropy = -act_dim
+    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
+    if agent_state:
+        agent.load_state_dict(agent_state)
+    agent.actor = fabric.setup_module(agent.actor)
+    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+
+    return agent

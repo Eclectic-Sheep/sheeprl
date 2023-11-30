@@ -11,10 +11,17 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-learning_starts: 1000
-per_rank_pretrain_steps: 100
-per_rank_gradient_steps: 1
 train_every: 5
+learning_starts: 1000
+per_rank_gradient_steps: 1
+per_rank_pretrain_steps: 100
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
 layer_norm: False
@@ -104,6 +111,10 @@ actor:
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  expl_amount: 0.0
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 0
 
   # Actor optimizer
   optimizer:
@@ -128,8 +139,4 @@ critic:
 
 # Player agent (it interacts with the environment)
 player:
-  expl_min: 0.0
-  expl_amount: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
   discrete_size: ${algo.world_model.discrete_size}

@@ -1,11 +1,12 @@
 import gymnasium as gym
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.utils.env import make_env
+from sheeprl.utils.utils import dotdict
 
 
-@hydra.main(version_base=None, config_path="../sheeprl/configs", config_name="env_config")
+@hydra.main(version_base="1.3", config_path="../sheeprl/configs", config_name="env_config")
 def main(cfg: DictConfig) -> None:
     cfg.env.capture_video = False
     if cfg.agent in {
@@ -14,6 +15,7 @@ def main(cfg: DictConfig) -> None:
         "dreamer_v3",
         "p2e_dv1",
         "p2e_dv2",
+        "p2e_dv3",
         "sac_ae",
         "ppo",
         "ppo_decoupled",
@@ -22,10 +24,11 @@ def main(cfg: DictConfig) -> None:
         "droq",
         "ppo_recurrent",
     }:
+        cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
         env: gym.Env = make_env(cfg, cfg.seed, 0)()
     else:
         raise ValueError(
-            "Invalid selected agent: check the available agents with the command `python sheeprl.py --sheeprl_help`"
+            "Invalid selected agent: check the available agents with the command `python sheeprl/available_agents.py`"
         )
 
     print()

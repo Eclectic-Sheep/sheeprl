@@ -14,9 +14,11 @@ exp_name: "default"
 root_dir: $env_logs
 run_name: ${env.id}
 agent: ???
-cnn_keys:
-  encoder: []
-  decoder: ${cnn_keys.encoder}
-mlp_keys:
-  encoder: []
-  decoder: ${mlp_keys.encoder}
+
+algo:
+  cnn_keys:
+    encoder: []
+    decoder: ${algo.cnn_keys.encoder}
+  mlp_keys:
+    encoder: []
+    decoder: ${algo.mlp_keys.encoder}

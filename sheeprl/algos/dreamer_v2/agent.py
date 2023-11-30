@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -430,6 +432,8 @@ class Actor(nn.Module):
             Default to 4.
         layer_norm (bool): whether or not to use the layer norm.
             Default to False.
+        expl_amount (float): the exploration amount to use during training.
+            Default to 0.0.
     """
 
     def __init__(
@@ -444,9 +448,11 @@ class Actor(nn.Module):
         activation: nn.Module = nn.ELU,
         mlp_layers: int = 4,
         layer_norm: bool = False,
+        expl_amount: float = 0.0,
     ) -> None:
         super().__init__()
-        self.distribution = distribution_cfg.pop("type", "auto").lower()
+        self.distribution_cfg = distribution_cfg
+        self.distribution = distribution_cfg.get("type", "auto").lower()
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
             raise ValueError(
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
@@ -477,6 +483,15 @@ class Actor(nn.Module):
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
         self.distribution_cfg = distribution_cfg
+        self._expl_amount = expl_amount
+
+    @property
+    def expl_amount(self) -> float:
+        return self._expl_amount
+
+    @expl_amount.setter
+    def expl_amount(self, amount: float):
+        self._expl_amount = amount
 
     def forward(
         self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
@@ -541,6 +556,27 @@ class Actor(nn.Module):
                     actions.append(actions_dist[-1].mode)
         return tuple(actions), tuple(actions_dist)
 
+    def add_exploration_noise(
+        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+    ) -> Sequence[Tensor]:
+        if self.is_continuous:
+            actions = torch.cat(actions, -1)
+            if self._expl_amount > 0.0:
+                actions = torch.clip(Normal(actions, self._expl_amount).sample(), -1, 1)
+            expl_actions = [actions]
+        else:
+            expl_actions = []
+            for act in actions:
+                sample = (
+                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
+                    .sample()
+                    .to(act.device)
+                )
+                expl_actions.append(
+                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
+                )
+        return tuple(expl_actions)
+
 
 class MinedojoActor(Actor):
     def __init__(
@@ -555,18 +591,20 @@ class MinedojoActor(Actor):
         activation: nn.Module = nn.ELU,
         mlp_layers: int = 4,
         layer_norm: bool = False,
+        expl_amount: float = 0.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
             is_continuous=is_continuous,
+            distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
             dense_units=dense_units,
             activation=activation,
             mlp_layers=mlp_layers,
             layer_norm=layer_norm,
-            distribution_cfg=distribution_cfg,
+            expl_amount=expl_amount,
         )
 
     def forward(
@@ -626,6 +664,51 @@ class MinedojoActor(Actor):
                 functional_action = actions[0].argmax(dim=-1)  # [T, B]
         return tuple(actions), tuple(actions_dist)
 
+    def add_exploration_noise(
+        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+    ) -> Sequence[Tensor]:
+        expl_actions = []
+        functional_action = actions[0].argmax(dim=-1)
+        for i, act in enumerate(actions):
+            logits = torch.zeros_like(act)
+            # Exploratory action must respect the constraints of the environment
+            if mask is not None:
+                if i == 0:
+                    logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
+                elif i == 1:
+                    mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action == 15:  # Craft action
+                                logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
+                elif i == 2:
+                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
+                    for t in range(functional_action.shape[0]):
+                        for b in range(functional_action.shape[1]):
+                            sampled_action = functional_action[t, b].item()
+                            if sampled_action in {16, 17}:  # Equip/Place action
+                                logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
+                            elif sampled_action == 18:  # Destroy action
+                                logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
+            sample = (
+                OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
+            )
+            expl_amount = self.expl_amount
+            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
+            # to satisfy the constraints of the environment
+            if (
+                i in {1, 2}
+                and actions[0].argmax() != expl_actions[0].argmax()
+                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
+            ):
+                expl_amount = 2
+            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
+            if mask is not None and i == 0:
+                functional_action = expl_actions[0].argmax(dim=-1)
+        return tuple(expl_actions)
+
 
 class WorldModel(nn.Module):
     """
@@ -657,7 +740,7 @@ class WorldModel(nn.Module):
 
 class PlayerDV2(nn.Module):
     """
-    The model of the Dreamer_v1 player.
+    The model of the Dreamer_v2 player.
 
     Args:
         encoder (nn.Module): the encoder.
@@ -665,7 +748,6 @@ class PlayerDV2(nn.Module):
         representation_model (nn.Module): the representation model.
         actor (nn.Module): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        expl_amount (float): the exploration amout to use during training.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
@@ -673,6 +755,8 @@ class PlayerDV2(nn.Module):
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
+        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+            Default to None.
     """
 
     def __init__(
@@ -682,12 +766,12 @@ class PlayerDV2(nn.Module):
         representation_model: nn.Module,
         actor: nn.Module,
         actions_dim: Sequence[int],
-        expl_amount: float,
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: torch.device,
         discrete_size: int = 32,
+        actor_type: str | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -695,13 +779,13 @@ class PlayerDV2(nn.Module):
         self.representation_model = representation_model
         self.actor = actor
         self.device = device
-        self.expl_amount = expl_amount
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
+        self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -722,12 +806,7 @@ class PlayerDV2(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(
-        self,
-        obs: Dict[str, Tensor],
-        is_continuous: bool,
-        mask: Optional[Dict[str, Tensor]] = None,
-    ) -> Tensor:
+    def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
         """
         Return the actions with a certain amount of noise for exploration.
 
@@ -741,62 +820,11 @@ class PlayerDV2(nn.Module):
             The actions the agent has to perform.
         """
         actions = self.get_greedy_action(obs, mask=mask)
-        if is_continuous:
-            self.actions = torch.cat(actions, -1)
-            if self.expl_amount > 0.0:
-                self.actions = torch.clip(
-                    Normal(self.actions, self.expl_amount, validate_args=self.validate_args).sample(),
-                    -1,
-                    1,
-                )
-            expl_actions = [self.actions]
-        else:
-            expl_actions = []
-            functional_action = actions[0].argmax(dim=-1)
-            for i, act in enumerate(actions):
-                logits = torch.zeros_like(act)
-                # Exploratory action must respect the constraints of the environment
-                if mask is not None:
-                    if i == 0:
-                        logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
-                    elif i == 1:
-                        mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
-                        for t in range(functional_action.shape[0]):
-                            for b in range(functional_action.shape[1]):
-                                sampled_action = functional_action[t, b].item()
-                                if sampled_action == 15:  # Craft action
-                                    logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
-                    elif i == 2:
-                        mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                        mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
-                        for t in range(functional_action.shape[0]):
-                            for b in range(functional_action.shape[1]):
-                                sampled_action = functional_action[t, b].item()
-                                if sampled_action in {16, 17}:  # Equip/Place action
-                                    logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
-                                elif sampled_action == 18:  # Destroy action
-                                    logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=self.validate_args)
-                    .sample()
-                    .to(self.device)
-                )
-                expl_amount = self.expl_amount
-                # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-                # to satisfy the constraints of the environment
-                if (
-                    i in {1, 2}
-                    and actions[0].argmax() != expl_actions[0].argmax()
-                    and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-                ):
-                    expl_amount = 2
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act)
-                )
-                if mask is not None and i == 0:
-                    functional_action = expl_actions[0].argmax(dim=-1)
-            self.actions = torch.cat(expl_actions, -1)
-        return tuple(expl_actions)
+        expl_actions = None
+        if self.actor.expl_amount > 0:
+            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
+            self.actions = torch.cat(expl_actions, dim=-1)
+        return expl_actions or actions
 
     def get_greedy_action(
         self,
@@ -833,7 +861,7 @@ class PlayerDV2(nn.Module):
         return actions
 
 
-def build_models(
+def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
@@ -879,26 +907,26 @@ def build_models(
     # Define models
     cnn_encoder = (
         CNNEncoder(
-            keys=cfg.cnn_keys.encoder,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.encoder],
-            image_size=obs_space[cfg.cnn_keys.encoder[0]].shape[-2:],
+            keys=cfg.algo.cnn_keys.encoder,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
+            image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=world_model_cfg.encoder.layer_norm,
             activation=eval(world_model_cfg.encoder.cnn_act),
         )
-        if cfg.cnn_keys.encoder is not None and len(cfg.cnn_keys.encoder) > 0
+        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
-            keys=cfg.mlp_keys.encoder,
-            input_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.encoder],
+            keys=cfg.algo.mlp_keys.encoder,
+            input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
             layer_norm=world_model_cfg.encoder.layer_norm,
         )
-        if cfg.mlp_keys.encoder is not None and len(cfg.mlp_keys.encoder) > 0
+        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -939,29 +967,29 @@ def build_models(
     )
     cnn_decoder = (
         CNNDecoder(
-            keys=cfg.cnn_keys.decoder,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.cnn_keys.decoder],
+            keys=cfg.algo.cnn_keys.decoder,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
             channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cfg.cnn_keys.decoder[0]].shape[-2:],
+            image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=eval(world_model_cfg.observation_model.cnn_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if cfg.cnn_keys.decoder is not None and len(cfg.cnn_keys.decoder) > 0
+        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            keys=cfg.mlp_keys.decoder,
-            output_dims=[obs_space[k].shape[0] for k in cfg.mlp_keys.decoder],
+            keys=cfg.algo.mlp_keys.decoder,
+            output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=eval(world_model_cfg.observation_model.dense_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if cfg.mlp_keys.decoder is not None and len(cfg.mlp_keys.decoder) > 0
+        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)

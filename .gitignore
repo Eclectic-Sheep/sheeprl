@@ -167,3 +167,7 @@ pytest_*
 !sheeprl/configs/env
 .diambra*
 .hydra
+.pypirc
+mlruns
+mlartifacts
+examples/models

@@ -7,7 +7,6 @@ defaults:
 
 # Experiment
 seed: 5
-total_steps: 100000
 
 # Environment
 env:
@@ -30,10 +29,11 @@ buffer:
 
 # Algorithm
 algo:
-  learning_starts: 1024
+  mlp_layers: 2
   train_every: 1
   dense_units: 512
-  mlp_layers: 2
+  total_steps: 100000
+  learning_starts: 1024
   world_model:
     encoder:
       cnn_channels_multiplier: 32

@@ -1,7 +1,7 @@
 # Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota`, so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
+Suppose that we want to add a new SoTA algorithm to sheeprl called `sota` so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
 
-We start from creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
+We start by creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
 ```bash
 algos
@@ -49,6 +49,7 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
 from torchmetrics import MeanMetric, SumMetric
 
+from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.sota.loss import loss1, loss2
 from sheeprl.algos.sota.utils import test
 from sheeprl.data import ReplayBuffer
@@ -56,8 +57,9 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import create_tensorboard_logger, get_log_dir
+from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import register_model, unwrap_fabric
 
 
 def train(
@@ -77,8 +79,9 @@ def train(
     optimizer.step()
 
     # Update metrics
-    aggregator.update("Loss/loss1", l1.detach())
-    aggregator.update("Loss/loss2", l2.detach())
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/loss1", l1.detach())
+        aggregator.update("Loss/loss2", l2.detach())
 
 
 @register_algorithm(decoupled=False)
@@ -88,10 +91,10 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     fabric.seed_everything(cfg.seed)
 
-    # Create TensorBoardLogger. This will create the logger only on the
+    # Create Logger. This will create the logger only on the
     # rank-0 process
-    logger = create_tensorboard_logger(fabric, cfg)
-    if fabric.is_global_zero:
+    logger = get_logger(fabric, cfg)
+    if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
@@ -112,28 +115,29 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         ]
     )
 
-    # Create the agent model: this should be a torch.nn.Module to be acceleratesd with Fabric
-    # Given that the environment has been created with the `make_dict_env` method, the agent
+    # Create the agent model: this should be a torch.nn.Module to be accelerated with Fabric
+    # Given that the environment has been created with the `make_env` method, the agent
     # forward method must accept as input a dictionary like {"obs1_name": obs1, "obs2_name": obs2, ...}.
     # The agent should be able to process both image and vector-like observations.
-    agent = ...
+    agent = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        observation_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
+    )
 
-    # Define the agent and the optimizer and setup them with Fabric
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=list(agent.parameters()))
-    agent = fabric.setup_module(agent)
-    optimizer = fabric.setup_optimizers(optimizer)
+    # the optimizer and set up it with Fabric
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+
+    # In case you want to give the possiblity to register your models
+    local_vars = locals()
 
     # Create a metric aggregator to log the metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(),
-                "Game/ep_len_avg": MeanMetric(),
-                "Loss/value_loss": MeanMetric(),
-                "Loss/policy_loss": MeanMetric(),
-                "Loss/entropy_loss": MeanMetric(),
-            }
-        )
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
 
     # Local data
     rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.env.num_envs, device=device, memmap=cfg.buffer.memmap)
@@ -146,7 +150,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_step = 0
     last_checkpoint = 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
     if cfg.metric.log_every % policy_steps_per_update != 0:
@@ -170,9 +174,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     for k in o.keys():
         if k in obs_keys:
             torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.cnn_keys.encoder:
+            if k in cfg.algo.cnn_keys.encoder:
                 torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.mlp_keys.encoder:
+            if k in cfg.algo.mlp_keys.encoder:
                 torch_obs = torch_obs.float()
             step_data[k] = torch_obs
             next_obs[k] = torch_obs
@@ -212,9 +216,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             for k in o.keys():
                 if k in obs_keys:
                     torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-                    if k in cfg.cnn_keys.encoder:
+                    if k in cfg.algo.cnn_keys.encoder:
                         torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                    if k in cfg.mlp_keys.encoder:
+                    if k in cfg.algo.mlp_keys.encoder:
                         torch_obs = torch_obs.float()
                     step_data[k] = torch_obs
                     obs[k] = torch_obs
@@ -226,8 +230,10 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                     if agent_ep_info is not None:
                         ep_rew = agent_ep_info["episode"]["r"]
                         ep_len = agent_ep_info["episode"]["l"]
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
+                        if aggregator and "Rewards/rew_avg" in aggregator:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                        if aggregator and "Game/ep_len_avg" in aggregator:
+                            aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Flatten the batch
@@ -239,26 +245,28 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         # Log metrics
         if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
             # Sync distributed metrics
-            metrics_dict = aggregator.compute()
-            fabric.log_dict(metrics_dict, policy_step)
-            aggregator.reset()
+            if aggregator and not aggregator.disabled:
+                metrics_dict = aggregator.compute()
+                fabric.log_dict(metrics_dict, policy_step)
+                aggregator.reset()
 
             # Sync distributed timers
-            timer_metrics = timer.compute()
-            if "Time/train_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_train",
-                    (train_step - last_train) / timer_metrics["Time/train_time"],
-                    policy_step,
-                )
-            if "Time/env_interaction_time" in timer_metrics:
-                fabric.log(
-                    "Time/sps_env_interaction",
-                    ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                    / timer_metrics["Time/env_interaction_time"],
-                    policy_step,
-                )
-            timer.reset()
+            if not timer.disabled:
+                timer_metrics = timer.compute()
+                if "Time/train_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_train",
+                        (train_step - last_train) / timer_metrics["Time/train_time"],
+                        policy_step,
+                    )
+                if "Time/env_interaction_time" in timer_metrics:
+                    fabric.log(
+                        "Time/sps_env_interaction",
+                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        / timer_metrics["Time/env_interaction_time"],
+                        policy_step,
+                    )
+                timer.reset()
 
             # Reset counters
             last_log = policy_step
@@ -281,15 +289,54 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero:
-        test(actor.module, envs, fabric, cfg)
+        test(agent.module, fabric, cfg, log_dir)
+
+    # Optional part in case you want to give the possibility to register your models with MLFlow
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+
+        def log_models(
+            run_id: str, experiment_id: str | None = None, run_name: str | None = None
+        ) -> Dict[str, ModelInfo]:
+            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+                model_info = {}
+                unwrapped_models = {}
+                for k in cfg.model_manager.models.keys():
+                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
+                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+                mlflow.log_dict(cfg, "config.json")
+            return model_info
+
+        register_model(fabric, log_models, cfg)
+```
+
+### Metrics and Model Manager
+Each algorithm logs its own metrics, during training or environment interaction. To define which are the metrics that can be logged, you need to define the `AGGREGATOR_KEYS` variable in the `./sheeprl/algos/sota/utils.py` file. It must be a set of strings (the name of the metrics to log). Then, you can decide which metrics to log by defining the `metric.aggregator.metrics` in the configs.
+
+> **Remember**
+>
+> The intersection between the keys in the `AGGREGATOR_KEYS` and the ones in the `metric.aggregator.metrics` config will be logged.
+
+As for metrics, you have to specify which are the models that can be registered after training, you need to define the `MODELS_TO_REGISTER` variable in the `./sheeprl/algos/sota/utils.py` file. It must be a set of strings (the name of the variables of the models you want to register). As before, you can easily select which agents to register by defining the `model_manager.models` in the configs. Also in this case, the models that will be registered are the intersection between the `MODELS_TO_REGISTER` variable and the keys of the `model_manager.models` config.
+
+In this case, the `./sheeprl/algos/sota/utils.py` file could be defined as below:
+
+```python
+# `./sheeprl/algos/sota/utils.py`
+
+...
+
+AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/loss1", "Loss/loss2"}
+MODELS_TO_REGISTER = {"agent"}
+
+...
 ```
 
 ## Config files
-Once you have written your algorithm, you need to create two configs file: one in `./sheeprl/configs/algo` and the other in `./sheeprl/configs/exp`.
+Once you have written your algorithm, you need to create two config files: one in `./sheeprl/configs/algo` and the other in `./sheeprl/configs/exp`.
 
 > **Note**
 >
-> The name of the two file should be the same of the algorithm, so in our case it is `sota.yaml`
+> The name of the two files should be the same as the algorithm, so in our case, it is `sota.yaml`
 
 ```bash
 configs
@@ -306,9 +353,9 @@ configs
     └── sota.yaml
 ```
 
-#### Algo configs
+#### Algo Configs
 In the `./sheeprl/configs/algo/sota.yaml` we need to specify all the configs needed to initialize and train your agent.
-Here an example of the `./sheeprl/configs/algo/sota.yaml` config file:
+Here is an example of the `./sheeprl/configs/algo/sota.yaml` config file:
 
 ```yaml
 defaults:
@@ -364,15 +411,32 @@ defaults:
   - /optim@encoder.optimizer: adam
   - /optim@actor.optimizer: adam
 ```
-will add two optimizers, one accesible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
+will add two optimizers, one accessible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
 
 > **Note**
 >
 > The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `sheeprl/algos/sota` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `sheeprl/algos/sota/my_sota.py`, then `algo.name="my_sota"` 
 
-#### Experiment config
-In the second file you have to specify all the elements you want in your experiment and you can override all the parameters you want.
-Here an example of the `./sheeprl/configs/exp/sota.yaml` config file:
+#### Model Manager Configs
+In the `./sheeprl/configs/model_manager/sota.yaml` we need to specify all the configs needed to register your agent. You can specify a name, a description, and some tags for each model you want to register. The `disabled` parameter indicates whether or not you want to register your models.
+Here is an example of the `./sheeprl/configs/model_manager/sota.yaml` config file:
+
+```yaml
+defaults:
+  - default
+  - _self_
+
+disabled: False
+models: 
+  agent:
+    model_name: "${exp_name}"
+    description: "SOTA Agent in ${env.id} Environment"
+    tags: {}
+```
+
+#### Experiment Configs
+In the second file, you have to specify all the elements you want in your experiment and you can override all the parameters you want.
+Here is an example of the `./sheeprl/configs/exp/sota.yaml` config file:
 
 ```yaml
 # @package _global_
@@ -380,10 +444,14 @@ Here an example of the `./sheeprl/configs/exp/sota.yaml` config file:
 defaults:
   - override /algo: sota
   - override /env: atari
+  # select the model manager configs
+  - override /model_manager: sota
   - _self_
 
-total_steps: 65536
-per_rank_batch_size: 64
+algo:
+  total_steps: 65536
+  per_rank_batch_size: 64
+
 buffer:
   share_data: False
 
@@ -391,9 +459,20 @@ buffer:
 env:
   env:
     id: MsPacmanNoFrameskip-v4
+
+# select which metrics to log
+metric:
+  aggregator:
+    metrics:
+      Loss/loss1:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/loss2:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
 ```
 
-With `override /algo: sota` in `defaults` you are specifing you want to use the new `sota` algorithm, whereas, with `override /env: gym` you are specifing that you want to train your agent on an *Atari* environment.
+With `override /algo: sota` in `defaults` you are specifying you want to use the new `sota` algorithm, whereas, with `override /env: gym` you are specifying that you want to train your agent on an *Atari* environment.
 
 ## Register Algorithm
 
@@ -422,6 +501,7 @@ from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
 from sheeprl.algos.droq import droq as droq
 from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
+from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
 from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
@@ -452,6 +532,7 @@ SheepRL Agents
 │ sheeprl.algos.droq          │ droq          │ main       │ False     │
 │ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
 │ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
+│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
 │ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │

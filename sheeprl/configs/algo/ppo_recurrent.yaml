@@ -13,6 +13,7 @@ max_grad_norm: 0.5
 anneal_ent_coef: True
 normalize_advantages: True
 reset_recurrent_state_on_done: True
+per_rank_sequence_length: ???
 
 # Model related parameters
 mlp_layers: 1

@@ -6,6 +6,9 @@ defaults:
 name: p2e_dv1
 intrinsic_reward_multiplier: 10000
 
+player:
+  actor_type: exploration
+
 ensembles:
   n: 10 # the number of the ensembles
   dense_act: ${algo.dense_act}

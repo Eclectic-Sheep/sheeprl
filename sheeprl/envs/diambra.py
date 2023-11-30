@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import warnings
 
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
