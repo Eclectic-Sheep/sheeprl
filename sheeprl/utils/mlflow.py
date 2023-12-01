@@ -7,22 +7,26 @@ import os
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Literal, Set
+from typing import Any, Callable, Dict, Literal, Sequence, Set
 
-from git import Sequence
+import gymnasium as gym
+import torch
 from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
+from lightning.pytorch.loggers.mlflow import MLFlowLogger
 
-try:
-    import mlflow  # noqa
-    from mlflow.entities import Run  # noqa
-    from mlflow.entities.model_registry import ModelVersion  # noqa
-    from mlflow.exceptions import RestException  # noqa
-    from mlflow.tracking import MlflowClient  # noqa
+from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
-    MLFLOW_AVAILABLE = True
-except ImportError:
-    MLFLOW_AVAILABLE = False
+if not _IS_MLFLOW_AVAILABLE:
+    raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
 
+import mlflow  # noqa
+from mlflow.entities import Run  # noqa
+from mlflow.entities.model_registry import ModelVersion  # noqa
+from mlflow.exceptions import RestException  # noqa
+from mlflow.models.model import ModelInfo  # noqa
+from mlflow.tracking import MlflowClient  # noqa
 
 VERSION_MD_TEMPLATE = "## **Version {}**\n"
 DESCRIPTION_MD_TEMPLATE = "### Description: \n{}\n"
@@ -72,8 +76,8 @@ class MlflowModelManager(AbstractModelManager):
     """Model manager for Mlflow."""
 
     def __init__(self, fabric: Fabric, tracking_uri: str):
-        if not MLFLOW_AVAILABLE:
-            raise ImportError("Mlflow is not available, please install it with pip install mlflow.")
+        if not _IS_MLFLOW_AVAILABLE:
+            raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
 
         super().__init__(fabric)
         self.tracking_uri = tracking_uri
@@ -321,3 +325,103 @@ class MlflowModelManager(AbstractModelManager):
         except RestException:
             self.fabric.print(f"Model named {model_name} with version {version} does not exist")
             return None
+
+
+def register_model_from_checkpoint(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    state: Dict[str, Any],
+    log_models_from_checkpoint: Callable[
+        [Fabric, gym.Env | gym.Wrapper, Dict[str, Any], Dict[str, Any]], Dict[str, ModelInfo]
+    ],
+):
+    tracking_uri = getattr(cfg, "tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
+    if tracking_uri is None:
+        raise ValueError(
+            "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
+            "MLFLOW_TRACKING_URI environment variable."
+        )
+    # Creating the environment for agent instantiation
+    env = make_env(
+        cfg,
+        cfg.seed,
+        0,
+        None,
+        "test",
+        vector_env_idx=0,
+    )()
+    observation_space = env.observation_space
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
+
+    mlflow.set_tracking_uri(tracking_uri)
+    # If the user does not specify the experiment, than, create a new experiment
+    if cfg.run.id is None and cfg.experiment.id is None:
+        cfg.experiment.id = mlflow.create_experiment(cfg.experiment.name)
+    # Log the models
+    models_info = log_models_from_checkpoint(fabric, env, cfg, state)
+    model_manager = MlflowModelManager(fabric, tracking_uri)
+    if not set(cfg.model_manager.models.keys()).issubset(models_info.keys()):
+        raise RuntimeError(
+            f"The models you want to register must be a subset of the models of the {cfg.algo.name} agent. "
+            f"{len(cfg.model_manager.models)} model registration "
+            f"configs are given, but the agent has {len(models_info)} models. "
+            f"\nModels specified in the configs: {cfg.model_manager.models.keys()}."
+            f"\nModels of the {cfg.algo.name} agent: {cfg.model_manager.models.keys()}."
+        )
+    # Register the models specified in the configs
+    for k, cfg_model in cfg.model_manager.models.items():
+        model_manager.register_model(
+            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+        )
+
+
+def register_model(
+    fabric: Fabric,
+    log_models: Callable[
+        [Dict[str, Any], Dict[str, torch.nn.Module | _FabricModule], str, str | None, str | None], Dict[str, ModelInfo]
+    ],
+    cfg: Dict[str, Any],
+    models_to_log: Dict[str, torch.nn.Module | _FabricModule],
+):
+    if len(fabric.loggers) == 0:
+        raise RuntimeError("No logger is defined, try to set the `metric.log_level=1` from the CLI")
+    elif len(fabric.loggers) > 0 and not isinstance(fabric.logger, MLFlowLogger):
+        raise RuntimeError(
+            "The logger is not an mlflow logger, try to set the `logger@metric.logger=mlflow` from the CLI."
+        )
+    tracking_uri = getattr(fabric.logger, "_tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
+    if tracking_uri is None:
+        raise ValueError(
+            "The tracking uri is not defined, use an mlflow logger with a tracking uri or define the "
+            "MLFLOW_TRACKING_URI environment variable."
+        )
+    cfg_model_manager = cfg.model_manager
+    # Retrieve run_id, if None, create a new run
+    run_id = None
+    if len(fabric.loggers) > 0:
+        run_id = getattr(fabric.logger, "run_id", None)
+    mlflow.set_tracking_uri(tracking_uri)
+    experiment_id = None
+    run_name = None
+    if run_id is None:
+        experiment = mlflow.get_experiment_by_name(cfg.exp_name)
+        experiment_id = mlflow.create_experiment(cfg.exp_name) if experiment is None else experiment.experiment_id
+        run_name = f"{cfg.algo.name}_{cfg.env.id}_{datetime.today().strftime('%Y-%m-%d %H:%M:%S')}"
+    models_info = log_models(cfg, models_to_log, run_id, experiment_id, run_name)
+    model_manager = MlflowModelManager(fabric, tracking_uri)
+    if len(models_info) != len(cfg_model_manager.models):
+        raise RuntimeError(
+            f"The number of models of the {cfg.algo.name} agent must be equal to the number "
+            f"of models you want to register. {len(cfg_model_manager.models)} model registration "
+            f"configs are given, but the agent has {len(models_info)} models."
+        )
+    for k, cfg_model in cfg_model_manager.models.items():
+        model_manager.register_model(
+            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+        )

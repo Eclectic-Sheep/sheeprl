@@ -9,11 +9,9 @@ from typing import Any, Dict, List
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, pad_sequence
 from tensordict.tensordict import TensorDictBase
 from torch.distributed.algorithms.join import Join
@@ -30,7 +28,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, save_configs, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
 def train(
@@ -192,6 +190,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         observation_space,
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
+    models_to_log = {"agent": agent}
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
     # Load the state from the checkpoint
@@ -200,7 +199,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Setup agent and optimizer with Fabric
     optimizer = fabric.setup_optimizers(optimizer)
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
 
@@ -503,17 +501,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.ppo.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        register_model(fabric, log_models, cfg, models_to_log)

@@ -57,9 +57,10 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import unwrap_fabric
 
 
 def train(
@@ -130,9 +131,6 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # the optimizer and set up it with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
-
-    # In case you want to give the possiblity to register your models
-    local_vars = locals()
 
     # Create a metric aggregator to log the metrics
     aggregator = None
@@ -293,20 +291,52 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.sota.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
+        models_to_log = {"agent": agent}
+        register_model(fabric, log_models, cfg, models_to_log)
+```
 
-        register_model(fabric, log_models, cfg)
+where `log_models` has to be defined in the `sheeprl.algo.sota.utils` module, for example like this: 
+
+```python
+from __future__ import annotations
+
+import warnings
+from typing import TYPE_CHECKING, Any, Dict
+
+import torch
+from lightning.fabric.wrappers import _FabricModule
+
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.utils import unwrap_fabric
+
+if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
+
+def log_models(
+    cfg: Dict[str, Any],
+    models_to_log: Dict[str, torch.nn.Module | _FabricModule],
+    run_id: str,
+    experiment_id: str | None = None,
+    run_name: str | None = None,
+) -> Dict[str, "ModelInfo"]:
+    if not _IS_MLFLOW_AVAILABLE:
+        raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+    import mlflow  # noqa
+
+    with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
+        model_info = {}
+        unwrapped_models = {}
+        for k in cfg.model_manager.models.keys():
+            if k not in models_to_log:
+                warnings.warn(f"Model {k} not found in models_to_log, skipping.", category=UserWarning)
+                continue
+            unwrapped_models[k] = unwrap_fabric(models_to_log[k])
+            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+        mlflow.log_dict(cfg, "config.json")
+    return model_info
 ```
 
 ### Metrics and Model Manager

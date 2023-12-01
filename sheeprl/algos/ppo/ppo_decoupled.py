@@ -6,14 +6,12 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
@@ -29,7 +27,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, save_configs, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
 @torch.no_grad()
@@ -98,7 +96,6 @@ def player(
     }
     agent = PPOAgent(**agent_args).to(device)
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
@@ -358,20 +355,11 @@ def player(
         test(agent, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.ppo.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {"agent": agent}
+        register_model(fabric, log_models, cfg, models_to_log)
 
 
 def trainer(

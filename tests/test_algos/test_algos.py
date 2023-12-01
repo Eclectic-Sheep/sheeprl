@@ -20,7 +20,7 @@ def devices(request):
 
 @pytest.fixture()
 def standard_args():
-    return [
+    args = [
         os.path.join(ROOT_DIR, "__main__.py"),
         "hydra/job_logging=disabled",
         "hydra/hydra_logging=disabled",
@@ -33,6 +33,9 @@ def standard_args():
         f"env.sync_env={_IS_WINDOWS}",
         "env.capture_video=False",
     ]
+    if os.environ.get("MLFLOW_TRACKING_URI", None) is not None:
+        args.extend(["logger@metric.logger=mlflow", "model_manager.disabled=False", "metric.log_level=1"])
+    return args
 
 
 @pytest.fixture()
@@ -57,7 +60,6 @@ def remove_test_dir(path: str) -> None:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
-@pytest.mark.timeout(60)
 def test_droq(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
     run_name = "test_droq"
@@ -76,7 +78,6 @@ def test_droq(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 def test_sac(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "test_sac"
@@ -95,7 +96,6 @@ def test_sac(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 def test_sac_ae(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
     run_name = "test_sac_ae"
@@ -122,7 +122,6 @@ def test_sac_ae(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 def test_sac_decoupled(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_sac_decoupled"
@@ -144,7 +143,6 @@ def test_sac_decoupled(standard_args, start_time):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_ppo(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
@@ -166,7 +164,6 @@ def test_ppo(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_ppo_decoupled(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
@@ -193,7 +190,6 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
@@ -212,7 +208,6 @@ def test_ppo_recurrent(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_dreamer_v1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
@@ -241,7 +236,6 @@ def test_dreamer_v1(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
@@ -316,7 +310,6 @@ def test_p2e_dv1(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_dreamer_v2(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
@@ -350,7 +343,6 @@ def test_dreamer_v2(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv2(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
@@ -425,7 +417,6 @@ def test_p2e_dv2(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_dreamer_v3(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
@@ -459,7 +450,6 @@ def test_dreamer_v3(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv3(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])

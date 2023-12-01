@@ -10,11 +10,12 @@ from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict, print_config, register_model_from_checkpoint
+from sheeprl.utils.utils import dotdict, print_config
 
 
 def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
@@ -261,6 +262,14 @@ def check_configs(cfg: Dict[str, Any]):
                 "if you run into any problems.",
                 UserWarning,
             )
+    if not (_IS_MLFLOW_AVAILABLE or cfg.model_manager.disabled):
+        warnings.warn(
+            "MLFlow is not installed. "
+            "Please install it with 'pip install mlflow' if you want to use the MLFlow logger and log models. "
+            "Setting `cfg.model_manager.disabled=True`",
+            UserWarning,
+        )
+        cfg.model_manager.disabled = True
 
 
 def check_configs_evaluation(cfg: DictConfig):
@@ -318,6 +327,8 @@ def evaluation(cfg: DictConfig):
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="model_manager_config")
 def registration(cfg: DictConfig):
+    from sheeprl.utils.mlflow import register_model_from_checkpoint
+
     checkpoint_path = Path(cfg.checkpoint_path)
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / ".hydra" / "config.yaml")
 

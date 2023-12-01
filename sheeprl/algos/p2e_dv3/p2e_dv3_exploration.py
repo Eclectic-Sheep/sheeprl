@@ -5,13 +5,11 @@ from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from mlflow.models.model import ModelInfo
 from omegaconf import DictConfig
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
@@ -36,7 +34,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, save_configs, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, save_configs
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -345,7 +343,7 @@ def train(
         )
         critic["lambda_values"] = lambda_values
         baseline = predicted_values[:-1]
-        offset, invscale = moments_exploration[k](lambda_values)
+        offset, invscale = moments_exploration[k](lambda_values, fabric)
         normed_lambda_values = (lambda_values - offset) / invscale
         normed_baseline = (baseline - offset) / invscale
         advantages.append((normed_lambda_values - normed_baseline) * critic["weight"] / weights_sum)
@@ -479,7 +477,7 @@ def train(
     policies: Sequence[Distribution] = actor_task(imagined_trajectories.detach())[1]
 
     baseline = predicted_values[:-1]
-    offset, invscale = moments_task(lambda_values)
+    offset, invscale = moments_task(lambda_values, fabric)
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
@@ -698,7 +696,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     moments_exploration = {
         k: Moments(
-            fabric,
             cfg.algo.actor.moments.decay,
             cfg.algo.actor.moments.max,
             cfg.algo.actor.moments.percentile.low,
@@ -707,7 +704,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k in critics_exploration.keys()
     }
     moments_task = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -717,8 +713,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k, m in moments_exploration.items():
             m.load_state_dict(state[f"moments_exploration_{k}"])
         moments_task.load_state_dict(state["moments_task"])
-
-    local_vars = locals()
 
     # Metrics
     # Since there could be more exploration critics, the key of the critic is added
@@ -1104,28 +1098,25 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    if k.startswith("critic_exploration"):
-                        unwrapped_models[k] = unwrap_fabric(
-                            critics_exploration[k.replace("critic_exploration_", "")]["module"]
-                        )
-                    elif k.startswith("target_critic_exploration"):
-                        unwrapped_models[k] = critics_exploration[k.replace("target_critic_exploration_", "")][
-                            "target_module"
-                        ]
-                    elif k.startswith("moments_exploration"):
-                        unwrapped_models[k] = unwrap_fabric(moments_exploration[k.replace("moments_exploration_", "")])
-                    else:
-                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {
+            "world_model": world_model,
+            "ensembles": ensembles,
+            "actor_exploration": actor_exploration,
+            "actor_task": actor_task,
+            "critic_task": critic_task,
+            "target_critic_task": target_critic_task,
+            "moments_task": moments_task,
+        }
+        critics_to_log = {}
+        for k, v in critics_exploration.items():
+            critics_to_log["critic_exploration_" + k] = v["module"]
+            critics_to_log["target_critic_exploration_" + k] = v["target_module"]
+        critics_moments_to_log = {}
+        for k, v in moments_exploration.items():
+            critics_moments_to_log["moments_exploration_" + k] = v
+        models_to_log.update(critics_to_log)
+        models_to_log.update(critics_moments_to_log)
+        register_model(fabric, log_models, cfg, models_to_log)

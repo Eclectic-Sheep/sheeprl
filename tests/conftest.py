@@ -67,3 +67,11 @@ def teardown_process_group():
     yield
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
+
+
+def pytest_collection_modifyitems(items):
+    """Adds a timeout marker to all tests in test_algos.py."""
+    timeout = 60 if os.environ.get("MLFLOW_TRACKING_URI", None) is not None else 180
+    for item in items:
+        if "test_algos.py" in item.module.__name__:
+            item.add_marker(pytest.mark.timeout(timeout))

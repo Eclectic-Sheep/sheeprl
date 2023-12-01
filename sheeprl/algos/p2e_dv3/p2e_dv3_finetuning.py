@@ -6,11 +6,9 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from torch import Tensor
 from torch.utils.data import BatchSampler
@@ -26,7 +24,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, save_configs, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, save_configs
 
 
 @register_algorithm()
@@ -180,7 +178,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
 
     moments_task = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -188,7 +185,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
     moments_task.load_state_dict(state["moments_task"])
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
 
@@ -509,21 +505,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                models_keys = set(cfg.model_manager.models.keys())
-                for k in models_keys:
-                    if "exploration" not in k and k != "ensembles":
-                        unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                        model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                    else:
-                        cfg.model_manager.models.pop(k, None)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {
+            "world_model": world_model,
+            "actor_task": actor_task,
+            "critic_task": critic_task,
+            "target_critic_task": target_critic_task,
+            "moments_task": moments_task,
+        }
+        register_model(fabric, log_models, cfg, models_to_log)

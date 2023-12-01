@@ -11,5 +11,6 @@ _IS_DIAMBRA_ARENA_AVAILABLE = RequirementCache("diambra-arena")
 _IS_DMC_AVAILABLE = RequirementCache("dm_control")
 _IS_MINEDOJO_AVAILABLE = RequirementCache("minedojo")
 _IS_MINERL_0_4_4_AVAILABLE = RequirementCache("minerl==0.4.4")
+_IS_MLFLOW_AVAILABLE = RequirementCache("mlflow>=2.8", "mlflow")
 _IS_TORCH_GREATER_EQUAL_2_0 = RequirementCache("torch>=2.0")
 _IS_WINDOWS = platform.system() == "Windows"
