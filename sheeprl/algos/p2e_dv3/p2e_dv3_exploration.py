@@ -343,7 +343,7 @@ def train(
         )
         critic["lambda_values"] = lambda_values
         baseline = predicted_values[:-1]
-        offset, invscale = moments_exploration[k](lambda_values)
+        offset, invscale = moments_exploration[k](lambda_values, fabric)
         normed_lambda_values = (lambda_values - offset) / invscale
         normed_baseline = (baseline - offset) / invscale
         advantages.append((normed_lambda_values - normed_baseline) * critic["weight"] / weights_sum)
@@ -477,7 +477,7 @@ def train(
     policies: Sequence[Distribution] = actor_task(imagined_trajectories.detach())[1]
 
     baseline = predicted_values[:-1]
-    offset, invscale = moments_task(lambda_values)
+    offset, invscale = moments_task(lambda_values, fabric)
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
