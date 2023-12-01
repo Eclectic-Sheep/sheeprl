@@ -16,7 +16,6 @@ from torch import Tensor
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v1.utils import log_models
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2
 from sheeprl.algos.dreamer_v2.dreamer_v2 import train
 from sheeprl.algos.dreamer_v2.utils import test
@@ -518,6 +517,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"world_model": world_model, "actor_task": actor_task, "critic_task": critic_task}

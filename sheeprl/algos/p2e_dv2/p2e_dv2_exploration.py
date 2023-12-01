@@ -19,7 +19,6 @@ from torch.distributions import Bernoulli, Distribution, Independent, Normal
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v1.utils import log_models
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
@@ -1042,6 +1041,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {

@@ -20,7 +20,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import log_models, normalize_obs, test
+from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
@@ -355,6 +355,7 @@ def player(
         test(agent, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.ppo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"agent": agent}

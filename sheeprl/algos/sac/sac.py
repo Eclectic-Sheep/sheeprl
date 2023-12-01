@@ -20,7 +20,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.agent import SACAgent, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac.utils import log_models, test
+from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -392,6 +392,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.sac.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"agent": agent}

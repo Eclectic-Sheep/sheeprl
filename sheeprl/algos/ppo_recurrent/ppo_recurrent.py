@@ -19,7 +19,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import log_models, normalize_obs
+from sheeprl.algos.ppo.utils import normalize_obs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -501,6 +501,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.ppo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         register_model(fabric, log_models, cfg, models_to_log)

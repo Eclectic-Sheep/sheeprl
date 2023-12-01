@@ -17,7 +17,6 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
-from sheeprl.algos.dreamer_v1.utils import log_models
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import AsyncReplayBuffer
@@ -462,6 +461,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"world_model": world_model, "actor_task": actor_task, "critic_task": critic_task}
