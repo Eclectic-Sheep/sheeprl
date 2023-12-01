@@ -41,7 +41,7 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
     # Substitute the config with the old one (except for the parameters removed before)
     # because the experiment must continue with the same parameters
     with open_dict(cfg):
-        cfg.merge_with(old_cfg.__dict__)
+        cfg.merge_with(old_cfg.as_dict())
     return cfg
 
 

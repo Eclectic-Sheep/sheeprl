@@ -43,12 +43,11 @@ class dotdict(dict):
     def __setstate__(self, state):
         self.update(state)
 
-    @property
-    def __dict__(self) -> Dict[str, Any]:
+    def as_dict(self) -> Dict[str, Any]:
         _copy = dict(self)
         for k, v in _copy.items():
             if isinstance(v, dotdict):
-                _copy[k] = v.__dict__
+                _copy[k] = v.as_dict()
         return _copy
 
 
@@ -274,4 +273,4 @@ def register_model_from_checkpoint(
 
 
 def save_configs(cfg: Dict[str, Any], log_dir: str):
-    OmegaConf.save(cfg.__dict__, os.path.join(log_dir, "config.yaml"), resolve=True)
+    OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)
