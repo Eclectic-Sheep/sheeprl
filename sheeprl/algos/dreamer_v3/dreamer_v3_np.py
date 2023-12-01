@@ -1,6 +1,7 @@
 """Dreamer-V3 implementation from [https://arxiv.org/abs/2301.04104](https://arxiv.org/abs/2301.04104)
 Adapted from the original implementation from https://github.com/danijar/dreamerv3
 """
+from __future__ import annotations
 
 import copy
 import os
@@ -55,7 +56,7 @@ def train(
     actor_optimizer: Optimizer,
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator,
+    aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
     is_continuous: bool,
     actions_dim: Sequence[int],
