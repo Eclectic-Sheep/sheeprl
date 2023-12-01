@@ -30,7 +30,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, register_model, save_configs, unwrap_fabric
 
 
 def train(
@@ -137,7 +137,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Create Logger. This will create the logger only on the
     # rank-0 process
@@ -202,6 +201,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     optimizer = fabric.setup_optimizers(optimizer)
 
     local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Create a metric aggregator to log the metrics
     aggregator = None
@@ -225,12 +226,21 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // fabric.world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
     policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:

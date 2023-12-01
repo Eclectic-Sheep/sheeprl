@@ -294,7 +294,7 @@ def test_evaluate():
     ckpt_path = os.path.join(ckpt_path, ckpt_file_name)
     try:
         subprocess.run(
-            sys.executable + f" sheeprl_eval.py exp=dreamer_v3 checkpoint_path={ckpt_path} env.capture_video=False",
+            sys.executable + f" sheeprl_eval.py checkpoint_path={ckpt_path} env.capture_video=False",
             shell=True,
             check=True,
         )

@@ -66,8 +66,8 @@ class MineDojoWrapper(gym.Wrapper):
         self._height = height
         self._width = width
         self._pitch_limits = pitch_limits
-        self._pos = kwargs.pop("start_position", None)
-        self._break_speed_multiplier = kwargs.pop("break_speed_multiplier", 100)
+        self._pos = kwargs.get("start_position", None)
+        self._break_speed_multiplier = kwargs.get("break_speed_multiplier", 100)
         self._start_pos = copy.deepcopy(self._pos)
         self._sticky_attack = sticky_attack
         self._sticky_jump = sticky_jump
@@ -83,10 +83,8 @@ class MineDojoWrapper(gym.Wrapper):
             task_id=id,
             image_size=(height, width),
             world_seed=seed,
-            start_position=self._pos,
             generate_world_type="default",
             fast_reset=True,
-            break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
         super().__init__(env)

@@ -17,11 +17,9 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config, register_model_from_checkpoint
 
 
-def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
-    root_dir = cfg.root_dir
-    run_name = cfg.run_name
+def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
     ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-    old_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+    old_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
     old_cfg = dotdict(OmegaConf.to_container(old_cfg, resolve=True, throw_on_missing=True))
     if old_cfg.env.id != cfg.env.id:
         raise ValueError(
@@ -35,12 +33,15 @@ def resume_from_checkpoint(cfg: DictConfig) -> Dict[str, Any]:
             f"Got '{cfg.algo.name}', but the algorithm of the experiment of the checkpoint was {old_cfg.algo.name}. "
             "Set properly the algorithm name for restarting the experiment."
         )
+
+    # Remove keys from the `old_cfg` that must not be overridden
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
-    cfg = dotdict(old_cfg)
-    cfg.checkpoint.resume_from = str(ckpt_path)
-    cfg.root_dir = root_dir
-    cfg.run_name = run_name
+    old_cfg.checkpoint.pop("resume_from", None)
+    # Substitute the config with the old one (except for the parameters removed before)
+    # because the experiment must continue with the same parameters
+    with open_dict(cfg):
+        cfg.merge_with(old_cfg.as_dict())
     return cfg
 
 
@@ -83,7 +84,7 @@ def run_algorithm(cfg: Dict[str, Any]):
             fabric._loggers = [logger]
             fabric.logger.log_hyperparams(cfg)
     else:
-        strategy = cfg.fabric.pop("strategy", "auto")
+        strategy = cfg.fabric.get("strategy", "auto")
         if "sac_ae" in module:
             if strategy is not None:
                 warnings.warn(
@@ -91,11 +92,12 @@ def run_algorithm(cfg: Dict[str, Any]):
                     f"'python sheeprl.py fabric.strategy={strategy}'. This algorithm is run with the "
                     "'lightning.fabric.strategies.DDPStrategy' strategy."
                 )
+            cfg.fabric.pop("strategy", "auto")
             strategy = DDPStrategy(find_unused_parameters=True)
         elif "finetuning" in algo_name and "p2e" in module:
             # Load exploration configurations
             ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
-            exploration_cfg = OmegaConf.load(ckpt_path.parent.parent.parent / ".hydra" / "config.yaml")
+            exploration_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
             exploration_cfg = dotdict(OmegaConf.to_container(exploration_cfg, resolve=True, throw_on_missing=True))
             if exploration_cfg.env.id != cfg.env.id:
                 raise ValueError(
@@ -104,6 +106,7 @@ def run_algorithm(cfg: Dict[str, Any]):
                     f"Got '{cfg.env.id}', but the environment used during exploration was {exploration_cfg.env.id}. "
                     "Set properly the environment for finetuning the experiment."
                 )
+            kwargs["exploration_cfg"] = exploration_cfg
             # Take environment configs from exploration
             cfg.env.frame_stack = exploration_cfg.env.frame_stack
             cfg.env.screen_size = exploration_cfg.env.screen_size
@@ -120,9 +123,9 @@ def run_algorithm(cfg: Dict[str, Any]):
                 cfg.env.sticky_jump = exploration_cfg.env.sticky_jump
                 cfg.env.sticky_attack = exploration_cfg.env.sticky_attack
                 cfg.env.break_speed_multiplier = exploration_cfg.env.break_speed_multiplier
-            kwargs["exploration_cfg"] = exploration_cfg
-            cfg.fabric = exploration_cfg.fabric
-            strategy = cfg.fabric.pop("strategy", "auto")
+            if cfg.buffer.load_from_exploration:
+                cfg.fabric.devices = exploration_cfg.fabric.devices
+                cfg.fabric.num_nodes = exploration_cfg.fabric.num_nodes
         fabric: Fabric = hydra.utils.instantiate(cfg.fabric, strategy=strategy, _convert_="all")
 
     if hasattr(cfg, "metric") and cfg.metric is not None:
@@ -269,9 +272,9 @@ def check_configs_evaluation(cfg: DictConfig):
 def run(cfg: DictConfig):
     """SheepRL zero-code command line utility."""
     print_config(cfg)
-    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     if cfg.checkpoint.resume_from:
         cfg = resume_from_checkpoint(cfg)
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     check_configs(cfg)
     run_algorithm(cfg)
 
@@ -280,7 +283,7 @@ def run(cfg: DictConfig):
 def evaluation(cfg: DictConfig):
     # Load the checkpoint configuration
     checkpoint_path = Path(cfg.checkpoint_path)
-    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
 
     # Merge the two configs
     with open_dict(cfg):
@@ -316,7 +319,7 @@ def evaluation(cfg: DictConfig):
 @hydra.main(version_base="1.3", config_path="configs", config_name="model_manager_config")
 def registration(cfg: DictConfig):
     checkpoint_path = Path(cfg.checkpoint_path)
-    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent.parent / ".hydra" / "config.yaml")
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / ".hydra" / "config.yaml")
 
     # Merge the two configs
     with open_dict(cfg):
