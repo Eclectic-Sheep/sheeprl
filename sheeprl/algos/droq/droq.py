@@ -27,6 +27,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import save_configs
 
 
 def train(
@@ -145,7 +146,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("DroQ algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -208,6 +208,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         qf_optimizer, actor_optimizer, alpha_optimizer
     )
 
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
@@ -234,15 +237,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // fabric.world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts += start_step
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:

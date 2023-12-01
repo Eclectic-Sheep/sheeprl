@@ -29,7 +29,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay
+from sheeprl.utils.utils import polynomial_decay, save_configs
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -416,7 +416,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64
@@ -541,6 +540,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         critic_exploration_optimizer,
     )
 
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
@@ -569,7 +571,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     train_step = 0
     last_train = 0
-    start_step = state["update"] // world_size if cfg.checkpoint.resume_from else 1
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
@@ -577,10 +586,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
-    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts += start_step
     max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
     if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
         actor_task.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.actor.expl_amount,
@@ -593,6 +601,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             final=cfg.algo.actor.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:

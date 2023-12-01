@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import rich.syntax
 import rich.tree
@@ -34,6 +34,13 @@ class dotdict(dict):
 
     def __setstate__(self, state):
         self.update(state)
+
+    def as_dict(self) -> Dict[str, Any]:
+        _copy = dict(self)
+        for k, v in _copy.items():
+            if isinstance(v, dotdict):
+                _copy[k] = v.as_dict()
+        return _copy
 
 
 @torch.no_grad()
@@ -168,3 +175,7 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
     for name, child in model.named_children():
         setattr(model, name, unwrap_fabric(child))
     return model
+
+
+def save_configs(cfg: Dict[str, Any], log_dir: str):
+    OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)
