@@ -697,7 +697,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     moments_exploration = {
         k: Moments(
-            fabric,
             cfg.algo.actor.moments.decay,
             cfg.algo.actor.moments.max,
             cfg.algo.actor.moments.percentile.low,
@@ -706,7 +705,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k in critics_exploration.keys()
     }
     moments_task = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -716,8 +714,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k, m in moments_exploration.items():
             m.load_state_dict(state[f"moments_exploration_{k}"])
         moments_task.load_state_dict(state["moments_task"])
-
-    local_vars = locals()
 
     # Metrics
     # Since there could be more exploration critics, the key of the critic is added

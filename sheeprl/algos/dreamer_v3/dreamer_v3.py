@@ -294,7 +294,7 @@ def train(
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
     baseline = predicted_values[:-1]
-    offset, invscale = moments(lambda_values)
+    offset, invscale = moments(lambda_values, fabric)
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
@@ -466,7 +466,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_optimizer, actor_optimizer, critic_optimizer
     )
     moments = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -474,8 +473,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
     if cfg.checkpoint.resume_from:
         moments.load_state_dict(state["moments"])
-
-    local_vars = locals()
 
     # Metrics
     aggregator = None

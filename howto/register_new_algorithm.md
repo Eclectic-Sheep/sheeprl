@@ -132,9 +132,6 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     # the optimizer and set up it with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
 
-    # In case you want to give the possiblity to register your models
-    local_vars = locals()
-
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:

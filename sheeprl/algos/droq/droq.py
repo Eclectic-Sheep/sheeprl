@@ -208,8 +208,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         qf_optimizer, actor_optimizer, alpha_optimizer
     )
 
-    local_vars = locals()
-
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:

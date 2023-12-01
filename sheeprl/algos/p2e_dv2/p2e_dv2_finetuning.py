@@ -177,8 +177,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         world_optimizer, actor_task_optimizer, critic_task_optimizer
     )
 
-    local_vars = locals()
-
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:

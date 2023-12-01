@@ -179,15 +179,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
 
     moments_task = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
         cfg.algo.actor.moments.percentile.high,
     )
     moments_task.load_state_dict(state["moments_task"])
-
-    local_vars = locals()
 
     # Metrics
     aggregator = None

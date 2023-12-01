@@ -541,8 +541,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         critic_exploration_optimizer,
     )
 
-    local_vars = locals()
-
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:

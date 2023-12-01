@@ -41,14 +41,12 @@ MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moment
 class Moments(nn.Module):
     def __init__(
         self,
-        fabric: Fabric,
         decay: float = 0.99,
         max_: float = 1e8,
         percentile_low: float = 0.05,
         percentile_high: float = 0.95,
     ) -> None:
         super().__init__()
-        self._fabric = fabric
         self._decay = decay
         self._max = torch.tensor(max_)
         self._percentile_low = percentile_low
@@ -56,8 +54,8 @@ class Moments(nn.Module):
         self.register_buffer("low", torch.zeros((), dtype=torch.float32))
         self.register_buffer("high", torch.zeros((), dtype=torch.float32))
 
-    def forward(self, x: Tensor) -> Any:
-        gathered_x = self._fabric.all_gather(x).detach()
+    def forward(self, x: Tensor, fabric: Fabric) -> Any:
+        gathered_x = fabric.all_gather(x).detach()
         low = torch.quantile(gathered_x, self._percentile_low)
         high = torch.quantile(gathered_x, self._percentile_high)
         self.low = self._decay * self.low + (1 - self._decay) * low
