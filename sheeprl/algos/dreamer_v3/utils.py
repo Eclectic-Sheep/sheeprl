@@ -3,17 +3,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import mlflow
 import numpy as np
 import torch
 from lightning import Fabric
-from mlflow.models.model import ModelInfo
 from torch import Tensor, nn
 
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
+
     from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 
 AGGREGATOR_KEYS = {
@@ -40,14 +41,12 @@ MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moment
 class Moments(nn.Module):
     def __init__(
         self,
-        fabric: Fabric,
         decay: float = 0.99,
         max_: float = 1e8,
         percentile_low: float = 0.05,
         percentile_high: float = 0.95,
     ) -> None:
         super().__init__()
-        self._fabric = fabric
         self._decay = decay
         self._max = torch.tensor(max_)
         self._percentile_low = percentile_low
@@ -55,8 +54,8 @@ class Moments(nn.Module):
         self.register_buffer("low", torch.zeros((), dtype=torch.float32))
         self.register_buffer("high", torch.zeros((), dtype=torch.float32))
 
-    def forward(self, x: Tensor) -> Any:
-        gathered_x = self._fabric.all_gather(x).detach()
+    def forward(self, x: Tensor, fabric: Fabric) -> Any:
+        gathered_x = fabric.all_gather(x).detach()
         low = torch.quantile(gathered_x, self._percentile_low)
         high = torch.quantile(gathered_x, self._percentile_high)
         self.low = self._decay * self.low + (1 - self._decay) * low
@@ -186,7 +185,11 @@ def uniform_init_weights(given_scale):
 
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
-) -> Sequence[ModelInfo]:
+) -> Sequence["ModelInfo"]:
+    if not _IS_MLFLOW_AVAILABLE:
+        raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+    import mlflow  # noqa
+
     from sheeprl.algos.dreamer_v3.agent import build_agent
 
     # Create the models

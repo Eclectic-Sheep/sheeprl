@@ -7,14 +7,12 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
@@ -29,7 +27,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import save_configs
 
 
 @torch.no_grad()
@@ -45,7 +43,6 @@ def player(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -83,7 +80,12 @@ def player(
     if cfg.metric.log_level > 0:
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+
     # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
     cfg.checkpoint.log_dir = log_dir
     world_collective.broadcast_object_list([cfg], src=0)
 
@@ -122,18 +124,26 @@ def player(
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
-        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
-            rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], ReplayBuffer):
+        if isinstance(state["rb"], ReplayBuffer):
             rb = state["rb"]
         else:
-            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
+            raise RuntimeError(
+                "The replay buffer in the configs must be of type "
+                f"`sheeprl.data.buffers.ReplayBuffer`, got {type(state['rb'])}."
+            )
     step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     first_info_sent = False
-    start_step = state["update"] if cfg.checkpoint.resume_from else 1
-    policy_step = (state["update"] - 1) * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        state["update"] + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
+    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs)
@@ -309,6 +319,9 @@ def player(
         test(actor, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.sac.utils import log_models
+        from sheeprl.utils.mlflow import register_model
+
         critics = [
             SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
             for _ in range(cfg.algo.critic.n)
@@ -322,36 +335,17 @@ def player(
         )
         player_trainer_collective.broadcast(flattened_parameters, src=1)
         torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, agent.parameters())
-
-        local_vars = locals()
-
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        register_model(fabric, log_models, cfg, {"agent": agent})
 
 
 def trainer(
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
+    cfg: Dict[str, Any],
 ):
     global_rank = world_collective.rank
     group_world_size = world_collective.world_size - 1
-
-    # Receive (possibly updated, by the make_env method for example) cfg from the player
-    data = [None]
-    world_collective.broadcast_object_list(data, src=0)
-    cfg: Dict[str, Any] = data[0]
 
     # Initialize Fabric
     cfg.fabric.pop("loggers", None)
@@ -367,6 +361,11 @@ def trainer(
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
+
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
+    data = [None]
+    world_collective.broadcast_object_list(data, src=0)
+    cfg: Dict[str, Any] = data[0]
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -572,4 +571,4 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if global_rank == 0:
         player(fabric, cfg, world_collective, player_trainer_collective)
     else:
-        trainer(world_collective, player_trainer_collective, optimization_pg)
+        trainer(world_collective, player_trainer_collective, optimization_pg, cfg)

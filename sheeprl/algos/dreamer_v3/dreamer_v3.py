@@ -10,13 +10,11 @@ from typing import Any, Dict, Sequence
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
@@ -41,7 +39,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, register_model, unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -295,7 +293,7 @@ def train(
     policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
     baseline = predicted_values[:-1]
-    offset, invscale = moments(lambda_values)
+    offset, invscale = moments(lambda_values, fabric)
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
@@ -365,7 +363,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # These arguments cannot be changed
     cfg.env.frame_stack = -1
@@ -467,7 +464,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_optimizer, actor_optimizer, critic_optimizer
     )
     moments = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -476,7 +472,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         moments.load_state_dict(state["moments"])
 
-    local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Metrics
     aggregator = None
@@ -506,7 +503,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     train_step = 0
     last_train = 0
-    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // fabric.world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
@@ -514,16 +518,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     updates_before_training = cfg.algo.train_every // policy_steps_per_update
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts += start_step
     max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
         actor.expl_amount = polynomial_decay(
             expl_decay_steps,
             initial=cfg.algo.actor.expl_amount,
             final=cfg.algo.actor.expl_min,
             max_decay_steps=max_step_expl_decay,
         )
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -782,17 +787,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(player, fabric, cfg, log_dir, sample_actions=True)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.dreamer_v1.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {
+            "world_model": world_model,
+            "actor": actor,
+            "critic": critic,
+            "target_critic": target_critic,
+            "moments": moments,
+        }
+        register_model(fabric, log_models, cfg, models_to_log)

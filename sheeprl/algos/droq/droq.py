@@ -7,12 +7,10 @@ from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
-import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from mlflow.models.model import ModelInfo
 from tensordict import TensorDict, make_tensordict
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -28,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import register_model, unwrap_fabric
+from sheeprl.utils.utils import save_configs
 
 
 def train(
@@ -147,7 +145,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("DroQ algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -210,7 +207,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         qf_optimizer, actor_optimizer, alpha_optimizer
     )
 
-    local_vars = locals()
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Metrics
     aggregator = None
@@ -238,15 +236,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = state["update"] // fabric.world_size if cfg.checkpoint.resume_from else 1
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // fabric.world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
-        learning_starts += start_step
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
+        if not cfg.buffer.checkpoint:
+            learning_starts += start_step
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -388,17 +395,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         test(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.sac.utils import log_models
+        from sheeprl.utils.mlflow import register_model
 
-        def log_models(
-            run_id: str, experiment_id: str | None = None, run_name: str | None = None
-        ) -> Dict[str, ModelInfo]:
-            with mlflow.start_run(run_id=run_id, experiment_id=experiment_id, run_name=run_name, nested=True) as _:
-                model_info = {}
-                unwrapped_models = {}
-                for k in cfg.model_manager.models.keys():
-                    unwrapped_models[k] = unwrap_fabric(local_vars[k])
-                    model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
-                mlflow.log_dict(cfg, "config.json")
-            return model_info
-
-        register_model(fabric, log_models, cfg)
+        models_to_log = {"agent": agent}
+        register_model(fabric, log_models, cfg, models_to_log)

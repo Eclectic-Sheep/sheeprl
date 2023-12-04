@@ -30,9 +30,9 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
                     "so the logger one will be ignored and replaced with the experiment `run_name`",
                     UserWarning,
                 )
-            logger = hydra.utils.instantiate(cfg.metric.logger, root_dir=root_dir, name=cfg.run_name)
-        else:
-            logger = hydra.utils.instantiate(cfg.metric.logger)
+            cfg.metric.logger.root_dir = root_dir
+            cfg.metric.logger.name = cfg.run_name
+        logger = hydra.utils.instantiate(cfg.metric.logger)
     return logger
 
 
