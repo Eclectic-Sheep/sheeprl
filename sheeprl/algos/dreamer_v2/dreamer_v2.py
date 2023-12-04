@@ -530,7 +530,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_optimizer, actor_optimizer, critic_optimizer
     )
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
 
