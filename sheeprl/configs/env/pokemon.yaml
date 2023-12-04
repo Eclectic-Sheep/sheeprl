@@ -1,0 +1,36 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: PokemonRed
+num_envs: 16
+frame_stack: 1
+sync_env: False
+screen_size: 64
+action_repeat: 1
+grayscale: False
+clip_rewards: False
+capture_video: True
+frame_stack_dilation: 1
+max_episode_steps: null
+reward_as_observation: False
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.pokemon.RedGymEnv
+  config:
+    headless: True
+    save_final_state: True
+    early_stop: False
+    action_freq: 24
+    max_steps: 20480
+    print_rewards: True
+    save_video: False
+    fast_video: True
+    debug: False
+    sim_frame_dist: 2_000_000.0
+    use_screen_explore: True
+    reward_scale: 4
+    extra_buttons: False
+    explore_weight: 3 # 2.5
