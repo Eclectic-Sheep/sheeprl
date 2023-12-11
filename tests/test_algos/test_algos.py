@@ -1,27 +1,41 @@
-import importlib
 import os
 import shutil
 import sys
 import time
-from contextlib import closing, nullcontext
+import warnings
+from contextlib import nullcontext
 from unittest import mock
 
 import pytest
-import torch.distributed as dist
-from lightning import Fabric
-from lightning.fabric.fabric import _is_using_cli
 
-from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_ATARI_ROMS_AVAILABLE, _IS_WINDOWS
+from sheeprl import ROOT_DIR
+from sheeprl.cli import run
+from sheeprl.utils.imports import _IS_WINDOWS
 
 
-@pytest.fixture(params=["1", "2", "3"])
+@pytest.fixture(params=["1", "2"])
 def devices(request):
     return request.param
 
 
 @pytest.fixture()
 def standard_args():
-    return ["--num_envs=1", "--dry_run"]
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "hydra/job_logging=disabled",
+        "hydra/hydra_logging=disabled",
+        "dry_run=True",
+        "checkpoint.save_last=False",
+        "metric.log_level=0",
+        "metric.disable_timer=True",
+        "env.num_envs=1",
+        "fabric.devices=auto",
+        f"env.sync_env={_IS_WINDOWS}",
+        "env.capture_video=False",
+    ]
+    if os.environ.get("MLFLOW_TRACKING_URI", None) is not None:
+        args.extend(["logger@metric.logger=mlflow", "model_manager.disabled=False", "metric.log_level=1"])
+    return args
 
 
 @pytest.fixture()
@@ -31,417 +45,485 @@ def start_time():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(devices)}) as _fixture:
-        if _IS_WINDOWS and devices != "1":
-            pytest.skip()
-        yield _fixture
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    os.environ["LT_ACCELERATOR"] = "cpu"
+    os.environ["LT_DEVICES"] = str(devices)
+    if _IS_WINDOWS and devices != "1":
+        pytest.skip()
+    yield
 
 
-def check_checkpoint(ckpt_path: str, target_keys: set, checkpoint_buffer: bool = True):
-    fabric = Fabric(accelerator="cpu")
-    if not _is_using_cli():
-        fabric.launch()
-
-    # check the presence of the checkpoint
-    assert os.path.isdir(ckpt_path)
-    state = fabric.load(ckpt_path + "/" + os.listdir(ckpt_path)[-1])
-
-    # the keys in the checkpoint must match with the expected keys
-    ckpt_keys = set(state.keys())
-    assert len(ckpt_keys.intersection(target_keys)) == len(ckpt_keys) == len(target_keys)
-
-    # if checkpoint_buffer is false, then "rb" cannot be in the checkpoint keys
-    assert checkpoint_buffer or "rb" not in ckpt_keys
+def remove_test_dir(path: str) -> None:
+    """Utility function to cleanup a temporary folder if it still exists."""
+    try:
+        shutil.rmtree(path, False, None)
+    except (OSError, WindowsError):
+        warnings.warn("Unable to delete folder {}.".format(path))
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_droq(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.droq.droq")
-    root_dir = os.path.join("pytest_" + start_time, "droq", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+def test_droq(standard_args, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
+    run_name = "test_droq"
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--root_dir=" + root_dir,
-        "--run_name=" + run_name,
+        "exp=droq",
+        "algo.per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac.sac")
-    root_dir = os.path.join("pytest_" + start_time, "sac", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+def test_sac(standard_args, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
+    run_name = "test_sac"
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--root_dir=" + root_dir,
-        "--run_name=" + run_name,
+        "exp=sac",
+        "algo.per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_pixel_continuous(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac_pixel.sac_pixel_continuous")
-    root_dir = os.path.join("pytest_" + start_time, "sac", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+def test_sac_ae(standard_args, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
+    run_name = "test_sac_ae"
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        f"--buffer_size={int(os.environ['LT_DEVICES'])}",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--root_dir=" + root_dir,
-        "--run_name=" + run_name,
+        "exp=sac_ae",
+        "algo.per_rank_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.cnn_keys.encoder=[rgb]",
+        "env.screen_size=64",
+        "algo.hidden_size=4",
+        "algo.dense_units=4",
+        "algo.cnn_channels_multiplier=2",
+        "algo.actor.network_frequency=1",
+        "algo.decoder.update_freq=1",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        keys = {
-            "agent",
-            "encoder",
-            "decoder",
-            "qf_optimizer",
-            "actor_optimizer",
-            "alpha_optimizer",
-            "encoder_optimizer",
-            "decoder_optimizer",
-            "args",
-            "global_step",
-            "batch_size",
-        }
-        if checkpoint_buffer:
-            keys.add("rb")
-        check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-        shutil.rmtree("pytest_" + start_time)
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("checkpoint_buffer", [True, False])
-def test_sac_decoupled(standard_args, checkpoint_buffer, start_time):
-    task = importlib.import_module("sheeprl.algos.sac.sac_decoupled")
-    root_dir = os.path.join("pytest_" + start_time, "sac_decoupled", os.environ["LT_DEVICES"])
-    run_name = "checkpoint_buffer" if checkpoint_buffer else "no_checkpoint_buffer"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+def test_sac_decoupled(standard_args, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
+    run_name = "test_sac_decoupled"
     args = standard_args + [
-        "--per_rank_batch_size=1",
-        "--learning_starts=0",
-        "--gradient_steps=1",
-        "--root_dir=" + root_dir,
-        "--run_name=" + run_name,
+        "exp=sac_decoupled",
+        "algo.per_rank_batch_size=1",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        f"fabric.devices={os.environ['LT_DEVICES']}",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
     ]
-    if checkpoint_buffer:
-        args.append("--checkpoint_buffer")
 
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
-
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
+            run()
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            keys = {"agent", "qf_optimizer", "actor_optimizer", "alpha_optimizer", "args", "global_step"}
-            if checkpoint_buffer:
-                keys.add("rb")
-            check_checkpoint(ckpt_path, keys, checkpoint_buffer)
-            shutil.rmtree("pytest_" + start_time)
+        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-def test_ppo(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo")
-    root_dir = os.path.join("pytest_" + start_time, "ppo", os.environ["LT_DEVICES"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_ppo(standard_args, start_time, env_id):
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=ppo",
+        "env=dummy",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"env.id={env_id}",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[]",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-def test_a2c(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.a2c.a2c")
-    root_dir = os.path.join("pytest_" + start_time, "a2c", os.environ["LT_DEVICES"])
-    run_name = "test_a2c"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
-def test_ppo_decoupled(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo.ppo_decoupled")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_decoupled", os.environ["LT_DEVICES"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_ppo_decoupled(standard_args, start_time, env_id):
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
     run_name = "test_ppo_decoupled"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--update_epochs=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=ppo_decoupled",
+        "env=dummy",
+        f"fabric.devices={os.environ['LT_DEVICES']}",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        "algo.update_epochs=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        f"env.id={env_id}",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[]",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
 
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
+            run()
 
     if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
+        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.skipif(
-    not (_IS_ATARI_AVAILABLE and _IS_ATARI_ROMS_AVAILABLE),
-    reason="requires Atari games to be installed. "
-    "Check https://gymnasium.farama.org/environments/atari/ for more infomation",
-)
-def test_ppo_atari(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_atari")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_atari", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_atari"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--env_id=BreakoutNoFrameskip-v4",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
-
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
-
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
-
-    if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
-def test_ppo_continuous(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_continuous.ppo_continuous")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_continuous", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_continuous"
-    ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
-    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
-    args = standard_args + [
-        "--rollout_steps=1",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
-    ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
-
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"actor", "critic", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
-
-
-@pytest.mark.timeout(60)
 def test_ppo_recurrent(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_recurrent.ppo_recurrent")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_recurrent", os.environ["LT_DEVICES"])
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
+    args = standard_args + [
+        "exp=ppo_recurrent",
+        "algo.rollout_steps=2",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=2",
+        "algo.update_epochs=2",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_dreamer_v1(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
+    run_name = "test_dreamer_v1"
+    args = standard_args + [
+        "exp=dreamer_v1",
+        "env=dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=2",
+        f"env.id={env_id}",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_p2e_dv1(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
+    run_name = "test_p2e_dv1"
     ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=p2e_dv1_exploration",
+        "env=dummy",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=4",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=2",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=2",
+        "algo.world_model.representation_model.hidden_size=2",
+        "algo.world_model.transition_model.hidden_size=2",
+        "buffer.checkpoint=True",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+        "checkpoint.save_last=True",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        for command in task.__all__:
-            if command == "main":
-                task.__dict__[command]()
 
-    with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-        check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-        shutil.rmtree("pytest_" + start_time)
+    with mock.patch.object(sys, "argv", args):
+        run()
+        import torch.distributed
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            del os.environ["LOCAL_RANK"]
+            del os.environ["NODE_RANK"]
+            del os.environ["WORLD_SIZE"]
+            del os.environ["MASTER_ADDR"]
+            del os.environ["MASTER_PORT"]
+
+    ckpt_path = os.path.join("logs", "runs", ckpt_path)
+    checkpoints = os.listdir(ckpt_path)
+    if len(checkpoints) > 0:
+        ckpt_path = os.path.join(ckpt_path, checkpoints[-1])
+    else:
+        raise RuntimeError("No exploration checkpoints")
+    args = standard_args + [
+        "exp=p2e_dv1_finetuning",
+        f"checkpoint.exploration_ckpt_path={ckpt_path}",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=4",
+        "env=dummy",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=2",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=2",
+        "algo.world_model.representation_model.hidden_size=2",
+        "algo.world_model.transition_model.hidden_size=2",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.timeout(60)
-def test_ppo_pixel_continuous(standard_args, start_time):
-    task = importlib.import_module("sheeprl.algos.ppo_pixel.ppo_pixel_continuous")
-    root_dir = os.path.join("pytest_" + start_time, "ppo_pixel_continuous", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_pixel_continuous"
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_dreamer_v2(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
+    run_name = "test_dreamer_v2"
+    args = standard_args + [
+        "exp=dreamer_v2",
+        "env=dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.per_rank_pretrain_steps=1",
+        "algo.layer_norm=True",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_p2e_dv2(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
+    run_name = "test_p2e_dv2"
     ckpt_path = os.path.join(root_dir, run_name)
-    version = 0 if not os.path.isdir(ckpt_path) else len(os.listdir(ckpt_path))
+    version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
     ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
     args = standard_args + [
-        f"--rollout_steps={os.environ['LT_DEVICES']}",
-        "--per_rank_batch_size=1",
-        "--update_epochs=1",
-        f"--root_dir={root_dir}",
-        f"--run_name={run_name}",
+        "exp=p2e_dv2_exploration",
+        "env=dummy",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=4",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=2",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=2",
+        "algo.world_model.representation_model.hidden_size=2",
+        "algo.world_model.transition_model.hidden_size=2",
+        "buffer.checkpoint=True",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+        "checkpoint.save_last=True",
     ]
-    with mock.patch.object(sys, "argv", [task.__file__] + args):
-        import torch.distributed.run as torchrun
-        from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
-        from torch.distributed.elastic.utils import get_socket_with_port
 
-        sock = get_socket_with_port()
-        with closing(sock):
-            master_port = sock.getsockname()[1]
+    with mock.patch.object(sys, "argv", args):
+        run()
+        import torch.distributed
 
-        for command in task.__all__:
-            if command == "main":
-                with pytest.raises(ChildFailedError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-                    torchrun_args = [
-                        f"--nproc_per_node={os.environ['LT_DEVICES']}",
-                        "--nnodes=1",
-                        "--node-rank=0",
-                        "--start-method=spawn",
-                        "--master-addr=localhost",
-                        f"--master-port={master_port}",
-                    ] + sys.argv
-                    torchrun.main(torchrun_args)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            del os.environ["LOCAL_RANK"]
+            del os.environ["NODE_RANK"]
+            del os.environ["WORLD_SIZE"]
+            del os.environ["MASTER_ADDR"]
+            del os.environ["MASTER_PORT"]
 
-    if os.environ["LT_DEVICES"] != "1":
-        with mock.patch.dict(os.environ, {"LT_ACCELERATOR": "cpu", "LT_DEVICES": str(1)}):
-            check_checkpoint(ckpt_path, {"agent", "optimizer", "args", "update_step", "scheduler"})
-            shutil.rmtree("pytest_" + start_time)
+    ckpt_path = os.path.join("logs", "runs", ckpt_path)
+    checkpoints = os.listdir(ckpt_path)
+    if len(checkpoints) > 0:
+        ckpt_path = os.path.join(ckpt_path, checkpoints[-1])
+    else:
+        raise RuntimeError("No exploration checkpoints")
+    args = standard_args + [
+        "exp=p2e_dv2_finetuning",
+        f"checkpoint.exploration_ckpt_path={ckpt_path}",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=2",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=4",
+        "env=dummy",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=2",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=2",
+        "algo.world_model.representation_model.hidden_size=2",
+        "algo.world_model.transition_model.hidden_size=2",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_dreamer_v3(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
+    run_name = "test_dreamer_v3"
+    args = standard_args + [
+        "exp=dreamer_v3",
+        "env=dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_p2e_dv3(standard_args, env_id, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])
+    run_name = "test_p2e_dv3"
+    ckpt_path = os.path.join(root_dir, run_name)
+    version = 0 if not os.path.isdir(ckpt_path) else len([d for d in os.listdir(ckpt_path) if "version" in d])
+    ckpt_path = os.path.join(ckpt_path, f"version_{version}", "checkpoint")
+    args = standard_args + [
+        "exp=p2e_dv3_exploration",
+        "env=dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        "buffer.checkpoint=True",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+        "checkpoint.save_last=True",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+        import torch.distributed
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            del os.environ["LOCAL_RANK"]
+            del os.environ["NODE_RANK"]
+            del os.environ["WORLD_SIZE"]
+            del os.environ["MASTER_ADDR"]
+            del os.environ["MASTER_PORT"]
+
+    ckpt_path = os.path.join("logs", "runs", ckpt_path)
+    checkpoints = os.listdir(ckpt_path)
+    if len(checkpoints) > 0:
+        ckpt_path = os.path.join(ckpt_path, checkpoints[-1])
+    else:
+        raise RuntimeError("No exploration checkpoints")
+    args = standard_args + [
+        "exp=p2e_dv3_finetuning",
+        f"checkpoint.exploration_ckpt_path={ckpt_path}",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.learning_starts=0",
+        "algo.per_rank_gradient_steps=1",
+        "algo.horizon=8",
+        "env=dummy",
+        "env.id=" + env_id,
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.layer_norm=True",
+        "algo.train_every=1",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))

@@ -1,0 +1,17 @@
+defaults:
+  - default
+  - _self_
+
+models: 
+  world_model:
+    model_name: "${exp_name}_world_model"
+    description: "DreamerV1 World Model used in ${env.id} Environment"
+    tags: {}
+  actor:
+    model_name: "${exp_name}_actor"
+    description: "DreamerV1 Actor used in ${env.id} Environment"
+    tags: {}
+  critic:
+    model_name: "${exp_name}_critic"
+    description: "DreamerV1 Critic used in ${env.id} Environment"
+    tags: {}

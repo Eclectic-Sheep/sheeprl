@@ -1,0 +1,55 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: dmc
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 1000
+  id: walker_walk
+  wrapper:
+    from_vectors: True
+    from_pixels: True
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+  memmap: True
+
+# Algorithm
+algo:
+  total_steps: 1000000
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder:
+      - state
+  learning_starts: 8000
+  train_every: 2
+  dense_units: 512
+  mlp_layers: 2
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 32
+    recurrent_model:
+      recurrent_state_size: 512
+    transition_model:
+      hidden_size: 512
+    representation_model:
+      hidden_size: 512
+
+# Metric
+metric:
+  log_every: 5000

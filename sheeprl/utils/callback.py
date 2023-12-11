@@ -1,10 +1,10 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.buffers import AsyncReplayBuffer, EpisodeBuffer, ReplayBuffer
 
 
 class CheckpointCallback:
@@ -12,21 +12,32 @@ class CheckpointCallback:
     Three methods are defined to checkpoint the models, the optimizers, and the replay buffers during the training:
         1. `on_checkpoint_coupled`: The method called by all processes in coupled algorithms,
             the process on rank-0 gets the buffers from all the processes and saves the state of the training.
-        2. `on_checkpoint_player`: called by the player process of decoupled algorithms (rank-0), it receives the state from
-            the trainer of rank-1 and, if required, adds the replay_buffer to the state.
-        3. `on_checkpoint_trainer`: called by the rank-1 trainer process of decoupled algorithms that sends the state to the player process (rank-0).
+        2. `on_checkpoint_player`: called by the player process of decoupled algorithms (rank-0),
+            it receives the state from the trainer of rank-1 and, if required, adds the replay_buffer to the state.
+        3. `on_checkpoint_trainer`: called by the rank-1 trainer process of decoupled algorithms that
+            sends the state to the player process (rank-0).
 
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
     """
 
     def on_checkpoint_coupled(
-        self, fabric: Fabric, ckpt_path: str, state: Dict[str, Any], replay_buffer: Optional["ReplayBuffer"] = None
+        self,
+        fabric: Fabric,
+        ckpt_path: str,
+        state: Dict[str, Any],
+        replay_buffer: Optional[Union["AsyncReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
-            # clone the true done
-            true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
-            # substitute the last done with all True values (all the environment are truncated)
-            replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            if isinstance(replay_buffer, ReplayBuffer):
+                # clone the true done
+                true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
+                # substitute the last done with all True values (all the environment are truncated)
+                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            elif isinstance(replay_buffer, AsyncReplayBuffer):
+                true_dones = []
+                for b in replay_buffer.buffer:
+                    true_dones.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
+                    b["dones"][(b._pos - 1) % b.buffer_size, :] = True
             state["rb"] = replay_buffer
             if fabric.world_size > 1:
                 # We need to collect the buffers from all the ranks
@@ -45,9 +56,12 @@ class CheckpointCallback:
                 else:
                     checkpoint_collective.gather_object(replay_buffer, None)
         fabric.save(ckpt_path, state)
-        if replay_buffer is not None:
+        if replay_buffer is not None and isinstance(replay_buffer, ReplayBuffer):
             # reinsert the true dones in the buffer
             replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
+        elif isinstance(replay_buffer, AsyncReplayBuffer):
+            for i, b in enumerate(replay_buffer.buffer):
+                b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
 
     def on_checkpoint_player(
         self,
@@ -70,5 +84,9 @@ class CheckpointCallback:
             # reinsert the true dones in the buffer
             replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
 
-    def on_checkpoint_trainer(self, player_trainer_collective: TorchCollective, state: Dict[str, Any]):
-        player_trainer_collective.broadcast_object_list([state], src=1)
+    def on_checkpoint_trainer(
+        self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
+    ):
+        if fabric.global_rank == 1:
+            player_trainer_collective.broadcast_object_list([state], src=1)
+        fabric.save(ckpt_path, state)

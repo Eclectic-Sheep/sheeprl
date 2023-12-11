@@ -1,0 +1,123 @@
+defaults:
+  - default
+  - /optim@world_model.optimizer: adam
+  - /optim@actor.optimizer: adam
+  - /optim@critic.optimizer: adam
+  - _self_
+
+gamma: 0.99
+lmbda: 0.95
+horizon: 15
+name: dreamer_v1
+
+# Training recipe
+train_every: 1000
+learning_starts: 5000
+per_rank_gradient_steps: 100
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
+
+# Model related parameters
+dense_units: 400
+mlp_layers: 4
+dense_act: torch.nn.ELU
+cnn_act: torch.nn.ReLU
+
+# World model
+world_model:
+  stochastic_size: 30
+  kl_free_nats: 3.0
+  kl_regularizer: 1.0
+  min_std: 0.1
+  use_continues: False
+  continue_scale_factor: 1.0
+  clip_gradients: 100.0
+
+  # Encoder
+  encoder:
+    cnn_channels_multiplier: 32
+    cnn_act: ${algo.cnn_act}
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    dense_units: ${algo.dense_units}
+
+  # Recurrent model
+  recurrent_model:
+    recurrent_state_size: 200
+    dense_units: ${algo.dense_units}
+    dense_act: ${algo.dense_act}
+
+  # Prior
+  transition_model:
+    hidden_size: 200
+    dense_act: ${algo.dense_act}
+
+  # Posterior
+  representation_model:
+    hidden_size: 200
+    dense_act: ${algo.dense_act}
+
+  # Decoder
+  observation_model:
+    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
+    cnn_act: ${algo.cnn_act}
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    dense_units: ${algo.dense_units}
+
+  # Reward model
+  reward_model:
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    dense_units: ${algo.dense_units}
+
+  # Discount model
+  discount_model:
+    learnable: True
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    dense_units: ${algo.dense_units}
+
+  # World model optimizer
+  optimizer:
+    lr: 6e-4
+    eps: 1e-5
+    weight_decay: 0
+
+# Actor
+actor:
+  cls: sheeprl.algos.dreamer_v1.agent.Actor
+  min_std: 0.1
+  init_std: 5.0
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  dense_units: ${algo.dense_units}
+  clip_gradients: 100.0
+  expl_amount: 0.3
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 200000
+
+  # Actor optimizer
+  optimizer:
+    lr: 8e-5
+    eps: 1e-5
+    weight_decay: 0
+
+# Critic
+critic:
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  dense_units: ${algo.dense_units}
+  clip_gradients: 100.0
+
+  # Critic optimizer
+  optimizer:
+    lr: 8e-5
+    eps: 1e-5
+    weight_decay: 0

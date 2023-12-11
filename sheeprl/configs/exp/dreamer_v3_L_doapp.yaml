@@ -1,0 +1,59 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: diambra
+  - _self_
+
+# Experiment
+seed: 5
+total_steps: 5000000
+
+# Environment
+env:
+  id: doapp
+  num_envs: 8
+  frame_stack: 1
+  wrapper:
+    diambra_settings:
+      characters: Kasumi
+
+# Checkpoint
+checkpoint:
+  every: 200000
+
+# Buffer
+buffer:
+  checkpoint: True
+
+# Algorithm
+algo:
+  learning_starts: 65536
+  train_every: 8
+  dense_units: 768
+  mlp_layers: 4
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 64
+    recurrent_model:
+      recurrent_state_size: 2048
+    transition_model:
+      hidden_size: 768
+    representation_model:
+      hidden_size: 768
+  cnn_keys:
+    encoder:
+      - frame
+  mlp_keys:
+    encoder:
+      - P1_actions_attack
+      - P1_actions_move
+      - P1_oppChar
+      - P1_oppHealth
+      - P1_oppSide
+      - P1_oppWins
+      - P1_ownChar
+      - P1_ownHealth
+      - P1_ownSide
+      - P1_ownWins
+      - stage

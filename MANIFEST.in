@@ -1,0 +1,4 @@
+recursive-include sheeprl *.py
+recursive-include sheeprl *.yaml
+global-exclude *.pyc
+global-exclude __pycache__

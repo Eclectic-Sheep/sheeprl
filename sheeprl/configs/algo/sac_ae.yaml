@@ -1,0 +1,70 @@
+defaults:
+  - sac
+  - /optim@encoder.optimizer: adam
+  - /optim@decoder.optimizer: adam
+  - _self_
+
+name: sac_ae
+
+# Training recipe
+learning_starts: 1000
+
+# Model related parameters
+cnn_channels_multiplier: 16
+dense_units: 64
+mlp_layers: 2
+dense_act: torch.nn.ReLU
+layer_norm: False
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
+
+# Encoder
+encoder:
+  tau: 0.05
+  features_dim: 64
+  cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
+  dense_units: ${algo.dense_units}
+  mlp_layers: ${algo.mlp_layers}
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+  optimizer:
+    lr: 1e-3
+    eps: 1e-08
+
+# Decoder
+decoder:
+  l2_lambda: 1e-6
+  update_freq: 1
+  cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
+  dense_units: ${algo.dense_units}
+  mlp_layers: ${algo.mlp_layers}
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+  optimizer:
+    lr: 1e-3
+    weight_decay: 1e-7
+    eps: 1e-08
+
+# Override from `sac` config
+tau: 0.01
+hidden_size: 1024
+actor:
+  network_frequency: 2
+  optimizer:
+    lr: 1e-3
+    eps: 1e-08
+critic:
+  target_network_frequency: 2
+  optimizer:
+    lr: 1e-3
+    eps: 1e-08
+alpha:
+  alpha: 0.1
+  optimizer:
+    lr: 1e-4
+    betas: [0.5, 0.999]
+    eps: 1e-08

@@ -1,5 +1,10 @@
+import os
+import shutil
+import time
+
 import pytest
 import torch
+from lightning import Fabric
 from tensordict import TensorDict
 
 from sheeprl.data.buffers import ReplayBuffer
@@ -150,11 +155,89 @@ def test_replay_buffer_sample_fail():
 
 
 def test_memmap_replay_buffer():
-    buf_size = 1000000
+    buf_size = 10
     n_envs = 4
-    rb = ReplayBuffer(buf_size, n_envs, memmap=True)
+    with pytest.warns(
+        UserWarning,
+        match="The buffer will be memory-mapped into the `/tmp` folder, this means that there is the"
+        " possibility to lose the saved files. Set the `memmap_dir` to a known directory.",
+    ):
+        rb = ReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=None)
     td = TensorDict(
         {"observations": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8)}, batch_size=[10, n_envs]
     )
     rb.add(td)
     assert rb.buffer.is_memmap()
+
+
+def test_memmap_to_file_replay_buffer():
+    buf_size = 10
+    n_envs = 4
+    root_dir = os.path.join("pytest_" + str(int(time.time())))
+    memmap_dir = os.path.join(root_dir, "memmap_buffer")
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, memmap_dir=memmap_dir)
+    td = TensorDict(
+        {"observations": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8)}, batch_size=[10, n_envs]
+    )
+    rb.add(td)
+    assert rb.buffer.is_memmap()
+    assert os.path.exists(os.path.join(memmap_dir, "meta.pt"))
+    assert os.path.exists(os.path.join(memmap_dir, "observations.meta.pt"))
+    assert os.path.exists(os.path.join(memmap_dir, "observations.memmap"))
+    fabric = Fabric(devices=1, accelerator="cpu")
+    ckpt_file = os.path.join(root_dir, "checkpoint", "ckpt.ckpt")
+    fabric.save(ckpt_file, {"rb": rb})
+    ckpt = fabric.load(ckpt_file)
+    assert (ckpt["rb"]["observations"][:10] == rb["observations"][:10]).all()
+    del rb
+    del ckpt
+    shutil.rmtree(root_dir)
+
+
+def test_obs_keys_replay_buffer():
+    buf_size = 10
+    n_envs = 4
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, obs_keys=("rgb", "state", "tmp"))
+    td = TensorDict(
+        {
+            "rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+        },
+        batch_size=[10, n_envs],
+    )
+    rb.add(td)
+    sample = rb.sample(10, True)
+    sample_keys = sample.keys()
+    assert "rgb" in sample_keys
+    assert "state" in sample_keys
+    assert "tmp" in sample_keys
+    assert "next_rgb" in sample_keys
+    assert "next_state" in sample_keys
+    assert "next_tmp" in sample_keys
+
+
+def test_obs_keys_replay_no_sample_next_obs_buffer():
+    buf_size = 10
+    n_envs = 4
+    rb = ReplayBuffer(buf_size, n_envs, memmap=True, obs_keys=("rgb", "state", "tmp"))
+    td = TensorDict(
+        {
+            "rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+            "next_rgb": torch.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=torch.uint8),
+            "next_state": torch.randint(0, 256, (10, n_envs, 8), dtype=torch.uint8),
+            "next_tmp": torch.randint(0, 256, (10, n_envs, 5), dtype=torch.uint8),
+        },
+        batch_size=[10, n_envs],
+    )
+    rb.add(td)
+    sample = rb.sample(10, False)
+    sample_keys = sample.keys()
+    assert "rgb" in sample_keys
+    assert "state" in sample_keys
+    assert "tmp" in sample_keys
+    assert "next_rgb" in sample_keys
+    assert "next_state" in sample_keys
+    assert "next_tmp" in sample_keys

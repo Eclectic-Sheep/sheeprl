@@ -1,0 +1,48 @@
+# @package _global_
+
+defaults:
+  - dreamer_v2
+  - override /env: atari
+  - _self_
+
+seed: 5
+
+# Environment
+env:
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v0
+
+# Checkpoint
+checkpoint:
+  every: 200000
+
+# Buffer
+buffer:
+  size: 2000000
+  type: episode
+  checkpoint: True
+  prioritize_ends: True
+
+# Algorithm
+algo:
+  gamma: 0.995
+  train_every: 16
+  total_steps: 200000000
+  learning_starts: 200000
+  per_rank_batch_size: 32
+  per_rank_pretrain_steps: 1
+  per_rank_gradient_steps: 1
+  world_model:
+    use_continues: True
+    kl_free_nats: 0.0
+    kl_regularizer: 0.1
+    discount_scale_factor: 0.5
+    optimizer:
+      lr: 0.0002
+  actor:
+    ent_coef: 0.001
+    optimizer:
+      lr: 4e-05
+  critic:
+    optimizer:
+      lr: 0.0001

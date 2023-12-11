@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: discrete_dummy
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.utils.env.get_dummy_env
+  id: ${env.id}

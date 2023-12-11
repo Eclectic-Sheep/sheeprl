@@ -1,8 +1,11 @@
 import copy
-from typing import Sequence, SupportsFloat, Tuple, Union
+from math import prod
+from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
+import gymnasium
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
@@ -55,6 +58,7 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
+        distribution_cfg: Dict[str, Any],
         hidden_size: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
@@ -65,6 +69,7 @@ class SACActor(nn.Module):
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
+            distribution_cfg (Dict[str, Any]): the configs of the distributions.
             hidden_size (int): the hidden sizes for both of the two-layer MLP.
                 Defaults to 256.
             action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
@@ -73,6 +78,8 @@ class SACActor(nn.Module):
                 Defaults to 1.0.
         """
         super().__init__()
+        self.distribution_cfg = distribution_cfg
+
         self.model = MLP(input_dims=observation_dim, hidden_sizes=(hidden_size, hidden_size), flatten_dim=None)
         self.fc_mean = nn.Linear(self.model.output_dim, action_dim)
         self.fc_logstd = nn.Linear(self.model.output_dim, action_dim)
@@ -112,7 +119,7 @@ class SACActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        normal = torch.distributions.Normal(mean, std)
+        normal = torch.distributions.Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
 
         # Reparameterization trick (mean + std * N(0,1))
         x_t = normal.rsample()
@@ -162,12 +169,36 @@ class SACAgent(nn.Module):
 
         # Actor and critics
         self._num_critics = len(critics)
-        self._actor = actor
+        self.actor = actor
+        self.critics = critics
+
+        # Automatic entropy tuning
+        self._target_entropy = torch.tensor(target_entropy, device=device)
+        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=device)), requires_grad=True)
+
+        # EMA tau
+        self._tau = tau
+
+    def __setattr__(self, name: str, value: Union[Tensor, nn.Module]) -> None:
+        # Taken from https://github.com/pytorch/pytorch/pull/92044
+        # Check if a property setter exists. If it does, use it.
+        class_attr = getattr(self.__class__, name, None)
+        if isinstance(class_attr, property) and class_attr.fset is not None:
+            return class_attr.fset(self, value)
+        super().__setattr__(name, value)
+
+    @property
+    def critics(self) -> nn.ModuleList:
+        return self.qfs
+
+    @critics.setter
+    def critics(self, critics: Sequence[Union[SACCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
         # Create target critic unwrapping the DDP module from the critics to prevent
         # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group argument to DDP constructor`.
+        # That is, when you have called init_process_group and have not passed process_group
+        # argument to DDP constructor`.
         # This happens when we're using the decoupled version of SAC for example
         qfs_unwrapped_modules = []
         for critic in critics:
@@ -180,13 +211,7 @@ class SACAgent(nn.Module):
         self._qfs_target = copy.deepcopy(self._qfs_unwrapped)
         for p in self._qfs_target.parameters():
             p.requires_grad = False
-
-        # Automatic entropy tuning
-        self._target_entropy = torch.tensor(target_entropy, device=device)
-        self._log_alpha = torch.nn.Parameter(torch.log(torch.tensor([alpha], device=device)), requires_grad=True)
-
-        # EMA tau
-        self._tau = tau
+        return
 
     @property
     def num_critics(self) -> int:
@@ -203,6 +228,11 @@ class SACAgent(nn.Module):
     @property
     def actor(self) -> Union[SACActor, _FabricModule]:
         return self._actor
+
+    @actor.setter
+    def actor(self, actor: Union[SACActor, _FabricModule]) -> None:
+        self._actor = actor
+        return
 
     @property
     def qfs_target(self) -> nn.ModuleList:
@@ -246,3 +276,34 @@ class SACAgent(nn.Module):
     def qfs_target_ema(self) -> None:
         for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+
+
+def build_agent(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    action_space: gymnasium.spaces.Box,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> SACAgent:
+    act_dim = prod(action_space.shape)
+    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
+    actor = SACActor(
+        observation_dim=obs_dim,
+        action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
+        hidden_size=cfg.algo.actor.hidden_size,
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+    critics = [
+        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
+        for _ in range(cfg.algo.critic.n)
+    ]
+    target_entropy = -act_dim
+    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
+    if agent_state:
+        agent.load_state_dict(agent_state)
+    agent.actor = fabric.setup_module(agent.actor)
+    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+
+    return agent

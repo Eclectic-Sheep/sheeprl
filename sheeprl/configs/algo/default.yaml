@@ -1,0 +1,9 @@
+name: ???
+total_steps: ???
+per_rank_batch_size: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  encoder: []
+mlp_keys:
+  encoder: []

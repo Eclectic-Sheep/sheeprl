@@ -1,0 +1,48 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: crafter
+  - _self_
+
+# Experiment
+seed: 5
+total_steps: 1000000
+
+# Environment
+env:
+  num_envs: 1
+  id: reward
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  checkpoint: True
+
+# Algorithm
+algo:
+  train_every: 2
+  learning_starts: 1024
+  dense_units: 1024
+  mlp_layers: 5
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 96
+    recurrent_model:
+      recurrent_state_size: 4096
+    transition_model:
+      hidden_size: 1024
+    representation_model:
+      hidden_size: 1024
+  cnn_keys:
+    encoder:
+      - rgb
+    decoder:
+      - rgb
+  mlp_keys:
+    encoder:
+      - reward
+    decoder: []

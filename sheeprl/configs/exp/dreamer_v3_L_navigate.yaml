@@ -1,0 +1,57 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: minerl
+  - _self_
+
+# Experiment
+seed: 5
+total_steps: 50000000
+
+# Environment
+env:
+  num_envs: 4
+  id: custom_navigate
+  reward_as_observation: True
+  wrapper:
+    multihot_inventory: False
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  checkpoint: True
+
+# Algorithm
+algo:
+  train_every: 16
+  learning_starts: 65536
+  dense_units: 768
+  mlp_layers: 4
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 64
+    recurrent_model:
+      recurrent_state_size: 2048
+    transition_model:
+      hidden_size: 768
+    representation_model:
+      hidden_size: 768
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder:
+      - life_stats
+      - inventory
+      - max_inventory
+      - compass
+      - reward
+    decoder:
+      - life_stats
+      - inventory
+      - max_inventory
+      - compass

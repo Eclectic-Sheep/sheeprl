@@ -1,0 +1,9 @@
+defaults:
+  - default
+  - _self_
+
+max_pitch: 60
+min_pitch: -60
+sticky_jump: 10
+sticky_attack: 30
+break_speed_multiplier: 100

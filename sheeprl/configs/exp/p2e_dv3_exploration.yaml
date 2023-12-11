@@ -1,0 +1,101 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /algo: p2e_dv3
+  - override /model_manager: p2e_dv3_exploration
+  - _self_
+
+algo:
+  name: p2e_dv3_exploration
+
+metric:
+  aggregator:
+    metrics:
+      Rewards/rew_avg:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Game/ep_len_avg:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/world_model_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/value_loss_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/observation_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/reward_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/state_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/continue_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/ensemble_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/kl:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Params/exploration_amount_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Params/exploration_amount_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/post_entropy:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/prior_entropy:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/world_model:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/actor_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/critic_task:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/actor_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/ensemble:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      
+      # There could be more exploration critics so here the general metrics
+      # are defined all the metrics for the exploration critics
+      # will be instantiated with the key: <metric_key>_<critic_key>.
+      # For instance if 'intrinsic' is the key of an exploration critic 
+      # then its 'Loss/value_loss_exploration' metric will be logged under the
+      # 'Loss/value_loss_exploration_intrinsic' key.
+      # NOTE: Remove from here the metrics you do not want to plot for ALL
+      # the exploration critics.
+      Loss/value_loss_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Values_exploration/predicted_values:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Values_exploration/lambda_values:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/critic_exploration:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Rewards/intrinsic:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}

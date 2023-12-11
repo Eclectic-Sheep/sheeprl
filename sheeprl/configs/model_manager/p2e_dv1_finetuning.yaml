@@ -1,0 +1,17 @@
+defaults:
+  - default
+  - _self_
+
+models: 
+  world_model:
+    model_name: "${exp_name}_world_model"
+    description: "P2E_DV1 World Model used in ${env.id} Environment"
+    tags: {}
+  actor_task:
+    model_name: "${exp_name}_actor_task"
+    description: "P2E_DV1 Actor used in ${env.id} Environment"
+    tags: {}
+  critic_task:
+    model_name: "${exp_name}_critic_task"
+    description: "P2E_DV1 Critic in ${env.id} Environment"
+    tags: {}

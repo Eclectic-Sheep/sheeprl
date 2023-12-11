@@ -1,0 +1,38 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: doapp
+frame_stack: 1
+sync_env: False
+action_repeat: 1
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.diambra.DiambraWrapper
+  id: ${env.id}
+  action_space: diambra.arena.SpaceTypes.DISCRETE # or diambra.arena.SpaceTypes.MULTI_DISCRETE
+  screen_size: ${env.screen_size}
+  grayscale: ${env.grayscale}
+  repeat_action: ${env.action_repeat}
+  rank: null
+  log_level: 0
+  increase_performance: True
+  diambra_settings:
+    role: diambra.arena.Roles.P1 # or diambra.arena.Roles.P2 or null
+    step_ratio: 6
+    difficulty: 4
+    continue_game: 0.0
+    show_final: False
+    outfits: 4
+    splash_screen: False
+  diambra_wrappers:
+    stack_actions: 1
+    no_op_max: 0
+    no_attack_buttons_combinations: False
+    add_last_action: True
+    scale: False
+    exclude_image_scaling: False
+    process_discrete_binary: False
+    role_relative: True

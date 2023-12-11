@@ -1,0 +1,53 @@
+defaults:
+  - default
+  - /optim@optimizer: adam
+  - _self_
+
+# Training receipe
+name: ppo
+anneal_lr: False
+gamma: 0.99
+gae_lambda: 0.95
+update_epochs: 10
+loss_reduction: mean
+normalize_advantages: False
+clip_coef: 0.2
+anneal_clip_coef: False
+clip_vloss: False
+ent_coef: 0.0
+anneal_ent_coef: False
+vf_coef: 1.0
+rollout_steps: 128
+dense_units: 64
+mlp_layers: 2
+dense_act: torch.nn.Tanh
+layer_norm: False
+max_grad_norm: 0.0
+
+# Encoder
+encoder:
+  cnn_features_dim: 512
+  mlp_features_dim: 64
+  dense_units: ${algo.dense_units}
+  mlp_layers: ${algo.mlp_layers}
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Actor
+actor:
+  dense_units: ${algo.dense_units}
+  mlp_layers: ${algo.mlp_layers}
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Critic
+critic:
+  dense_units: ${algo.dense_units}
+  mlp_layers: ${algo.mlp_layers}
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Single optimizer for both actor and critic
+optimizer:
+  lr: 1e-3
+  eps: 1e-4

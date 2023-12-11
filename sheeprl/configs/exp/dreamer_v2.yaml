@@ -1,0 +1,77 @@
+# @package _global_
+
+defaults:
+  - override /algo: dreamer_v2
+  - override /env: atari
+  - override /model_manager: dreamer_v2
+  - _self_
+
+# Algorithm
+algo:
+  total_steps: 5000000
+  per_rank_batch_size: 16
+  per_rank_sequence_length: 50
+  cnn_keys:
+    encoder: [rgb]
+    decoder: [rgb]
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  size: 5000000
+  type: sequential
+  checkpoint: False
+  prioritize_ends: False
+
+# Distribution
+distribution:
+  type: "auto"
+
+metric:
+  aggregator:
+    metrics:
+      Loss/world_model_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/value_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/observation_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/reward_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/state_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/continue_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/post_entropy:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/prior_entropy:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      State/kl:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Params/exploration_amount:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/world_model:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/actor:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Grads/critic:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}

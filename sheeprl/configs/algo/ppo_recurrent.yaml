@@ -1,0 +1,44 @@
+defaults:
+  - ppo
+  - _self_
+
+# Algo related parameters
+name: ppo_recurrent
+vf_coef: 0.2
+clip_coef: 0.2
+ent_coef: 0.001
+clip_vloss: True
+anneal_lr: False
+max_grad_norm: 0.5
+anneal_ent_coef: True
+normalize_advantages: True
+reset_recurrent_state_on_done: True
+per_rank_sequence_length: ???
+
+# Model related parameters
+mlp_layers: 1
+layer_norm: True
+dense_units: 128
+dense_act: torch.nn.ReLU
+rnn:
+  lstm:
+    hidden_size: 64
+  pre_rnn_mlp:
+    bias: True
+    apply: False
+    activation: ${algo.dense_act}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.encoder.dense_units}
+  post_rnn_mlp:
+    bias: True
+    apply: False
+    activation: ${algo.dense_act}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.rnn.lstm.hidden_size}
+encoder:
+  dense_units: 64
+
+# Optimizer related parameters
+optimizer:
+  lr: 3e-4
+  _target_: torch.optim.AdamW

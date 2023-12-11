@@ -1,0 +1,142 @@
+defaults:
+  - default
+  - /optim@world_model.optimizer: adam
+  - /optim@actor.optimizer: adam
+  - /optim@critic.optimizer: adam
+  - _self_
+
+name: dreamer_v2
+gamma: 0.99
+lmbda: 0.95
+horizon: 15
+
+# Training recipe
+train_every: 5
+learning_starts: 1000
+per_rank_gradient_steps: 1
+per_rank_pretrain_steps: 100
+per_rank_sequence_length: ???
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
+
+# Model related parameters
+layer_norm: False
+dense_units: 400
+mlp_layers: 4
+dense_act: torch.nn.ELU
+cnn_act: torch.nn.ELU
+
+# World model
+world_model:
+  discrete_size: 32
+  stochastic_size: 32
+  kl_balancing_alpha: 0.8
+  kl_free_nats: 1.0
+  kl_free_avg: True
+  kl_regularizer: 1.0
+  discount_scale_factor: 1.0
+  use_continues: False
+  clip_gradients: 100.0
+
+  # Encoder
+  encoder:
+    cnn_channels_multiplier: 48
+    cnn_act: ${algo.cnn_act}
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.dense_units}
+
+  # Recurrent model
+  recurrent_model:
+    recurrent_state_size: 600
+    layer_norm: True
+    dense_units: ${algo.dense_units}
+
+  # Prior
+  transition_model:
+    hidden_size: 600
+    dense_act: ${algo.dense_act}
+    layer_norm: ${algo.layer_norm}
+
+  # Posterior
+  representation_model:
+    hidden_size: 600
+    dense_act: ${algo.dense_act}
+    layer_norm: ${algo.layer_norm}
+
+  # Decoder
+  observation_model:
+    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
+    cnn_act: ${algo.cnn_act}
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.dense_units}
+
+  # Reward
+  reward_model:
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.dense_units}
+
+  # Discount model
+  discount_model:
+    learnable: True
+    dense_act: ${algo.dense_act}
+    mlp_layers: ${algo.mlp_layers}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.dense_units}
+
+  # World model optimizer
+  optimizer:
+    lr: 3e-4
+    eps: 1e-5
+    weight_decay: 1e-6
+
+# Actor
+actor:
+  cls: sheeprl.algos.dreamer_v2.agent.Actor
+  ent_coef: 1e-4
+  min_std: 0.1
+  init_std: 0.0
+  objective_mix: 1.0
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  layer_norm: ${algo.layer_norm}
+  dense_units: ${algo.dense_units}
+  clip_gradients: 100.0
+  expl_amount: 0.0
+  expl_min: 0.0
+  expl_decay: False
+  max_step_expl_decay: 0
+
+  # Actor optimizer
+  optimizer:
+    lr: 8e-5
+    eps: 1e-5
+    weight_decay: 1e-6
+
+# Critic
+critic:
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  layer_norm: ${algo.layer_norm}
+  dense_units: ${algo.dense_units}
+  target_network_update_freq: 100
+  clip_gradients: 100.0
+
+  # Critic optimizer
+  optimizer:
+    lr: 8e-5
+    eps: 1e-5
+    weight_decay: 1e-6
+
+# Player agent (it interacts with the environment)
+player:
+  discrete_size: ${algo.world_model.discrete_size}

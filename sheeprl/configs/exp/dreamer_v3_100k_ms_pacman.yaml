@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: atari
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v4
+
+# Checkpoint
+checkpoint:
+  every: 2000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+
+# Algorithm
+algo:
+  learning_starts: 1024
+  total_steps: 100000
+  train_every: 1
+  dense_units: 512
+  mlp_layers: 2
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 32
+    recurrent_model:
+      recurrent_state_size: 512
+    transition_model:
+      hidden_size: 512
+    representation_model:
+      hidden_size: 512

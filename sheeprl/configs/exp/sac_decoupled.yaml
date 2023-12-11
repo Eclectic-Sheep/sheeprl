@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - sac
+  - override /algo: sac_decoupled
+  - override /env: gym
+  - _self_
+
+fabric:
+  strategy: ddp
+  devices: 2

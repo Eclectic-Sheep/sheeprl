@@ -3,13 +3,13 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 """
 import warnings
 from math import prod
-from typing import Optional, Sequence, Union, no_type_check
+from typing import Dict, Optional, Sequence, Union, no_type_check
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from sheeprl.utils.model import ArgsType, ModuleType, create_layers, miniblock
+from sheeprl.utils.model import ArgsType, ModuleType, cnn_forward, create_layers, miniblock
 
 
 class MLP(nn.Module):
@@ -123,7 +123,8 @@ class CNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -146,6 +147,7 @@ class CNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int],
+        cnn_layer: ModuleType = nn.Conv2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -181,7 +183,7 @@ class CNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(in_dim, out_dim, nn.Conv2d, l_args, drop, drop_args, norm, norm_args, activ, act_args)
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)
@@ -204,7 +206,8 @@ class DeCNN(nn.Module):
 
     Args:
         input_channels (int): dimensions of the input channels.
-        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN, including the output channels.
+        hidden_channels (Sequence[int], optional): intermediate number of channels for the CNN,
+            including the output channels.
         dropout_layer (Union[ModuleType, Sequence[ModuleType]], optional): which dropout layer to be used
             before activation (possibly before the normalization layer), e.g., ``nn.Dropout``.
             You can also pass a list of dropout modules with the same length
@@ -227,6 +230,7 @@ class DeCNN(nn.Module):
         self,
         input_channels: int,
         hidden_channels: Sequence[int] = (),
+        cnn_layer: ModuleType = nn.ConvTranspose2d,
         layer_args: ArgsType = None,
         dropout_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         dropout_args: Optional[ArgsType] = None,
@@ -262,9 +266,7 @@ class DeCNN(nn.Module):
             activation_list,
             act_args_list,
         ):
-            model += miniblock(
-                in_dim, out_dim, nn.ConvTranspose2d, l_args, drop, drop_args, norm, norm_args, activ, act_args
-            )
+            model += miniblock(in_dim, out_dim, cnn_layer, l_args, drop, drop_args, norm, norm_args, activ, act_args)
 
         self._output_dim = hidden_sizes[-1]
         self._model = nn.Sequential(*model)
@@ -320,6 +322,168 @@ class NatureCNN(CNN):
         return self._output_dim
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.model(x)
-        x = F.relu(self.fc(x.flatten(1)))
+        x = cnn_forward(self.model, x, input_dim=x.shape[-3:], output_dim=(-1,))
+        x = F.relu(self.fc(x))
         return x
+
+
+class LayerNormGRUCell(nn.Module):
+    """A GRU cell with a LayerNorm, taken
+    from https://github.com/danijar/dreamerv2/blob/main/dreamerv2/common/nets.py#L317.
+
+    This particular GRU cell accepts 3-D inputs, with a sequence of length 1, and applies
+    a LayerNorm after the projection of the inputs.
+
+    Args:
+        input_size (int): the input size.
+        hidden_size (int): the hidden state size
+        bias (bool, optional): whether to apply a bias to the input projection.
+            Defaults to True.
+        batch_first (bool, optional): whether the first dimension represent the batch dimension or not.
+            Defaults to False.
+        layer_norm (bool, optional): whether to apply a LayerNorm after the input projection.
+            Defaults to False.
+    """
+
+    def __init__(
+        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.bias = bias
+        self.batch_first = batch_first
+        self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
+        if layer_norm:
+            self.layer_norm = torch.nn.LayerNorm(3 * hidden_size)
+        else:
+            self.layer_norm = nn.Identity()
+
+    def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:
+        is_3d = input.dim() == 3
+        if is_3d:
+            if input.shape[int(self.batch_first)] == 1:
+                input = input.squeeze(int(self.batch_first))
+            else:
+                raise AssertionError(
+                    "LayerNormGRUCell: Expected input to be 3-D with sequence length equal to 1 but received "
+                    f"a sequence of length {input.shape[int(self.batch_first)]}"
+                )
+        if hx.dim() == 3:
+            hx = hx.squeeze(0)
+        assert input.dim() in (
+            1,
+            2,
+        ), f"LayerNormGRUCell: Expected input to be 1-D or 2-D but received {input.dim()}-D tensor"
+
+        is_batched = input.dim() == 2
+        if not is_batched:
+            input = input.unsqueeze(0)
+
+        if hx is None:
+            hx = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
+        else:
+            hx = hx.unsqueeze(0) if not is_batched else hx
+
+        input = torch.cat((hx, input), -1)
+        x = self.linear(input)
+        x = self.layer_norm(x)
+        reset, cand, update = torch.chunk(x, 3, -1)
+        reset = torch.sigmoid(reset)
+        cand = torch.tanh(reset * cand)
+        update = torch.sigmoid(update - 1)
+        hx = update * cand + (1 - update) * hx
+
+        if not is_batched:
+            hx = hx.squeeze(0)
+        elif is_3d:
+            hx = hx.unsqueeze(0)
+
+        return hx
+
+
+class MultiEncoder(nn.Module):
+    def __init__(
+        self,
+        cnn_encoder: ModuleType,
+        mlp_encoder: ModuleType,
+    ) -> None:
+        super().__init__()
+        if cnn_encoder is None and mlp_encoder is None:
+            raise ValueError("There must be at least one encoder, both cnn and mlp encoders are None")
+        if cnn_encoder is not None:
+            if getattr(cnn_encoder, "input_dim", None) is None:
+                raise AttributeError(
+                    "`cnn_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
+                )
+            if getattr(cnn_encoder, "output_dim", None) is None:
+                raise AttributeError(
+                    "`cnn_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
+                )
+        if mlp_encoder is not None:
+            if getattr(mlp_encoder, "input_dim", None) is None:
+                raise AttributeError(
+                    "`mlp_encoder` must contain the `input_dim` attribute representing "
+                    "the dimension of the input tensor"
+                )
+            if getattr(mlp_encoder, "output_dim", None) is None:
+                raise AttributeError(
+                    "`mlp_encoder` must contain the `output_dim` attribute representing "
+                    "the dimension of the output tensor"
+                )
+        self.cnn_encoder = cnn_encoder
+        self.mlp_encoder = mlp_encoder
+        self.cnn_input_dim = self.cnn_encoder.input_dim if self.cnn_encoder is not None else None
+        self.mlp_input_dim = self.mlp_encoder.input_dim if self.mlp_encoder is not None else None
+        self.cnn_output_dim = self.cnn_encoder.output_dim if self.cnn_encoder is not None else 0
+        self.mlp_output_dim = self.mlp_encoder.output_dim if self.mlp_encoder is not None else 0
+        self.output_dim = self.cnn_output_dim + self.mlp_output_dim
+
+    @property
+    def cnn_keys(self) -> Sequence[str]:
+        return self.cnn_encoder.keys if self.cnn_encoder is not None else []
+
+    @property
+    def mlp_keys(self) -> Sequence[str]:
+        return self.mlp_encoder.keys if self.mlp_encoder is not None else []
+
+    def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
+        device = obs[list(obs.keys())[0]].device
+        cnn_out = torch.tensor((), device=device)
+        mlp_out = torch.tensor((), device=device)
+        if self.cnn_encoder is not None:
+            cnn_out = self.cnn_encoder(obs, *args, **kwargs)
+        if self.mlp_encoder is not None:
+            mlp_out = self.mlp_encoder(obs, *args, **kwargs)
+        return torch.cat((cnn_out, mlp_out), -1)
+
+
+class MultiDecoder(nn.Module):
+    def __init__(
+        self,
+        cnn_decoder: ModuleType,
+        mlp_decoder: ModuleType,
+    ) -> None:
+        super().__init__()
+        if cnn_decoder is None and mlp_decoder is None:
+            raise ValueError("There must be an decoder, both cnn and mlp decoders are None")
+        self.cnn_decoder = cnn_decoder
+        self.mlp_decoder = mlp_decoder
+
+    @property
+    def cnn_keys(self) -> Sequence[str]:
+        return self.cnn_decoder.keys if self.cnn_decoder is not None else []
+
+    @property
+    def mlp_keys(self) -> Sequence[str]:
+        return self.mlp_decoder.keys if self.mlp_decoder is not None else []
+
+    def forward(self, x: Tensor) -> Dict[str, Tensor]:
+        reconstructed_obs = {}
+        if self.cnn_decoder is not None:
+            reconstructed_obs.update(self.cnn_decoder(x))
+        if self.mlp_decoder is not None:
+            reconstructed_obs.update(self.mlp_decoder(x))
+        return reconstructed_obs
