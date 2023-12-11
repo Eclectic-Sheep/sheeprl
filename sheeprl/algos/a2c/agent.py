@@ -2,8 +2,8 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch import Tensor
 import torch.nn.functional as F
+from torch import Tensor
 
 from sheeprl.models.models import MLP
 

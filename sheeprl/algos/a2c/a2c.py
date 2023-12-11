@@ -17,8 +17,8 @@ from tensordict.tensordict import TensorDictBase
 from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import MeanMetric
-from sheeprl.algos.a2c.agent import A2CActor
 
+from sheeprl.algos.a2c.agent import A2CActor
 from sheeprl.algos.a2c.args import A2CArgs
 from sheeprl.algos.a2c.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.a2c.utils import test
