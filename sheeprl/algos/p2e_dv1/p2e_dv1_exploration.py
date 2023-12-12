@@ -102,6 +102,7 @@ def train(
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
+    data = {k: data[k] for k in data.keys()}
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
 
@@ -182,17 +183,6 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
-        aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
-        if world_grad:
-            aggregator.update("Grads/world_model", world_grad.detach())
 
     # Ensemble Learning
     loss = 0.0
@@ -213,10 +203,6 @@ def train(
             error_if_nonfinite=False,
         )
     ensemble_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
-        if ensemble_grad:
-            aggregator.update("Grads/ensemble", ensemble_grad.detach())
 
     # Behaviour Learning Exploration
     imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
@@ -237,7 +223,7 @@ def train(
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
-    predicted_values = critic_exploration(imagined_trajectories)
+    predicted_values_exploration = critic_exploration(imagined_trajectories)
 
     # Predict intrinsic reward
     next_obs_embedding = torch.zeros(
@@ -252,8 +238,6 @@ def train(
 
     # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
     intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
 
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         predicted_continues = Independent(
@@ -264,24 +248,20 @@ def train(
     else:
         predicted_continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
 
-    lambda_values = compute_lambda_values(
+    lambda_values_exploration = compute_lambda_values(
         intrinsic_reward,
-        predicted_values,
+        predicted_values_exploration,
         predicted_continues,
-        last_values=predicted_values[-1],
+        last_values=predicted_values_exploration[-1],
         horizon=cfg.algo.horizon,
         lmbda=cfg.algo.lmbda,
     )
-
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Values_exploration/predicted_values", predicted_values.detach().cpu().mean())
-        aggregator.update("Values_exploration/lambda_values", lambda_values.detach().cpu().mean())
 
     with torch.no_grad():
         discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
 
     actor_exploration_optimizer.zero_grad(set_to_none=True)
-    policy_loss_exploration = actor_loss(discount * lambda_values)
+    policy_loss_exploration = actor_loss(discount * lambda_values_exploration)
     fabric.backward(policy_loss_exploration)
     actor_exploration_grad = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -292,10 +272,6 @@ def train(
             error_if_nonfinite=False,
         )
     actor_exploration_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
-        if actor_exploration_grad:
-            aggregator.update("Grads/actor_exploration", actor_exploration_grad.detach())
 
     qv = Independent(
         Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
@@ -303,7 +279,7 @@ def train(
         validate_args=validate_args,
     )
     critic_exploration_optimizer.zero_grad(set_to_none=True)
-    value_loss_exploration = critic_loss(qv, lambda_values.detach(), discount[..., 0])
+    value_loss_exploration = critic_loss(qv, lambda_values_exploration.detach(), discount[..., 0])
     fabric.backward(value_loss_exploration)
     critic_exploration_grad = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
@@ -314,10 +290,6 @@ def train(
             error_if_nonfinite=False,
         )
     critic_exploration_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
-        if critic_exploration_grad:
-            aggregator.update("Grads/critic_exploration", critic_exploration_grad.detach())
 
     # reset the world_model gradients, to avoid interferences with task learning
     world_optimizer.zero_grad(set_to_none=True)
@@ -335,7 +307,7 @@ def train(
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
 
-    predicted_values = critic_task(imagined_trajectories)
+    predicted_values_task = critic_task(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         predicted_continues = Independent(
@@ -346,11 +318,11 @@ def train(
     else:
         predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
-    lambda_values = compute_lambda_values(
+    lambda_values_task = compute_lambda_values(
         predicted_rewards,
-        predicted_values,
+        predicted_values_task,
         predicted_continues,
-        last_values=predicted_values[-1],
+        last_values=predicted_values_task[-1],
         horizon=cfg.algo.horizon,
         lmbda=cfg.algo.lmbda,
     )
@@ -359,7 +331,7 @@ def train(
         discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
 
     actor_task_optimizer.zero_grad(set_to_none=True)
-    policy_loss_task = actor_loss(discount * lambda_values)
+    policy_loss_task = actor_loss(discount * lambda_values_task)
     fabric.backward(policy_loss_task)
     actor_task_grad = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -370,10 +342,6 @@ def train(
             error_if_nonfinite=False,
         )
     actor_task_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
-        if actor_task_grad:
-            aggregator.update("Grads/actor_task", actor_task_grad.detach())
 
     qv = Independent(
         Normal(critic_task(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
@@ -381,8 +349,8 @@ def train(
         validate_args=validate_args,
     )
     critic_task_optimizer.zero_grad(set_to_none=True)
-    value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
-    fabric.backward(value_loss)
+    value_loss_task = critic_loss(qv, lambda_values_task.detach(), discount[..., 0])
+    fabric.backward(value_loss_task)
     critic_task_grad = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_task_grad = fabric.clip_gradients(
@@ -393,7 +361,32 @@ def train(
         )
     critic_task_optimizer.step()
     if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss_task", value_loss.detach())
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.mean().detach())
+        aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
+        aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
+        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
+        aggregator.update("Values_exploration/predicted_values", predicted_values_exploration.detach().cpu().mean())
+        aggregator.update("Values_exploration/lambda_values", lambda_values_exploration.detach().cpu().mean())
+        aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
+        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
+        aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
+        aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
+        aggregator.update("Loss/value_loss_task", value_loss_task.detach())
+        if world_grad:
+            aggregator.update("Grads/world_model", world_grad.detach())
+        if ensemble_grad:
+            aggregator.update("Grads/ensemble", ensemble_grad.detach())
+        if actor_exploration_grad:
+            aggregator.update("Grads/actor_exploration", actor_exploration_grad.detach())
+        if critic_exploration_grad:
+            aggregator.update("Grads/critic_exploration", critic_exploration_grad.detach())
+        if actor_task_grad:
+            aggregator.update("Grads/actor_task", actor_task_grad.detach())
         if critic_task_grad:
             aggregator.update("Grads/critic_task", critic_task_grad.detach())
 
@@ -546,7 +539,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4

@@ -60,7 +60,6 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    device = rewards.device
     observation_loss = -sum([po[k].log_prob(observations[k]).mean() for k in po.keys()])
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
@@ -90,16 +89,20 @@ def reconstruction_loss(
             validate_args=validate_args,
         ),
     )
-    kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:
-        loss_lhs = torch.maximum(lhs.mean(), kl_free_nats)
-        loss_rhs = torch.maximum(rhs.mean(), kl_free_nats)
+        lhs = lhs.mean()
+        rhs = rhs.mean()
+        free_nats = torch.full_like(lhs, kl_free_nats)
+        loss_lhs = torch.max(lhs, free_nats)
+        loss_rhs = torch.max(rhs, free_nats)
     else:
+        free_nats = torch.full_like(lhs, kl_free_nats)
         loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
         loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
-    continue_loss = torch.tensor(0, device=device)
     if pc is not None and continue_targets is not None:
         continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()
+    else:
+        continue_loss = torch.zeros_like(reward_loss)
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl, kl_loss, reward_loss, observation_loss, continue_loss

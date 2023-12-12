@@ -120,7 +120,7 @@ def player(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -431,7 +431,7 @@ def trainer(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Start training
     last_train = 0
@@ -474,11 +474,12 @@ def trainer(
                 )
             return
         data = make_tensordict(data, device=device)
+        data = {k: data[k] for k in data.keys()}
 
         train_step += group_world_size
 
         # Prepare sampler
-        indexes = list(range(data.shape[0]))
+        indexes = list(range(data[next(iter(data.keys()))].shape[0]))
         sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
         # Start training
@@ -490,7 +491,7 @@ def trainer(
             with Join([agent._forward_module]):
                 for _ in range(cfg.algo.update_epochs):
                     for batch_idxes in sampler:
-                        batch = data[batch_idxes]
+                        batch = {k: data[k][batch_idxes] for k in data.keys()}
                         normalized_obs = normalize_obs(
                             batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                         )

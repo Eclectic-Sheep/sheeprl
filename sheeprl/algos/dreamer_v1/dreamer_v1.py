@@ -106,6 +106,7 @@ def train(
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
+    data = {k: data[k] for k in data.keys()}
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
 
@@ -229,21 +230,12 @@ def train(
         cfg.algo.world_model.continue_scale_factor,
     )
     fabric.backward(rec_loss)
+    world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
             module=world_model, optimizer=world_optimizer, max_norm=cfg.algo.world_model.clip_gradients
         )
     world_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.detach())
-        aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
-        aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
 
     # Behaviour Learning
     # Unflatten first 2 dimensions of recurrent and posterior states in order
@@ -356,14 +348,12 @@ def train(
     # compute the policy loss
     policy_loss = actor_loss(discount * lambda_values)
     fabric.backward(policy_loss)
+    actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients
         )
     actor_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/actor", actor_grads.mean().detach())
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values distribution only for the first H (horizon) imagined states
     # (to match the dimension with the lambda values),
@@ -383,14 +373,30 @@ def train(
     # for the log prob
     value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
+    critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
             module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients
         )
     critic_optimizer.step()
+
     if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/critic", critic_grads.mean().detach())
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.detach())
+        aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
+        aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
+        aggregator.update("Loss/policy_loss", policy_loss.detach())
         aggregator.update("Loss/value_loss", value_loss.detach())
+        if world_model_grads:
+            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        if actor_grads:
+            aggregator.update("Grads/actor", actor_grads.mean().detach())
+        if critic_grads:
+            aggregator.update("Grads/critic", critic_grads.mean().detach())
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)
@@ -509,7 +515,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2

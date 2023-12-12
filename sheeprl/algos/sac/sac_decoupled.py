@@ -112,7 +112,7 @@ def player(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // cfg.env.num_envs if not cfg.dry_run else 1
@@ -405,7 +405,7 @@ def trainer(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Receive data from player reagrding the:
     # * update
@@ -454,7 +454,10 @@ def trainer(
                 )
             return
         data = make_tensordict(data, device=device)
-        sampler = BatchSampler(range(len(data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
+        data = {k: data[k] for k in data.keys()}
+        sampler = BatchSampler(
+            range(len(data[next(iter(data.keys()))])), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+        )
 
         # Start training
         with timer(
@@ -467,7 +470,7 @@ def trainer(
                     actor_optimizer,
                     qf_optimizer,
                     alpha_optimizer,
-                    data[batch_idxes],
+                    {k: data[k][batch_idxes] for k in data.keys()},
                     aggregator,
                     update,
                     cfg,

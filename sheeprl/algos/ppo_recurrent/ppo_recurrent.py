@@ -39,7 +39,8 @@ def train(
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
 ):
-    num_sequences = data.shape[1]
+    data = {k: data[k] for k in data.keys()}
+    num_sequences = data[next(iter(data.keys()))].shape[1]
     if cfg.algo.per_rank_num_batches > 0:
         batch_size = num_sequences // cfg.algo.per_rank_num_batches
         batch_size = batch_size if batch_size > 0 else num_sequences
@@ -53,7 +54,7 @@ def train(
                 drop_last=False,
             )  # Random sampling sequences
             for idxes in sampler:
-                batch = data[:, idxes]
+                batch = {k: v[:, idxes] for k, v in data.items()}
                 mask = batch["mask"].unsqueeze(-1)
                 for k in cfg.algo.cnn_keys.encoder:
                     batch[k] = batch[k] / 255.0 - 0.5
@@ -205,7 +206,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     rb = ReplayBuffer(

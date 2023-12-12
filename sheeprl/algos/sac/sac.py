@@ -12,7 +12,7 @@ import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
@@ -36,7 +36,7 @@ def train(
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
-    data: TensorDictBase,
+    data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     update: int,
     cfg: Dict[str, Any],
@@ -166,7 +166,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 1
@@ -325,7 +325,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         actor_optimizer,
                         qf_optimizer,
                         alpha_optimizer,
-                        gathered_data[batch_idxes],
+                        {k: gathered_data[k][batch_idxes] for k in gathered_data.keys()},
                         aggregator,
                         update,
                         cfg,

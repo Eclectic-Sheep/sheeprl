@@ -38,7 +38,8 @@ def train(
     cfg: Dict[str, Any],
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(data.shape[0]))
+    data = {k: data[k] for k in data.keys()}
+    indexes = list(range(data[next(iter(data.keys()))].shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -55,7 +56,7 @@ def train(
         if cfg.buffer.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
-            batch = data[batch_idxes]
+            batch = {k: v[batch_idxes] for k, v in data.items()}
             normalized_obs = normalize_obs(
                 batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
             )
@@ -198,7 +199,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     if cfg.buffer.size < cfg.algo.rollout_steps:

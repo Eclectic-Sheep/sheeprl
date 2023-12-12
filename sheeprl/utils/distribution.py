@@ -252,10 +252,16 @@ class TwoHotEncodingDistribution:
 
     def log_prob(self, x: Tensor) -> Tensor:
         x = self.transfwd(x)
+        # below in [-1, len(self.bins) - 1]
         below = (self.bins <= x).type(torch.int32).sum(dim=-1, keepdim=True) - 1
-        above = len(self.bins) - (self.bins > x).type(torch.int32).sum(dim=-1, keepdim=True)
-        below = torch.clip(below, 0, len(self.bins) - 1)
-        above = torch.clip(above, 0, len(self.bins) - 1)
+        # above in [0, len(self.bins)]
+        above = below + 1
+
+        # above in [0, len(self.bins) - 1]
+        above = torch.minimum(above, torch.full_like(above, len(self.bins) - 1))
+        # below in [0, len(self.bins) - 1]
+        below = torch.maximum(below, torch.zeros_like(below))
+
         equal = below == above
         dist_to_below = torch.where(equal, 1, torch.abs(self.bins[below] - x))
         dist_to_above = torch.where(equal, 1, torch.abs(self.bins[above] - x))
