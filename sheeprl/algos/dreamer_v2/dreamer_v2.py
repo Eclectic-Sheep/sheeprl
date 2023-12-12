@@ -19,6 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
 from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
@@ -280,22 +281,10 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # Predict values and rewards
-    predicted_target_values = Independent(
-        Normal(target_critic(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
-    predicted_rewards = Independent(
-        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
+    predicted_target_values = target_critic(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args,
-        ).mean
+        continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
     else:

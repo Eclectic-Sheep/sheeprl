@@ -15,6 +15,7 @@ from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
+from torch.distributions.utils import logits_to_probs
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
@@ -274,24 +275,12 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of values/rewards
-    predicted_values = Independent(
-        Normal(critic(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mean
-    predicted_rewards = Independent(
-        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mean
+    predicted_values = critic(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
 
     # predict the probability that the episode will continue in the imagined states
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ).mean
+        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
     else:
         predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 

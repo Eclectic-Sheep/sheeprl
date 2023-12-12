@@ -15,6 +15,7 @@ from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch.distributions import Bernoulli, Independent, Normal
+from torch.distributions.utils import logits_to_probs
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
@@ -240,11 +241,7 @@ def train(
     intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
 
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ).mean
+        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
     else:
         predicted_continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
 
@@ -310,11 +307,7 @@ def train(
     predicted_values_task = critic_task(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ).mean
+        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
     else:
         predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
