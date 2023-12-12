@@ -1,8 +1,11 @@
-from typing import Any, Dict, Optional, Union
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Sequence, Union
 
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
+from torch import Tensor
 
 from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
 
@@ -28,20 +31,7 @@ class CheckpointCallback:
         replay_buffer: Optional[Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
-            if isinstance(replay_buffer, ReplayBuffer):
-                # clone the true done
-                true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
-                # substitute the last done with all True values (all the environment are truncated)
-                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
-            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
-                true_dones = []
-                for b in replay_buffer.buffer:
-                    true_dones.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
-                    b["dones"][(b._pos - 1) % b.buffer_size, :] = True
-            elif isinstance(replay_buffer, EpisodeBuffer):
-                # remove open episodes from the buffer because the state of the environment is not saved
-                open_episodes = replay_buffer._open_episodes
-                replay_buffer._open_episodes = [[] for _ in range(replay_buffer.n_envs)]
+            rb_state = self._ckpt_rb(replay_buffer)
             state["rb"] = replay_buffer
             if fabric.world_size > 1:
                 # We need to collect the buffers from all the ranks
@@ -61,15 +51,7 @@ class CheckpointCallback:
                     checkpoint_collective.gather_object(replay_buffer, None)
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
-            if isinstance(replay_buffer, ReplayBuffer):
-                # reinsert the true dones in the buffer
-                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
-            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
-                for i, b in enumerate(replay_buffer.buffer):
-                    b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
-            elif isinstance(replay_buffer, EpisodeBuffer):
-                # reinsert the open episodes to continue the training
-                replay_buffer._open_episodes = open_episodes
+            self._experiment_consistent_rb(replay_buffer, rb_state)
 
     def on_checkpoint_player(
         self,
@@ -82,32 +64,11 @@ class CheckpointCallback:
         player_trainer_collective.broadcast_object_list(state, src=1)
         state = state[0]
         if replay_buffer is not None:
-            if isinstance(replay_buffer, ReplayBuffer):
-                # clone the true done
-                true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
-                # substitute the last done with all True values (all the environment are truncated)
-                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
-            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
-                true_dones = []
-                for b in replay_buffer.buffer:
-                    true_dones.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
-                    b["dones"][(b._pos - 1) % b.buffer_size, :] = True
-            elif isinstance(replay_buffer, EpisodeBuffer):
-                # remove open episodes from the buffer because the state of the environment is not saved
-                open_episodes = replay_buffer._open_episodes
-                replay_buffer._open_episodes = [[] for _ in range(replay_buffer.n_envs)]
+            rb_state = self._ckpt_rb(replay_buffer)
             state["rb"] = replay_buffer
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
-            if isinstance(replay_buffer, ReplayBuffer):
-                # reinsert the true dones in the buffer
-                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
-            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
-                for i, b in enumerate(replay_buffer.buffer):
-                    b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
-            elif isinstance(replay_buffer, EpisodeBuffer):
-                # reinsert the open episodes to continue the training
-                replay_buffer._open_episodes = open_episodes
+            self._experiment_consistent_rb(replay_buffer, rb_state)
 
     def on_checkpoint_trainer(
         self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
@@ -115,3 +76,60 @@ class CheckpointCallback:
         if fabric.global_rank == 1:
             player_trainer_collective.broadcast_object_list([state], src=1)
         fabric.save(ckpt_path, state)
+
+    def _ckpt_rb(
+        self, rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer
+    ) -> Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]]:
+        """Modify the replay buffer in order to be consistent for the checkpoint.
+        There could be 3 cases, depending on the buffers:
+
+        1. The `ReplayBuffer` or `SequentialReplayBuffer`: a done is inserted in the last pos because the
+            state of the environment is not saved in the checkpoint.
+        2. The `EnvIndependentReplayBuffer`: for each buffer, the done in the last position is set to True
+            (for the same reason of the point 1.).
+        3. The `EpisodeBuffer`: the open episodes are discarded  because the
+            state of the environment is not saved in the checkpoint.
+
+        Args:
+            rb (ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer): the buffer.
+
+        Returns:
+            The original state of the buffer.
+        """
+        if isinstance(rb, ReplayBuffer):
+            # clone the true done
+            state = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].clone()
+            # substitute the last done with all True values (all the environment are truncated)
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+        elif isinstance(rb, EnvIndependentReplayBuffer):
+            state = []
+            for b in rb.buffer:
+                state.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
+                b["dones"][(b._pos - 1) % b.buffer_size, :] = True
+        elif isinstance(rb, EpisodeBuffer):
+            # remove open episodes from the buffer because the state of the environment is not saved
+            state = rb._open_episodes
+            rb._open_episodes = [[] for _ in range(rb.n_envs)]
+        return state
+
+    def _experiment_consistent_rb(
+        self,
+        rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer,
+        state: Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]],
+    ):
+        """Restore the state of the buffer consistent with the execution of the experiment.
+        I.e., it undoes the changes in the _ckpt_rb function.
+
+        Args:
+            rb (ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer): the buffer.
+            state (Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]]): the original state of the buffer.
+        """
+        if isinstance(rb, ReplayBuffer):
+            # reinsert the true dones in the buffer
+            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = state
+        elif isinstance(rb, EnvIndependentReplayBuffer):
+            for i, b in enumerate(rb.buffer):
+                b["dones"][(b._pos - 1) % b.buffer_size, :] = state[i]
+        elif isinstance(rb, EpisodeBuffer):
+            # reinsert the open episodes to continue the training
+            rb._open_episodes = state
