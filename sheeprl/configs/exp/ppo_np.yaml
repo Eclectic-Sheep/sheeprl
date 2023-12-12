@@ -3,6 +3,7 @@
 defaults:
   - override /algo: ppo_np
   - override /env: gym
+  - override /fabric: fabric_np
   - _self_
 
 # Experiment

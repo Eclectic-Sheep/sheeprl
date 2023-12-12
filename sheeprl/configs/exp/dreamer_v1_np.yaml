@@ -3,6 +3,7 @@
 defaults:
   - override /algo: dreamer_v1_np
   - override /env: atari
+  - override /fabric: fabric_np
   - _self_
 
 # Experiment

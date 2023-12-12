@@ -1,0 +1,6 @@
+defaults:
+  - default
+  - _self_
+
+callbacks:
+  - _target_: sheeprl.utils.callback_np.CheckpointCallback
