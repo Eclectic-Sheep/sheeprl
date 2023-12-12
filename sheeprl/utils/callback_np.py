@@ -4,7 +4,7 @@ import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 
-from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
 
 
 class CheckpointCallback:
@@ -25,12 +25,10 @@ class CheckpointCallback:
         fabric: Fabric,
         ckpt_path: str,
         state: Dict[str, Any],
-        replay_buffer: Optional[
-            Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer", "SequentialReplayBuffer"]
-        ] = None,
+        replay_buffer: Optional[Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
-            if isinstance(replay_buffer, (ReplayBuffer, SequentialReplayBuffer)):
+            if isinstance(replay_buffer, ReplayBuffer):
                 # clone the true done
                 true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
                 # substitute the last done with all True values (all the environment are truncated)
@@ -62,15 +60,16 @@ class CheckpointCallback:
                 else:
                     checkpoint_collective.gather_object(replay_buffer, None)
         fabric.save(ckpt_path, state)
-        if replay_buffer is not None and isinstance(replay_buffer, ReplayBuffer):
-            # reinsert the true dones in the buffer
-            replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
-        elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
-            for i, b in enumerate(replay_buffer.buffer):
-                b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
-        elif isinstance(replay_buffer, EpisodeBuffer):
-            # reinsert the open episodes to continue the training
-            replay_buffer._open_episodes = open_episodes
+        if replay_buffer is not None:
+            if isinstance(replay_buffer, ReplayBuffer):
+                # reinsert the true dones in the buffer
+                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
+            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
+                for i, b in enumerate(replay_buffer.buffer):
+                    b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
+            elif isinstance(replay_buffer, EpisodeBuffer):
+                # reinsert the open episodes to continue the training
+                replay_buffer._open_episodes = open_episodes
 
     def on_checkpoint_player(
         self,
@@ -83,15 +82,32 @@ class CheckpointCallback:
         player_trainer_collective.broadcast_object_list(state, src=1)
         state = state[0]
         if replay_buffer is not None:
-            # clone the true done
-            true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
-            # substitute the last done with all True values (all the environment are truncated)
-            replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            if isinstance(replay_buffer, ReplayBuffer):
+                # clone the true done
+                true_done = replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :].clone()
+                # substitute the last done with all True values (all the environment are truncated)
+                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = True
+            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
+                true_dones = []
+                for b in replay_buffer.buffer:
+                    true_dones.append(b["dones"][(b._pos - 1) % b.buffer_size, :].clone())
+                    b["dones"][(b._pos - 1) % b.buffer_size, :] = True
+            elif isinstance(replay_buffer, EpisodeBuffer):
+                # remove open episodes from the buffer because the state of the environment is not saved
+                open_episodes = replay_buffer._open_episodes
+                replay_buffer._open_episodes = [[] for _ in range(replay_buffer.n_envs)]
             state["rb"] = replay_buffer
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
-            # reinsert the true dones in the buffer
-            replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
+            if isinstance(replay_buffer, ReplayBuffer):
+                # reinsert the true dones in the buffer
+                replay_buffer["dones"][(replay_buffer._pos - 1) % replay_buffer.buffer_size, :] = true_done
+            elif isinstance(replay_buffer, EnvIndependentReplayBuffer):
+                for i, b in enumerate(replay_buffer.buffer):
+                    b["dones"][(b._pos - 1) % b.buffer_size, :] = true_dones[i]
+            elif isinstance(replay_buffer, EpisodeBuffer):
+                # reinsert the open episodes to continue the training
+                replay_buffer._open_episodes = open_episodes
 
     def on_checkpoint_trainer(
         self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
