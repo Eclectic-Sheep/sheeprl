@@ -1,30 +1,49 @@
-import gymnasium as gym
-import numpy as np
+from typing import Any, Dict
+
 import torch
 from lightning import Fabric
 
-from sheeprl.algos.a2c.agent import A2CActor
-from sheeprl.algos.a2c.args import A2CArgs
+from sheeprl.algos.a2c.agent import A2CAgent
+from sheeprl.utils.env import make_env
+
+AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
 
 
 @torch.no_grad()
-def test(actor: A2CActor, env: gym.Env, fabric: Fabric, args: A2CArgs):
-    actor.eval()
+def test(agent: A2CAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+    env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
+    agent.eval()
     done = False
     cumulative_rew = 0
-    next_obs = torch.tensor(np.array(env.reset(seed=args.seed)[0]), device=fabric.device).unsqueeze(0)
+    o = env.reset(seed=cfg.seed)[0]
+    obs = {}
+    for k in o.keys():
+        if k in cfg.algo.mlp_keys.encoder:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+            torch_obs = torch_obs.float()
+            obs[k] = torch_obs
+
     while not done:
         # Act greedly through the environment
-        action = actor.get_greedy_actions(next_obs)
+        if agent.is_continuous:
+            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        else:
+            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
 
         # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        next_obs = torch.tensor(np.array(next_obs), device=fabric.device).unsqueeze(0)
+        obs = {}
+        for k in o.keys():
+            if k in cfg.algo.mlp_keys.encoder:
+                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+                torch_obs = torch_obs.float()
+                obs[k] = torch_obs
 
-        if args.dry_run:
+        if cfg.dry_run:
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
-    fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+    if cfg.metric.log_level > 0:
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()

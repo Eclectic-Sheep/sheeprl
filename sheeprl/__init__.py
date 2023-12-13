@@ -15,6 +15,7 @@ if not _IS_TORCH_GREATER_EQUAL_2_0:
 import numpy as np
 
 # fmt: off
+from sheeprl.algos.a2c import a2c  # noqa: F401
 from sheeprl.algos.dreamer_v1 import dreamer_v1  # noqa: F401
 from sheeprl.algos.dreamer_v2 import dreamer_v2  # noqa: F401
 from sheeprl.algos.dreamer_v3 import dreamer_v3  # noqa: F401

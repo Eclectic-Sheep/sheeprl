@@ -1,8 +1,9 @@
 """ RMSProp modified to behave like Tensorflow impl
 
-Originally cut & paste from timm RMSPropTF
-https://github.com/huggingface/pytorch-image-models/blob/main/timm/optim/rmsprop_tf.py
-Licensed under Apache License 2.0, https://github.com/huggingface/pytorch-image-models/blob/main/LICENSE
+Originally cut & paste from PyTorch RMSProp
+https://github.com/pytorch/pytorch/blob/063946d2b3f3f1e953a2a3b54e0b34f1393de295/torch/optim/rmsprop.py
+Licensed under BSD-Clause 3 (ish), https://github.com/pytorch/pytorch/blob/master/LICENSE
+
 Modifications Copyright 2021 Ross Wightman
 """
 

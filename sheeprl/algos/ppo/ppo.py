@@ -366,7 +366,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Add returns and advantages to the buffer
             rb["returns"] = returns.float()
             rb["advantages"] = advantages.float()
-            rb["rewards"] = rb["rewards"].float()
 
         # Flatten the batch
         local_data = rb.buffer.view(-1)

@@ -138,6 +138,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the SAC agent. "
+                f"The observation with key '{k}' has shape {observation_space[k].shape}. "
                 f"Provided environment: {cfg.env.id}"
             )
     if cfg.metric.log_level > 0:
