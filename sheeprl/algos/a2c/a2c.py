@@ -105,6 +105,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -127,10 +128,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
     if len(cfg.algo.mlp_keys.encoder) == 0:
         raise RuntimeError("You should specify at least one MLP key for the encoder: `algo.mlp_keys.encoder=[state]`")
-    for k in cfg.algo.mlp_keys.encoder:
-        if len(observation_space[k].shape) > 1:
+    for k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
+        if k in observation_space.keys() and len(observation_space[k].shape) > 1:
             raise ValueError(
-                "Only environments with vector-only observations are supported by the SAC agent. "
+                "Only environments with vector-only observations are supported by the A2C agent. "
                 f"The observation with key '{k}' has shape {observation_space[k].shape}. "
                 f"Provided environment: {cfg.env.id}"
             )
