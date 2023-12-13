@@ -397,7 +397,7 @@ def trainer(
 
     # Define the agent and the optimizer
     agent = PPOAgent(**agent_args[0])
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:

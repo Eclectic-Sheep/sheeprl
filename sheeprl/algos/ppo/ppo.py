@@ -184,7 +184,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Define the optimizer
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)

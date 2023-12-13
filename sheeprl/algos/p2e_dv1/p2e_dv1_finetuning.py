@@ -159,9 +159,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
-    actor_task_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor_task.parameters())
-    critic_task_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic_task.parameters())
+    world_optimizer = hydra.utils.instantiate(
+        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
+    )
+    actor_task_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer, params=actor_task.parameters(), _convert_="all"
+    )
+    critic_task_optimizer = hydra.utils.instantiate(
+        cfg.algo.critic.optimizer, params=critic_task.parameters(), _convert_="all"
+    )
     world_optimizer.load_state_dict(state["world_optimizer"])
     actor_task_optimizer.load_state_dict(state["actor_task_optimizer"])
     critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])

@@ -192,7 +192,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
     models_to_log = {"agent": agent}
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
