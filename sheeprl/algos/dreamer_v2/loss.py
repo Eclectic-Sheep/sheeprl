@@ -93,8 +93,8 @@ def reconstruction_loss(
         lhs = lhs.mean()
         rhs = rhs.mean()
         free_nats = torch.full_like(lhs, kl_free_nats)
-        loss_lhs = torch.max(lhs, free_nats)
-        loss_rhs = torch.max(rhs, free_nats)
+        loss_lhs = torch.maximum(lhs, free_nats)
+        loss_rhs = torch.maximum(rhs, free_nats)
     else:
         free_nats = torch.full_like(lhs, kl_free_nats)
         loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
