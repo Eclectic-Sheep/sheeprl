@@ -69,7 +69,7 @@ def make_env(
             instantiate_kwargs["seed"] = seed
         if "rank" in cfg.env.wrapper:
             instantiate_kwargs["rank"] = rank + vector_env_idx
-        env = hydra.utils.instantiate(cfg.env.wrapper, **instantiate_kwargs)
+        env = hydra.utils.instantiate(cfg.env.wrapper, **instantiate_kwargs, _convert_="all")
 
         # action repeat
         if (

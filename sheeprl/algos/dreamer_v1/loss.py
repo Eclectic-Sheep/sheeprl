@@ -82,13 +82,14 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    device = rewards.device
     observation_loss = -sum([qo[k].log_prob(observations[k]).mean() for k in qo.keys()])
     reward_loss = -qr.log_prob(rewards).mean()
     kl = kl_divergence(posteriors_dist, priors_dist).mean()
-    state_loss = torch.max(torch.tensor(kl_free_nats, device=device), kl)
-    continue_loss = torch.tensor(0, device=device)
+    free_nats = torch.full_like(kl, kl_free_nats)
+    state_loss = torch.max(kl, free_nats)
     if qc is not None and continue_targets is not None:
         continue_loss = continue_scale_factor * qc.log_prob(continue_targets)
+    else:
+        continue_loss = torch.zeros_like(reward_loss)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss
     return reconstruction_loss, kl, state_loss, reward_loss, observation_loss, continue_loss

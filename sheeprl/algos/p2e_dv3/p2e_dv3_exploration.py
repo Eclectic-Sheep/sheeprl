@@ -114,9 +114,10 @@ def train(
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
     device = fabric.device
+    data = {k: data[k] for k in data.keys()}
     batch_obs = {k: data[k] / 255.0 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
-    data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
     # Given how the environment interaction works, we remove the last actions
     # and add the first one as the zero action
@@ -200,45 +201,12 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        if world_model_grads:
-            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update(
-            "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
-        aggregator.update(
-            "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
 
     # Free up space
     del posterior
     del prior_logits
-    del priors_logits
     del recurrent_state
     del posterior_logits
-    del posteriors_logits
     world_optimizer.zero_grad(set_to_none=True)
 
     # Ensemble Learning
@@ -267,10 +235,6 @@ def train(
             error_if_nonfinite=False,
         )
     ensemble_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        if ensemble_grad:
-            aggregator.update("Grads/ensemble", ensemble_grad.detach())
-        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
 
     # Behaviour Learning Exploration
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
@@ -387,10 +351,6 @@ def train(
             error_if_nonfinite=False,
         )
     actor_exploration_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        if actor_grads_exploration:
-            aggregator.update("Grads/actor_exploration", actor_grads_exploration.mean().detach())
-        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
 
     for k, critic in critics_exploration.items():
         qv = TwoHotEncodingDistribution(critic["module"](imagined_trajectories.detach()[:-1]), dims=1)
@@ -509,10 +469,6 @@ def train(
             error_if_nonfinite=False,
         )
     actor_task_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        if actor_grads_task:
-            aggregator.update("Grads/actor_task", actor_grads_task.mean().detach())
-        aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
 
     # Predict the values
     qv = TwoHotEncodingDistribution(critic_task(imagined_trajectories.detach()[:-1]), dims=1)
@@ -538,9 +494,48 @@ def train(
         )
     critic_task_optimizer.step()
     if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.mean().detach())
+        aggregator.update(
+            "State/post_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update(
+            "State/prior_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
+        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
+        aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
+        aggregator.update("Loss/value_loss_task", value_loss_task.detach())
+        if world_model_grads:
+            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        if ensemble_grad:
+            aggregator.update("Grads/ensemble", ensemble_grad.detach())
+        if actor_grads_exploration:
+            aggregator.update("Grads/actor_exploration", actor_grads_exploration.mean().detach())
+        if actor_grads_task:
+            aggregator.update("Grads/actor_task", actor_grads_task.mean().detach())
         if critic_grads_task:
             aggregator.update("Grads/critic_task", critic_grads_task.mean().detach())
-        aggregator.update("Loss/value_loss_task", value_loss_task.detach())
 
     # Reset everything
     actor_exploration_optimizer.zero_grad(set_to_none=True)
@@ -661,15 +656,25 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
+    world_optimizer = hydra.utils.instantiate(
+        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
+    )
     actor_exploration_optimizer = hydra.utils.instantiate(
-        cfg.algo.actor.optimizer, params=actor_exploration.parameters()
+        cfg.algo.actor.optimizer, params=actor_exploration.parameters(), _convert_="all"
     )
     for k, critic in critics_exploration.items():
-        critic["optimizer"] = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic["module"].parameters())
-    actor_task_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor_task.parameters())
-    critic_task_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic_task.parameters())
-    ensemble_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=ensembles.parameters())
+        critic["optimizer"] = hydra.utils.instantiate(
+            cfg.algo.critic.optimizer, params=critic["module"].parameters(), _convert_="all"
+        )
+    actor_task_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer, params=actor_task.parameters(), _convert_="all"
+    )
+    critic_task_optimizer = hydra.utils.instantiate(
+        cfg.algo.critic.optimizer, params=critic_task.parameters(), _convert_="all"
+    )
+    ensemble_optimizer = hydra.utils.instantiate(
+        cfg.algo.critic.optimizer, params=ensembles.parameters(), _convert_="all"
+    )
     if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_task_optimizer.load_state_dict(state["actor_task_optimizer"])
@@ -744,7 +749,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     cfg.metric.aggregator.metrics.pop("Rewards/intrinsic", None)
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
