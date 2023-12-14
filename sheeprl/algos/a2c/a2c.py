@@ -33,6 +33,11 @@ def train(
     cfg: Dict[str, Any],
 ):
     """Train the agent on the data collected from the environment."""
+
+    # Prepare the sampler
+    # If we are in the distributed setting, we need to use a DistributedSampler, which
+    # will shuffle the data at each epoch and will ensure that each process will get
+    # a different part of the data
     indexes = list(range(data.shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
@@ -49,6 +54,14 @@ def train(
     optimizer.zero_grad(set_to_none=True)
     if cfg.buffer.share_data:
         sampler.sampler.set_epoch(0)
+
+    # Train the agent
+    # Even though in the Spinning-Up A2C algorithm implementation
+    # (https://spinningup.openai.com/en/latest/algorithms/vpg.html) the policy gradient is estimated
+    # by taking the mean over all the sequences collected
+    # of the sum of the actions log-probabilities gradients' multiplied by the advantages,
+    # we do not do that, instead we take the overall sum (or mean, depending on the loss reduction).
+    # This is achieved by accumulating the gradients and calling the backward method only at the end.
     for i, batch_idxes in enumerate(sampler):
         batch = data[batch_idxes]
         obs = {k: batch[k] for k in cfg.algo.mlp_keys.encoder}
