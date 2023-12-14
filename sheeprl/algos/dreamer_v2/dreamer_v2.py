@@ -19,6 +19,7 @@ from tensordict import TensorDict
 from tensordict.tensordict import TensorDictBase
 from torch import Tensor
 from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
@@ -120,12 +121,13 @@ def train(
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
     device = fabric.device
+    data = {k: data[k] for k in data.keys()}
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
 
     # Given how the environment interaction works, we assume that the first element in a sequence
     # is the first one, as if the environment has been reset
-    data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
@@ -213,6 +215,7 @@ def train(
         validate_args=validate_args,
     )
     fabric.backward(rec_loss)
+    world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
             module=world_model,
@@ -221,36 +224,6 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update(
-            "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
-        aggregator.update(
-            "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
 
     # Behaviour Learning
     # (1, batch_size * sequence_length, stochastic_size * discrete_size)
@@ -308,22 +281,10 @@ def train(
         imagined_trajectories[i] = imagined_latent_state
 
     # Predict values and rewards
-    predicted_target_values = Independent(
-        Normal(target_critic(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
-    predicted_rewards = Independent(
-        Normal(world_model.reward_model(imagined_trajectories), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
+    predicted_target_values = target_critic(imagined_trajectories)
+    predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args,
-        ).mean
+        continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
     else:
@@ -385,14 +346,12 @@ def train(
         entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
+    actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/actor", actor_grads.mean().detach())
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values distribution only for the first H (horizon)
     # imagined states (to match the dimension with the lambda values),
@@ -413,8 +372,42 @@ def train(
         )
     critic_optimizer.step()
     if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/critic", critic_grads.mean().detach())
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.mean().detach())
+        aggregator.update(
+            "State/post_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update(
+            "State/prior_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update("Loss/policy_loss", policy_loss.detach())
         aggregator.update("Loss/value_loss", value_loss.detach())
+        if world_model_grads:
+            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        if actor_grads:
+            aggregator.update("Grads/actor", actor_grads.mean().detach())
+        if critic_grads:
+            aggregator.update("Grads/critic", critic_grads.mean().detach())
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)
@@ -519,9 +512,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters())
-    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters())
+    world_optimizer = hydra.utils.instantiate(
+        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
+    )
+    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
+    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
     if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
@@ -536,7 +531,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2

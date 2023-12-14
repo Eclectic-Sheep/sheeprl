@@ -330,7 +330,7 @@ def registration(cfg: DictConfig):
     from sheeprl.utils.mlflow import register_model_from_checkpoint
 
     checkpoint_path = Path(cfg.checkpoint_path)
-    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / ".hydra" / "config.yaml")
+    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
 
     # Merge the two configs
     with open_dict(cfg):
