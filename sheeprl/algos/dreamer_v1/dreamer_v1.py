@@ -369,6 +369,7 @@ def train(
         )
     critic_optimizer.step()
 
+    # Log metrics
     if aggregator and not aggregator.disabled:
         aggregator.update("Loss/world_model_loss", rec_loss.detach())
         aggregator.update("Loss/observation_loss", observation_loss.detach())
