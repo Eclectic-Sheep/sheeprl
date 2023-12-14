@@ -196,9 +196,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters())
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters())
-    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha])
+    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all")
+    actor_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer, params=agent.actor.parameters(), _convert_="all"
+    )
+    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha], _convert_="all")
     if cfg.checkpoint.resume_from:
         qf_optimizer.load_state_dict(state["qf_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
@@ -213,7 +215,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1

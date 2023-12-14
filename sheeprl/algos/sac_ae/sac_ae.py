@@ -15,7 +15,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
 from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
@@ -44,7 +44,7 @@ def train(
     alpha_optimizer: Optimizer,
     encoder_optimizer: Optimizer,
     decoder_optimizer: Optimizer,
-    data: TensorDictBase,
+    data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     update: int,
     cfg: Dict[str, Any],
@@ -54,7 +54,7 @@ def train(
     critic_target_network_frequency = cfg.algo.critic.target_network_frequency // policy_steps_per_update + 1
     actor_network_frequency = cfg.algo.actor.network_frequency // policy_steps_per_update + 1
     decoder_update_freq = cfg.algo.decoder.update_freq // policy_steps_per_update + 1
-    data = data.to(fabric.device)
+    data = {k: v.to(fabric.device) for k, v in data.items()}
     normalized_obs = {}
     normalized_next_obs = {}
     for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
@@ -74,8 +74,6 @@ def train(
     qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss", qf_loss)
 
     # Update the target networks with EMA
     if update % critic_target_network_frequency == 0:
@@ -83,6 +81,7 @@ def train(
         agent.critic_encoder_target_ema()
 
     # Update the actor
+    actor_loss = alpha_loss = None
     if update % actor_network_frequency == 0:
         actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
         qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
@@ -99,11 +98,8 @@ def train(
         agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
         alpha_optimizer.step()
 
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/policy_loss", actor_loss)
-            aggregator.update("Loss/alpha_loss", alpha_loss)
-
     # Update the decoder
+    reconstruction_loss = None
     if update % decoder_update_freq == 0:
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
@@ -119,7 +115,14 @@ def train(
         fabric.backward(reconstruction_loss)
         encoder_optimizer.step()
         decoder_optimizer.step()
-        if aggregator and not aggregator.disabled:
+
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/value_loss", qf_loss)
+        if actor_loss:
+            aggregator.update("Loss/policy_loss", actor_loss)
+        if alpha_loss:
+            aggregator.update("Loss/alpha_loss", alpha_loss)
+        if reconstruction_loss:
             aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
 
 
@@ -207,11 +210,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters())
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters())
-    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha])
-    encoder_optimizer = hydra.utils.instantiate(cfg.algo.encoder.optimizer, params=encoder.parameters())
-    decoder_optimizer = hydra.utils.instantiate(cfg.algo.decoder.optimizer, params=decoder.parameters())
+    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters(), _convert_="all")
+    actor_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer, params=agent.actor.parameters(), _convert_="all"
+    )
+    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha], _convert_="all")
+    encoder_optimizer = hydra.utils.instantiate(
+        cfg.algo.encoder.optimizer, params=encoder.parameters(), _convert_="all"
+    )
+    decoder_optimizer = hydra.utils.instantiate(
+        cfg.algo.decoder.optimizer, params=decoder.parameters(), _convert_="all"
+    )
 
     if cfg.checkpoint.resume_from:
         qf_optimizer.load_state_dict(state["qf_optimizer"])
@@ -230,7 +239,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
@@ -406,7 +415,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         alpha_optimizer,
                         encoder_optimizer,
                         decoder_optimizer,
-                        gathered_data[batch_idxes],
+                        {k: gathered_data[k][batch_idxes] for k in gathered_data.keys()},
                         aggregator,
                         update,
                         cfg,

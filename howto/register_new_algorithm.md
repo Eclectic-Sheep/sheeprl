@@ -130,12 +130,12 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # the optimizer and set up it with Fabric
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.env.num_envs, device=device, memmap=cfg.buffer.memmap)

@@ -97,9 +97,10 @@ def train(
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
     device = fabric.device
+    data = {k: data[k] for k in data.keys()}
     batch_obs = {k: data[k] / 255.0 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
-    data["is_first"][0, :] = torch.tensor([1.0], device=fabric.device).expand_as(data["is_first"][0, :])
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
     # Given how the environment interaction works, we remove the last actions
     # and add the first one as the zero action
@@ -184,36 +185,6 @@ def train(
             error_if_nonfinite=False,
         )
     world_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update(
-            "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
-        aggregator.update(
-            "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
-        )
 
     # Behaviour Learning
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
@@ -321,9 +292,6 @@ def train(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/actor", actor_grads.mean().detach())
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values
     qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
@@ -343,7 +311,40 @@ def train(
             module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
+
+    # Log metrics
     if aggregator and not aggregator.disabled:
+        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        aggregator.update("Loss/world_model_loss", rec_loss.detach())
+        aggregator.update("Loss/observation_loss", observation_loss.detach())
+        aggregator.update("Loss/reward_loss", reward_loss.detach())
+        aggregator.update("Loss/state_loss", state_loss.detach())
+        aggregator.update("Loss/continue_loss", continue_loss.detach())
+        aggregator.update("State/kl", kl.mean().detach())
+        aggregator.update(
+            "State/post_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update(
+            "State/prior_entropy",
+            Independent(
+                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
+                1,
+                validate_args=validate_args,
+            )
+            .entropy()
+            .mean()
+            .detach(),
+        )
+        aggregator.update("Grads/actor", actor_grads.mean().detach())
+        aggregator.update("Loss/policy_loss", policy_loss.detach())
         aggregator.update("Grads/critic", critic_grads.mean().detach())
         aggregator.update("Loss/value_loss", value_loss.detach())
 
@@ -453,9 +454,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(cfg.algo.world_model.optimizer, params=world_model.parameters())
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters())
-    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters())
+    world_optimizer = hydra.utils.instantiate(
+        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
+    )
+    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
+    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
     if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
@@ -478,7 +481,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2
