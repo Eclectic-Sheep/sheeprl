@@ -38,6 +38,7 @@ from sheeprl.algos.sac import sac  # noqa: F401
 from sheeprl.algos.sac import sac_decoupled  # noqa: F401
 from sheeprl.algos.sac import sac_np  # noqa: F401
 from sheeprl.algos.sac_ae import sac_ae  # noqa: F401
+from sheeprl.algos.sac_ae import sac_ae_np  # noqa: F401
 
 from sheeprl.algos.dreamer_v1 import evaluate as dreamer_v1_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.dreamer_v2 import evaluate as dreamer_v2_evaluate  # noqa: F401, isort:skip

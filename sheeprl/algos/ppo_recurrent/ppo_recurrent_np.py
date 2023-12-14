@@ -265,6 +265,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data = {}
     obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     for k in obs_keys:
+        if k in cfg.algo.cnn_keys.encoder:
+            obs[k] = obs[k].reshape(cfg.env.num_envs, -1, *obs[k].shape[-2:])
         obs[k] = obs[k][np.newaxis]
         step_data[k] = obs[k]
 
@@ -349,6 +351,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             obs = next_obs
             for k in obs_keys:
                 obs[k] = obs[k][np.newaxis]
+                if k in cfg.algo.cnn_keys.encoder:
+                    obs[k] = obs[k].reshape(1, cfg.env.num_envs, -1, *obs[k].shape[-2:])
                 step_data[k] = obs[k]
 
             # Reset the states if the episode is done

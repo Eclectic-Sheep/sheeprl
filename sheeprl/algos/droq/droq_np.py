@@ -44,8 +44,8 @@ def train(
         cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
     )
     critic_data = fabric.all_gather(sample)
-    starting_dim = 3 if fabric.world_size > 1 else 2
-    critic_data = {k: v.view(-1, *v.shape[starting_dim:]) for k, v in critic_data.items()}
+    flatten_dim = 3 if fabric.world_size > 1 else 2
+    critic_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in critic_data.items()}
     critic_idxes = range(len(critic_data[next(iter(critic_data.keys()))]))
     if fabric.world_size > 1:
         dist_sampler: DistributedSampler = DistributedSampler(
@@ -65,7 +65,7 @@ def train(
     # Sample a different minibatch in a distributed way to update actor and alpha parameter
     sample = rb.sample_tensors(cfg.algo.per_rank_batch_size)
     actor_data = fabric.all_gather(sample)
-    actor_data = {k: v.view(-1, *v.shape[starting_dim:]) for k, v in actor_data.items()}
+    actor_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in actor_data.items()}
     if fabric.world_size > 1:
         actor_sampler: DistributedSampler = DistributedSampler(
             range(len(actor_data[next(iter(actor_data.keys()))])),
