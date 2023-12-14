@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - sac
+  - override /algo: droq_np
+  - override /model_manager: droq
+  - override /fabric: fabric_np
+  - _self_
