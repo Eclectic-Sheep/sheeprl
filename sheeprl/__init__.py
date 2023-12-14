@@ -33,6 +33,7 @@ from sheeprl.algos.ppo import ppo  # noqa: F401
 from sheeprl.algos.ppo import ppo_decoupled  # noqa: F401
 from sheeprl.algos.ppo import ppo_np  # noqa: F401
 from sheeprl.algos.ppo_recurrent import ppo_recurrent  # noqa: F401
+from sheeprl.algos.ppo_recurrent import ppo_recurrent_np  # noqa: F401
 from sheeprl.algos.sac import sac  # noqa: F401
 from sheeprl.algos.sac import sac_decoupled  # noqa: F401
 from sheeprl.algos.sac import sac_np  # noqa: F401

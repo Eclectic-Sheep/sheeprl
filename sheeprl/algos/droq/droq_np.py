@@ -274,7 +274,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data = {}
     # Get the first environment observation and start the optimization
     o = envs.reset(seed=cfg.seed)[0]
-    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
@@ -284,7 +284,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                actions, _ = agent.actor.module(torch.as_tensor(obs, device=device).float())
+                actions, _ = agent.actor.module(torch.from_numpy(obs).to(device))
                 actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             dones = np.logical_or(dones, truncated)
@@ -307,15 +307,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
-        real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+        next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
+        real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
+            np.float32
+        )
 
-        step_data["observations"] = obs.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
-            step_data["next_observations"] = real_next_obs.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+            step_data["next_observations"] = real_next_obs[np.newaxis]
+        step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
         step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data)
 
         # next_obs becomes the new obs
