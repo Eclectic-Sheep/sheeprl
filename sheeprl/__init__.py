@@ -37,6 +37,7 @@ from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning  # noqa: F401
 from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning_np  # noqa: F401
 from sheeprl.algos.ppo import ppo  # noqa: F401
 from sheeprl.algos.ppo import ppo_decoupled  # noqa: F401
+from sheeprl.algos.ppo import ppo_decoupled_np  # noqa: F401
 from sheeprl.algos.ppo import ppo_np  # noqa: F401
 from sheeprl.algos.ppo_recurrent import ppo_recurrent  # noqa: F401
 from sheeprl.algos.ppo_recurrent import ppo_recurrent_np  # noqa: F401

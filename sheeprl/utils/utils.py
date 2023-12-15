@@ -86,9 +86,9 @@ def gae(
     """
     lastgaelam = 0
     nextvalues = next_value
-    not_dones = np.logical_not(dones)
+    not_dones = torch.logical_not(dones)
     nextnonterminal = not_dones[-1]
-    advantages = np.zeros_like(rewards)
+    advantages = torch.zeros_like(rewards)
     for t in reversed(range(num_steps)):
         if t < num_steps - 1:
             nextnonterminal = not_dones[t]

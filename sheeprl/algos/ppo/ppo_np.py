@@ -351,7 +351,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
             next_values = agent.module.get_value(torch_obs)
             returns, advantages = gae(
-                local_data["rewards"],
+                local_data["rewards"].to(torch.float64),
                 local_data["values"],
                 local_data["dones"],
                 next_values,

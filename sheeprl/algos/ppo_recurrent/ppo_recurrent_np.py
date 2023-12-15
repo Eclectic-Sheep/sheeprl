@@ -371,6 +371,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
+        # Transform the data into PyTorch Tensors
+        local_data = rb.to_tensor(dtype=None, device=device)
+
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
             normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
@@ -379,28 +382,26 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rnn_out, _ = agent.module.rnn(torch.cat((feat, torch_actions), dim=-1), states)
             next_values = agent.module.get_values(rnn_out)
             returns, advantages = gae(
-                rb["rewards"].astype(np.float64),
-                rb["values"],
-                rb["dones"],
-                next_values.cpu().numpy(),
+                local_data["rewards"].to(torch.float64),
+                local_data["values"],
+                local_data["dones"],
+                next_values,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )
 
             # Add returns and advantages to the buffer
-            rb["returns"] = returns.astype(np.float32)
-            rb["advantages"] = advantages.astype(np.float32)
-
-        # Get the training data as a TensorDict
-        local_data = rb.to_tensor(torch.float32)
+            local_data["rewards"] = local_data["rewards"].float()
+            local_data["returns"] = returns.float()
+            local_data["advantages"] = advantages.float()
 
         # Train the agent
         # 1. Split data into episodes (for every environment)
         episodes: List[Dict[str, Tensor]] = []
         lengths = []
         for env_id in range(cfg.env.num_envs):
-            env_data = {k: v[:, env_id] for k, v in local_data.items()}  # [N_steps, *]
+            env_data = {k: v[:, env_id].float() for k, v in local_data.items()}  # [N_steps, *]
             episode_ends = env_data["dones"].nonzero(as_tuple=True)[0]
             episode_ends = episode_ends.tolist()
             episode_ends.append(cfg.algo.rollout_steps)
