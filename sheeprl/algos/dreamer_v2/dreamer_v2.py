@@ -371,6 +371,8 @@ def train(
             module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
         )
     critic_optimizer.step()
+
+    # Log metrics
     if aggregator and not aggregator.disabled:
         aggregator.update("Loss/world_model_loss", rec_loss.detach())
         aggregator.update("Loss/observation_loss", observation_loss.detach())
@@ -525,7 +527,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         world_optimizer, actor_optimizer, critic_optimizer
     )
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
 

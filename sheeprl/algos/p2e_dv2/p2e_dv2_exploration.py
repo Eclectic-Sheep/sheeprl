@@ -666,7 +666,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         critic_exploration_optimizer,
     )
 
-    local_vars = locals()
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
 
