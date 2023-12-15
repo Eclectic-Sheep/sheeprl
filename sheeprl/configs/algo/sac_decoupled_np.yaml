@@ -1,0 +1,5 @@
+defaults:
+  - sac_np
+  - _self_
+
+name: sac_decoupled_np
