@@ -106,7 +106,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     actions_dim = tuple(
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
-    clip_rewards_fn = lambda r: torch.tanh(r) if cfg.env.clip_rewards else r
+    clip_rewards_fn = lambda r: np.tanh(r) if cfg.env.clip_rewards else r
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
 
