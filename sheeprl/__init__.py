@@ -28,7 +28,9 @@ from sheeprl.algos.p2e_dv1 import p2e_dv1_exploration_np  # noqa: F401
 from sheeprl.algos.p2e_dv1 import p2e_dv1_finetuning  # noqa: F401
 from sheeprl.algos.p2e_dv1 import p2e_dv1_finetuning_np  # noqa: F401
 from sheeprl.algos.p2e_dv2 import p2e_dv2_exploration  # noqa: F401
+from sheeprl.algos.p2e_dv2 import p2e_dv2_exploration_np  # noqa: F401
 from sheeprl.algos.p2e_dv2 import p2e_dv2_finetuning  # noqa: F401
+from sheeprl.algos.p2e_dv2 import p2e_dv2_finetuning_np  # noqa: F401
 from sheeprl.algos.p2e_dv3 import p2e_dv3_exploration  # noqa: F401
 from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning  # noqa: F401
 from sheeprl.algos.ppo import ppo  # noqa: F401
