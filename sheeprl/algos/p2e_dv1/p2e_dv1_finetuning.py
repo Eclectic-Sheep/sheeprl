@@ -287,7 +287,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()
                 else:
-                    real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
+                    real_actions = (
+                        torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                    )
             next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
             dones = np.logical_or(dones, truncated).astype(np.uint8)
 

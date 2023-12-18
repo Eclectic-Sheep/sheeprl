@@ -868,7 +868,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
                     else:
-                        real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
+                        real_actions = (
+                            torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                        )
 
             step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
