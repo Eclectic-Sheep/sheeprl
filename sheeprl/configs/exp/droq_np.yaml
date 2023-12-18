@@ -1,7 +1,0 @@
-# @package _global_
-
-defaults:
-  - sac_np
-  - override /algo: droq_np
-  - override /model_manager: droq
-  - _self_

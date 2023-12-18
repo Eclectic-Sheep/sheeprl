@@ -304,7 +304,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for k in obs_keys:
         if k in cfg.algo.cnn_keys.encoder:
             obs[k] = obs[k].reshape(cfg.env.num_envs, -1, *obs[k].shape[-2:])
-        obs[k] = obs[k][np.newaxis]
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
@@ -317,7 +316,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             else:
                 with torch.no_grad():
                     normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
-                    torch_obs = {k: torch.from_numpy(v[0]).to(device).float() for k, v in normalized_obs.items()}
+                    torch_obs = {k: torch.from_numpy(v).to(device).float() for k, v in normalized_obs.items()}
                     actions, _ = agent.actor.module(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
@@ -344,8 +343,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         for k in real_next_obs.keys():
             if k in cfg.algo.cnn_keys.encoder:
                 next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            next_obs[k] = next_obs[k][np.newaxis]
-            step_data[k] = obs[k]
+            step_data[k] = obs[k][np.newaxis]
 
             if not cfg.buffer.sample_next_obs:
                 step_data[f"next_{k}"] = real_next_obs[k][np.newaxis]

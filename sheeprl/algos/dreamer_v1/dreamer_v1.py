@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
+from torch import Tensor
 from torch.distributions import Bernoulli, Independent, Normal
 from torch.distributions.utils import logits_to_probs
 from torchmetrics import SumMetric
@@ -41,7 +42,7 @@ def train(
     world_optimizer: _FabricOptimizer,
     actor_optimizer: _FabricOptimizer,
     critic_optimizer: _FabricOptimizer,
-    data: Dict[str, torch.Tensor],
+    data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
 ) -> None:
@@ -94,7 +95,7 @@ def train(
         world_optimizer (_FabricOptimizer): the world optimizer.
         actor_optimizer (_FabricOptimizer): the actor optimizer.
         critic_optimizer (_FabricOptimizer): the critic optimizer.
-        data (TensorDictBase): the batch of data to use for training.
+        data (Dict[str, Tensor]): the batch of data to use for training.
         aggregator (MetricAggregator, optional): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
     """
@@ -525,8 +526,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
-    step_data = {}
-    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
     train_step = 0
@@ -546,6 +545,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     updates_before_training = cfg.algo.train_every // policy_steps_per_update if not cfg.dry_run else 0
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
+    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
     max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * world_size)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
@@ -575,6 +575,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
+    step_data = {}
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         if k in cfg.algo.cnn_keys.encoder:

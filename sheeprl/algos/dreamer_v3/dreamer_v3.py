@@ -285,6 +285,7 @@ def train(
         entropy = torch.zeros_like(objective)
     policy_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
     fabric.backward(policy_loss)
+    actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
@@ -304,6 +305,7 @@ def train(
     value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
     fabric.backward(value_loss)
+    critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
             module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
@@ -312,7 +314,6 @@ def train(
 
     # Log metrics
     if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/world_model", world_model_grads.mean().detach())
         aggregator.update("Loss/world_model_loss", rec_loss.detach())
         aggregator.update("Loss/observation_loss", observation_loss.detach())
         aggregator.update("Loss/reward_loss", reward_loss.detach())
@@ -341,10 +342,14 @@ def train(
             .mean()
             .detach(),
         )
-        aggregator.update("Grads/actor", actor_grads.mean().detach())
         aggregator.update("Loss/policy_loss", policy_loss.detach())
-        aggregator.update("Grads/critic", critic_grads.mean().detach())
         aggregator.update("Loss/value_loss", value_loss.detach())
+        if world_model_grads:
+            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
+        if actor_grads:
+            aggregator.update("Grads/actor", actor_grads.mean().detach())
+        if critic_grads:
+            aggregator.update("Grads/critic", critic_grads.mean().detach())
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)

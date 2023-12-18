@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence, Union
 
-import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from torch import Tensor
@@ -38,11 +37,7 @@ class CheckpointCallback:
                 # The collective it is needed because the `gather_object` function is not implemented in Fabric
                 checkpoint_collective = TorchCollective()
                 # gloo is the torch.distributed backend that works on cpu
-                if fabric.device == torch.device("cpu"):
-                    backend = "gloo"
-                else:
-                    backend = "nccl"
-                checkpoint_collective.create_group(backend=backend, ranks=list(range(fabric.world_size)))
+                checkpoint_collective.create_group(backend="gloo", ranks=list(range(fabric.world_size)))
                 gathered_rb = [None for _ in range(fabric.world_size)]
                 if fabric.global_rank == 0:
                     checkpoint_collective.gather_object(replay_buffer, gathered_rb)
