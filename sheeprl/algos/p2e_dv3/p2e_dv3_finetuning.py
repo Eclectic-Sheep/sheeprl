@@ -9,16 +9,13 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from tensordict import TensorDict
-from torch import Tensor
-from torch.utils.data import BatchSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
-from sheeprl.data.buffers import AsyncReplayBuffer
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -201,22 +198,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
-    rb = AsyncReplayBuffer(
+    rb = EnvIndependentReplayBuffer(
         buffer_size,
-        cfg.env.num_envs,
-        device="cpu",
+        n_envs=cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        sequential=True,
+        buffer_cls=SequentialReplayBuffer,
     )
     if resume_from_checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], AsyncReplayBuffer):
+        elif isinstance(state["rb"], EnvIndependentReplayBuffer):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device="cpu")
     expl_decay_steps = state["expl_decay_steps"] if resume_from_checkpoint else 0
 
     # Global variables
@@ -272,18 +267,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]
-    obs = {k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")}
+    step_data = {}
+    obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
-        torch_obs = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
-        if k in cfg.algo.mlp_keys.encoder:
-            # Images stay uint8 to save space
-            torch_obs = torch_obs.float()
-        step_data[k] = torch_obs
-        obs[k] = torch_obs
-    step_data["dones"] = torch.zeros(cfg.env.num_envs, 1).float()
-    step_data["rewards"] = torch.zeros(cfg.env.num_envs, 1).float()
-    step_data["is_first"] = torch.ones_like(step_data["dones"]).float()
+        step_data[k] = obs[k][np.newaxis]
+    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["is_first"] = np.ones_like(step_data["dones"])
     player.init_states()
 
     per_rank_gradient_steps = 0
@@ -296,10 +286,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             with torch.no_grad():
                 preprocessed_obs = {}
                 for k, v in obs.items():
+                    preprocessed_obs[k] = torch.as_tensor(v[np.newaxis], dtype=torch.float32, device=device)
                     if k in cfg.algo.cnn_keys.encoder:
-                        preprocessed_obs[k] = v[None, ...].to(device) / 255.0
-                    else:
-                        preprocessed_obs[k] = v[None, ...].to(device)
+                        preprocessed_obs[k] = preprocessed_obs[k] / 255.0
                 mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                 if len(mask) == 0:
                     mask = None
@@ -310,22 +299,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 else:
                     real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
 
-            step_data["actions"] = torch.from_numpy(actions).view(cfg.env.num_envs, -1).float()
-            rb.add(step_data[None, ...])
+            step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            o, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated)
+            next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
+            dones = np.logical_or(dones, truncated).astype(np.uint8)
 
-        step_data["is_first"] = torch.zeros_like(step_data["dones"])
+        step_data["is_first"] = np.zeros_like(step_data["dones"])
         if "restart_on_exception" in infos:
             for i, agent_roe in enumerate(infos["restart_on_exception"]):
                 if agent_roe and not dones[i]:
                     last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
-                    rb.buffer[i]["dones"][last_inserted_idx] = torch.ones_like(rb.buffer[i]["dones"][last_inserted_idx])
-                    rb.buffer[i]["is_first"][last_inserted_idx] = torch.zeros_like(
+                    rb.buffer[i]["dones"][last_inserted_idx] = np.ones_like(rb.buffer[i]["dones"][last_inserted_idx])
+                    rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
                         rb.buffer[i]["is_first"][last_inserted_idx]
                     )
-                    step_data["is_first"][i] = torch.ones_like(step_data["is_first"][i])
+                    step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -338,51 +327,39 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
-        real_next_obs = copy.deepcopy(o)
+        real_next_obs = copy.deepcopy(next_obs)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs: Dict[str, Tensor] = {
-            k: torch.from_numpy(v).view(cfg.env.num_envs, *v.shape[1:]) for k, v in o.items() if k.startswith("mask")
-        }
-        for k in real_next_obs.keys():  # [N_envs, N_obs]
-            if k in obs_keys:
-                next_obs[k] = torch.from_numpy(o[k]).view(cfg.env.num_envs, *o[k].shape[1:])
-                step_data[k] = next_obs[k]
-                if k in cfg.algo.mlp_keys.encoder:
-                    next_obs[k] = next_obs[k].float()
-                    step_data[k] = step_data[k].float()
+        for k in obs_keys:
+            step_data[k] = next_obs[k][np.newaxis]
 
         # next_obs becomes the new obs
         obs = next_obs
 
-        rewards = torch.from_numpy(rewards).view(cfg.env.num_envs, -1).float()
-        dones = torch.from_numpy(dones).view(cfg.env.num_envs, -1).float()
-        step_data["dones"] = dones
+        rewards = rewards.reshape((1, cfg.env.num_envs, -1))
+        step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
         step_data["rewards"] = clip_rewards_fn(rewards)
 
-        dones_idxes = dones.nonzero(as_tuple=True)[0].tolist()
+        dones_idxes = dones.nonzero()[0].tolist()
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
-            reset_data = TensorDict({}, batch_size=[reset_envs], device="cpu")
-            for k in real_next_obs.keys():
-                if k in obs_keys:
-                    reset_data[k] = real_next_obs[k][dones_idxes]
-                    if k in cfg.algo.mlp_keys.encoder:
-                        reset_data[k] = reset_data[k].float()
-            reset_data["dones"] = torch.ones(reset_envs, 1).float()
-            reset_data["actions"] = torch.zeros(reset_envs, np.sum(actions_dim)).float()
-            reset_data["rewards"] = step_data["rewards"][dones_idxes].float()
-            reset_data["is_first"] = torch.zeros_like(reset_data["dones"]).float()
-            rb.add(reset_data[None, ...], dones_idxes)
+            reset_data = {}
+            for k in obs_keys:
+                reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
+            reset_data["dones"] = np.ones((1, reset_envs, 1))
+            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
+            reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
+            reset_data["is_first"] = np.zeros_like(reset_data["dones"])
+            rb.add(reset_data, dones_idxes)
 
             # Reset already inserted step data
-            step_data["rewards"][dones_idxes] = torch.zeros_like(reset_data["rewards"]).float()
-            step_data["dones"][dones_idxes] = torch.zeros_like(step_data["dones"][dones_idxes]).float()
-            step_data["is_first"][dones_idxes] = torch.ones_like(step_data["is_first"][dones_idxes]).float()
+            step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
+            step_data["dones"][:, dones_idxes] = np.zeros_like(step_data["dones"][:, dones_idxes])
+            step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
             player.init_states(dones_idxes)
 
         updates_before_training -= 1
@@ -392,21 +369,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             if player.actor_type == "exploration":
                 player.actor = actor_task.module
                 player.actor_type = "task"
-            local_data = rb.sample(
+            local_data = rb.sample_tensors(
                 cfg.algo.per_rank_batch_size,
                 sequence_length=cfg.algo.per_rank_sequence_length,
-                n_samples=cfg.algo.per_rank_pretrain_steps
-                if update == learning_starts
-                else cfg.algo.per_rank_gradient_steps,
-            ).to(device)
-            distributed_sampler = BatchSampler(range(local_data.shape[0]), batch_size=1, drop_last=False)
+                n_samples=(
+                    cfg.algo.per_rank_pretrain_steps if update == learning_starts else cfg.algo.per_rank_gradient_steps
+                ),
+                dtype=None,
+                device=fabric.device,
+            )
             # Start training
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
-                for i in distributed_sampler:
+                for i in range(next(iter(local_data.values())).shape[0]):
                     tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                             tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
+                    batch = {k: v[i].float() for k, v in local_data.items()}
                     train(
                         fabric,
                         world_model,
@@ -416,7 +395,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                         world_optimizer,
                         actor_task_optimizer,
                         critic_task_optimizer,
-                        local_data[i].view(cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size),
+                        batch,
                         aggregator,
                         cfg,
                         is_continuous=is_continuous,

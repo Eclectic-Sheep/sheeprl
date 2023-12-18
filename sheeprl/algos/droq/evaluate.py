@@ -12,7 +12,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(algorithms=["droq", "droq_np"])
+@register_evaluation(algorithms="droq")
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:

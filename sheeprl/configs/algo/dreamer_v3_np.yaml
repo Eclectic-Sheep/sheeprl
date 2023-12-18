@@ -1,5 +1,0 @@
-defaults:
-  - dreamer_v3
-  - _self_
-
-name: dreamer_v3_np

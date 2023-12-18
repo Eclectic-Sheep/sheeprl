@@ -270,6 +270,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         run()
         import torch.distributed
 
+        print(ckpt_path)
+
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
             del os.environ["LOCAL_RANK"]
