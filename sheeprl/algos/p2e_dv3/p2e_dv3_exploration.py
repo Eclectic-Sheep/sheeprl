@@ -927,7 +927,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
             reset_data["is_first"] = np.zeros_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes)
+            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
 
             # Reset already inserted step data
             step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])

@@ -190,7 +190,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Define the optimizer
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:

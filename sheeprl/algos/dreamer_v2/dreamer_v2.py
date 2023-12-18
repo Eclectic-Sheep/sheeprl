@@ -123,7 +123,7 @@ def train(
 
     # Given how the environment interaction works, we assume that the first element in a sequence
     # is the first one, as if the environment has been reset
-    data["is_first"][0, :] = torch.full_like(data["is_first"][0, :], 1.0)
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
@@ -280,7 +280,7 @@ def train(
     predicted_target_values = target_critic(imagined_trajectories)
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        continues = logits_to_probs(world_model.continue_model(imagined_trajectories))
+        continues = logits_to_probs(world_model.continue_model(imagined_trajectories), is_binary=True)
         true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
         continues = torch.cat((true_done, continues[1:]))
     else:
@@ -348,9 +348,6 @@ def train(
             module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
         )
     actor_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Grads/actor", actor_grads.mean().detach())
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
 
     # Predict the values distribution only for the first H (horizon)
     # imagined states (to match the dimension with the lambda values),
@@ -625,7 +622,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["is_first"] = np.ones_like(step_data["dones"])
-    rb.add(step_data, validate_args=False)
+    rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
     per_rank_gradient_steps = 0
@@ -703,7 +700,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
         step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
         step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
-        rb.add(step_data, validate_args=False)
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -716,7 +713,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
             reset_data["is_first"] = np.ones_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes, validate_args=False)
+            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
                 step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
