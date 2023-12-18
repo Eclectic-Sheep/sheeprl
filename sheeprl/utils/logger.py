@@ -32,7 +32,7 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
                 )
             cfg.metric.logger.root_dir = root_dir
             cfg.metric.logger.name = cfg.run_name
-        logger = hydra.utils.instantiate(cfg.metric.logger)
+        logger = hydra.utils.instantiate(cfg.metric.logger, _convert_="all")
     return logger
 
 
