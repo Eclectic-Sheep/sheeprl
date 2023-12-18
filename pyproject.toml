@@ -140,7 +140,7 @@ markers = ["benchmark: mark test as a benchmark"]
 
 # Pytest coverage
 [tool.coverage.run]
-omit = ["./sheeprl/envs/*", "./sheeprl/available_agents.py"]
+omit = ["./sheeprl/envs/*", "./sheeprl/available_agents.py", "sheeprl/utils/mlflow.py"]
 
 [tool.prettier]
 tab_width = 2
