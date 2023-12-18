@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from lightning import Fabric
 
-from sheeprl.data.buffers_np import ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
 
 

@@ -197,8 +197,8 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                 o, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
 
             with device:
-                rewards = torch.tensor(reward).view(cfg.env.num_envs, -1)  # [N_envs, 1]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
+                rewards = torch.as_tensor(reward).view(cfg.env.num_envs, -1)  # [N_envs, 1]
+                done = torch.logical_or(torch.as_tensor(done), torch.as_tensor(truncated))  # [N_envs, 1]
                 done = done.view(cfg.env.num_envs, -1).float()
 
             # Update the step data

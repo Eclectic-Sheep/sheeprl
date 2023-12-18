@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from sheeprl.data.buffers_np import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 
 
 def test_env_idependent_wrong_buffer_size():

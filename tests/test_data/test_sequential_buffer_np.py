@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pytest
 
-from sheeprl.data.buffers_np import SequentialReplayBuffer
+from sheeprl.data.buffers import SequentialReplayBuffer
 
 
 def test_seq_replay_buffer_wrong_buffer_size():

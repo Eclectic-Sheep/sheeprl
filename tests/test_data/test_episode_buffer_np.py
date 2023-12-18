@@ -7,7 +7,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from sheeprl.data.buffers_np import EpisodeBuffer, ReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
 
 
