@@ -193,5 +193,5 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
     return model
 
 
-def save_configs(cfg: Dict[str, Any], log_dir: str):
+def save_configs(cfg: dotdict, log_dir: str):
     OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)

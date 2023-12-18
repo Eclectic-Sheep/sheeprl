@@ -923,7 +923,7 @@ class EpisodeBuffer:
             if "dones" not in data:
                 raise RuntimeError(f"The episode must contain the `dones` key, got: {data.keys()}")
 
-            if (np.array(env_idxes) >= self._n_envs).any():
+            if env_idxes is not None and (np.array(env_idxes) >= self._n_envs).any():
                 raise ValueError(
                     f"The indices of the environment must be integers in [0, {self._n_envs}), given {env_idxes}"
                 )

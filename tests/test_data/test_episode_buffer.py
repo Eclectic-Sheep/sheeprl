@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 import pytest
+import torch
 
 from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
@@ -74,11 +75,11 @@ def test_episode_buffer_error_add():
     obs_keys = ("dones",)
     rb = EpisodeBuffer(buf_size, sl, n_envs=n_envs, obs_keys=obs_keys)
 
-    ep1 = {"dones": np.zeros((sl, n_envs, 1))}
+    ep1 = torch.zeros(sl, n_envs, 1)
     with pytest.raises(ValueError, match="`data` must be a dictionary containing Numpy arrays, but `data` is of type"):
         rb.add(ep1, validate_args=True)
 
-    ep2 = {"dones": np.zeros((sl, n_envs, 1))}
+    ep2 = {"dones": torch.zeros((sl, n_envs, 1))}
     with pytest.raises(ValueError, match="`data` must be a dictionary containing Numpy arrays. Found key"):
         rb.add(ep2, validate_args=True)
 
