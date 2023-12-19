@@ -91,10 +91,6 @@ import hydra
 import torch
 from lightning.fabric import Fabric
 from torchmetrics import MeanMetric, SumMetric
-
-from sheeprl.algos.sota.agent import build_agent
-from sheeprl.algos.sota.loss import loss1, loss2
-from sheeprl.algos.sota.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -103,6 +99,10 @@ from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import unwrap_fabric
+
+from my_awesome_algo.agent import build_agent
+from my_awesome_algo.loss import loss1, loss2
+from my_awesome_algo.utils import normalize_obs, test
 
 
 def train(
@@ -393,10 +393,10 @@ from typing import TYPE_CHECKING, Any, Dict
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
-
-from sheeprl.algos.sota.agent import SOTAAgent
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
+
+from my_awesome_algo.agent import SOTAAgent
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
