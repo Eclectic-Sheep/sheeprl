@@ -169,6 +169,7 @@ By default the checkpointing is enabled with the following settings:
 every: 100
 resume_from: null
 save_last: True
+keep_last: 5
 ```
 
 meaning that:
@@ -176,6 +177,7 @@ meaning that:
 * `every` is the number of policy steps (number of steps played in the environment, e.g. if one has 2 processes with 4 environments per process then the policy steps are 2*4=8) between two consecutive checkpointing operations. For more info about the policy steps, check the [Work with Steps Tutorial](./work_with_steps.md).
 * `resume_from` is the path of the checkpoint to resume from. If `null`, then the checkpointing is not resumed.
 * `save_last` is a boolean flag that enables/disables the saving of the last checkpoint.
+* `keep_last` is the number of checkpoints you want to keep during the experiment. If `null`, all the checkpoints are kept.
 
 > **Note**
 >

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import pathlib
 from typing import Any, Dict, Optional, Sequence, Union
 
 from lightning.fabric import Fabric
@@ -21,6 +23,9 @@ class CheckpointCallback:
 
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
     """
+
+    def __init__(self, keep_last: int | None = None) -> None:
+        self.keep_last = keep_last
 
     def on_checkpoint_coupled(
         self,
@@ -47,6 +52,8 @@ class CheckpointCallback:
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
+        if self.keep_last:
+            self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
 
     def on_checkpoint_player(
         self,
@@ -64,6 +71,8 @@ class CheckpointCallback:
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
+        if self.keep_last:
+            self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
 
     def on_checkpoint_trainer(
         self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
@@ -128,3 +137,9 @@ class CheckpointCallback:
         elif isinstance(rb, EpisodeBuffer):
             # reinsert the open episodes to continue the training
             rb._open_episodes = state
+
+    def _delete_old_checkpoints(self, ckpt_folder: str | pathlib.Path):
+        ckpts = list(sorted(ckpt_folder.glob("*.ckpt"), key=os.path.getmtime))
+        if len(ckpts) > self.keep_last:
+            to_delete = ckpts[: -self.keep_last]
+            [f.unlink() for f in to_delete]
