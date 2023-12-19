@@ -733,6 +733,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 n_samples=n_samples,
                 dtype=None,
                 device=fabric.device,
+                from_numpy=cfg.buffer.from_numpy,
             )
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for i in range(next(iter(local_data.values())).shape[0]):

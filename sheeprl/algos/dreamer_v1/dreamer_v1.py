@@ -689,6 +689,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         n_samples=1,
                         dtype=None,
                         device=device,
+                        from_numpy=cfg.buffer.from_numpy,
                     )  # [N_samples, Seq_len, Batch_size, ...]
                     batch = {k: v[0].float() for k, v in sample.items()}
                     train(
