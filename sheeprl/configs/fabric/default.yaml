@@ -5,4 +5,7 @@ strategy: "auto"
 accelerator: "cpu"
 precision: "32-true"
 callbacks:
-  - _target_: sheeprl.utils.callback.CheckpointCallback
+  - {
+      _target_: sheeprl.utils.callback.CheckpointCallback,
+      keep_last: "${checkpoint.keep_last}"
+    }
