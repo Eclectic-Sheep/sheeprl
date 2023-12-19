@@ -264,7 +264,7 @@ def player(
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Transform the data into PyTorch Tensors
-        local_data = rb.to_tensor(dtype=None, device=device)
+        local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
