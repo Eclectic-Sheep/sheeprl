@@ -270,6 +270,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         run()
         import torch.distributed
 
+        print(ckpt_path)
+
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
             del os.environ["LOCAL_RANK"]
@@ -438,7 +440,6 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
         "algo.layer_norm=True",
         "algo.train_every=1",
         "algo.cnn_keys.encoder=[rgb]",

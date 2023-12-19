@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
 
 import gymnasium as gym
-import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -150,7 +149,7 @@ def test(
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()
         else:
-            real_actions = np.array([real_act.cpu().argmax(dim=-1).numpy() for real_act in real_actions])
+            real_actions = torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         # Single environment step
         next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))

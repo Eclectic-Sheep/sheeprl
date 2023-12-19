@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from tensordict import TensorDict, make_tensordict
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
@@ -41,14 +40,16 @@ def train(
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
     # We sample one time to reduce the communications between processes
-    sample = rb.sample(
+    sample = rb.sample_tensors(
         cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
     )
-    critic_data = fabric.all_gather(sample.to_dict())
-    critic_data = make_tensordict(critic_data).view(-1)
+    critic_data = fabric.all_gather(sample)
+    flatten_dim = 3 if fabric.world_size > 1 else 2
+    critic_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in critic_data.items()}
+    critic_idxes = range(len(critic_data[next(iter(critic_data.keys()))]))
     if fabric.world_size > 1:
         dist_sampler: DistributedSampler = DistributedSampler(
-            range(len(critic_data)),
+            critic_idxes,
             num_replicas=fabric.world_size,
             rank=fabric.global_rank,
             shuffle=True,
@@ -59,29 +60,27 @@ def train(
             sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
         )
     else:
-        critic_sampler = BatchSampler(
-            sampler=range(len(critic_data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-        )
+        critic_sampler = BatchSampler(sampler=critic_idxes, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
     # Sample a different minibatch in a distributed way to update actor and alpha parameter
-    sample = rb.sample(cfg.algo.per_rank_batch_size)
-    actor_data = fabric.all_gather(sample.to_dict())
-    actor_data = make_tensordict(actor_data).view(-1)
+    sample = rb.sample_tensors(cfg.algo.per_rank_batch_size)
+    actor_data = fabric.all_gather(sample)
+    actor_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in actor_data.items()}
     if fabric.world_size > 1:
         actor_sampler: DistributedSampler = DistributedSampler(
-            range(len(actor_data)),
+            range(len(actor_data[next(iter(actor_data.keys()))])),
             num_replicas=fabric.world_size,
             rank=fabric.global_rank,
             shuffle=True,
             seed=cfg.seed,
             drop_last=False,
         )
-        actor_data = actor_data[next(iter(actor_sampler))]
+        actor_data = {k: actor_data[k][next(iter(actor_sampler))] for k in actor_data.keys()}
 
     with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
         # Update the soft-critic
         for batch_idxes in critic_sampler:
-            critic_batch_data = critic_data[batch_idxes]
+            critic_batch_data = {k: critic_data[k][batch_idxes] for k in critic_data.keys()}
             next_target_qf_value = agent.get_next_target_q_values(
                 critic_batch_data["next_observations"],
                 critic_batch_data["rewards"],
@@ -233,7 +232,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     last_train = 0
@@ -273,12 +271,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "policy_steps_per_update value."
         )
 
-    with device:
-        # Get the first environment observation and start the optimization
-        o = envs.reset(seed=cfg.seed)[0]
-        obs = torch.cat(
-            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-        )  # [N_envs, N_obs]
+    step_data = {}
+    # Get the first environment observation and start the optimization
+    o = envs.reset(seed=cfg.seed)[0]
+    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
@@ -288,9 +284,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
-                actions, _ = agent.actor.module(obs)
+                actions, _ = agent.actor.module(torch.from_numpy(obs).to(device))
                 actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions)
+            next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             dones = np.logical_or(dones, truncated)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
@@ -311,24 +307,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        with device:
-            next_obs = torch.cat(
-                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            real_next_obs = torch.cat(
-                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
+        next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
+        real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
+            np.float32
+        )
 
-        step_data["dones"] = dones
-        step_data["actions"] = actions
-        step_data["observations"] = obs
+        step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
-            step_data["next_observations"] = real_next_obs
-        step_data["rewards"] = rewards
-        rb.add(step_data.unsqueeze(0))
+            step_data["next_observations"] = real_next_obs[np.newaxis]
+        step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
+        step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # next_obs becomes the new obs
         obs = next_obs
