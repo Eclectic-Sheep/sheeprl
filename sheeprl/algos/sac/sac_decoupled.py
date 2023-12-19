@@ -13,8 +13,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
@@ -119,7 +117,6 @@ def player(
     rb = ReplayBuffer(
         buffer_size,
         cfg.env.num_envs,
-        device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
@@ -131,7 +128,6 @@ def player(
                 "The replay buffer in the configs must be of type "
                 f"`sheeprl.data.buffers.ReplayBuffer`, got {type(state['rb'])}."
             )
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     first_info_sent = False
@@ -168,12 +164,10 @@ def player(
             "policy_steps_per_update value."
         )
 
-    with device:
-        # Get the first environment observation and start the optimization
-        o = envs.reset(seed=cfg.seed)[0]
-        obs = torch.cat(
-            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-        )  # [N_envs, N_obs]
+    step_data = {}
+    # Get the first environment observation and start the optimization
+    obs = envs.reset(seed=cfg.seed)[0]
+    obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs
@@ -186,10 +180,13 @@ def player(
             else:
                 # Sample an action given the observation received by the environment
                 with torch.no_grad():
-                    actions, _ = actor(obs)
+                    torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                    actions, _ = actor(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
-            dones = np.logical_or(dones, truncated)
+            next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+            dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+            rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -206,27 +203,15 @@ def player(
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+                    real_next_obs[idx] = np.concatenate([v for v in final_obs.values()], axis=-1)
 
-        with device:
-            next_obs = torch.cat(
-                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            real_next_obs = torch.cat(
-                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)  # [N_envs, 1]
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
-
-        step_data["dones"] = dones
-        step_data["actions"] = actions
-        step_data["observations"] = obs
+        step_data["dones"] = dones[np.newaxis]
+        step_data["actions"] = actions[np.newaxis]
+        step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
-            step_data["next_observations"] = real_next_obs
-        step_data["rewards"] = rewards
-        rb.add(step_data.unsqueeze(0))
+            step_data["next_observations"] = real_next_obs[np.newaxis]
+        step_data["rewards"] = rewards[np.newaxis]
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # next_obs becomes the new obs
         obs = next_obs
@@ -242,13 +227,22 @@ def player(
 
             # Sample data to be sent to the trainers
             training_steps = learning_starts if update == learning_starts else 1
-            chunks = rb.sample(
-                training_steps
+            sample = rb.sample_tensors(
+                batch_size=training_steps
                 * cfg.algo.per_rank_gradient_steps
                 * cfg.algo.per_rank_batch_size
                 * (fabric.world_size - 1),
                 sample_next_obs=cfg.buffer.sample_next_obs,
-            ).split(training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
+                dtype=None,
+                device=device,
+            )
+            # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+            chunks = {
+                k: v.float().split(training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
+                for k, v in sample.items()
+            }
+            # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
+            chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
             world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
             # Wait the trainers to finish
@@ -426,7 +420,7 @@ def trainer(
         data = [None]
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
-        if not isinstance(data, TensorDictBase) and data == -1:
+        if not isinstance(data, dict) and data == -1:
             # Last Checkpoint
             if cfg.checkpoint.save_last:
                 state = {
@@ -452,8 +446,6 @@ def trainer(
                     torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()), src=1
                 )
             return
-        data = make_tensordict(data, device=device)
-        data = {k: data[k] for k in data.keys()}
         sampler = BatchSampler(
             range(len(data[next(iter(data.keys()))])), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
         )

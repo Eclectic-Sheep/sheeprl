@@ -9,9 +9,55 @@ algos
 ...
 └── sota
     ├── __init__.py
+    ├── agent.py
     ├── loss.py
     ├── sota.py
     └── utils.py
+```
+
+## The agent
+The agent is the core of the algorithm and it is defined in the `agent.py` file. It must contain at least single function called `build_agent` that returns a `torch.nn.Module` wrapped with Fabric:
+
+```python
+from __future__ import annotations
+
+from typing import Any, Dict, Sequence
+
+import gymnasium
+from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
+import torch
+from torch import Tensor
+
+
+class SOTAAgent(torch.nn.Module):
+    def __init__(self, ...):
+        ...
+
+    def forward(self, obs: Dict[str, torch.Tensor]) -> Tensor:
+        ...
+
+
+def build_agent(
+    fabric: Fabric,
+    actions_dim: Sequence[int],
+    is_continuous: bool,
+    cfg: Dict[str, Any],
+    observation_space: gymnasium.spaces.Dict,
+    state: Dict[str, Any] | None = None,
+) -> _FabricModule:
+
+    # Define the agent here
+    agent = SOTAAgent(...)
+
+    # Load the state from the checkpoint
+    if state:
+        agent.load_state_dict(state)
+
+    # Setup the agent with Fabric
+    agent = fabric.setup_model(agent)
+
+    return agent
 ```
 
 ## Loss functions
@@ -40,20 +86,13 @@ from datetime import datetime
 import gymnasium as gym
 import hydra
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
-from omegaconf import DictConfig, OmegaConf
-from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
-from torch.optim import Adam
 from torchmetrics import MeanMetric, SumMetric
 
-from sheeprl.algos.ppo.agent import build_agent
+from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import loss1, loss2
-from sheeprl.algos.sota.utils import test
+from sheeprl.algos.sota.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
@@ -67,7 +106,7 @@ def train(
     fabric: Fabric,
     agent: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    data: TensorDictBase,
+    data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator,
     cfg: Dict[str, Any],
 ):
@@ -99,6 +138,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -108,12 +148,33 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                 cfg,
                 cfg.seed + rank * cfg.env.num_envs + i,
                 rank * cfg.env.num_envs,
-                logger.log_dir if rank == 0 else None,
+                log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
-            ),
+            )
             for i in range(cfg.env.num_envs)
         ]
+    )
+    observation_space = envs.single_observation_space
+
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+
+    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        envs.single_action_space.shape
+        if is_continuous
+        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
 
     # Create the agent model: this should be a torch.nn.Module to be accelerated with Fabric
@@ -129,29 +190,54 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
 
-    # the optimizer and set up it with Fabric
+    # Define the optimizer
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+
+    # Load the state from the checkpoint
+    if cfg.checkpoint.resume_from:
+        optimizer.load_state_dict(state["optimizer"])
+
+    # Setup agent and optimizer with Fabric
+    optimizer = fabric.setup_optimizers(optimizer)
 
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+
     # Local data
-    rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.env.num_envs, device=device, memmap=cfg.buffer.memmap)
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
+    rb = ReplayBuffer(
+        cfg.buffer.size,
+        cfg.env.num_envs,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=obs_keys,
+    )
 
     # Global variables
-    last_log = 0
     last_train = 0
     train_step = 0
-    policy_step = 0
-    last_checkpoint = 0
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        (state["update"] // fabric.world_size) + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
+    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
             f"policy_steps_per_update value ({policy_steps_per_update}), so "
@@ -167,20 +253,14 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
-    next_obs = {}
-    for k in o.keys():
-        if k in obs_keys:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-            if k in cfg.algo.cnn_keys.encoder:
-                torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch_obs.float()
-            step_data[k] = torch_obs
-            next_obs[k] = torch_obs
-    next_done = torch.zeros(cfg.env.num_envs, 1, dtype=torch.float32).to(fabric.device)  # [N_envs, 1]
+    step_data = {}
+    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    for k in obs_keys:
+        if k in cfg.algo.cnn_keys.encoder:
+            next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
+        step_data[k] = next_obs[k][np.newaxis]
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs * world_size
 
@@ -189,41 +269,43 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
-                    # This calls the `forward` method of the PyTorch module, escaping from Fabric
-                    # because we don't want this to be a synchronization point
-                    action = agent.module(next_obs)
+                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
+                    torch_obs = {
+                        k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
+                    }
+                    actions = agent.module(torch_obs)
+                    if is_continuous:
+                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                    else:
+                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                    actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
-                o, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
-
-            with device:
-                rewards = torch.tensor(reward).view(cfg.env.num_envs, -1)  # [N_envs, 1]
-                done = torch.logical_or(torch.tensor(done), torch.tensor(truncated))  # [N_envs, 1]
-                done = done.view(cfg.env.num_envs, -1).float()
+                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                rewards = rewards.reshape(cfg.env.num_envs, -1)
 
             # Update the step data
-            step_data["dones"] = next_done
-            step_data["actions"] = action
-            step_data["rewards"] = rewards
+            step_data["dones"] = dones[np.newaxis]
+            step_data["actions"] = actions[np.newaxis]
+            step_data["rewards"] = rewards[np.newaxis]
+            if cfg.buffer.memmap:
+                step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
+            rb.add(step_data, validate_args=False)
 
-            # Update the observation and done
-            obs = {}
-            for k in o.keys():
-                if k in obs_keys:
-                    torch_obs = torch.from_numpy(o[k]).to(fabric.device)
-                    if k in cfg.algo.cnn_keys.encoder:
-                        torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                    if k in cfg.algo.mlp_keys.encoder:
-                        torch_obs = torch_obs.float()
-                    step_data[k] = torch_obs
-                    obs[k] = torch_obs
-            next_obs = obs
-            next_done = done
+            # Update the observation and dones
+            next_obs = {}
+            for k in obs_keys:
+                _obs = obs[k]
+                if k in cfg.algo.cnn_keys.encoder:
+                    _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
+                step_data[k] = _obs[np.newaxis]
+                next_obs[k] = _obs
 
-            if "final_info" in info:
+            if cfg.metric.log_level > 0 and "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
                     if agent_ep_info is not None:
                         ep_rew = agent_ep_info["episode"]["r"]
@@ -234,8 +316,8 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                             aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
-        # Flatten the batch
-        local_data = rb.buffer.view(-1)
+        # Transform the data into PyTorch Tensors
+        local_data = rb.to_tensor(dtype=None, device=device)
 
         # Train the agent
         train(fabric, agent, optimizer, local_data, aggregator, cfg)
@@ -298,7 +380,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         register_model(fabric, log_models, cfg, models_to_log)
 ```
 
-where `log_models` has to be defined in the `sheeprl.algo.sota.utils` module, for example like this: 
+where `log_models`, `test` and `normalize_obs` have to be defined in the `sheeprl.algo.sota.utils` module, for example like this: 
 
 ```python
 from __future__ import annotations
@@ -307,13 +389,68 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict
 
 import torch
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 
+from sheeprl.algos.sota.agent import SOTAAgent
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+
+@torch.no_grad()
+def test(agent: SOTAAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+    env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
+    agent.eval()
+    done = False
+    cumulative_rew = 0
+    o = env.reset(seed=cfg.seed)[0]
+    obs = {}
+    for k in o.keys():
+        if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
+            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+            if k in cfg.algo.cnn_keys.encoder:
+                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
+            if k in cfg.algo.mlp_keys.encoder:
+                torch_obs = torch_obs.float()
+            obs[k] = torch_obs
+
+    while not done:
+        # Act greedly through the environment
+        if agent.is_continuous:
+            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        else:
+            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+
+        # Single environment step
+        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        done = done or truncated
+        cumulative_rew += reward
+        obs = {}
+        for k in o.keys():
+            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
+                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
+                if k in cfg.algo.cnn_keys.encoder:
+                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
+                if k in cfg.algo.mlp_keys.encoder:
+                    torch_obs = torch_obs.float()
+                obs[k] = torch_obs
+
+        if cfg.dry_run:
+            done = True
+    fabric.print("Test - Reward:", cumulative_rew)
+    if cfg.metric.log_level > 0:
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+    env.close()
+
+
+def normalize_obs(
+    obs: Dict[str, np.ndarray | Tensor], cnn_keys: Sequence[str], obs_keys: Sequence[str]
+) -> Dict[str, np.ndarray | Tensor]:
+    return {k: obs[k] / 255 - 0.5 if k in cnn_keys else obs[k] for k in obs_keys}
+
 
 def log_models(
     cfg: Dict[str, Any],

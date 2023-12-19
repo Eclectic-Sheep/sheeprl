@@ -118,8 +118,10 @@ env=atari \
 env.id=AssaultNoFrameskip-v0 \
 env.capture_video=True \
 env.action_repeat=4 \
-clip_rewards=True \
-total_steps=200000000 \
+env.clip_rewards=True \
+env.max_episode_steps=27000 \
+env.num_envs=1 \
+algo.total_steps=200000000 \
 algo.learning_starts=200000 \
 algo.per_rank_pretrain_steps=1 \
 algo.train_every=4 \
@@ -134,14 +136,14 @@ algo.world_model.use_continues=True \
 algo.world_model.representation_model.hidden_size=600 \
 algo.world_model.transition_model.hidden_size=600 \
 algo.world_model.recurrent_model.recurrent_state_size=600 \
+algo.world_model.kl_free_nats=0.0 \
+algo.per_rank_batch_size=50 \
+algo.cnn_keys.encoder=[rgb] \
 buffer.size=2000000 \
 buffer.memmap=True \
-algo.world_model.kl_free_nats=0.0 \
-env.max_episode_steps=27000 \
-per_rank_batch_size=50 \
-checkpoint.every=100000 \
 buffer.type=episode \
 buffer.prioritize_ends=True 
+checkpoint.every=100000 \
 ```
 
 ## DMC environments
@@ -158,11 +160,14 @@ PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa python sheeprl.py \
 exp=dreamer_v2 \
 fabric.devices=1 \
 env=dmc \
-env.id=dmc_walker_walk \
+env.id=walker_walk \
 env.capture_video=True \
 env.action_repeat=2 \
-clip_rewards=False \
-total_steps=5000000 \
+env.clip_rewards=False \
+env.max_episode_steps=1000 \
+env.num_envs=1 \
+algo.cnn_keys.encoder=[rgb] \
+algo.total_steps=5000000 \
 algo.learning_starts=1000 \
 algo.per_rank_pretrain_steps=100 \
 algo.train_every=5 \
@@ -176,14 +181,14 @@ algo.world_model.use_continues=False \
 algo.world_model.representation_model.hidden_size=200 \
 algo.world_model.transition_model.hidden_size=200 \
 algo.world_model.recurrent_model.recurrent_state_size=200 \
+algo.per_rank_batch_size=50 \
+algo.world_model.kl_free_nats=1.0 \
+algo.actor.objective_mix=0.0 \
 buffer.size=5000000 \
 buffer.memmap=True \
-algo.world_model.kl_free_nats=1.0 \
-env.max_episode_steps=1000 \
-per_rank_batch_size=50 \
-checkpoint.every=100000 \
 buffer.type=episode \
 buffer.prioritize_ends=False 
+checkpoint.every=100000 \
 ```
 
 ## Recommendations

@@ -7,8 +7,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from tensordict import TensorDict
-from tensordict.tensordict import TensorDictBase
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
@@ -28,7 +26,7 @@ def train(
     fabric: Fabric,
     agent: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    data: TensorDictBase,
+    data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator,
     cfg: Dict[str, Any],
 ):
@@ -38,7 +36,7 @@ def train(
     # If we are in the distributed setting, we need to use a DistributedSampler, which
     # will shuffle the data at each epoch and will ensure that each process will get
     # a different part of the data
-    indexes = list(range(data.shape[0]))
+    indexes = list(range(next(iter(data.values())).shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -63,8 +61,8 @@ def train(
     # we do not do that, instead we take the overall sum (or mean, depending on the loss reduction).
     # This is achieved by accumulating the gradients and calling the backward method only at the end.
     for i, batch_idxes in enumerate(sampler):
-        batch = data[batch_idxes]
-        obs = {k: batch[k] for k in cfg.algo.mlp_keys.encoder}
+        batch = {k: v[batch_idxes] for k, v in data.items()}
+        obs = {k: v for k, v in batch.items() if k in cfg.algo.mlp_keys.encoder}
 
         # is_accumulating is True for every i except for the last one
         is_accumulating = i < len(sampler) - 1
@@ -173,7 +171,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         observation_space,
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
-    fabric.print(agent.module)
 
     # the optimizer and set up it with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
@@ -184,8 +181,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    rb = ReplayBuffer(cfg.algo.rollout_steps, cfg.env.num_envs, device=device, memmap=cfg.buffer.memmap)
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
+    rb = ReplayBuffer(
+        cfg.buffer.size,
+        cfg.env.num_envs,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=obs_keys,
+    )
 
     # Global variables
     last_log = 0
@@ -213,13 +215,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
-    next_obs = {}
-    for k in o.keys():
-        if k in obs_keys:
-            torch_obs = torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device)
-            step_data[k] = torch_obs
-            next_obs[k] = torch_obs
+    step_data = {}
+    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    for k in obs_keys:
+        step_data[k] = next_obs[k][np.newaxis]
 
     for update in range(1, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
@@ -232,40 +231,39 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     # Sample an action given the observation received by the environment
                     # This calls the `forward` method of the PyTorch module, escaping from Fabric
                     # because we don't want this to be a synchronization point
-                    actions, _, values = agent.module(next_obs)
+                    torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+                    actions, _, values = agent.module(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
-                        real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
-                    actions = torch.cat(actions, -1)
+                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], axis=-1).cpu().numpy()
+                    actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
-                o, rewards, done, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                obs, rewards, done, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
 
             dones = np.logical_or(done, truncated)
-            dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
-            rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
+            dones = dones.reshape(cfg.env.num_envs, -1)
+            rewards = rewards.reshape(cfg.env.num_envs, -1)
 
             # Update the step data
-            step_data["dones"] = dones
-            step_data["values"] = values
-            step_data["actions"] = actions
-            step_data["rewards"] = rewards
+            step_data["dones"] = dones[np.newaxis]
+            step_data["values"] = values.cpu().numpy()[np.newaxis]
+            step_data["actions"] = actions[np.newaxis]
+            step_data["rewards"] = rewards[np.newaxis]
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
-                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            # Update the observation and done
-            obs = {}
-            for k in o.keys():
-                if k in obs_keys:
-                    torch_obs = torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device)
-                    step_data[k] = torch_obs
-                    obs[k] = torch_obs
-            next_obs = obs
+            # Update the observation and dones
+            next_obs = {}
+            for k in obs_keys:
+                _obs = obs[k]
+                step_data[k] = _obs[np.newaxis]
+                next_obs[k] = _obs
 
             if cfg.metric.log_level > 0 and "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
@@ -278,13 +276,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
+        # Transform the data into PyTorch Tensors
+        local_data = rb.to_tensor(dtype=None, device=device)
+
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            next_values = agent.module.get_value(next_obs)
+            torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+            next_values = agent.module.get_value(torch_obs)
             returns, advantages = gae(
-                rb["rewards"].to(torch.float64),
-                rb["values"],
-                rb["dones"],
+                local_data["rewards"].to(torch.float64),
+                local_data["values"],
+                local_data["dones"],
                 next_values,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
@@ -292,11 +294,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
 
             # Add returns and advantages to the buffer
-            rb["returns"] = returns.float()
-            rb["advantages"] = advantages.float()
-
-        # Flatten the batch
-        local_data = rb.buffer.view(-1)
+            local_data["returns"] = returns.float()
+            local_data["advantages"] = advantages.float()
 
         # Train the agent
         train(fabric, agent, optimizer, local_data, aggregator, cfg)

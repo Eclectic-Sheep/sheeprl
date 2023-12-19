@@ -12,13 +12,14 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(algorithms=["ppo"])
+@register_evaluation(algorithms="ppo")
 def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    fabric.print(f"Log dir: {log_dir}")
 
     env = make_env(
         cfg,
@@ -53,6 +54,6 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
 
 
 # This is just for showcase
-@register_evaluation(algorithms=["ppo_decoupled"])
+@register_evaluation(algorithms="ppo_decoupled")
 def evaluate_ppo_decoupled(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     evaluate_ppo(fabric, cfg, state)

@@ -31,12 +31,12 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_di
     with fabric.device:
         o = env.reset(seed=cfg.seed)[0]
         next_obs = {
-            k: torch.tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1, *o[k].shape[-2:]) / 255
+            k: torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1, *o[k].shape[-2:]) / 255
             for k in cfg.algo.cnn_keys.encoder
         }
         next_obs.update(
             {
-                k: torch.tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1)
+                k: torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1)
                 for k in cfg.algo.mlp_keys.encoder
             }
         )
