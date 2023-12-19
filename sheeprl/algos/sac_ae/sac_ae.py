@@ -368,6 +368,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             sample = rb.sample_tensors(
                 training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
+                from_numpy=cfg.buffer.from_numpy,
             )  # [G*B, 1]
             gathered_data = fabric.all_gather(sample)  # [G*B, World, 1]
             flatten_dim = 3 if fabric.world_size > 1 else 2
