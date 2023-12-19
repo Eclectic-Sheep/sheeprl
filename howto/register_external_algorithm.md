@@ -375,7 +375,7 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        from sheeprl.algos.sota.utils import log_models
+        from my_awesome_algo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"agent": agent}
