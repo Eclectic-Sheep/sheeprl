@@ -166,6 +166,7 @@ def test_memmap_from_array_memmap_array():
     m1 = MemmapArray.from_array(a)
     m2 = MemmapArray.from_array(m1, filename=m1.filename)
     filename = m1.filename
+    assert m1.has_ownership
     assert not m2.has_ownership
     del m2
     assert os.path.isfile(filename)

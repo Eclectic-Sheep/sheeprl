@@ -48,10 +48,10 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         """
         if filename is None:
             fd, path = tempfile.mkstemp(".memmap")
-            self._filename = Path(path).absolute()
+            self._filename = Path(path).resolve()
             self._file = _TemporaryFileWrapper(open(fd, mode="r+"), path, delete=False)
         else:
-            path = Path(filename).absolute()
+            path = Path(filename).resolve()
             if os.path.exists(path):
                 warnings.warn(
                     "The specified filename already exists. "
@@ -190,7 +190,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         Returns:
             MemmapArray: the memory-mapped array.
         """
-        filename = Path(filename).absolute() if filename is not None else None
+        filename = Path(filename).resolve() if filename is not None else None
         is_memmap_array = isinstance(array, MemmapArray)
         is_shared_array = is_shared(array)
         if isinstance(array, (np.ndarray, MemmapArray)):
@@ -198,7 +198,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             if is_memmap_array or is_shared_array:
                 if is_memmap_array:
                     array = array.array
-                if filename is not None and filename == Path(array.filename).absolute():
+                if filename is not None and filename == Path(array.filename).resolve():
                     out.array = array  # Lose previous ownership
                 else:
                     out.array[:] = array[:]
