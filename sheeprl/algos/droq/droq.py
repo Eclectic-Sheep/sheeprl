@@ -41,7 +41,9 @@ def train(
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
     # We sample one time to reduce the communications between processes
     sample = rb.sample_tensors(
-        cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+        cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
+        sample_next_obs=cfg.buffer.sample_next_obs,
+        from_numpy=cfg.buffer.from_numpy,
     )
     critic_data = fabric.all_gather(sample)
     flatten_dim = 3 if fabric.world_size > 1 else 2
@@ -63,7 +65,7 @@ def train(
         critic_sampler = BatchSampler(sampler=critic_idxes, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
     # Sample a different minibatch in a distributed way to update actor and alpha parameter
-    sample = rb.sample_tensors(cfg.algo.per_rank_batch_size)
+    sample = rb.sample_tensors(cfg.algo.per_rank_batch_size, from_numpy=cfg.buffer.from_numpy)
     actor_data = fabric.all_gather(sample)
     actor_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in actor_data.items()}
     if fabric.world_size > 1:
