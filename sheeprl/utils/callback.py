@@ -138,7 +138,7 @@ class CheckpointCallback:
             # reinsert the open episodes to continue the training
             rb._open_episodes = state
 
-    def _delete_old_checkpoints(self, ckpt_folder: str | pathlib.Path):
+    def _delete_old_checkpoints(self, ckpt_folder: pathlib.Path):
         ckpts = list(sorted(ckpt_folder.glob("*.ckpt"), key=os.path.getmtime))
         if len(ckpts) > self.keep_last:
             to_delete = ckpts[: -self.keep_last]
