@@ -52,7 +52,7 @@ class CheckpointCallback:
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
-        if self.keep_last:
+        if fabric.is_global_zero and self.keep_last:
             self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
 
     def on_checkpoint_player(
@@ -71,7 +71,7 @@ class CheckpointCallback:
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
-        if self.keep_last:
+        if fabric.is_global_zero and self.keep_last:
             self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
 
     def on_checkpoint_trainer(
