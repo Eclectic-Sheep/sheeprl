@@ -242,7 +242,7 @@ def player(
                 step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data, validate_args=False)
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Update the observation and dones
             next_obs = {}

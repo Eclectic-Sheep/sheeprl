@@ -282,7 +282,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["is_first"] = np.ones_like(step_data["dones"])
-    rb.add(step_data, validate_args=False)
+    rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
     per_rank_gradient_steps = 0
@@ -344,7 +344,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
         step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
         step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
-        rb.add(step_data, validate_args=False)
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -357,7 +357,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
             reset_data["is_first"] = np.ones_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes, validate_args=False)
+            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
                 step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])

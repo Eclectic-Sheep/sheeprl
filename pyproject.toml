@@ -83,7 +83,6 @@ minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
 diambra = ["diambra==0.0.16", "diambra-arena==2.2.2"]
 crafter = ["crafter==1.8.1"]
 mlflow = ["mlflow==2.8.0"]
-pokemon = ["hnswlib", "mediapy", "pyboy", "scikit-image"]
 
 [tool.ruff]
 line-length = 120

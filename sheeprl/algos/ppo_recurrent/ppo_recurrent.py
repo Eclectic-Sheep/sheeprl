@@ -203,7 +203,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     rb = ReplayBuffer(
@@ -341,7 +341,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["advantages"] = np.zeros_like(rewards)
 
             # Append data to buffer
-            rb.add(step_data)
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Update actions
             prev_actions = (1 - dones) * actions

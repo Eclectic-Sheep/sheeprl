@@ -36,7 +36,7 @@ def train(
     cfg: Dict[str, Any],
 ):
     """Train the agent on the data collected from the environment."""
-    indexes = list(range(data[next(iter(data.keys()))].shape[0]))
+    indexes = list(range(next(iter(data.values())).shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
             indexes,
@@ -196,7 +196,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     if cfg.buffer.size < cfg.algo.rollout_steps:
@@ -320,7 +320,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data, validate_args=False)
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Update the observation and dones
             next_obs = {}

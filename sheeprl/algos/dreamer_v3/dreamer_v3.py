@@ -97,7 +97,7 @@ def train(
     device = fabric.device
     batch_obs = {k: data[k] / 255.0 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
-    data["is_first"][0, :] = torch.full_like(data["is_first"][0, :], 1.0)
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
     # Given how the environment interaction works, we remove the last actions
     # and add the first one as the zero action
@@ -656,7 +656,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
             reset_data["is_first"] = np.zeros_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes)
+            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
 
             # Reset already inserted step data
             step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])

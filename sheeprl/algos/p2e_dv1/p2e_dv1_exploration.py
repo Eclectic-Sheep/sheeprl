@@ -621,7 +621,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    rb.add(step_data, validate_args=False)
+    rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
     for update in range(start_step, num_updates + 1):
@@ -697,7 +697,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["dones"] = dones[np.newaxis]
         step_data["actions"] = actions[np.newaxis]
         step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
-        rb.add(step_data, validate_args=False)
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # Reset and save the observation coming from the automatic reset
         dones_idxes = dones.nonzero()[0].tolist()
@@ -709,7 +709,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             reset_data["dones"] = np.zeros((1, reset_envs, 1))
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-            rb.add(reset_data, dones_idxes, validate_args=False)
+            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
             # Reset dones so that `is_first` is updated
             for d in dones_idxes:
                 step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
