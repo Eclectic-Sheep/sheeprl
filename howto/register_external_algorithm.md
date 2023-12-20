@@ -1,21 +1,22 @@
-# Register a new algorithm
-Suppose that we want to add a new SoTA algorithm to sheeprl called `sota` so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.  
+# Register an external algorithm
 
-We start by creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
+Suppose that we have installed SheepRL through pip with `pip install sheeprl[box2d,atari,dev,test]` and we want to add a new (external) SoTA algorithm called `ext_sota` without directly adding the new algorithm to the SheepRL codebase, i.e. without the need to clone the repo locally. 
+
+We can start by creating two new folders called `my_awesome_algo` and `my_awesome_configs`, the former will contain the implementation of the algorithm, the latter the configs needed to run the experiment and configure our new algorithm. 
+
+Reading our [how-to on how to register a new algorithm](../howto/register_new_algorithm.md) we can see that we need to create at least four new files under the `my_awesome_algo` folder:
 
 ```bash
-algos
-└── droq
-...
-└── sota
-    ├── __init__.py
-    ├── agent.py
-    ├── loss.py
-    ├── sota.py
-    └── utils.py
+my_awesome_algo
+├── __init__.py
+├── agent.py
+├── loss.py
+├── ext_sota.py
+└── utils.py
 ```
 
 ## The agent
+
 The agent is the core of the algorithm and it is defined in the `agent.py` file. It must contain at least single function called `build_agent` that returns a `torch.nn.Module` wrapped with Fabric:
 
 ```python
@@ -61,6 +62,7 @@ def build_agent(
 ```
 
 ## Loss functions
+
 All the loss functions to be optimized by the agent during the training should be defined under the `loss.py` file, even though is not strictly necessary:
 
 ```python
@@ -75,7 +77,8 @@ def loss2(...) -> Tensor:
 ```
 
 ## Algorithm implementation
-The real algorithm implementation has to be placed under the `sota.py` file, which needs to contain a single entrypoint decorated with the `register_algorithm` decorator:
+
+The real algorithm implementation has to be placed under the `ext_sota.py` file, which needs to contain a single entrypoint decorated with the `register_algorithm` decorator:
 
 ```python
 import copy
@@ -88,10 +91,6 @@ import hydra
 import torch
 from lightning.fabric import Fabric
 from torchmetrics import MeanMetric, SumMetric
-
-from sheeprl.algos.sota.agent import build_agent
-from sheeprl.algos.sota.loss import loss1, loss2
-from sheeprl.algos.sota.utils import normalize_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -100,6 +99,10 @@ from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import unwrap_fabric
+
+from my_awesome_algo.agent import build_agent
+from my_awesome_algo.loss import loss1, loss2
+from my_awesome_algo.utils import normalize_obs, test
 
 
 def train(
@@ -125,7 +128,7 @@ def train(
 
 
 @register_algorithm(decoupled=False)
-def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
+def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
@@ -372,14 +375,14 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
-        from sheeprl.algos.sota.utils import log_models
+        from my_awesome_algo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
         models_to_log = {"agent": agent}
         register_model(fabric, log_models, cfg, models_to_log)
 ```
 
-where `log_models`, `test` and `normalize_obs` have to be defined in the `sheeprl.algo.sota.utils` module, for example like this: 
+where `log_models`, `test` and `normalize_obs` have to be defined in the `my_awesome_algo.utils` module, for example like this: 
 
 ```python
 from __future__ import annotations
@@ -390,10 +393,10 @@ from typing import TYPE_CHECKING, Any, Dict
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
-
-from sheeprl.algos.sota.agent import SOTAAgent
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
+
+from my_awesome_algo.agent import SOTAAgent
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -476,18 +479,19 @@ def log_models(
 ```
 
 ### Metrics and Model Manager
-Each algorithm logs its own metrics, during training or environment interaction. To define which are the metrics that can be logged, you need to define the `AGGREGATOR_KEYS` variable in the `./sheeprl/algos/sota/utils.py` file. It must be a set of strings (the name of the metrics to log). Then, you can decide which metrics to log by defining the `metric.aggregator.metrics` in the configs.
+
+Each algorithm logs its own metrics during training or environment interaction. To define which are the metrics that can be logged, you need to define the `AGGREGATOR_KEYS` variable in the `./my_awesome_algo/utils.py` file. It must be a set of strings (the name of the metrics to log). Then, you can decide which metrics to log by defining the `metric.aggregator.metrics` in the configs.
 
 > **Remember**
 >
 > The intersection between the keys in the `AGGREGATOR_KEYS` and the ones in the `metric.aggregator.metrics` config will be logged.
 
-As for metrics, you have to specify which are the models that can be registered after training, you need to define the `MODELS_TO_REGISTER` variable in the `./sheeprl/algos/sota/utils.py` file. It must be a set of strings (the name of the variables of the models you want to register). As before, you can easily select which agents to register by defining the `model_manager.models` in the configs. Also in this case, the models that will be registered are the intersection between the `MODELS_TO_REGISTER` variable and the keys of the `model_manager.models` config.
+As for metrics, you have to specify which are the models that can be registered after training, you need to define the `MODELS_TO_REGISTER` variable in the `./my_awesome_algo/utils.py` file. It must be a set of strings (the name of the variables of the models you want to register). As before, you can easily select which agents to register by defining the `model_manager.models` in the configs. Also in this case, the models that will be registered are the intersection between the `MODELS_TO_REGISTER` variable and the keys of the `model_manager.models` config.
 
-In this case, the `./sheeprl/algos/sota/utils.py` file could be defined as below:
+In this case, the `./my_awesome_algo/utils.py` file could be defined as below:
 
 ```python
-# `./sheeprl/algos/sota/utils.py`
+# `./my_awesome_algo/utils.py`
 
 ...
 
@@ -498,27 +502,32 @@ MODELS_TO_REGISTER = {"agent"}
 ```
 
 ## Config files
-Once you have written your algorithm, you need to create two config files: one in `./sheeprl/configs/algo` and the other in `./sheeprl/configs/exp`.
+
+Once you have written your algorithm, you need to create three config files: one in `./my_awesome_configs/algo`, one in `./my_awesome_configs/exp` and the other one in `./my_awesome_configs/model_manager`.
 
 
 ```bash
-configs
-└── algo
-    ├── default.yaml
-    ├── dreamer_v1.yaml
-    ...
-    └── sota.yaml
-...
-└── exp
-    ├── default.yaml
-    ├── dreamer_v1.yaml
-    ...
-    └── sota.yaml
+.
+├── my_awesome_algo
+|   ├── __init__.py
+│   ├── agent.py
+│   ├── loss.py
+│   ├── ext_sota.py
+│   └── utils.py
+└── my_awesome_configs
+    ├── algo
+    │   └── ext_sota.yaml
+    ├── exp
+    │   └── ext_sota.yaml
+    └── model_manager
+        └── ext_sota.yaml
+    
 ```
 
 #### Algo Configs
-In the `./sheeprl/configs/algo/sota.yaml` we need to specify all the configs needed to initialize and train your agent.
-Here is an example of the `./sheeprl/configs/algo/sota.yaml` config file:
+
+In the `./my_awesome_configs/algo/ext_sota.yaml` we need to specify all the configs needed to initialize and train your agent.
+Here is an example of the `./my_awesome_configs/algo/ext_sota.yaml` config file:
 
 ```yaml
 defaults:
@@ -526,7 +535,7 @@ defaults:
   - /optim@optimizer: adam
   - _self_
 
-name: sota  # This must be set! And must be equal to the name of the file.py, found under the `./sheeprl/algos/sota/` folder, where the implementation of the algorithm is defined
+name: ext_sota  # This must be set! And must be equal to the name of the file.py, found under the `my_awesome_algo` folder, where the implementation of the algorithm is defined
 
 # Algorithm-related paramters
 ...
@@ -578,11 +587,12 @@ will add two optimizers, one accessible with `algo.encoder.optimizer`, the other
 
 > **Note**
 >
-> The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `sheeprl/algos/sota` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `sheeprl/algos/sota/my_sota.py`, then `algo.name="my_sota"` 
+> The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `my_awesome_algo` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `my_awesome_algo/my_sota.py`, then `algo.name="my_sota"` 
 
 #### Model Manager Configs
-In the `./sheeprl/configs/model_manager/sota.yaml` we need to specify all the configs needed to register your agent. You can specify a name, a description, and some tags for each model you want to register. The `disabled` parameter indicates whether or not you want to register your models.
-Here is an example of the `./sheeprl/configs/model_manager/sota.yaml` config file:
+
+In the `./my_awesome_configs/model_manager/ext_sota.yaml` we need to specify all the configs needed to register your agent. You can specify a name, a description, and some tags for each model you want to register. The `disabled` parameter indicates whether or not you want to register your models.
+Here is an example of the `./my_awesome_configs/model_manager/ext_sota.yaml` config file:
 
 ```yaml
 defaults:
@@ -598,17 +608,18 @@ models:
 ```
 
 #### Experiment Configs
+
 In the second file, you have to specify all the elements you want in your experiment and you can override all the parameters you want.
-Here is an example of the `./sheeprl/configs/exp/sota.yaml` config file:
+Here is an example of the `./my_awesome_configs/exp/ext_sota.yaml` config file:
 
 ```yaml
 # @package _global_
 
 defaults:
-  - override /algo: sota
+  - override /algo: ext_sota
   - override /env: atari
   # select the model manager configs
-  - override /model_manager: sota
+  - override /model_manager: ext_sota
   - _self_
 
 algo:
@@ -635,71 +646,55 @@ metric:
         sync_on_compute: ${metric.sync_on_compute}
 ```
 
-With `override /algo: sota` in `defaults` you are specifying you want to use the new `sota` algorithm, whereas, with `override /env: atari` you are specifying that you want to train your agent on an *Atari* environment.
+With `override /algo: ext_sota` in `defaults` you are specifying you want to use the new `ext_sota` algorithm, whereas, with `override /env: atari` you are specifying that you want to train your agent on an *Atari* environment.
 
-## Register Algorithm
+## Register the algorithm and the configs
 
-To let the `register_algorithm` decorator add our new `sota` algorithm to the available algorithms registry we need to import it in `./sheeprl/__init__.py`: 
-
-```diff
-import os
-
-ROOT_DIR = os.path.dirname(__file__)
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
-
-if not _IS_TORCH_GREATER_EQUAL_2_0:
-    raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
-
-# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
-import numpy as np
-
-from sheeprl.algos.dreamer_v1 import dreamer_v1 as dreamer_v1
-from sheeprl.algos.dreamer_v2 import dreamer_v2 as dreamer_v2
-from sheeprl.algos.dreamer_v3 import dreamer_v3 as dreamer_v3
-from sheeprl.algos.droq import droq as droq
-from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
-from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
-from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
-from sheeprl.algos.ppo import ppo as ppo
-from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
-from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
-from sheeprl.algos.sac import sac as sac
-from sheeprl.algos.sac import sac_decoupled as sac_decoupled
-from sheeprl.algos.sac_ae import sac_ae as sac_ae
-+from sheeprl.algos.sota import sota as sota
-
-np.float = np.float32
-np.int = np.int64
-np.bool = bool
-
-__version__ = "0.4.3"
-```
-
-Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:
+To let the `register_algorithm` decorator add our new `ext_sota` algorithm to the available algorithms registry we need first to create a new file called for example `my_awesome_main.py` in the root of the project:
 
 ```bash
-SheepRL Agents                             
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃ Decoupled ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │ False     │
-│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │ False     │
-│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │ False     │
-│ sheeprl.algos.sac           │ sac           │ main       │ False     │
-│ sheeprl.algos.sac           │ sac_decoupled │ main       │ True      │
-│ sheeprl.algos.droq          │ droq          │ main       │ False     │
-│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
-│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
-│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
-│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
-│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │ False     │
-│ sheeprl.algos.sota          │ sota          │ sota_main  │ False     │
-└─────────────────────────────┴───────────────┴────────────┴───────────┘
+.
+├── my_awesome_algo
+|   ├── __init__.py
+│   ├── agent.py
+│   ├── loss.py
+│   ├── ext_sota.py
+│   └── utils.py
+├── my_awesome_configs
+|   ├── algo
+|   |   └── ext_sota.yaml
+|   ├── exp
+|   |   └── ext_sota.yaml
+|   └── model_manager
+|       └── ext_sota.yaml
+└── my_awesome_main.py
 ```
+
+containing the following:
+
+```python
+# my_awesome_main.py
+
+# This will trigger the algorithm registration of SheepRL
+from my_awesome_algo import ext_sota  # noqa: F401
+
+if __name__ == "__main__":
+    # This must be imported after the algorithm registration, otherwise SheepRL
+    # will not be able to find the new algorithm given the name specified
+    # in the `algo.name` field of the `./my_awesome_configs/algo/ext_sota.yaml` config file
+    from sheeprl.cli import run
+
+    run()
+```
+
+While to let SheepRL know about the new configs we need to add a new file called `.env` to the root of the project containing the following env variable:
+
+```bash
+SHEEPRL_SEARCH_PATH=file://my_awesome_configs;pkg://sheeprl.configs
+```
+
+This tells SheepRL to search for configs in the `my_awesome_configs` folder and in the `configs` folder under the installed `sheeprl` package.
+
+## Run the experiment
+
+Then you can run your experiment with `python my_awesome_main.py exp=ext_sota env=... env.id=...`.
