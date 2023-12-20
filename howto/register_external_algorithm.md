@@ -506,7 +506,7 @@ MODELS_TO_REGISTER = {"agent"}
 Once you have written your algorithm, you need to create three config files: one in `./my_awesome_configs/algo`, one in `./my_awesome_configs/exp` and the other one in `./my_awesome_configs/model_manager`.
 
 
-```bash
+```tree
 .
 ├── my_awesome_algo
 |   ├── __init__.py
@@ -652,7 +652,7 @@ With `override /algo: ext_sota` in `defaults` you are specifying you want to use
 
 To let the `register_algorithm` decorator add our new `ext_sota` algorithm to the available algorithms registry we need first to create a new file called for example `my_awesome_main.py` in the root of the project:
 
-```bash
+```tree
 .
 ├── my_awesome_algo
 |   ├── __init__.py
