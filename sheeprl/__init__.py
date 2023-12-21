@@ -1,11 +1,11 @@
 import os
 
-ROOT_DIR = os.path.dirname(__file__)
-
 import decorator
 from dotenv import load_dotenv
 
 load_dotenv()
+ROOT_DIR = os.path.dirname(__file__)
+
 
 from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
@@ -50,7 +50,7 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.4.9"
+__version__ = "0.5.1"
 
 
 # Replace `moviepy.decorators.use_clip_fps_by_default` method to work with python 3.8, 3.9, and 3.10

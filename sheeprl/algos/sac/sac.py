@@ -11,8 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from tensordict import TensorDict, make_tensordict
-from tensordict.tensordict import TensorDictBase
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
@@ -36,7 +35,7 @@ def train(
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
-    data: TensorDictBase,
+    data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     update: int,
     cfg: Dict[str, Any],
@@ -149,9 +148,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters())
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=agent.actor.parameters())
-    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha])
+    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all")
+    actor_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer, params=agent.actor.parameters(), _convert_="all"
+    )
+    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha], _convert_="all")
     if cfg.checkpoint.resume_from:
         qf_optimizer.load_state_dict(state["qf_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
@@ -166,14 +167,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Create a metric aggregator to log the metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 1
     rb = ReplayBuffer(
         buffer_size,
         cfg.env.num_envs,
-        device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
@@ -184,7 +184,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     last_train = 0
@@ -225,12 +224,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "policy_steps_per_update value."
         )
 
-    with device:
-        # Get the first environment observation and start the optimization
-        o = envs.reset(seed=cfg.seed)[0]
-        obs = torch.cat(
-            [torch.tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-        )  # [N_envs, N_obs]
+    step_data = {}
+    # Get the first environment observation and start the optimization
+    obs = envs.reset(seed=cfg.seed)[0]
+    obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
@@ -243,10 +240,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             else:
                 # Sample an action given the observation received by the environment
                 with torch.no_grad():
-                    actions, _ = agent.actor.module(obs)
+                    torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                    actions, _ = agent.actor.module(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
-            dones = np.logical_or(dones, truncated)
+            next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+            dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+            rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -263,27 +263,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+                    real_next_obs[idx] = np.concatenate([v for v in final_obs.values()], axis=-1)
 
-        with device:
-            next_obs = torch.cat(
-                [torch.tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            real_next_obs = torch.cat(
-                [torch.tensor(real_next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )  # [N_envs, N_obs]
-            actions = torch.tensor(actions, dtype=torch.float32).view(cfg.env.num_envs, -1)
-            rewards = torch.tensor(rewards, dtype=torch.float32).view(cfg.env.num_envs, -1)
-            dones = torch.tensor(dones, dtype=torch.float32).view(cfg.env.num_envs, -1)
-
-        step_data["dones"] = dones
-        step_data["actions"] = actions
-        step_data["observations"] = obs
+        step_data["dones"] = dones[np.newaxis]
+        step_data["actions"] = actions[np.newaxis]
+        step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
-            step_data["next_observations"] = real_next_obs
-        step_data["rewards"] = rewards
-        rb.add(step_data.unsqueeze(0))
+            step_data["next_observations"] = real_next_obs[np.newaxis]
+        step_data["rewards"] = rewards[np.newaxis]
+        rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # next_obs becomes the new obs
         obs = next_obs
@@ -293,15 +281,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             training_steps = learning_starts if update == learning_starts else 1
 
             # We sample one time to reduce the communications between processes
-            sample = rb.sample(
-                training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
+            sample = rb.sample_tensors(
+                batch_size=training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
-            )  # [G*B, 1]
-            gathered_data = fabric.all_gather(sample.to_dict())  # [G*B, World, 1]
-            gathered_data = make_tensordict(gathered_data).view(-1)  # [G*B*World]
+                dtype=None,
+                device=device,
+                from_numpy=cfg.buffer.from_numpy,
+            )  # [G*B]
+            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
+            for k, v in gathered_data.items():
+                gathered_data[k] = v.float()  # [G*B*World]
+                if fabric.world_size > 1:
+                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=2)
+                else:
+                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=1)
+            idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
             if world_size > 1:
                 dist_sampler: DistributedSampler = DistributedSampler(
-                    range(len(gathered_data)),
+                    idxes_to_sample,
                     num_replicas=world_size,
                     rank=fabric.global_rank,
                     shuffle=True,
@@ -313,19 +310,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 )
             else:
                 sampler = BatchSampler(
-                    sampler=range(len(gathered_data)), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+                    sampler=idxes_to_sample, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
                 )
 
             # Start training
             with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
                 for batch_idxes in sampler:
+                    batch = {k: v[batch_idxes] for k, v in gathered_data.items()}
                     train(
                         fabric,
                         agent,
                         actor_optimizer,
                         qf_optimizer,
                         alpha_optimizer,
-                        gathered_data[batch_idxes],
+                        batch,
                         aggregator,
                         update,
                         cfg,

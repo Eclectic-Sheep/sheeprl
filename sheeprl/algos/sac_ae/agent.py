@@ -13,6 +13,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -71,7 +72,7 @@ class CNNEncoder(CNN):
 
     def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
         x = torch.cat([obs[k] for k in self.keys], dim=-3)
-        x = self.model(x).flatten(1)
+        x = cnn_forward(self.model, x, x.shape[-3:], (-1,))
         if detach_encoder_features:
             x = x.detach()
         x = self.fc(x)

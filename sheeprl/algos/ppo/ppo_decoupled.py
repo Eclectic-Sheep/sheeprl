@@ -12,8 +12,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from tensordict import TensorDict
-from tensordict.tensordict import TensorDictBase, make_tensordict
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
@@ -21,7 +19,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, test
-from sheeprl.data import ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
@@ -120,17 +118,16 @@ def player(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
     rb = ReplayBuffer(
-        cfg.algo.rollout_steps,
+        cfg.buffer.size,
         cfg.env.num_envs,
-        device=device,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=obs_keys,
     )
-    step_data = TensorDict({}, batch_size=[cfg.env.num_envs], device=device)
 
     # Global variables
     start_step = (
@@ -175,20 +172,16 @@ def player(
     ]
 
     # Broadcast num_updates to all the world
-    update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
+    update_t = torch.as_tensor([num_updates], device=device, dtype=torch.float32)
     world_collective.broadcast(update_t, src=0)
 
     # Get the first environment observation and start the optimization
-    obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
-    next_obs = {}
+    step_data = {}
+    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     for k in obs_keys:
-        torch_obs = torch.as_tensor(obs[k]).to(fabric.device)
         if k in cfg.algo.cnn_keys.encoder:
-            torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-        elif k in cfg.algo.mlp_keys.encoder:
-            torch_obs = torch_obs.float()
-        step_data[k] = torch_obs
-        next_obs[k] = torch_obs
+            next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
+        step_data[k] = next_obs[k][np.newaxis]
 
     params = {"update": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
     world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
@@ -202,15 +195,18 @@ def player(
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                    actions, logprobs, _, values = agent(normalized_obs)
+                    torch_obs = {
+                        k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
+                    }
+                    actions, logprobs, _, values = agent(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
-                        real_actions = np.concatenate([act.argmax(dim=-1).cpu().numpy() for act in actions], axis=-1)
-                    actions = torch.cat(actions, -1)
+                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                    actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions)
+                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
                     real_next_obs = {
@@ -226,38 +222,36 @@ def player(
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
+                                torch_v = torch_v.view(cfg.env.num_envs, -1, *v.shape[-2:])
+                                torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
                         vals = agent.get_value(real_next_obs).cpu().numpy()
                         rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
-                dones = np.logical_or(dones, truncated)
-                dones = torch.as_tensor(dones, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
-                rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(cfg.env.num_envs, -1)
+                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                rewards = rewards.reshape(cfg.env.num_envs, -1)
 
             # Update the step data
-            step_data["dones"] = dones
-            step_data["values"] = values
-            step_data["actions"] = actions
-            step_data["logprobs"] = logprobs
-            step_data["rewards"] = rewards
+            step_data["dones"] = dones[np.newaxis]
+            step_data["values"] = values.cpu().numpy()[np.newaxis]
+            step_data["actions"] = actions[np.newaxis]
+            step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
+            step_data["rewards"] = rewards[np.newaxis]
             if cfg.buffer.memmap:
-                step_data["returns"] = torch.zeros_like(rewards, dtype=torch.float32)
-                step_data["advantages"] = torch.zeros_like(rewards, dtype=torch.float32)
+                step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Update the observation and dones
             next_obs = {}
             for k in obs_keys:
+                _obs = obs[k]
                 if k in cfg.algo.cnn_keys.encoder:
-                    torch_obs = torch.as_tensor(obs[k], device=device)
-                    torch_obs = torch_obs.view(cfg.env.num_envs, -1, *torch_obs.shape[-2:])
-                elif k in cfg.algo.mlp_keys.encoder:
-                    torch_obs = torch.as_tensor(obs[k], device=device, dtype=torch.float32)
-                step_data[k] = torch_obs
-                next_obs[k] = torch_obs
+                    _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
+                step_data[k] = _obs[np.newaxis]
+                next_obs[k] = _obs
 
             if cfg.metric.log_level > 0 and "final_info" in info:
                 for i, agent_ep_info in enumerate(info["final_info"]):
@@ -269,13 +263,17 @@ def player(
                             aggregator.update("Game/ep_len_avg", ep_len)
                         fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
+        # Transform the data into PyTorch Tensors
+        local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
+
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-        next_values = agent.get_value(normalized_obs)
+        torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+        next_values = agent.get_value(torch_obs)
         returns, advantages = gae(
-            rb["rewards"].to(torch.float64),
-            rb["values"],
-            rb["dones"],
+            local_data["rewards"].to(torch.float64),
+            local_data["values"],
+            local_data["dones"],
             next_values,
             cfg.algo.rollout_steps,
             cfg.algo.gamma,
@@ -283,17 +281,17 @@ def player(
         )
 
         # Add returns and advantages to the buffer
-        rb["returns"] = returns.float()
-        rb["advantages"] = advantages.float()
-        rb["rewards"] = rb["rewards"].float()
-
-        # Flatten the batch
-        local_data = rb.buffer.view(-1)
+        local_data["returns"] = returns.float()
+        local_data["advantages"] = advantages.float()
+        local_data["rewards"] = local_data["rewards"].float()
 
         # Send data to the training agents
         # Split data in an even way, when possible
-        perm = torch.randperm(local_data.shape[0], device=device)
-        chunks = local_data[perm].split(chunks_sizes)
+        perm = torch.randperm(local_data[next(iter(local_data.keys()))].shape[0], device=device)
+        # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+        chunks = {k: v[perm].flatten(0, 1).split(chunks_sizes) for k, v in local_data.items()}
+        # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
+        chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
         world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
         # Wait the trainers to finish
@@ -397,7 +395,7 @@ def trainer(
 
     # Define the agent and the optimizer
     agent = PPOAgent(**agent_args[0])
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Load the state from the checkpoint
     if cfg.checkpoint.resume_from:
@@ -431,7 +429,7 @@ def trainer(
     # Metrics
     aggregator = None
     if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator).to(device)
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Start training
     last_train = 0
@@ -452,7 +450,7 @@ def trainer(
         data = [None]
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
-        if not isinstance(data, TensorDictBase) and data == -1:
+        if not isinstance(data, dict) and data == -1:
             # Last Checkpoint
             if cfg.checkpoint.save_last:
                 state = {
@@ -473,12 +471,11 @@ def trainer(
                     state=state,
                 )
             return
-        data = make_tensordict(data, device=device)
 
         train_step += group_world_size
 
         # Prepare sampler
-        indexes = list(range(data.shape[0]))
+        indexes = list(range(data[next(iter(data.keys()))].shape[0]))
         sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
         # Start training
@@ -490,7 +487,7 @@ def trainer(
             with Join([agent._forward_module]):
                 for _ in range(cfg.algo.update_epochs):
                     for batch_idxes in sampler:
-                        batch = data[batch_idxes]
+                        batch = {k: data[k][batch_idxes] for k in data.keys()}
                         normalized_obs = normalize_obs(
                             batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                         )
