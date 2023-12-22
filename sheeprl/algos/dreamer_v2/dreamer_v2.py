@@ -631,7 +631,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             # Sample an action given the observation received by the environment
             if (
                 update <= learning_starts
@@ -735,7 +735,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 device=fabric.device,
                 from_numpy=cfg.buffer.from_numpy,
             )
-            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(next(iter(local_data.values())).shape[0]):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
@@ -828,7 +828,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

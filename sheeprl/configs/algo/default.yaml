@@ -1,6 +1,7 @@
 name: ???
 total_steps: ???
 per_rank_batch_size: ???
+run_test: True
 
 # Encoder and decoder keys
 cnn_keys:

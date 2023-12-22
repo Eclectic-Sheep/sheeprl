@@ -411,6 +411,8 @@ class MultiEncoder(nn.Module):
         super().__init__()
         if cnn_encoder is None and mlp_encoder is None:
             raise ValueError("There must be at least one encoder, both cnn and mlp encoders are None")
+        self.has_cnn_encoder = False
+        self.has_mlp_encoder = False
         if cnn_encoder is not None:
             if getattr(cnn_encoder, "input_dim", None) is None:
                 raise AttributeError(
@@ -422,6 +424,7 @@ class MultiEncoder(nn.Module):
                     "`cnn_encoder` must contain the `output_dim` attribute representing "
                     "the dimension of the output tensor"
                 )
+            self.has_cnn_encoder = True
         if mlp_encoder is not None:
             if getattr(mlp_encoder, "input_dim", None) is None:
                 raise AttributeError(
@@ -433,6 +436,8 @@ class MultiEncoder(nn.Module):
                     "`mlp_encoder` must contain the `output_dim` attribute representing "
                     "the dimension of the output tensor"
                 )
+            self.has_mlp_encoder = True
+        self.has_both_encoders = self.has_cnn_encoder and self.has_mlp_encoder
         self.cnn_encoder = cnn_encoder
         self.mlp_encoder = mlp_encoder
         self.cnn_input_dim = self.cnn_encoder.input_dim if self.cnn_encoder is not None else None
@@ -450,14 +455,16 @@ class MultiEncoder(nn.Module):
         return self.mlp_encoder.keys if self.mlp_encoder is not None else []
 
     def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
-        device = obs[list(obs.keys())[0]].device
-        cnn_out = torch.tensor((), device=device)
-        mlp_out = torch.tensor((), device=device)
-        if self.cnn_encoder is not None:
+        if self.has_cnn_encoder:
             cnn_out = self.cnn_encoder(obs, *args, **kwargs)
-        if self.mlp_encoder is not None:
+        if self.has_mlp_encoder:
             mlp_out = self.mlp_encoder(obs, *args, **kwargs)
-        return torch.cat((cnn_out, mlp_out), -1)
+        if self.has_both_encoders:
+            return torch.cat((cnn_out, mlp_out), -1)
+        elif self.has_cnn_encoder:
+            return cnn_out
+        else:
+            return mlp_out
 
 
 class MultiDecoder(nn.Module):

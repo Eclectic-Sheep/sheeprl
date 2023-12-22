@@ -776,7 +776,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             # Sample an action given the observation received by the environment
             if (
                 update <= learning_starts
@@ -881,7 +881,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 from_numpy=cfg.buffer.from_numpy,
             )
             # Start training
-            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(next(iter(local_data.values())).shape[0]):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
@@ -1000,7 +1000,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     # task test zero-shot
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")
