@@ -265,7 +265,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)

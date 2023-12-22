@@ -269,7 +269,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
@@ -372,7 +372,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
-        with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
         train_step += world_size
 

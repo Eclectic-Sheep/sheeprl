@@ -174,7 +174,7 @@ def player(
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             if update <= learning_starts:
                 actions = envs.action_space.sample()
             else:

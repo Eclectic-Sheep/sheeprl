@@ -234,7 +234,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             if update <= learning_starts:
                 actions = envs.action_space.sample()
             else:
@@ -314,7 +314,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 )
 
             # Start training
-            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for batch_idxes in sampler:
                     batch = {k: v[batch_idxes] for k, v in gathered_data.items()}
                     train(

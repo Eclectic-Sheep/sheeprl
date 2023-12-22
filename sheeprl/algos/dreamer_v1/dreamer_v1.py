@@ -589,7 +589,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             # Sample an action given the observation received by the environment
             if (
                 update <= learning_starts
@@ -681,7 +681,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Train the agent
         if update > learning_starts and updates_before_training <= 0:
             # Start training
-            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(cfg.algo.per_rank_gradient_steps):
                     sample = rb.sample_tensors(
                         batch_size=cfg.algo.per_rank_batch_size,
