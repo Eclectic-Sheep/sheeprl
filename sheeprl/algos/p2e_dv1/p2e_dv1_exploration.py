@@ -835,7 +835,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     # task test zero-shot
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")

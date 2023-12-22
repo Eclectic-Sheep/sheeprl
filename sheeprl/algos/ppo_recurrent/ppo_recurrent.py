@@ -509,7 +509,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=ckpt_state)
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

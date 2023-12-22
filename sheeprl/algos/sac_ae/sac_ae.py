@@ -22,7 +22,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
-from sheeprl.algos.sac_ae.utils import preprocess_obs, test_sac_ae
+from sheeprl.algos.sac_ae.utils import preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
@@ -471,8 +471,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
 
     envs.close()
-    if fabric.is_global_zero:
-        test_sac_ae(agent.actor.module, fabric, cfg, log_dir)
+    if fabric.is_global_zero and cfg.algo.run_test:
+        test(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac_ae.utils import log_models

@@ -349,7 +349,7 @@ def player(
         )
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(agent, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

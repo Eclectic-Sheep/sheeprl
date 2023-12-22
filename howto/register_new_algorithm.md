@@ -367,7 +367,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(agent.module, fabric, cfg, log_dir)
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
