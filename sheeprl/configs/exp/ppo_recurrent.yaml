@@ -7,11 +7,11 @@ defaults:
   - _self_
 
 algo:
-  per_rank_num_batches: 4
-  per_rank_sequence_length: 8
-  total_steps: 409600
-  rollout_steps: 256
-  update_epochs: 4
+  per_rank_num_batches: 8
+  per_rank_sequence_length: 16
+  total_steps: 650000
+  rollout_steps: 512
+  update_epochs: 8
 
 # Environment
 env:

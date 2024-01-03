@@ -18,11 +18,11 @@ per_rank_sequence_length: ???
 # Model related parameters
 mlp_layers: 1
 layer_norm: True
-dense_units: 128
+dense_units: 256
 dense_act: torch.nn.ReLU
 rnn:
   lstm:
-    hidden_size: 64
+    hidden_size: 128
   pre_rnn_mlp:
     bias: True
     apply: False
@@ -36,7 +36,7 @@ rnn:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.rnn.lstm.hidden_size}
 encoder:
-  dense_units: 64
+  dense_units: 128
 
 # Optimizer related parameters
 optimizer:
