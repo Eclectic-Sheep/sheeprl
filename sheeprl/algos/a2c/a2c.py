@@ -226,7 +226,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     # This calls the `forward` method of the PyTorch module, escaping from Fabric
@@ -298,7 +298,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             local_data["advantages"] = advantages.float()
 
         # Train the agent
-        train(fabric, agent, optimizer, local_data, aggregator, cfg)
+        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+            train(fabric, agent, optimizer, local_data, aggregator, cfg)
 
         # Log metrics
         if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
