@@ -79,7 +79,7 @@ def train(
         )
         actor_data = {k: actor_data[k][next(iter(actor_sampler))] for k in actor_data.keys()}
 
-    with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+    with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
         # Update the soft-critic
         for batch_idxes in critic_sampler:
             critic_batch_data = {k: critic_data[k][batch_idxes] for k in critic_data.keys()}
@@ -284,7 +284,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             with torch.no_grad():
                 # Sample an action given the observation received by the environment
                 actions, _ = agent.actor.module(torch.from_numpy(obs).to(device))
@@ -386,7 +386,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(agent.actor.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

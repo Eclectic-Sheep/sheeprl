@@ -6,7 +6,7 @@ import gymnasium as gym
 from lightning import Fabric
 
 from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
-from sheeprl.algos.sac_ae.utils import test_sac_ae
+from sheeprl.algos.sac_ae.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
@@ -42,4 +42,4 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     agent, _, _ = build_agent(
         fabric, cfg, observation_space, action_space, state["agent"], state["encoder"], state["decoder"]
     )
-    test_sac_ae(agent.actor, fabric, cfg, log_dir)
+    test(agent.actor, fabric, cfg, log_dir)

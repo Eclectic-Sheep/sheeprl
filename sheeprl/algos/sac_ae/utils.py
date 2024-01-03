@@ -25,7 +25,7 @@ MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
 @torch.no_grad()
-def test_sac_ae(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys

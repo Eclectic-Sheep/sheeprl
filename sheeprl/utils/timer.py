@@ -1,8 +1,9 @@
 # timer.py
+from __future__ import annotations
 
 import time
 from contextlib import ContextDecorator
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Type, Union
 
 import torch
 from torchmetrics import Metric, SumMetric
@@ -19,11 +20,11 @@ class timer(ContextDecorator):
     timers: Dict[str, Metric] = {}
     _start_time: Optional[float] = None
 
-    def __init__(self, name: str, metric: Optional[Metric] = None) -> None:
+    def __init__(self, name: str, metric: Optional[Type[Metric]] = None, **kwargs) -> None:
         """Add timer to dict of timers after initialization"""
         self.name = name
         if not timer.disabled and self.name is not None and self.name not in self.timers.keys():
-            self.timers.setdefault(self.name, metric if metric is not None else SumMetric())
+            self.timers.setdefault(self.name, metric(**kwargs) if metric is not None else SumMetric(**kwargs))
 
     def start(self) -> None:
         """Start a new timer"""

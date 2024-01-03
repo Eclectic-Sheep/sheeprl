@@ -282,7 +282,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     # [Seq_len, Batch_size, D] --> [1, num_envs, D]
@@ -439,7 +439,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         mask = (torch.arange(max_len).expand(len(lengths), max_len) < lengths.unsqueeze(1)).T
         padded_sequences["mask"] = mask.to(device).bool()
 
-        with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
             train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
         train_step += world_size
 
@@ -510,7 +510,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=ckpt_state)
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(agent.module, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

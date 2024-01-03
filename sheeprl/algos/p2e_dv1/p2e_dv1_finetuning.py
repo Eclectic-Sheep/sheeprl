@@ -272,7 +272,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric(sync_on_compute=False)):
+        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
             with torch.no_grad():
                 normalized_obs = {}
                 for k in obs_keys:
@@ -350,7 +350,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             if player.actor_type == "exploration":
                 player.actor = actor_task.module
                 player.actor_type = "task"
-            with timer("Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute)):
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(cfg.algo.per_rank_gradient_steps):
                     sample = rb.sample_tensors(
                         batch_size=cfg.algo.per_rank_batch_size,
@@ -453,7 +453,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     envs.close()
     # task test few-shot
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "few-shot")
