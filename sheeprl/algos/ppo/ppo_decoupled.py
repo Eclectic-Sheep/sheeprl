@@ -222,7 +222,7 @@ def player(
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(cfg.env.num_envs, -1, *v.shape[-2:])
+                                torch_v = torch_v.view(-1, *v.shape[-2:])
                                 torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
@@ -480,7 +480,7 @@ def trainer(
 
         # Start training
         with timer(
-            "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
+            "Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
         ):
             # The Join context is needed because there can be the possibility
             # that some ranks receive less data

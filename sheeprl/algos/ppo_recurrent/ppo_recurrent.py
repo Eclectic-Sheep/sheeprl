@@ -315,7 +315,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(1, len(truncated_envs), -1, *torch_obs.shape[-2:]) / 255.0 - 0.5
+                                torch_v = torch_v.view(1, 1, -1, *torch_v.shape[-2:]) / 255.0 - 0.5
                             real_next_obs[k][0, i] = torch_v
                     with torch.no_grad():
                         feat = agent.module.feature_extractor(real_next_obs)
