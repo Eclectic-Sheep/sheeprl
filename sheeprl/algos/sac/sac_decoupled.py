@@ -453,7 +453,7 @@ def trainer(
 
         # Start training
         with timer(
-            "Time/train_time", SumMetric(sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg)
+            "Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
         ):
             for batch_idxes in sampler:
                 train(

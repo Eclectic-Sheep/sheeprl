@@ -1,0 +1,42 @@
+defaults:
+  - default
+  - /optim@optimizer: rmsprop
+  - _self_
+
+# Training receipe
+name: a2c
+gamma: 0.99
+gae_lambda: 1.0
+loss_reduction: sum
+rollout_steps: 5
+dense_act: torch.nn.Tanh
+layer_norm: False
+max_grad_norm: 0.5
+per_rank_batch_size: ${algo.rollout_steps}
+
+# Encoder
+encoder:
+  mlp_layers: 1
+  dense_units: 64
+  mlp_features_dim: 64
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Actor
+actor:
+  mlp_layers: 2
+  dense_units: 64
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Critic
+critic:
+  mlp_layers: 2
+  dense_units: 64
+  dense_act: ${algo.dense_act}
+  layer_norm: ${algo.layer_norm}
+
+# Single optimizer for both actor and critic
+optimizer:
+  lr: 1e-3
+  eps: 1e-4

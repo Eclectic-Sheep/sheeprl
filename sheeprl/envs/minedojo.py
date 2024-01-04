@@ -192,7 +192,7 @@ class MineDojoWrapper(gym.Wrapper):
                 self._sticky_attack_counter -= 1
             # it the selected action is not attack, then the agent stops the sticky attack
             elif converted_action[5] != 3:
-                self._sticky_attack = 0
+                self._sticky_attack_counter = 0
         if self._sticky_jump:
             # 2 is the index of the jump/sneak/sprint actions, 1 is the value for the jump action
             if converted_action[2] == 1:

@@ -109,6 +109,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -137,6 +138,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if len(observation_space[k].shape) > 1:
             raise ValueError(
                 "Only environments with vector-only observations are supported by the SAC agent. "
+                f"The observation with key '{k}' has shape {observation_space[k].shape}. "
                 f"Provided environment: {cfg.env.id}"
             )
     if cfg.metric.log_level > 0:
