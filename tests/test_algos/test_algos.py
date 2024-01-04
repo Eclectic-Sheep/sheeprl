@@ -143,6 +143,24 @@ def test_sac_decoupled(standard_args, start_time):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_a2c(standard_args, start_time):
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
+    run_name = "test_ppo"
+    args = standard_args + [
+        "exp=a2c",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.cnn_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_ppo(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
