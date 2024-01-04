@@ -38,12 +38,34 @@ jobs:
             requirements.txt
             setup.py
 
-      - name: Install packages
+      - name: Create venv
         run: |
-          python -m pip install -U pip
-          python -m pip install swig
-          python -m pip install -e .[atari,box2d,test,dev]
+          python -m venv env
 
-      - name: Run tests
+      - name: Install packages Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: powershell
         run: |
+          env\\Scripts\\Activate.ps1
+          pip install swig
+          pip install -e .[atari,box2d,test,dev]
+
+      - name: Install packages Linux
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          source env/bin/activate
+          pip install swig
+          pip install -e .[atari,box2d,test,dev]
+
+      - name: Run tests Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: powershell
+        run: |
+          env\\Scripts\\Activate.ps1
+          python tests/run_tests.py
+
+      - name: Run tests Linux
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          source env/bin/activate
           python tests/run_tests.py
