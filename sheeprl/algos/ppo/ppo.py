@@ -301,7 +301,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         for k, v in info["final_observation"][truncated_env].items():
                             torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                             if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(cfg.env.num_envs, -1, *v.shape[-2:])
+                                torch_v = torch_v.view(-1, *v.shape[-2:])
                                 torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
