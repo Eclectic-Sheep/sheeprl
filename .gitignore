@@ -172,3 +172,4 @@ mlruns
 mlartifacts
 examples/models
 session_*
+bin/

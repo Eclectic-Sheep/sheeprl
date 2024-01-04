@@ -1,0 +1,4 @@
+_target_: torch.optim.RMSprop
+lr: 0.0007
+eps: 0.00001
+weight_decay: 0
