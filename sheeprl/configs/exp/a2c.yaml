@@ -3,6 +3,7 @@
 defaults:
   - override /algo: a2c
   - override /env: gym
+  - override /model_manager: a2c
   - _self_
 
 # Algorithm
