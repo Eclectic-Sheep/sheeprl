@@ -51,7 +51,7 @@ np.float = np.float32
 np.int = np.int64
 np.bool = bool
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 
 # Replace `moviepy.decorators.use_clip_fps_by_default` method to work with python 3.8, 3.9, and 3.10
