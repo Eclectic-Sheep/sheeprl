@@ -63,12 +63,12 @@ repository = "https://github.com/Eclectic-Sheep/sheeprl"
 [project.optional-dependencies]
 test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage"]
 dev = [
-  "pre-commit==2.20.0",
+  "pre-commit==3.5.0",
   "mypy==1.2.0",
-  "black==23.3.0",
-  "isort==5.12.0",
-  "autoflake==2.1.1",
-  "ruff==0.0.284",
+  "black==23.12.1",
+  "isort==5.13.2",
+  "autoflake==2.2.1",
+  "ruff==0.1.9",
 ]
 mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==0.29.*"]
 dmc = ["dm_control>=1.0.12"]
@@ -196,7 +196,7 @@ warn_return_any = false
 
 
 [tool.bumpver]
-current_version = "0.5.1"
+current_version = "0.5.2"
 version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "v{new_version}"
