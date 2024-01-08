@@ -6,6 +6,7 @@ defaults:
 id: walker_walk
 action_repeat: 1
 max_episode_steps: 1000
+sync_env: True
 
 # Wrapper to be instantiated
 wrapper:
@@ -15,4 +16,4 @@ wrapper:
   height: ${env.screen_size}
   seed: null
   from_pixels: True
-  from_vectors: False
+  from_vectors: True
