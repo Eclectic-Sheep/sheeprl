@@ -13,7 +13,7 @@ For each of them, you need to install some packages:
 - OSMesa: `sudo apt-get install libgl1-mesa-glx libosmesa6`
 In order to use one of these rendering backends, you need to set the `MUJOCO_GL` environment variable to `"glfw"`, `"egl"`, `"osmesa"`, respectively.
 
-> **Note**
+> [!NOTE]
 >
 > The `libglew2.2` could have a different name, based on your OS (e.g., `libglew2.2` is for Ubuntu 22.04.2 LTS).
 

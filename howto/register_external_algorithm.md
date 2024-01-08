@@ -572,7 +572,7 @@ optimizer:
   eps: 1e-4
 ```
 
-> **Note**
+> [!NOTE]
 >
 > With `/optim@optimizer: adam` under `defaults` you specify that your agent has one adam optimizer and you can access to its config with `algo.optimizer`.
 >
@@ -585,7 +585,7 @@ defaults:
 ```
 will add two optimizers, one accessible with `algo.encoder.optimizer`, the other with `algo.actor.optimizer`.
 
-> **Note**
+> [!NOTE]
 >
 > The field `algo.name` **must** be set and **must** be equal to the name of the file.py, found under the `my_awesome_algo` folder, where the implementation of the algorithm is defined. For example, if your implementation is defined in a python file named `my_sota.py`, i.e. `my_awesome_algo/my_sota.py`, then `algo.name="my_sota"` 
 

@@ -123,7 +123,7 @@ The training times of our implementations compared to the ones of Stable Baselin
     </tbody>
   </table>
 </div>
-> **Note**
+> [!NOTE]
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
 
@@ -208,7 +208,7 @@ From inside the newly created folder run
 pip install .
 ```
 
-> **Note**
+> [!NOTE]
 >
 > To install all the optional dependencies one can run `pip install .[atari,mujoco,dev,test]`
 
@@ -219,7 +219,7 @@ pip install .
 
 If you haven't already done so, create an environment with your choice of venv or conda.
 
-> **Note**
+> [!NOTE]
 >
 > The example will use Python standard's venv module and assumes macOS or Linux.
 
@@ -250,7 +250,7 @@ pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Ec
 <details>
   <summary>Installing on an M-series Mac</summary>
 
-> **Note**
+> [!NOTE]
 >
 > If you are on an M-series Mac and encounter an error attributed box2dpy during installation, you need to install SWIG using the instructions shown below.
 
@@ -271,7 +271,7 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 <details>
   <summary>MineRL, MineDojo and DIAMBRA</summary>
 
-> **Note**
+> [!NOTE]
 >
 > If you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 >
@@ -295,7 +295,7 @@ python sheeprl/available_agents.py
 
 That's all it takes to train an agent with SheepRL! 🎉
 
-> **Note**
+> [!NOTE]
 >
 > Before you start using the SheepRL framework, it is **highly recommended** that you read the following instructional documents:
 > 

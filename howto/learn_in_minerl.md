@@ -7,7 +7,7 @@ sudo apt-get update
 sudo apt-get install openjdk-8-jdk
 ```
 
-> **Note**
+> [!NOTE]
 >
 > If you work on another OS, you can follow the instructions [here](https://minerl.readthedocs.io/en/v0.4.4/tutorials/index.html) to install JDK 1.8.
 
@@ -23,7 +23,7 @@ We have modified the MineRL environments to have a custom action and observation
 2. Obtain Iron Pickaxe: you need to set the `env.id` argument to `custom_obtain_iron_pickaxe`.
 3. Obtain Diamond: you need to set the `env.id` argument to `custom_obtain_diamond`.
 
-> **Note**
+> [!NOTE]
 > If you want to use a *MineRL* environment, you must specify it, for example, by setting `env=minerl` in the cli arguments or by creating your custom config file.
 >
 > In all these environments, it is possible to have or not a dense reward, you can set the type of the reward by setting the `env.wrapper.dense` argument to `True` if you want a dense reward, to `False` otherwise.
@@ -46,7 +46,7 @@ We decided to convert the multi-discrete action space into a discrete action spa
 In addition, we added the forward action when the agent selects one of the following actions: `jump`, `sprint`, and `sneak`.
 Finally, we added sticky actions for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `env.sticky_jump` and `env.sticky_attack` arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
 
-> **Note**
+> [!NOTE]
 > Since the MineRL environments have a multi-discrete action space, the sticky actions can be easily implemented. The agent will perform the selected action and the sticky actions simultaneously.
 >
 > The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).

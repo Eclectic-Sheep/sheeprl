@@ -33,7 +33,7 @@ The implementation supports flexibility in experience collection during fine-tun
 
 - **Initial Experiences:** If using a new buffer, users can decide whether to collect initial experiences (until `learning_start`) with the `actor_exploration` or the `actor_task`. After `learning_start`, only the `actor_task` collects experiences. (`player.actor_type` parameter, can be either `exploration` or `task`).
 
-> **Note**
+> [!NOTE]
 >
 > When exploring, the only valid choice of the `player.actor_type` parameter is `exploration`.
 
@@ -44,7 +44,7 @@ To use the Plan2Explore framework, follow these steps:
 1. Run the exploration script to learn the dynamics of the environment.
 2. Execute the fine-tuning script with the same environment configurations and consistent hyper-parameters.
 
-> **Note**
+> [!NOTE]
 >
 > Choose whether to start fine-tuning from the exploration buffer or create a new buffer, and specify the actor for initial experience collection accordingly.
 
@@ -55,7 +55,7 @@ In P2E_DV3 we added the possibility to use more critics for the exploration:
 * It consists of a python dictionary that contains a pair key-critic_configs.
 * Each critic_config has to contain: the weight to give to the advantages (if zero, then the critic is ignored), the reward to use (`intrinsic` or `task`).
 
-> **Note**
+> [!NOTE]
 >
 > There must be at least one intrinsic critic (the reward type must be `intrinsic`)
 

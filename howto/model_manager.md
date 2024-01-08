@@ -12,7 +12,7 @@ models: {}
 ```
 Since the algorithms have different models, then the `models` parameter is set to an empty python dictionary, and each agent will define its own configuration. The `disabled` parameter indicates whether or not the user wants to register the agent when the training is finished (`False` means that the agent will be registered, otherwise not).
 
-> **Note**
+> [!NOTE]
 >
 > The model manager can be used even if the chosen logger is Tensorboard, the only requirement is that an instance of the MLFlow server is running and is accessible, moreover, it is necessary to specify its URI in the `MLFLOW_TRACKING_URI` environment variable.
 
@@ -49,7 +49,7 @@ models:
 For each model, it is necessary to define the `model_name`, the `description`, and the `tags` (i.e., a python dictionary with strings as keys and values). The keys that can be specified are defined by the `MODELS_TO_REGISTER` variable in the `./sheeprl/algos/<algo_name>/utils.py`. For DreamerV3, it is defined as follows: `MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}`.
 If you do not want to log some models, then, you just need to remove it from the configuration file.
 
-> **Note**
+> [!NOTE]
 >
 > The name of the models in the `MODELS_TO_REGISTER` variable is equal to the name of the variables of the models in the `./sheeprl/algos/<algo_name>/<algo_name>.py` file.
 >
@@ -88,7 +88,7 @@ As before, it is necessary to specify the `model_manager` configurations (the mo
 * If you want to create a new run (with a name equal to `run.name`) and put it into an existing experiment, then you have to set `run.id=null` and `experiment.id=<experiment_id>`.
 * If you set `experiment.id=null` and `run.id=null`, then a new experiment and a new run are created with the specified names.
 
-> **Note**
+> [!NOTE]
 >
 > Also, in this case, the models specified in the `model_manager` configuration must be a subset of the `MODELS_TO_REGISTER` variable.
 

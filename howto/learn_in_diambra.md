@@ -28,7 +28,7 @@ To install an environment you have to execute the following steps:
 2. If the environment specifications (in `diambra arena list-roms`) contain notes, then apply those notes (for instance, if the ROM file must be renamed).
 3. Set the `DIAMBRAROMSPATH` variable either temporarily in your current shell/prompt session or permanently in your profile (e.g. on Linux in `~/.bashrc`): `export DIAMBRAROMSPATH=/absolute/path/to/roms/folder`
 
-> **Note**
+> [!NOTE]
 >
 > You can check the validity of the ROM file with: `diambra arena check-roms /absolute/path/to/roms/folder/romFileName.zip` 
 >
@@ -41,13 +41,13 @@ The action space can be either *discrete* or *multi-discrete*, in both cases, yo
 
 Each environment has its own observation and action space, so it is recommended to check them [here](https://docs.diambra.ai/envs/games/).
 
-> **Note**
+> [!NOTE]
 >
 > You have to be [registered](https://diambra.ai/register/) and logged in to acces the [DIAMRA documentation](https://docs.diambra.ai/).
 
 The observation space is slightly modified to be compatible with our algorithms, in particular, the `gymnasium.spaces.Discrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(1,)`, of type `int` and range from `0` to `n - 1`, where `n` is the number of options of the Discrete space. Finally, the  `gymnasium.spaces.MultiDiscrete` observations are converted into `gymnasium.spaces.Box` observations with dimension `(k,)` where `k` is the length of the MultiDiscrete space, of type `int` and range from `0` to `n[i] - 1` where `n[i]` is the number of options of the *i-th* element of the MultiDiscrete.
 
-> **Note**
+> [!NOTE]
 >
 > To know more about gymnasium spaces, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
 
@@ -97,7 +97,7 @@ Now, to run your experiment, you have to execute the following command:
 diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 ```
 
-> **Note**
+> [!NOTE]
 >
 > Some settings and wrappers are included in the cli arguments when the command is launched. These settings/wrappers cannot be specified in the `diambra_settings` and `diambra_wrappers` parameters, respectively.
 > The settings/wrappers you cannot specify in the `diambra_settings` and `diambra_wrappers` parameters are the following:

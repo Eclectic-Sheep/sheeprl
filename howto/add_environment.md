@@ -10,7 +10,7 @@ The main properties/methods that the environment has to provide are the followin
 * An `observation_space` property indicating all the valid observations that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary.
 * A `reward_range` (not mandatory), to specify the range that the agent can receive in a single step.
 
-> **Note**
+> [!NOTE]
 >
 > All the observations returned by the `step` and `reset` functions must be python dictionary of numpy arrays.
 
@@ -22,7 +22,7 @@ There are two ways to add a new environment:
 In both cases, the environment or wrapper must be inserted in a dedicated file in the `./sheeprl/envs` folder, for instance, you should add the `custom_env.py` file in `./sheeprl/envs` folder.
 After that, you must create a new config file and place it in the `./sheeprl/configs/env` folder.
 
-> **Note**
+> [!NOTE]
 >
 > It could be necessary to define the `metadata` property containing metadata information about the environment. It is used by the `gym.experimental.wrappers.RecordVideoV0` wrapper, which is responsible for capturing the video of the episode.
 
