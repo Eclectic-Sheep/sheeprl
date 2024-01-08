@@ -84,7 +84,6 @@
         <th>SheepRL v0.4.9</th>
         <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
         <th>StableBaselines3</th>
-        <th>TorchRL</th>
       </tr>
     </thead>
     <tbody>
@@ -95,7 +94,6 @@
         <td>138.3s &plusmn; 0.16</td>
         <td>80.81s &plusmn; 0.68</td>
         <td>77.21s &plusmn; 0.36</td>
-        <td>192.32s &plusmn; 5.59</td>
       </tr>
       <tr>
         <td><i>2 devices</i></td>
@@ -103,23 +101,20 @@
         <td>59.53s &plusmn; 0.78</td>
         <td>46.09s &plusmn; 0.59</td>
         <td></td>
-        <td></td>
       </tr>
       <tr>
         <td rowspan="2"><b>SAC</b></td>
         <td><i>1 device</i></td>
         <td>421.37s &plusmn; 5.27</td>
         <td>363.74s &plusmn; 3.44</td>
-        <td></td>
+        <td>318.06s &plusmn; 4.46</td>
         <td>336.06s &plusmn; 12.26</td>
-        <td>489.43s &plusmn; 9.01</td>
       </tr>
       <tr>
         <td><i>2 devices</i></td>
         <td>264.29s &plusmn; 1.81</td>
         <td>238.88s &plusmn; 4.97</td>
         <td>210.07s &plusmn; 27</td>
-        <td></td>
         <td></td>
       </tr>
     </tbody>
