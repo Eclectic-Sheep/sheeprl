@@ -86,7 +86,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <th>SheepRL v0.4.0</th>
         <th>SheepRL v0.4.9</th>
         <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
-        <th>StableBaselines3*</th>
+        <th>StableBaselines3<sup>1</sup></th>
       </tr>
     </thead>
     <tbody>
@@ -128,7 +128,7 @@ The training times of our implementations compared to the ones of Stable Baselin
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
 >
-> * The StableBaselines3 version is `v2.2.1`, please install the pakage with `pip install stable-baselines3==2.2.1`
+> 1. The StableBaselines3 version is `v2.2.1`, please install the pakage with `pip install stable-baselines3==2.2.1`
 
 ## What
 

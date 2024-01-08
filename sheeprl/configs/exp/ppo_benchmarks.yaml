@@ -17,6 +17,10 @@ algo:
   rollout_steps: 128
   normalize_advantages: True
   max_grad_norm: 0.5
+  encoder:
+    mlp_features_dim: null
+  actor:
+    mlp_layers: 0
   critic:
     mlp_layers: 0
   optimizer:
