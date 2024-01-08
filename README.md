@@ -75,6 +75,9 @@
 1. For comparison: 1M in 2d 7h vs 1M in 1d 5h (before and after optimizations resp.)
 2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
 
+#### Benchmarks
+The training times of our implementations compared to the ones of Stable Baselines3 are shown below:
+
 <div align="center">
   <table>
     <thead>
