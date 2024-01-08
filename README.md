@@ -123,6 +123,7 @@ The training times of our implementations compared to the ones of Stable Baselin
     </tbody>
   </table>
 </div>
+
 > [!NOTE]
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
