@@ -16,4 +16,4 @@ wrapper:
   height: ${env.screen_size}
   seed: null
   from_pixels: True
-  from_vectors: False
+  from_vectors: True
