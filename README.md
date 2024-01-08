@@ -17,63 +17,114 @@
 
 <div align="center">
   <table>
-<thead>
-  <tr>
-    <th>Environment</th>
-    <th>Total frames</th>
-    <th>Training time</th>
-    <th>Test reward</th>
-    <th>Paper reward</th>
-    <th>GPUs</th>
-  </tr>
-</thead>
-<tbody>
-  <tr>
-    <td>Crafter</td>
-    <td>1M</td>
-    <td>1d 3h</td>
-    <td>12.1</td>
-    <td>11.7</td>
-    <td>1-V100</td>
-  </tr>
-  <tr>
-    <td>Atari-MsPacman</td>
-    <td>100K</td>
-    <td>14h</td>
-    <td>1542</td>
-    <td>1327</td>
-    <td>1-3080</td>
-  </tr>
-  <tr>
-    <td> Atari-Boxing</td>
-    <td>100K</td>
-    <td>14h</td>
-    <td>84</td>
-    <td>78</td>
-    <td>1-3080</td>
-  </tr>
-  <tr>
-    <td>DOA++(w/o optimizations)<sup>1</sup></td>
-    <td>7M</td>
-    <td>18d 22h</td>
-    <td>2726/3328<sup>2</sup></td>
-    <td>N.A.</td>
-    <td>1-3080</td>
-  </tr>
-  <tr>
-    <td>Minecraft-Nav(w/o optimizations)</td>
-    <td>8M</td>
-    <td>16d 4h</td>
-    <td>27% &gt;= 70<br>14% &gt;= 100</td>
-    <td>N.A.</td>
-    <td>1-V100</td>
-  </tr>
-</tbody>
-</table>
+    <thead>
+      <tr>
+        <th>Environment</th>
+        <th>Total frames</th>
+        <th>Training time</th>
+        <th>Test reward</th>
+        <th>Paper reward</th>
+        <th>GPUs</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Crafter</td>
+        <td>1M</td>
+        <td>1d 3h</td>
+        <td>12.1</td>
+        <td>11.7</td>
+        <td>1-V100</td>
+      </tr>
+      <tr>
+        <td>Atari-MsPacman</td>
+        <td>100K</td>
+        <td>14h</td>
+        <td>1542</td>
+        <td>1327</td>
+        <td>1-3080</td>
+      </tr>
+      <tr>
+        <td> Atari-Boxing</td>
+        <td>100K</td>
+        <td>14h</td>
+        <td>84</td>
+        <td>78</td>
+        <td>1-3080</td>
+      </tr>
+      <tr>
+        <td>DOA++(w/o optimizations)<sup>1</sup></td>
+        <td>7M</td>
+        <td>18d 22h</td>
+        <td>2726/3328<sup>2</sup></td>
+        <td>N.A.</td>
+        <td>1-3080</td>
+      </tr>
+      <tr>
+        <td>Minecraft-Nav(w/o optimizations)</td>
+        <td>8M</td>
+        <td>16d 4h</td>
+        <td>27% &gt;= 70<br>14% &gt;= 100</td>
+        <td>N.A.</td>
+        <td>1-V100</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
 
-1. For comparison: 1M in 2d 7h vs 1M in 1d 15h (before and after optimizations resp.)
+1. For comparison: 1M in 2d 7h vs 1M in 1d 5h (before and after optimizations resp.)
 2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
+
+<div align="center">
+  <table>
+    <thead>
+      <tr>
+        <th colspan="2"></th>
+        <th>SheepRL v0.4.0</th>
+        <th>SheepRL v0.4.9</th>
+        <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
+        <th>StableBaselines3</th>
+        <th>TorchRL</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td rowspan="2"><b>PPO</b></td>
+        <td><i>1 device</i></td>
+        <td>192.31s &plusmn; 1.11</td>
+        <td>138.3s &plusmn; 0.16</td>
+        <td>80.81s &plusmn; 0.68</td>
+        <td>77.21s &plusmn; 0.36</td>
+        <td>192.32s &plusmn; 5.59</td>
+      </tr>
+      <tr>
+        <td><i>2 devices</i></td>
+        <td>85.42s &plusmn; 2.27</td>
+        <td>59.53s &plusmn; 0.78</td>
+        <td>46.09s &plusmn; 0.59</td>
+        <td></td>
+        <td></td>
+      </tr>
+      <tr>
+        <td rowspan="2"><b>SAC</b></td>
+        <td><i>1 device</i></td>
+        <td>421.37s &plusmn; 5.27</td>
+        <td>363.74s &plusmn; 3.44</td>
+        <td></td>
+        <td>336.06s &plusmn; 12.26</td>
+        <td>489.43s &plusmn; 9.01</td>
+      </tr>
+      <tr>
+        <td><i>2 devices</i></td>
+        <td>264.29s &plusmn; 1.81</td>
+        <td>238.88s &plusmn; 4.97</td>
+        <td>210.07s &plusmn; 27</td>
+        <td></td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
 
 ## What
 
