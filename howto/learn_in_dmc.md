@@ -17,7 +17,7 @@ In order to use one of these rendering backends, you need to set the `MUJOCO_GL`
 >
 > The `libglew2.2` could have a different name, based on your OS (e.g., `libglew2.2` is for Ubuntu 22.04.2 LTS).
 >
-> It cuold be necessary to install alse the `PyOpenGL-accelerate` package with the `pip install PyOpenGL-accelerate` command and the `mesalib` package with the `conda install conda-forge::mesalib` package.
+> It cuold be necessary to install alse the `PyOpenGL-accelerate` package with the `pip install PyOpenGL-accelerate` command and the `mesalib` package with the `conda install conda-forge::mesalib` command.
 
 For more information: [https://github.com/deepmind/dm_control](https://github.com/deepmind/dm_control) and [https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl).
 
