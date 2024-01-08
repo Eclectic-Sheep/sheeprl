@@ -128,7 +128,7 @@ The training times of our implementations compared to the ones of Stable Baselin
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
 >
-> *The StableBaselines3 version is `v2.2.1`, please install the pakage with `pip install stable-baselines3==2.2.1`
+> * The StableBaselines3 version is `v2.2.1`, please install the pakage with `pip install stable-baselines3==2.2.1`
 
 ## What
 
