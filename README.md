@@ -123,9 +123,9 @@ The training times of our implementations compared to the ones of Stable Baselin
       <tr>
         <td><b>Dreamer V1</b></td>
         <td><i>1 device</i></td>
-        <td>-</td>
+        <td>4201.23</td>
         <td></td>
-        <td>-</td>
+        <td>2921.38</td>
         <td></td>
       </tr>
       <tr>
