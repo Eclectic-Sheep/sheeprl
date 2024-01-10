@@ -25,7 +25,6 @@ buffer:
 
 # Algorithm
 algo:
-  total_steps: 16384
   learning_starts: 1024
   per_rank_pretrain_steps: 1
   train_every: 16
@@ -42,3 +41,6 @@ algo:
       hidden_size: 8
     representation_model:
       hidden_size: 8
+  # If you want to run this benchmark with older versions,
+  # you need to move out the `total_steps` config from `algo` to the root.
+  total_steps: 16384

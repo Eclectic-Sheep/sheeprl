@@ -151,7 +151,7 @@ The training times of our implementations compared to the ones of Stable Baselin
 > [!NOTE]
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
-> All benchmarks but the Dreamers' ones have been run 5 times and we have taken the mean and the std of the runs. 
+> All benchmarks, but the Dreamers' ones, have been run 5 times and we have taken the mean and the std of the runs. 
 > We have disabled the test function, the logging, and the checkpoints. Moreover, the models were not registered using MLFlow.
 > 
 > Dreamers' benchmarks have been run 1 time with logging and checkpoints, without running the test function.
