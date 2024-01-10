@@ -123,9 +123,9 @@ The training times of our implementations compared to the ones of Stable Baselin
       <tr>
         <td><b>Dreamer V1</b></td>
         <td><i>1 device</i></td>
-        <td>4201.23</td>
+        <td>4201.23s</td>
         <td></td>
-        <td>2921.38</td>
+        <td>2921.38s</td>
         <td></td>
       </tr>
       <tr>
@@ -151,8 +151,12 @@ The training times of our implementations compared to the ones of Stable Baselin
 > [!NOTE]
 >
 > All experiments were performed on 4 CPUs in [Lightning Studio](https://lightning.ai/).
+> All benchmarks but the Dreamers' ones have been run 5 times and we have taken the mean and the std of the runs. 
+> We have disabled the test function, the logging, and the checkpoints. Moreover, the models were not registered using MLFlow.
+> 
+> Dreamers' benchmarks have been run 1 time with logging and checkpoints, without running the test function.
 >
-> 1. The StableBaselines3 version is `v2.2.1`, please install the pakage with `pip install stable-baselines3==2.2.1`
+> 1. The StableBaselines3 version is `v2.2.1`, please install the package with `pip install stable-baselines3==2.2.1`
 
 ## What
 
