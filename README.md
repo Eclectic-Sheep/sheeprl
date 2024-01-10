@@ -103,7 +103,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>85.42s &plusmn; 2.27</td>
         <td>59.53s &plusmn; 0.78</td>
         <td>46.09s &plusmn; 0.59</td>
-        <td></td>
+        <td>N.D.</td>
       </tr>
       <tr>
         <td rowspan="2"><b>SAC</b></td>
@@ -118,7 +118,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>264.29s &plusmn; 1.81</td>
         <td>238.88s &plusmn; 4.97</td>
         <td>210.07s &plusmn; 27</td>
-        <td></td>
+        <td>N.D.</td>
       </tr>
       <tr>
         <td><b>Dreamer V1</b></td>
@@ -126,7 +126,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>4201.23s</td>
         <td>N.D.</td>
         <td>2921.38s</td>
-        <td></td>
+        <td>N.D.</td>
       </tr>
       <tr>
         <td><b>Dreamer V2</b></td>
@@ -134,7 +134,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>1874.62s</td>
         <td>N.D.</td>
         <td>1148.1s</td>
-        <td></td>
+        <td>N.D.</td>
       </tr>
       <tr>
         <td><b>Dreamer V3</b></td>
@@ -142,7 +142,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>2022.99s</td>
         <td>N.D.</td>
         <td>1378.01s</td>
-        <td></td>
+        <td>N.D.</td>
       </tr>
     </tbody>
   </table>
