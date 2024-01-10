@@ -27,6 +27,7 @@ from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
+    BernoulliSafeMode,
     MSEDistribution,
     OneHotCategoricalValidateArgs,
     SymlogDistribution,
@@ -145,7 +146,7 @@ def train(
 
     # Compute the distribution over the terminal steps, if required
     pc = Independent(
-        Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
+        BernoulliSafeMode(logits=world_model.continue_model(latent_states), validate_args=validate_args),
         1,
         validate_args=validate_args,
     )
@@ -229,7 +230,7 @@ def train(
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(
-        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+        BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
         1,
         validate_args=validate_args,
     ).mode
