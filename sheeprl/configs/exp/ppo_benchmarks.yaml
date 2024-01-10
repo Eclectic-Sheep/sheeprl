@@ -24,7 +24,7 @@ algo:
   critic:
     mlp_layers: 0
   optimizer:
-    lr: 1.5e-3
+    lr: 1e-3
   per_rank_batch_size: 64
   # # If you want to run this benchmark with older versions,
   # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.
