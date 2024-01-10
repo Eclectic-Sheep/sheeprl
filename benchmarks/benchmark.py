@@ -26,6 +26,15 @@ if __name__ == "__main__":
     #     # "env.num_envs=8",
     #     # "algo.per_rank_batch_size=512"
     # ]
+
+    # Dreamer Arguments
+    # args = [
+    #     os.path.join(ROOT_DIR, "__main__.py"),
+    #     # Select the Dreamer version you want to use for running the benchmarks
+    #     "exp=dreamer_v1_benchmarks",
+    #     # "exp=dreamer_v2_benchmarks",
+    #     # "exp=dreamer_v3_benchmarks",
+    # ]
     with mock.patch.object(sys, "argv", args):
         tic = time.perf_counter()
         run()
