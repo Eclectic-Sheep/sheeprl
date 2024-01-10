@@ -25,8 +25,13 @@ algo:
     mlp_layers: 0
   optimizer:
     lr: 1.5e-3
-  total_steps: 65536
   per_rank_batch_size: 64
+  # # If you want to run this benchmark with older versions,
+  # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.
+  run_test: False
+  # If you want to run this benchmark with older versions,
+  # you need to move the `total_steps` and the `mlp_keys` config from `algo` to the root.
+  total_steps: 65536
   mlp_keys:
     encoder: [state]
 

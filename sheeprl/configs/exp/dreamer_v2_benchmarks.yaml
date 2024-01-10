@@ -41,6 +41,9 @@ algo:
       hidden_size: 8
     representation_model:
       hidden_size: 8
+  # # If you want to run this benchmark with older versions,
+  # you need to comment the test function in the `./sheeprl/algos/dreamer_v2/dreamer_v2.py` file.
+  run_test: False
   # If you want to run this benchmark with older versions,
-  # you need to move out the `total_steps` config from `algo` to the root.
+  # you need to move the `total_steps` config from `algo` to the root.
   total_steps: 16384
