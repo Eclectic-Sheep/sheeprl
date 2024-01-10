@@ -2,7 +2,7 @@
 
 In this document, we give the user some advice to execute its experiments.
 
-> **Warning**
+> [!WARNING]
 >
 > Please read our [configs documentation](configs.md) before continuing to read this document.
 

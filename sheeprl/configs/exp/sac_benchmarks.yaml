@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - override /algo: sac
+  - override /env: gym
+  - _self_
+
+# Environment
+env:
+  id: LunarLanderContinuous-v2
+  capture_video: False
+  num_envs: 8
+
+# Algorithm
+algo:
+  name: sac
+  learning_starts: 100
+  per_rank_gradient_steps: 1
+  per_rank_batch_size: 512
+  # # If you want to run this benchmark with older versions,
+  # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.
+  run_test: False
+  # If you want to run this benchmark with older versions,
+  # you need to move the `total_steps` and the `mlp_keys` config from `algo` to the root.
+  total_steps: 65536
+  mlp_keys: 
+    encoder: [state]
+
+# Buffer
+buffer:
+  checkpoint: True
+  sample_next_obs: False
+  memmap: False
+  size: 65537
+
+fabric:
+  devices: 2
+  accelerator: cpu
+
+checkpoint:
+  every: 70000
+  save_last: False
+
+metric:
+  log_every: 70000
+  log_level: 0
+  disable_timer: True
