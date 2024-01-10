@@ -461,7 +461,7 @@ The best way to contribute is by opening an issue to discuss a new feature or a 
 
 You can contact us for any further questions or discussions:
 
-- Federico Belotti: federico.belotti@orobix.com
+- Federico Belotti: belo.fede@outlook.com
 - Davide Angioni: davide.angioni@orobix.com
 - Refik Can Malli: refikcan.malli@orobix.com
 - Michele Milesi: michele.milesi@orobix.com
