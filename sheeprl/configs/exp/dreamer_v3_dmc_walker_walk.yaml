@@ -10,11 +10,11 @@ seed: 5
 
 # Environment
 env:
-  num_envs: 1
-  max_episode_steps: 1000
+  num_envs: 4
+  max_episode_steps: -1
   id: walker_walk
   wrapper:
-    from_vectors: True
+    from_vectors: False
     from_pixels: True
 
 # Checkpoint
@@ -34,9 +34,8 @@ algo:
     encoder:
       - rgb
   mlp_keys:
-    encoder:
-      - state
-  learning_starts: 8000
+    encoder: []
+  learning_starts: 1024
   train_every: 2
   dense_units: 512
   mlp_layers: 2
