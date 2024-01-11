@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent
+from torch.distributions import Distribution, Independent
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
