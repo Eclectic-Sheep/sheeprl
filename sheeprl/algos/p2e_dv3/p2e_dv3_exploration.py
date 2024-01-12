@@ -12,7 +12,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from omegaconf import DictConfig
 from torch import Tensor, nn
-from torch.distributions import Bernoulli, Distribution, Independent
+from torch.distributions import Distribution, Independent
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
@@ -21,6 +21,7 @@ from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.distribution import (
+    BernoulliSafeMode,
     MSEDistribution,
     OneHotCategoricalValidateArgs,
     SymlogDistribution,
@@ -161,7 +162,7 @@ def train(
 
     # Compute the distribution over the terminal steps, if required
     pc = Independent(
-        Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
+        BernoulliSafeMode(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
         1,
         validate_args=validate_args,
     )
@@ -268,7 +269,7 @@ def train(
         # Predict values and continues
         predicted_values = TwoHotEncodingDistribution(critic["module"](imagined_trajectories), dims=1).mean
         continues = Independent(
-            Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+            BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
             1,
             validate_args=validate_args,
         ).mode
@@ -412,7 +413,7 @@ def train(
     predicted_values = TwoHotEncodingDistribution(critic_task(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
     continues = Independent(
-        Bernoulli(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
+        BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
         1,
         validate_args=validate_args,
     ).mode

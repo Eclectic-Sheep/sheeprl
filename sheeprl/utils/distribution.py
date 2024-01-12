@@ -7,7 +7,7 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torch.distributions import Categorical, Distribution, constraints
+from torch.distributions import Bernoulli, Categorical, Distribution, constraints
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
 from torch.distributions.utils import broadcast_all
 
@@ -402,3 +402,13 @@ class OneHotCategoricalStraightThroughValidateArgs(OneHotCategoricalValidateArgs
 @register_kl(OneHotCategoricalValidateArgs, OneHotCategoricalValidateArgs)
 def _kl_onehotcategoricalvalidateargs_onehotcategoricalvalidateargs(p, q):
     return _kl_categorical_categorical(p._categorical, q._categorical)
+
+
+class BernoulliSafeMode(Bernoulli):
+    def __init__(self, probs=None, logits=None, validate_args=None):
+        super().__init__(probs, logits, validate_args)
+
+    @property
+    def mode(self):
+        mode = (self.probs > 0.5).to(self.probs)
+        return mode
