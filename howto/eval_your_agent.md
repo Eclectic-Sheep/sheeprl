@@ -16,7 +16,7 @@ All the other parameters are loaded from the checkpoint config file used during 
 * `cfg.env.num_envs`, i.e. the number of environments used during the evaluation, is set to 1
 * `cfg.fabric.devices`and `cfg.fabric.num_nodes` are set to 1
 
-> **Note**
+> [!NOTE]
 >
 > You cannot modify the number of processes to spawn. The evaluation is made with only 1 process.
 

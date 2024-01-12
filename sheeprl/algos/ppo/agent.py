@@ -38,7 +38,7 @@ class MLPEncoder(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        features_dim: int,
+        features_dim: int | None,
         keys: Sequence[str],
         dense_units: int = 64,
         mlp_layers: int = 2,
@@ -48,7 +48,7 @@ class MLPEncoder(nn.Module):
         super().__init__()
         self.keys = keys
         self.input_dim = input_dim
-        self.output_dim = features_dim
+        self.output_dim = features_dim if features_dim else dense_units
         self.model = MLP(
             input_dim,
             features_dim,
@@ -115,18 +115,22 @@ class PPOAgent(nn.Module):
                 else None
             ),
         )
-        self.actor_backbone = MLP(
-            input_dims=features_dim,
-            output_dim=None,
-            hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
-            activation=eval(actor_cfg.dense_act),
-            flatten_dim=None,
-            norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
-                if actor_cfg.layer_norm
-                else None
-            ),
+        self.actor_backbone = (
+            MLP(
+                input_dims=features_dim,
+                output_dim=None,
+                hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
+                activation=eval(actor_cfg.dense_act),
+                flatten_dim=None,
+                norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
+                norm_args=(
+                    [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
+                    if actor_cfg.layer_norm
+                    else None
+                ),
+            )
+            if actor_cfg.mlp_layers > 0
+            else nn.Identity()
         )
         if is_continuous:
             self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])

@@ -5,7 +5,7 @@ There are various ways to interpret it, so it is necessary to clearly specify ho
 ## Policy steps
 We start from the concept of *policy step*: a policy step is the particular step in which the policy selects the action to perform in the environment, given an observation received by it.
 
-> **Note**
+> [!NOTE]
 >
 > The environment step is the step performed by the environment: the environment takes in input an action and computes the next observation and the next reward.
 

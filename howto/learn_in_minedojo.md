@@ -1,6 +1,6 @@
 ## Install MineDojo environment
 
-> **Warning**
+> [!WARNING]
 >
 > The `Categorical` PyTorch distribution does not work correctly when some probabilities are set to $0$ (the probs set to zero can be sampled anyway). This can cause some errors when filtering actions with the action masks provided by MineDojo. This error is sporadic, so, we are waiting for the issue to be fixed by PyTorch. One can track the issue here: https://github.com/pytorch/pytorch/issues/91863
 
@@ -15,7 +15,7 @@ sudo apt install -y openjdk-8-jdk
 sudo update-alternatives --config java
 ```
 
-> **Note**
+> [!NOTE]
 >
 > If you work on another OS, you can follow the instructions [here](https://docs.minedojo.org/sections/getting_started/install.html#on-macos) to install JDK 1.8.
 
@@ -26,7 +26,7 @@ pip install -e .[minedojo]
 ```
 
 ## MineDojo environments
-> **Note**
+> [!NOTE]
 >
 > So far, you can run an experiment with the MineDojo environments only with the Dreamers' agents.
 
@@ -64,7 +64,7 @@ Finally, we added sticky actions for the `jump` and `attack` actions. You can se
 
 For more information about the MineDojo action space, check [here](https://docs.minedojo.org/sections/core_api/action_space.html).
 
-> **Note**
+> [!NOTE]
 > Since the MineDojo environments have a multi-discrete action space, the sticky actions can be easily implemented. The agent will perform the selected action and the sticky actions simultaneously.
 >
 > The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).

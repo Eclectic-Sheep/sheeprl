@@ -20,7 +20,7 @@ The algorithms that can work with both image and vector observations are specifi
 
 To run one of these algorithms, it is necessary to specify which observations to use: it is possible to select all the vector observations or only some of them or none of them. Moreover, you can select all/some/none of the image observations.
 You just need to pass the  `algo.mlp_keys` and  `algo.cnn_keys` of the encoder and the decoder to the script to select the vector observations and the image observations, respectively.
-> **Note**
+> [!NOTE]
 >
 > The  `algo.mlp_keys` and the  `algo.cnn_keys` specified for the encoder are used by default as  `algo.mlp_keys` and  `algo.cnn_keys` of the decoder, respectively.
 
@@ -33,12 +33,12 @@ For instance, to train the ppo algorithm on the *doapp* task provided by *DIAMBR
 diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 algo.cnn_keys.encoder=[frame] algo.mlp_keys.encoder=[opp_health,own_health]
 ```
 
-> **Note**
+> [!NOTE]
 >
 > By default the  `algo.mlp_keys` and  `algo.cnn_keys` arguments are set to `[]` (empty list), so no observations are selected for the training. This will raise an exception: if fact, **every algorithm must specify at least one of them**.
 
 It is important to know the observations the environment provides, for instance, the *DIAMBRA* environments provide both vector observations and image observations, whereas all the atari environments provide only the image observations. 
-> **Note**
+> [!NOTE]
 >
 > For some environments provided by Gymnasium, e.g. `LunarLander-v2` or `CartPole-v1`, only vector observations are returned, but it is possible to extract the image observation from the render. To do this, it is sufficient to specify the `rgb` key to the  `algo.cnn_keys` args:
 > `python sheeprl.py exp=... algo.cnn_keys.encoder=[rgb]`
@@ -109,7 +109,7 @@ You can modify the parameters as usual by specifying them as cli arguments:
 python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanNoFrameskip-v4 env.frame_stack=5 env.grayscale=True algo.cnn_keys.encoder=[frame]
 ```
 
-> **Note**
+> [!NOTE]
 >
 > You can try to override some *cnn* or *mlp* keys by specifying the `algo.cnn_keys.encoder` and the `algo.mlp_keys.encoder` arguments. **Not all** environments allow it.
 > 
