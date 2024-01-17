@@ -214,12 +214,12 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __del__(self) -> None:
         """Delete the memory-mapped array. If the memory-mapped array has ownership of the file and no other
-        reference to the memory-mapped array exists or the OS is Windows-based,
+        reference to the memory-mapped array exists,
         then the memory-mapped array will be flushed to disk and both the memory-mapped array and
         the file will be closed. If the memory-mapped array is mapped to a temporary file then the file is
         removed.
         """
-        if (self._has_ownership and getrefcount(self._file) <= 2) or _IS_WINDOWS:
+        if self._array is not None and self._has_ownership and getrefcount(self._file) <= 2:
             self._array.flush()
             self._array._mmap.close()
             del self._array._mmap
