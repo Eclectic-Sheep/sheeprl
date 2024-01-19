@@ -19,7 +19,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae
+from sheeprl.utils.utils import gae, save_configs
 
 
 def train(
@@ -174,6 +174,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # the optimizer and set up it with Fabric
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Create a metric aggregator to log the metrics
     aggregator = None
