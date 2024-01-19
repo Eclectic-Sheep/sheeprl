@@ -14,8 +14,6 @@ from typing import Any, Tuple
 import numpy as np
 from numpy.typing import DTypeLike
 
-from sheeprl.utils.imports import _IS_WINDOWS
-
 
 def is_shared(array: np.ndarray) -> bool:
     return isinstance(array, np.ndarray) and hasattr(array, "_mmap")
