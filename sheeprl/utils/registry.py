@@ -42,6 +42,7 @@ def _register_evaluation(fn: Callable[..., Any], algorithms: str | List[str]) ->
     entrypoint = fn.__name__
     module_split = fn.__module__.split(".")
     module = ".".join(module_split[:-1])
+    evaluation_file = module_split[-1]
     if isinstance(algorithms, str):
         algorithms = [algorithms]
     # Check that the algorithms which we want to register an evaluation function for
@@ -55,7 +56,7 @@ def _register_evaluation(fn: Callable[..., Any], algorithms: str | List[str]) ->
     registered_algo_names = {algo["name"] for algo in registered_algos}
     if len(set(algorithms) - registered_algo_names) > 0:
         raise ValueError(
-            f"You are trying to register the evaluation function `{module+'.'+entrypoint}` "
+            f"You are trying to register the evaluation function `{module+'.'+evaluation_file+'.'+entrypoint}` "
             f"for algorithms which have not been registered for the module `{module}`!\n"
             f"Registered algorithms: {', '.join(registered_algo_names)}\n"
             f"Specified algorithms: {', '.join(algorithms)}"
@@ -64,17 +65,25 @@ def _register_evaluation(fn: Callable[..., Any], algorithms: str | List[str]) ->
     if registered_evals is None:
         evaluation_registry[module] = []
         for algorithm in algorithms:
-            evaluation_registry[module].append({"name": algorithm, "entrypoint": entrypoint})
+            evaluation_registry[module].append(
+                {"name": algorithm, "evaluation_file": evaluation_file, "entrypoint": entrypoint}
+            )
     else:
         for registered_eval in registered_evals:
             if registered_eval["name"] in algorithms:
                 raise ValueError(
-                    f"Cannot register the evaluate function `{module+'.'+entrypoint}` "
+                    f"Cannot register the evaluate function `{module+'.'+evaluation_file+'.'+entrypoint}` "
                     f"for the algorithm `{registered_eval['name']}`: "
-                    f"the evaluation function `{module+'.'+registered_eval['entrypoint']}` has already "
+                    "the evaluation function "
+                    f"`{module+'.'+registered_eval['evaluation_file']+'.'+registered_eval['entrypoint']}` has already "
                     f"been registered for the algorithm named `{registered_eval['name']}` in the module `{module}`!"
                 )
-        evaluation_registry[module].extend([{"name": algorithm, "entrypoint": entrypoint} for algorithm in algorithms])
+        evaluation_registry[module].extend(
+            [
+                {"name": algorithm, "evaluation_file": evaluation_file, "entrypoint": entrypoint}
+                for algorithm in algorithms
+            ]
+        )
 
     # add the decorated function to __all__ in algorithm
     mod = sys.modules[fn.__module__]
