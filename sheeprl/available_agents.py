@@ -11,19 +11,24 @@ if __name__ == "__main__":
     table.add_column("Decoupled")
     table.add_column("Evaluated by")
 
+    # print(evaluation_registry)
+
     for module, implementations in algorithm_registry.items():
         for algo in implementations:
-            evaluation_entrypoint = "Undefined"
-            for evaluation in evaluation_registry[module]:
-                if algo["name"] == evaluation["name"]:
-                    evaluation_entrypoint = evaluation["entrypoint"]
-                    break
+            evaluated_by = "Undefined"
+            if module in evaluation_registry:
+                for evaluation in evaluation_registry[module]:
+                    if algo["name"] == evaluation["name"]:
+                        evaluation_file = evaluation["evaluation_file"]
+                        evaluation_entrypoint = evaluation["entrypoint"]
+                        evaluated_by = module + "." + evaluation_file + "." + evaluation_entrypoint
+                        break
             table.add_row(
                 module,
                 algo["name"],
                 algo["entrypoint"],
                 str(algo["decoupled"]),
-                module + ".evaluate." + evaluation_entrypoint,
+                evaluated_by,
             )
 
     console = Console()
