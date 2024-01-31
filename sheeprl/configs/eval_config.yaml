@@ -17,4 +17,5 @@ fabric:
 env:
   capture_video: True
 
+seed: null
 checkpoint_path: ???
