@@ -307,7 +307,7 @@ def evaluation(cfg: DictConfig):
 
     # Merge the two configs
     with open_dict(cfg):
-        capture_video = getattr(cfg.env, "capture_video", False)
+        capture_video = getattr(cfg.env, "capture_video", True)
         cfg.env = {"capture_video": capture_video, "num_envs": 1}
         cfg.exp = {}
         cfg.algo = {}
