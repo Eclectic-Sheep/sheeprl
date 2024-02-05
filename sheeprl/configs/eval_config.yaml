@@ -17,4 +17,5 @@ fabric:
 env:
   capture_video: True
 
+disable_grads: True
 checkpoint_path: ???
