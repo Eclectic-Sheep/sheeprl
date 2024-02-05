@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 from typing import Any, Callable, Dict, List
 
-import torch
-
 # Mapping of tasks with their relative algorithms.
 # A new task can be added as:
 # tasks[module] = [..., {"name": algorithm, "entrypoint": entrypoint, "decoupled": decoupled}]
@@ -37,13 +35,7 @@ def _register_algorithm(fn: Callable[..., Any], decoupled: bool = False) -> Call
     return fn
 
 
-def _register_evaluation(
-    fn: Callable[..., Any], algorithms: str | List[str], disable_grads: bool = True
-) -> Callable[..., Any]:
-    # Disable gradient computation for evaluation
-    if disable_grads and torch.is_grad_enabled():
-        fn = torch.no_grad(fn)
-
+def _register_evaluation(fn: Callable[..., Any], algorithms: str | List[str]) -> Callable[..., Any]:
     # lookup containing module
     if fn.__module__ == "__main__":
         return fn
@@ -109,8 +101,8 @@ def register_algorithm(decoupled: bool = False):
     return inner_decorator
 
 
-def register_evaluation(algorithms: str | List[str], disable_grads: bool = True):
+def register_evaluation(algorithms: str | List[str]):
     def inner_decorator(fn):
-        return _register_evaluation(fn, algorithms=algorithms, disable_grads=disable_grads)
+        return _register_evaluation(fn, algorithms=algorithms)
 
     return inner_decorator

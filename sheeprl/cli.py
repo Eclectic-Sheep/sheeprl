@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import hydra
+import torch
 from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -209,6 +210,8 @@ def eval_algorithm(cfg: DictConfig):
         )
     task = importlib.import_module(f"{module}.{evaluation_file}")
     command = task.__dict__[entrypoint]
+    if getattr(cfg, "disable_grads", True):
+        command = torch.no_grad(command)
     fabric.launch(command, cfg, state)
 
 
