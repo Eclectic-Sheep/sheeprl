@@ -116,7 +116,7 @@ class RestartOnException(gym.Wrapper):
             gym.logger.warn(f"RESET - Restarting env after crash with {type(e).__name__}: {e}")
             time.sleep(self._wait)
             self.env = self._env_fn()
-            new_obs, info = self.env.reset()
+            new_obs, info = self.env.reset(seed=seed, options=options)
             info.update({"restart_on_exception": True})
             return new_obs, info
 

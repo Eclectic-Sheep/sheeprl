@@ -55,6 +55,7 @@ class CrafterWrapper(gym.Wrapper):
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
+        self.env._seed = seed
         obs = self.env.reset()
         return self._convert_obs(obs), {}
 

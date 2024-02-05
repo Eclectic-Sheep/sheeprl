@@ -178,6 +178,9 @@ def eval_algorithm(cfg: DictConfig):
         cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1, _convert_="all"
     )
 
+    # Seed everything
+    fabric.seed_everything(cfg.seed)
+
     # Load the checkpoint
     state = fabric.load(cfg.checkpoint_path)
 
@@ -303,6 +306,7 @@ def evaluation(cfg: DictConfig):
     # Load the checkpoint configuration
     checkpoint_path = Path(cfg.checkpoint_path)
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
+    ckpt_cfg.pop("seed", None)
 
     # Merge the two configs
     with open_dict(cfg):

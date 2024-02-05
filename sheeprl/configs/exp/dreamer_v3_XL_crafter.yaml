@@ -12,7 +12,7 @@ total_steps: 1000000
 # Environment
 env:
   num_envs: 1
-  id: reward
+  id: crafter_reward
 
 # Checkpoint
 checkpoint:
