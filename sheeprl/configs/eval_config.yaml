@@ -18,4 +18,5 @@ env:
   capture_video: True
 
 seed: null
+disable_grads: True
 checkpoint_path: ???
