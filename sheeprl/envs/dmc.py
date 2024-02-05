@@ -120,7 +120,12 @@ class DMCWrapper(gym.Wrapper):
         self._camera_id = camera_id
         self._channels_first = channels_first
 
-        # create task
+        # Remove random seed from task_kwargs since it will be set by the wrapper
+        # upon calling the reset method
+        task_kwargs = task_kwargs or {}
+        task_kwargs.pop("random", None)
+
+        # Create task
         env = suite.load(
             domain_name=domain_name,
             task_name=task_name,
@@ -225,6 +230,9 @@ class DMCWrapper(gym.Wrapper):
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Union[Dict[str, np.ndarray], np.ndarray], Dict[str, Any]]:
+        if not isinstance(seed, np.random.RandomState):
+            seed = np.random.RandomState(seed)
+        self.env.task._random = seed
         time_step = self.env.reset()
         self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step)
