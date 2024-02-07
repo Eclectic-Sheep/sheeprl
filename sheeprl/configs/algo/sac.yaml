@@ -13,6 +13,7 @@ hidden_size: 256
 # Training recipe
 learning_starts: 100
 per_rank_gradient_steps: 1
+reset_frequency: -1
 
 # Model related parameters
 # Actor

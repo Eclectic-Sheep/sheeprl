@@ -187,6 +187,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
 
+    # Since the replay ratio is defined as the number of gradient steps per environment step,
+    # we need to multiply the replay ratio by the number of environments to get the number of
+    # gradient steps per update
+    cfg.algo.per_rank_gradient_steps = int(cfg.algo.per_rank_gradient_steps * cfg.env.num_envs)
+
     # Global variables
     last_train = 0
     train_step = 0
@@ -198,6 +203,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if cfg.checkpoint.resume_from
         else 1
     )
+    gradient_step = state["gradient_step"] if cfg.checkpoint.resume_from else 0
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
@@ -281,6 +287,32 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Train the agent
         if update >= learning_starts:
             training_steps = learning_starts if update == learning_starts else 1
+
+            # Periodically reset the agent parameters and optimizer state
+            # From: The Primacy Bias in Deep Reinforcement Learning
+            # 1. https://arxiv.org/abs/2205.07802
+            # 2. https://iclr.cc/virtual/2023/oral/12655
+            # TODO: Replace TD-0 with TD-3 as specified in the paper (1.)
+            if cfg.algo.reset_frequency > 0 and gradient_step >= cfg.algo.reset_frequency or gradient_step == 0:
+                fabric.print(f"Rank:0 - Resetting the agent parameters after {gradient_step} gradient steps")
+                reset_agent = build_agent(fabric, cfg, observation_space, action_space, None)
+                agent.actor.load_state_dict(reset_agent.actor.state_dict())
+                for i in range(agent.num_critics):
+                    agent.qfs[i].load_state_dict(reset_agent.qfs[i].state_dict())
+                for i in range(agent.num_critics):
+                    agent.qfs_target[i].load_state_dict(reset_agent.qfs_target[i].state_dict())
+                agent.log_alpha.data = reset_agent.log_alpha.data
+                qf_optimizer = hydra.utils.instantiate(
+                    cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all"
+                )
+                actor_optimizer = hydra.utils.instantiate(
+                    cfg.algo.actor.optimizer, params=agent.actor.parameters(), _convert_="all"
+                )
+                alpha_optimizer = hydra.utils.instantiate(
+                    cfg.algo.alpha.optimizer, params=[agent.log_alpha], _convert_="all"
+                )
+                gradient_step = 0
+            gradient_step += training_steps * cfg.algo.per_rank_gradient_steps * world_size
 
             # We sample one time to reduce the communications between processes
             sample = rb.sample_tensors(
@@ -377,6 +409,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
+                "gradient_step": gradient_step,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call(
