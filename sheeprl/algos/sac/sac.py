@@ -293,7 +293,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # 1. https://arxiv.org/abs/2205.07802
             # 2. https://iclr.cc/virtual/2023/oral/12655
             # TODO: Replace TD-0 with TD-3 as specified in the paper (1.)
-            if cfg.algo.reset_frequency > 0 and gradient_step >= cfg.algo.reset_frequency or gradient_step == 0:
+            if cfg.algo.reset_frequency > 0 and gradient_step >= cfg.algo.reset_frequency:
                 fabric.print(f"Rank:0 - Resetting the agent parameters after {gradient_step} gradient steps")
                 reset_agent = build_agent(fabric, cfg, observation_space, action_space, None)
                 agent.actor.load_state_dict(reset_agent.actor.state_dict())
