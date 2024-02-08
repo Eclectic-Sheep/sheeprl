@@ -526,9 +526,9 @@ class DecoupledRSSM(RSSM):
         action = (1 - is_first) * action
         recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        # posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-        #     1
-        # ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
+            1
+        ].view_as(posterior)
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         return recurrent_state, prior, prior_logits
