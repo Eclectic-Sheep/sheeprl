@@ -18,5 +18,7 @@ env:
   capture_video: True
 
 seed: null
+num_threads: 1
 disable_grads: True
 checkpoint_path: ???
+float32_matmul_precision: "high"

@@ -15,6 +15,7 @@ defaults:
   - exp: ???
 
 num_threads: 1
+float32_matmul_precision: "high"
 
 # Set it to True to run a single optimization step
 dry_run: False
