@@ -211,6 +211,7 @@ The environments supported by sheeprl are:
 | MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
 | DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
 | Crafter            | `pip install -e .[crafter]`  | https://github.com/danijar/crafter              | :heavy_check_mark: |
+| Super Mario Bros   | `pip install -e .[supermario]`  | https://github.com/Kautenja/gym-super-mario-bros/tree/master | :heavy_check_mark: |
 
 
 ## Why
@@ -300,7 +301,7 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 </details>
 
 <details>
-  <summary>MineRL, MineDojo and DIAMBRA</summary>
+  <summary>MineRL and MineDojo</summary>
 
 > [!NOTE]
 >
