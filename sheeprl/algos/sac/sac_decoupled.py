@@ -203,7 +203,9 @@ def player(
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = np.concatenate([v for v in final_obs.values()], axis=-1)
+                    real_next_obs[idx] = np.concatenate(
+                        [v for k, v in final_obs.items() if k in cfg.algo.mlp_keys.encoder], axis=-1
+                    )
 
         step_data["dones"] = dones[np.newaxis]
         step_data["actions"] = actions[np.newaxis]
