@@ -52,8 +52,7 @@ class SuperMarioBrosWrapper(gym.Wrapper):
 
     def step(self, action: np.ndarray | int) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         if isinstance(action, np.ndarray):
-            action = action.squeeze()
-            action = action.item()
+            action = action.squeeze().item()
         obs, reward, done, info = self.env.step(action)
         converted_obs = {"rgb": obs.copy()}
         return converted_obs, reward, done, False, info
