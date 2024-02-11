@@ -1,0 +1,53 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /env: mujoco
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 4
+  max_episode_steps: -1
+  id: Walker2d-v4
+  wrapper:
+    terminate_when_unhealthy: False
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+  memmap: True
+
+# Algorithm
+algo:
+  total_steps: 1000000
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder: []
+  learning_starts: 1024
+  train_every: 2
+  dense_units: 512
+  mlp_layers: 2
+  world_model:
+    encoder:
+      cnn_channels_multiplier: 32
+    recurrent_model:
+      recurrent_state_size: 512
+    transition_model:
+      hidden_size: 512
+    representation_model:
+      hidden_size: 512
+
+# Metric
+metric:
+  log_every: 5000
