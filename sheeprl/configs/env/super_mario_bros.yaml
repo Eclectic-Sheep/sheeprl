@@ -1,0 +1,16 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: SuperMarioBros-v0
+frame_stack: 1
+sync_env: False
+action_repeat: 1
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.super_mario_bros.SuperMarioBrosWrapper
+  id: ${env.id}
+  action_space: simple # or complex or right_only
+  render_mode: rgb_array
