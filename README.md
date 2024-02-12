@@ -211,6 +211,7 @@ The environments supported by sheeprl are:
 | MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
 | DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
 | Crafter            | `pip install -e .[crafter]`  | https://github.com/danijar/crafter              | :heavy_check_mark: |
+| Super Mario Bros   | `pip install -e .[supermario]` | https://github.com/Kautenja/gym-super-mario-bros/tree/master | :heavy_check_mark: |
 
 
 ## Why
@@ -262,18 +263,21 @@ source .venv/bin/activate
 # if you do not wish to install extras such as mujuco, atari do
 pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with atari and mujuco environment support, do
-pip install "sheeprl[atari,mujoco,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[atari,mujoco,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with box2d environment support, do
 pip install swig
-pip install "sheeprl[box2d]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[box2d] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minedojo environment support, do
-pip install "sheeprl[minedojo,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[minedojo,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with minerl environment support, do
-pip install "sheeprl[minerl,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[minerl,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install with diambra environment support, do
-pip install "sheeprl[diambra,dev]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install "sheeprl[diambra,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with super mario bros environment support, do
+pip install "sheeprl[supermario,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 # or, to install all extras, do
-pip install "sheeprl[atari,mujoco,miedojo,dev,test]  @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+pip install swig
+pip install "sheeprl[box2d,atari,mujoco,minerl,supermario,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
 </details>
@@ -300,7 +304,7 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 </details>
 
 <details>
-  <summary>MineRL, MineDojo and DIAMBRA</summary>
+  <summary>MineRL and MineDojo</summary>
 
 > [!NOTE]
 >
