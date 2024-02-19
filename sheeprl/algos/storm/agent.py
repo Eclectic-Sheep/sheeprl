@@ -233,13 +233,3 @@ class StochasticTransformer(nn.Module):
 
         feats = self.head(feats)
         return feats
-
-
-if __name__ == "__main__":
-    device = "cuda"
-    model = StochasticTransformer(d_stoch=16, d_action=4, d_model=32, max_length=16).to(device)
-    samples = torch.randn(4, 16, 16, device=device)
-    action = F.one_hot(torch.randint(0, 4, (4, 16), device=device), num_classes=4).float()
-    mask = get_subsequent_mask_with_batch_length(16, device=device)
-    out = model(samples, action, None)
-    print(out.shape)
