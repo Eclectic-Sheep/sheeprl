@@ -78,7 +78,7 @@ class CNNEncoder(nn.Module):
             self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
 
     def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -3)  # channels dimension
+        x = torch.cat([obs[k] for k in self.keys], dim=-3) - 0.5  # channels dimension
         return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
