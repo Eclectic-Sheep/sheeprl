@@ -202,16 +202,16 @@ The actions supported by sheeprl agents are:
 The environments supported by sheeprl are:
 | Algorithm          | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
-| Classic Control    | `pip install -e .`           |                                                 | :heavy_check_mark: |
-| Box2D              | `pip install -e .`           |                                                 | :heavy_check_mark: |
-| Mujoco (Gymnasium) | `pip install -e .`           | [how_to/mujoco](./howto/learn_in_dmc.md)        | :heavy_check_mark: |
-| Atari              | `pip install -e .[atari]`    | [how_to/atari](./howto/learn_in_atari.md)       | :heavy_check_mark: |
-| DeepMind Control   | `pip install -e .[dmc]`      | [how_to/dmc](./howto/learn_in_dmc.md)           | :heavy_check_mark: |
-| MineRL             | `pip install -e .[minerl]`   | [how_to/minerl](./howto/learn_in_minerl.md)     | :heavy_check_mark: |
-| MineDojo           | `pip install -e .[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
-| DIAMBRA            | `pip install -e .[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
-| Crafter            | `pip install -e .[crafter]`  | https://github.com/danijar/crafter              | :heavy_check_mark: |
-| Super Mario Bros   | `pip install -e .[supermario]` | https://github.com/Kautenja/gym-super-mario-bros/tree/master | :heavy_check_mark: |
+| Classic Control    | `pip install sheeprl`           |                                                 | :heavy_check_mark: |
+| Box2D              | `pip install sheeprl[box2d]`    | Please install first `swig` with `pip install swig` | :heavy_check_mark: |
+| Mujoco (Gymnasium) | `pip install sheeprl[mujoco]`   | [how_to/mujoco](./howto/learn_in_dmc.md)        | :heavy_check_mark: |
+| Atari              | `pip install sheeprl[atari]`    | [how_to/atari](./howto/learn_in_atari.md)       | :heavy_check_mark: |
+| DeepMind Control   | `pip install sheeprl[dmc]`      | [how_to/dmc](./howto/learn_in_dmc.md)           | :heavy_check_mark: |
+| MineRL             | `pip install sheeprl[minerl]`   | [how_to/minerl](./howto/learn_in_minerl.md)     | :heavy_check_mark: |
+| MineDojo           | `pip install sheeprl[minedojo]` | [how_to/minedojo](./howto/learn_in_minedojo.md) | :heavy_check_mark: |
+| DIAMBRA            | `pip install sheeprl[diambra]`  | [how_to/diambra](./howto/learn_in_diambra.md)   | :heavy_check_mark: |
+| Crafter            | `pip install sheeprl[crafter]`  | https://github.com/danijar/crafter              | :heavy_check_mark: |
+| Super Mario Bros   | `pip install sheeprl[supermario]` | https://github.com/Kautenja/gym-super-mario-bros/tree/master | :heavy_check_mark: |
 
 
 ## Why
@@ -223,6 +223,21 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 ## How to use
 
 Two options exist for using SheepRL. One can either clone the repo and install the local version, or one can pip install the framework using the GitHub clone URL. Instructions for both methods are shown below.
+
+<details>
+  <summary>Cloning and installing the lastest version from PyPi</summary>
+
+You can install the latest version of SheepRL with
+
+```bash
+pip install sheeprl
+```
+
+> To install optional dependencies one can run for example `pip install sheeprl[atari,box2d,dev,mujoco,test]`
+
+For a detailed information about all the optional dependencies you can install please have a look at the [What](#what) section
+
+</details>
 
 <details>
   <summary>Cloning and installing a local version</summary>
@@ -240,8 +255,6 @@ From inside the newly created folder run
 pip install .
 ```
 
-> [!NOTE]
->
 > To install all the optional dependencies one can run `pip install .[atari,mujoco,dev,test]`
 
 </details>
@@ -251,8 +264,6 @@ pip install .
 
 If you haven't already done so, create an environment with your choice of venv or conda.
 
-> [!NOTE]
->
 > The example will use Python standard's venv module and assumes macOS or Linux.
 
 ```sh
@@ -285,8 +296,6 @@ pip install "sheeprl[box2d,atari,mujoco,minerl,supermario,dev,test] @ git+https:
 <details>
   <summary>Installing on an M-series Mac</summary>
 
-> [!NOTE]
->
 > If you are on an M-series Mac and encounter an error attributed box2dpy during installation, you need to install SWIG using the instructions shown below.
 
 
@@ -306,8 +315,6 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 <details>
   <summary>MineRL and MineDojo</summary>
 
-> [!NOTE]
->
 > If you want to install the *minedojo* or *minerl* environment support, Java JDK 8 is required: you can install it by following the instructions at this [link](https://docs.minedojo.org/sections/getting_started/install.html#on-ubuntu-20-04).
 >
 > **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively.
@@ -330,8 +337,6 @@ python sheeprl/available_agents.py
 
 That's all it takes to train an agent with SheepRL! 🎉
 
-> [!NOTE]
->
 > Before you start using the SheepRL framework, it is **highly recommended** that you read the following instructional documents:
 > 
 > 1. How to [run experiments](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/run_experiments.md)
