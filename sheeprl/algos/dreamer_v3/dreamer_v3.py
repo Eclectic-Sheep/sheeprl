@@ -132,7 +132,7 @@ def train(
 
     # Compute the distribution over the reconstructed observations
     po = {
-        k: MSEDistribution(reconstructed_obs[k] + 0.5, dims=len(reconstructed_obs[k].shape[2:]))
+        k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
         for k in cfg.algo.cnn_keys.decoder
     }
     po.update(
