@@ -533,16 +533,16 @@ class DecoupledRSSM(RSSM):
         prior_logits, prior = self._transition(recurrent_state)
         return recurrent_state, prior, prior_logits
 
-    def _representation(self, obs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _representation(self, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Args:
-            obs (Tensor): the real observations provided by the environment.
+            embedded_obs (Tensor): the embedded real observations provided by the environment.
 
         Returns:
             logits (Tensor): the logits of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior stochastic state.
         """
-        logits: Tensor = self.representation_model(obs)
+        logits: Tensor = self.representation_model(embedded_obs)
         logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(
             logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
@@ -675,7 +675,7 @@ class PlayerDV3(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         if self.decoupled_rssm:
-            _, self.stochastic_state = self.rssm._representation(obs)
+            _, self.stochastic_state = self.rssm._representation(embedded_obs)
         else:
             _, self.stochastic_state = self.rssm._representation(self.recurrent_state, embedded_obs)
         self.stochastic_state = self.stochastic_state.view(
@@ -1073,28 +1073,23 @@ def build_agent(
         **world_model_cfg.recurrent_model,
         input_size=int(sum(actions_dim) + stochastic_size),
     )
-    if cfg.algo.decoupled_rssm:
-        representation_model = nn.Sequential(
-            copy.deepcopy(encoder),
-            nn.LayerNorm(encoder.output_dim, eps=1e-3),
-            eval(world_model_cfg.encoder.cnn_act)(),
-            nn.Linear(encoder.output_dim, stochastic_size, bias=False),
-        )
-    else:
-        representation_model = MLP(
-            input_dims=recurrent_state_size + encoder.output_dim,
-            output_dim=stochastic_size,
-            hidden_sizes=[world_model_cfg.representation_model.hidden_size],
-            activation=eval(world_model_cfg.representation_model.dense_act),
-            layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
-            flatten_dim=None,
-            norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-                if world_model_cfg.representation_model.layer_norm
-                else None
-            ),
-        )
+    represention_model_input_size = encoder.output_dim
+    if not cfg.algo.decoupled_rssm:
+        represention_model_input_size += recurrent_state_size
+    representation_model = MLP(
+        input_dims=represention_model_input_size,
+        output_dim=stochastic_size,
+        hidden_sizes=[world_model_cfg.representation_model.hidden_size],
+        activation=eval(world_model_cfg.representation_model.dense_act),
+        layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
+        flatten_dim=None,
+        norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            if world_model_cfg.representation_model.layer_norm
+            else None
+        ),
+    )
     transition_model = MLP(
         input_dims=recurrent_state_size,
         output_dim=stochastic_size,
@@ -1234,10 +1229,7 @@ def build_agent(
         actor.mlp_heads.apply(uniform_init_weights(1.0))
         critic.model[-1].apply(uniform_init_weights(0.0))
         rssm.transition_model.model[-1].apply(uniform_init_weights(1.0))
-        if cfg.algo.decoupled_rssm:
-            rssm.representation_model[-1].apply(uniform_init_weights(1.0))
-        else:
-            rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
+        rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
         world_model.reward_model.model[-1].apply(uniform_init_weights(0.0))
         world_model.continue_model.model[-1].apply(uniform_init_weights(1.0))
         if mlp_decoder is not None:

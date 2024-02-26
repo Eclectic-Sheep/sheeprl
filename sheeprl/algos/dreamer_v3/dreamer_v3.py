@@ -115,7 +115,7 @@ def train(
     embedded_obs = world_model.encoder(batch_obs)
 
     if cfg.algo.decoupled_rssm:
-        posteriors_logits, posteriors = world_model.rssm._representation(batch_obs)
+        posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
             recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
                 posteriors[i : i + 1],
