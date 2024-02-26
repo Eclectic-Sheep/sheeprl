@@ -368,8 +368,6 @@ if you have installed SheepRL from PyPi.
 
 That's all it takes to train an agent with SheepRL! 🎉
 
-> [!NOTE]
->
 > Before you start using the SheepRL framework, it is **highly recommended** that you read the following instructional documents:
 > 
 > 1. How to [run experiments](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/run_experiments.md)
