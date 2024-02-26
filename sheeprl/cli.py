@@ -341,15 +341,7 @@ def evaluation(cfg: DictConfig):
             "strategy": "auto",
             "accelerator": getattr(cfg.fabric, "accelerator", "auto"),
         }
-        root_dir = ""
-        root_dir_found = False
-        for part in checkpoint_path.parts:
-            root_dir = os.path.join(root_dir, part)
-            if part == ckpt_cfg.env.id:
-                root_dir_found = True
-                break
-        if root_dir_found:
-            cfg.root_dir = root_dir
+        cfg.root_dir = str(checkpoint_path.parent.parent.parent.parent)
 
         # Merge configs
         ckpt_cfg.merge_with(cfg)
