@@ -264,7 +264,7 @@ pip install .
 
 > [!NOTE]
 > 
-> To install optional dependencies one can run for example `pip install sheeprl[atari,box2d,dev,mujoco,test]`
+> To install optional dependencies one can run for example `pip install .[atari,box2d,dev,mujoco,test]`
 
 #### Installing the framework from the GitHub repo
 
@@ -275,23 +275,32 @@ If you haven't already done so, create an environment with your choice of venv o
 ```sh
 # create a virtual environment
 python3 -m venv .venv
+
 # activate the environment
 source .venv/bin/activate
+
 # if you do not wish to install extras such as mujuco, atari do
 pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with atari and mujuco environment support, do
 pip install "sheeprl[atari,mujoco,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with box2d environment support, do
 pip install swig
 pip install "sheeprl[box2d] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with minedojo environment support, do
 pip install "sheeprl[minedojo,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with minerl environment support, do
 pip install "sheeprl[minerl,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with diambra environment support, do
 pip install "sheeprl[diambra,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install with super mario bros environment support, do
 pip install "sheeprl[supermario,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+
 # or, to install all extras, do
 pip install swig
 pip install "sheeprl[box2d,atari,mujoco,minerl,supermario,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
@@ -309,8 +318,10 @@ It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://
 ```sh
 # if needed install homebrew
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
 # then, do
 brew install swig
+
 # then attempt to pip install with the preferred method, such as
 pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
@@ -323,7 +334,7 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 
 > [!CAUTION]
 >
-> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install -e .[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install -e .[minerl]` or `pip install -e .[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively.
+> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install sheeprl[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install sheeprl[minerl]` or `pip install sheeprl[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively. 
 
 ### Run an experiment with SheepRL
 
