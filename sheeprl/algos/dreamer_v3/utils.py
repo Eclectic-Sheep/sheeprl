@@ -113,7 +113,7 @@ def test(
         preprocessed_obs = {}
         for k, v in next_obs.items():
             if k in cfg.algo.cnn_keys.encoder:
-                preprocessed_obs[k] = v[None, ...].to(device) / 255
+                preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
             elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
         real_actions = player.get_greedy_action(
