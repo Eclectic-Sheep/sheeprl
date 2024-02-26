@@ -2,6 +2,7 @@
 
 defaults:
   - dreamer_v3
+  - override /algo: dreamer_v3_L
   - override /env: diambra
   - _self_
 
@@ -38,17 +39,6 @@ algo:
   per_rank_batch_size: 8
   learning_starts: 65536
   train_every: 8
-  dense_units: 768
-  mlp_layers: 4
-  world_model:
-    encoder:
-      cnn_channels_multiplier: 64
-    recurrent_model:
-      recurrent_state_size: 2048
-    transition_model:
-      hidden_size: 768
-    representation_model:
-      hidden_size: 768
   cnn_keys:
     encoder:
       - frame

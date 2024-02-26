@@ -56,8 +56,9 @@ If you do not want to log some models, then, you just need to remove it from the
 > Make sure that the models specified in the configuration file are a subset of the models defined by the `MODELS_TO_REGISTER` variable.
 
 ## Register models from checkpoints
-Another possibility is to register the models after the training, by manually selecting the checkpoint where to retrieve the agent. To do this, it is possible to run the `sheeprl_model_manager.py` script by properly specifying the `checkpoint_path`, the `model_manager`, and the MLFlow-related configurations.
+Another possibility is to register the models after the training, by manually selecting the checkpoint where to retrieve the agent. To do this, it is possible to run the `sheeprl_model_manager.py` script (or directly `sheeprl-registration`) by properly specifying the `checkpoint_path`, the `model_manager`, and the MLFlow-related configurations.
 The default configurations are defined in the `./sheeprl/configs/model_manager_config.yaml` file, that is reported below:
+
 ```yaml
 # ./sheeprl/configs/model_manager_config.yaml
 
@@ -97,6 +98,14 @@ For instance, you can register the DreamerV3 models from a checkpoint with the f
 ```bash
 python sheeprl_model_manager.py model_manager=dreamer_v3 checkpoint_path=/path/to/checkpoint.ckpt
 ```
+
+if you have installed SheepRL from a cloned repo, or
+
+```bash
+sheeprl-registration model_manager=dreamer_v3 checkpoint_path=/path/to/checkpoint.ckpt
+```
+
+if you have installed SheepRL from PyPi.
 
 ## Delete, Transition and Download Models
 The MLFlow model manager enables the deletion of the registered models, moving them from one stage to another or downloading them.

@@ -1,3 +1,5 @@
+# Dreamer-V3 XL configuration
+
 defaults:
   - default
   - /optim@world_model.optimizer: adam
