@@ -109,6 +109,7 @@ class Block(nn.Module):
         proj_dropout_p=0.1,
         ffn_dropout_p: float = 0.1,
         ffn_activation: Type[torch.nn.Module] = nn.ReLU,
+        pre_norm: bool = False,
         norm_layer: Type[torch.nn.Module] = nn.LayerNorm,
         **norm_kwargs,
     ):
@@ -121,6 +122,7 @@ class Block(nn.Module):
             proj_dropout_p: dropout probability for the MHSA output tensor
             ffn_dropout_p: dropout probability for the pointwise feed-forward network
             ffn_activation: activation function for the pointwise feed-forward network
+            pre_norm: whether to use pre-norm or post-norm
             norm_layer: normalization layer
             norm_kwargs: keyword arguments for the normalization layer
         """
@@ -139,10 +141,15 @@ class Block(nn.Module):
         )
         self.norm1 = norm_layer(d_model, **norm_kwargs)
         self.norm2 = norm_layer(d_model, **norm_kwargs)
+        self.pre_norm = pre_norm
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        x = self.norm1(x + self.mhsa(x, mask=mask))
-        x = self.norm2(x + self.ffn(x))
+        if self.pre_norm:
+            x = x + self.mhsa(self.norm1(x), mask=mask)
+            x = x + self.ffn(self.norm2(x))
+        else:
+            x = self.norm1(x + self.mhsa(x, mask=mask))
+            x = self.norm2(x + self.ffn(x))
         return x
 
 
@@ -174,6 +181,7 @@ class StochasticTransformer(nn.Module):
         attn_dropout_p: float = 0.0,
         proj_dropout_p: float = 0.1,
         ffn_dropout_p: float = 0.1,
+        pre_norm: bool = False,
         block_norm_layer: Type[torch.nn.Module] = nn.LayerNorm,
         **block_norm_norm_kwargs,
     ):
@@ -189,6 +197,7 @@ class StochasticTransformer(nn.Module):
             attn_dropout_p: dropout probability for attention weights
             proj_dropout_p: dropout probability for the output tensor in the MHSA layer
             ffn_dropout_p: dropout probability for the pointwise feed-forward network
+            pre_norm: whether to use pre-norm or post-norm
             block_norm_layer: normalization layer for the transformer block
             block_norm_norm_kwargs: keyword arguments for the normalization layer
         """
@@ -216,6 +225,7 @@ class StochasticTransformer(nn.Module):
                     attn_dropout_p=attn_dropout_p,
                     proj_dropout_p=proj_dropout_p,
                     ffn_dropout_p=ffn_dropout_p,
+                    pre_norm=pre_norm,
                     norm_layer=block_norm_layer,
                     **block_norm_norm_kwargs,
                 )
