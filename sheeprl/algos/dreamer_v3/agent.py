@@ -68,9 +68,11 @@ class CNNEncoder(nn.Module):
                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(stages)] if layer_norm else None,
-                norm_args=[{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(stages)]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(stages)]
+                    if layer_norm
+                    else None
+                ),
             ),
             nn.Flatten(-3, -1),
         )
@@ -78,7 +80,7 @@ class CNNEncoder(nn.Module):
             self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
 
     def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -3)  # channels dimension
+        x = torch.cat([obs[k] for k in self.keys], dim=-3)  # channels dimension
         return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
@@ -123,9 +125,9 @@ class MLPEncoder(nn.Module):
             activation=activation,
             layer_args={"bias": not layer_norm},
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
-            if layer_norm
-            else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
+            ),
         )
         self.output_dim = dense_units
         self.symlog_inputs = symlog_inputs
@@ -193,18 +195,20 @@ class CNNDecoder(nn.Module):
                 + [{"kernel_size": 4, "stride": 2, "padding": 1}],
                 activation=[activation for _ in range(stages - 1)] + [None],
                 norm_layer=[LayerNormChannelLast for _ in range(stages - 1)] + [None] if layer_norm else None,
-                norm_args=[
-                    {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, "eps": 1e-3}
-                    for i in range(stages - 1)
-                ]
-                + [None]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [
+                        {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, "eps": 1e-3}
+                        for i in range(stages - 1)
+                    ]
+                    + [None]
+                    if layer_norm
+                    else None
+                ),
             ),
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim) + 0.5
+        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
 
 
@@ -248,9 +252,9 @@ class MLPDecoder(nn.Module):
             activation=activation,
             layer_args={"bias": not layer_norm},
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
-            if layer_norm
-            else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
+            ),
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -654,9 +658,9 @@ class Actor(nn.Module):
             flatten_dim=None,
             layer_args={"bias": not layer_norm},
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)]
-            if layer_norm
-            else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
+            ),
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
@@ -980,9 +984,11 @@ def build_agent(
         layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-        if world_model_cfg.representation_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            if world_model_cfg.representation_model.layer_norm
+            else None
+        ),
     )
     transition_model = MLP(
         input_dims=recurrent_state_size,
@@ -992,9 +998,11 @@ def build_agent(
         layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-        if world_model_cfg.transition_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            if world_model_cfg.transition_model.layer_norm
+            else None
+        ),
     )
     rssm = RSSM(
         recurrent_model=recurrent_model.apply(init_weights),
@@ -1040,15 +1048,19 @@ def build_agent(
         activation=eval(world_model_cfg.reward_model.dense_act),
         layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
-        norm_args=[
-            {"normalized_shape": world_model_cfg.reward_model.dense_units}
-            for _ in range(world_model_cfg.reward_model.mlp_layers)
-        ]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
+        norm_layer=(
+            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
+        norm_args=(
+            [
+                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                for _ in range(world_model_cfg.reward_model.mlp_layers)
+            ]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
     )
     continue_model = MLP(
         input_dims=latent_state_size,
@@ -1057,15 +1069,19 @@ def build_agent(
         activation=eval(world_model_cfg.discount_model.dense_act),
         layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-        if world_model_cfg.discount_model.layer_norm
-        else None,
-        norm_args=[
-            {"normalized_shape": world_model_cfg.discount_model.dense_units}
-            for _ in range(world_model_cfg.discount_model.mlp_layers)
-        ]
-        if world_model_cfg.discount_model.layer_norm
-        else None,
+        norm_layer=(
+            [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+            if world_model_cfg.discount_model.layer_norm
+            else None
+        ),
+        norm_args=(
+            [
+                {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                for _ in range(world_model_cfg.discount_model.mlp_layers)
+            ]
+            if world_model_cfg.discount_model.layer_norm
+            else None
+        ),
     )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1096,9 +1112,11 @@ def build_agent(
         layer_args={"bias": not critic_cfg.layer_norm},
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
