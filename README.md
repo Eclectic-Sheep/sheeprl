@@ -348,7 +348,7 @@ python sheeprl.py exp=ppo env=gym env.id=CartPole-v1
 if you have installed from a cloned repo, or
 
 ```bash
-python sheeprl exp=ppo env=gym env.id=CartPole-v1
+sheeprl exp=ppo env=gym env.id=CartPole-v1
 ```
 
 if you have installed SheepRL from PyPi.
@@ -362,7 +362,7 @@ python sheeprl/available_agents.py
 if you have installed from a cloned repo, or
 
 ```bash
-python sheeprl-agents
+sheeprl-agents
 ```
 if you have installed SheepRL from PyPi.
 
@@ -410,7 +410,7 @@ What you run is the PPO algorithm with the default configuration. But you can al
 For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
 
 ```bash
-python sheeprl.py exp=ppo env=gym env.id=CartPole-v1 env.num_envs=8
+sheeprl exp=ppo env=gym env.id=CartPole-v1 env.num_envs=8
 ```
 
 All the available arguments, with their descriptions, are listed in the `sheeprl/config` directory. You can find more information about the hierarchy of configs [here](./howto/run_experiments.md).
@@ -420,7 +420,7 @@ All the available arguments, with their descriptions, are listed in the `sheeprl
 To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
 
 ```bash
-python sheeprl.py fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 exp=ppo env=gym env.id=CartPole-v1
+sheeprl fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 exp=ppo env=gym env.id=CartPole-v1
 ```
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
@@ -430,7 +430,7 @@ You can check the available parameters for Lightning Fabric [here](https://light
 You can easily evaluate your trained agents from checkpoints: training configurations are retrieved automatically.
 
 ```bash
-python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu env.capture_video=True
+sheeprl-eval checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu env.capture_video=True
 ```
 
 For more information, check the corresponding [howto](./howto/eval_your_agent.md).
