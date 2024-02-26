@@ -204,7 +204,7 @@ class CNNDecoder(nn.Module):
         )
 
     def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim) + 0.5
+        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
         return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
 
 
