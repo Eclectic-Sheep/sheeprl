@@ -55,6 +55,9 @@ readme = {file = ["docs/README.md"], content-type = "text/markdown"}
 
 [project.scripts]
 sheeprl = "sheeprl.cli:run"
+sheeprl-eval = "sheeprl.cli:evaluation"
+sheeprl-agents = "sheeprl.available_agents:available_agents"
+sheeprl-registration = "sheeprl.cli:registration"
 
 [project.urls]
 homepage = "https://eclecticsheep.ai"

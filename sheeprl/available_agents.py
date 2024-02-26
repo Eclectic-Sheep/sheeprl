@@ -1,17 +1,16 @@
-if __name__ == "__main__":
-    from rich.console import Console
-    from rich.table import Table
+from rich.console import Console
+from rich.table import Table
 
-    from sheeprl.utils.registry import algorithm_registry, evaluation_registry
+from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 
+
+def available_agents():
     table = Table(title="SheepRL Agents")
     table.add_column("Module")
     table.add_column("Algorithm")
     table.add_column("Entrypoint")
     table.add_column("Decoupled")
     table.add_column("Evaluated by")
-
-    # print(evaluation_registry)
 
     for module, implementations in algorithm_registry.items():
         for algo in implementations:
@@ -33,3 +32,7 @@ if __name__ == "__main__":
 
     console = Console()
     console.print(table)
+
+
+if __name__ == "__main__":
+    available_agents()
