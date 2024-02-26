@@ -1,8 +1,8 @@
 # @package _global_
 
 defaults:
-  - storm
   - override /env: atari
+  - override /algo: storm
   - _self_
 
 # Experiment
@@ -26,16 +26,15 @@ buffer:
 
 # Algorithm
 algo:
+  cnn_keys:
+      encoder: [rgb]
+      decoder: [rgb]
   learning_starts: 1024
+  total_steps: 100000
+  per_rank_batch_size: 64
   train_every: 1
   dense_units: 512
   mlp_layers: 2
   world_model:
     encoder:
       cnn_channels_multiplier: 32
-    recurrent_model:
-      recurrent_state_size: 512
-    transition_model:
-      hidden_size: 512
-    representation_model:
-      hidden_size: 512

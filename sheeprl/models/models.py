@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 from __future__ import annotations
 
 import warnings
@@ -9,8 +10,6 @@ from typing import Dict, Optional, Sequence, Union, no_type_check
 
 import torch
 import torch.nn.functional as F
-from lit_gpt import Config
-from lit_gpt.model import GPT
 from torch import Tensor, nn
 
 from sheeprl.utils.model import ArgsType, ModuleType, cnn_forward, create_layers, miniblock
@@ -498,53 +497,3 @@ class MultiDecoder(nn.Module):
         if self.mlp_decoder is not None:
             reconstructed_obs.update(self.mlp_decoder(x))
         return reconstructed_obs
-
-
-class StormGPT(GPT):
-    def __init__(self, config: Config) -> None:
-        super().__init__(config)
-        self.lm_head = nn.Identity()
-        self.transformer["wte"] = nn.Identity()
-
-    def forward(
-        self,
-        idx: torch.Tensor,
-        input_pos: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None,
-        dones: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        T = idx.size(1)
-        if self.max_seq_length < T:
-            raise ValueError(f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}.")
-
-        if input_pos is not None:  # use the kv cache
-            cos = self.cos.index_select(0, input_pos)
-            sin = self.sin.index_select(0, input_pos)
-            if self.mask_cache is None:
-                raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = self.mask_cache.index_select(2, input_pos)
-        else:
-            if dones is None:
-                non_zero = None
-            else:
-                non_zero = dones.nonzero(as_tuple=True)[0]
-            if non_zero is None or len(non_zero) == 0:
-                cos = self.cos[:T]
-                sin = self.sin[:T]
-            else:
-                cos = self.cos[: non_zero[0] + 1]
-                sin = self.sin[: non_zero[0] + 1]
-                for i in range(1, len(non_zero)):
-                    lenght = non_zero[i] - non_zero[i - 1]
-                    cos = torch.cat((cos, self.cos[:lenght]))
-                    sin = torch.cat((sin, self.sin[:lenght]))
-                if cos.size(0) != T:
-                    cos = torch.cat((cos, self.cos[: T - len(cos)]))
-                if sin.size(0) != T:
-                    sin = torch.cat((sin, self.sin[: T - len(sin)]))
-
-        x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        for block in self.transformer.h:
-            x = block(x, cos, sin, mask, input_pos)
-        x = self.transformer.ln_f(x)
-        return self.lm_head(x)  # (b, t, vocab_size)

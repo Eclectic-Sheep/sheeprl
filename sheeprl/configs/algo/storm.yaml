@@ -47,21 +47,23 @@ world_model:
 
   # Recurrent model
   recurrent_model:
-    recurrent_state_size: 4096
-    layer_norm: True
-    dense_units: ${algo.dense_units}
+    d_model: 512
+    mlp_factor: 2
+    n_layers: 2
+    n_heads: 8
+    max_length: 16
+    attn_dropout_p: 0.0
+    proj_dropout_p: 0.1
+    ffn_dropout_p: 0.1
+    pre_norm: False
 
   # Prior
   transition_model:
-    hidden_size: 1024
-    dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: False
 
   # Posterior
   representation_model:
-    hidden_size: 1024
-    dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: False
 
   # Decoder
   observation_model:
