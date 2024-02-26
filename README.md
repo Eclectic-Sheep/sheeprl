@@ -377,22 +377,6 @@ That's all it takes to train an agent with SheepRL! 🎉
 >
 > Moreover, there are other useful documents in the [`howto` folder](https://github.com/Eclectic-Sheep/sheeprl/tree/main/howto), these documents contain some guidance on how to properly use the framework.
 
-#### Evaluate your agent with SheepRL
-
-To evaluate a trained agent you can simply run
-
-```bash
-python sheeprl.py checkpoint_path=/path/to/checkpoint
-```
-
-or 
-
-```bash
-sheeprl-eval checkpoint_path=/path/to/checkpoint
-```
-
-For more information about agent evaluation please have a look at the [evaluation how-to page](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/eval_your_agent.md)
-
 ### :chart_with_upwards_trend: Check your results
 
 Once you trained an agent, a new folder called `logs` will be created, containing the logs of the training. You can visualize them with [TensorBoard](https://www.tensorflow.org/tensorboard):
