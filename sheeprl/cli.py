@@ -325,7 +325,7 @@ def run(cfg: DictConfig):
 @hydra.main(version_base="1.3", config_path="configs", config_name="eval_config")
 def evaluation(cfg: DictConfig):
     # Load the checkpoint configuration
-    checkpoint_path = Path(cfg.checkpoint_path)
+    checkpoint_path = Path(os.path.abspath(cfg.checkpoint_path))
     ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
     ckpt_cfg.pop("seed", None)
 
@@ -341,6 +341,7 @@ def evaluation(cfg: DictConfig):
             "strategy": "auto",
             "accelerator": getattr(cfg.fabric, "accelerator", "auto"),
         }
+        cfg.root_dir = str(checkpoint_path.parent.parent.parent.parent)
 
         # Merge configs
         ckpt_cfg.merge_with(cfg)

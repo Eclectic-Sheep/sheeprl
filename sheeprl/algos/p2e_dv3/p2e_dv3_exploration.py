@@ -113,7 +113,7 @@ def train(
     discrete_size = cfg.algo.world_model.discrete_size
     device = fabric.device
     data = {k: data[k] for k in data.keys()}
-    batch_obs = {k: data[k] / 255.0 for k in cfg.algo.cnn_keys.encoder}
+    batch_obs = {k: data[k] / 255.0 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
@@ -861,7 +861,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     for k, v in obs.items():
                         preprocessed_obs[k] = torch.as_tensor(v[np.newaxis], dtype=torch.float32, device=device)
                         if k in cfg.algo.cnn_keys.encoder:
-                            preprocessed_obs[k] = preprocessed_obs[k] / 255.0
+                            preprocessed_obs[k] = preprocessed_obs[k] / 255.0 - 0.5
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
