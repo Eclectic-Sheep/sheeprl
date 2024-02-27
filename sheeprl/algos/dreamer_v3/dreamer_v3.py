@@ -117,8 +117,12 @@ def train(
     if cfg.algo.decoupled_rssm:
         posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
+            if i == 0:
+                posterior = torch.zeros_like(posteriors[:1])
+            else:
+                posterior = posteriors[i - 1 : i]
             recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posteriors[i : i + 1],
+                posterior,
                 recurrent_state,
                 batch_actions[i : i + 1],
                 data["is_first"][i : i + 1],
