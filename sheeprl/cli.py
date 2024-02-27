@@ -224,10 +224,10 @@ def eval_algorithm(cfg: DictConfig):
     command = task.__dict__[entrypoint]
     if getattr(cfg, "disable_grads", True):
 
-        def no_grad(command):
+        def no_grad(func):
             def wrapper(*args, **kwargs):
                 with torch.no_grad():
-                    return command(*args, **kwargs)
+                    return func(*args, **kwargs)
 
             return wrapper
 
