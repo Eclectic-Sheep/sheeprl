@@ -75,7 +75,8 @@ class DMCWrapper(gym.Wrapper):
         by the camera specified through the `camera_id` parameter
 
         Args:
-            id (str): the task id, e.g. 'walker_walk'. The id must be 'underscore' separated.
+            domain_name (str): the domain of the environment, e.g., "walker".
+            task_name (str): the task of the environment, e.g., "walk".
             from_pixels (bool, optional): whether to return the image observation.
                 If both 'from_pixels' and 'from_vectors' are True, then the observation space
                 will be a `gymnasium.spaces.Dict` with two keys: 'rgb' and 'state' for the

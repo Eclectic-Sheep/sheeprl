@@ -13,8 +13,9 @@ seed: 5
 env:
   num_envs: 4
   max_episode_steps: -1
-  id: walker_walk
   wrapper:
+    domain_name: walker
+    task_name: walk
     from_vectors: False
     from_pixels: True
 
