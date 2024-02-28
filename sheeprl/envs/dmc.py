@@ -49,7 +49,8 @@ def _flatten_obs(obs: Dict[Any, Any]) -> np.ndarray:
 class DMCWrapper(gym.Wrapper):
     def __init__(
         self,
-        id: str,
+        domain_name: str,
+        task_name: str,
         from_pixels: bool = False,
         from_vectors: bool = True,
         height: int = 84,
@@ -112,7 +113,6 @@ class DMCWrapper(gym.Wrapper):
                 f"got {from_vectors} and {from_pixels} respectively."
             )
 
-        domain_name, task_name = id.split("_")
         self._from_pixels = from_pixels
         self._from_vectors = from_vectors
         self._height = height
