@@ -108,6 +108,7 @@ actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
+  max_std: 1.0
   init_std: 0.0
   objective_mix: 1.0
   dense_act: ${algo.dense_act}

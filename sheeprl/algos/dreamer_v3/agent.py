@@ -18,11 +18,7 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import (
-    OneHotCategoricalStraightThroughValidateArgs,
-    OneHotCategoricalValidateArgs,
-    TruncatedNormal,
-)
+from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs, OneHotCategoricalValidateArgs
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -602,7 +598,9 @@ class Actor(nn.Module):
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
-            Default to 0.1.
+            Default to 1.0.
+        max_std (float): the maximum standard deviation for the actions.
+            Default to 1.0.
         dense_units (int): the dimension of the hidden dense layers.
             Default to 1024.
         activation (int): the activation function to apply after the dense layers.
@@ -627,7 +625,8 @@ class Actor(nn.Module):
         is_continuous: bool,
         distribution_cfg: Dict[str, Any],
         init_std: float = 0.0,
-        min_std: float = 0.1,
+        min_std: float = 1.0,
+        max_std: float = 1.0,
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
@@ -638,16 +637,16 @@ class Actor(nn.Module):
         super().__init__()
         self.distribution_cfg = distribution_cfg
         self.distribution = distribution_cfg.get("type", "auto").lower()
-        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
+        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "scaled_normal"):
             raise ValueError(
-                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
+                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
                 f"Found: {self.distribution}"
             )
         if self.distribution == "discrete" and is_continuous:
             raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
         if self.distribution == "auto":
             if is_continuous:
-                self.distribution = "trunc_normal"
+                self.distribution = "scaled_normal"
             else:
                 self.distribution = "discrete"
         self.model = MLP(
@@ -670,6 +669,7 @@ class Actor(nn.Module):
         self.is_continuous = is_continuous
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
+        self.max_std = max_std
         self._unimix = unimix
         self._expl_amount = expl_amount
 
@@ -713,9 +713,9 @@ class Actor(nn.Module):
             elif self.distribution == "normal":
                 actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
-            elif self.distribution == "trunc_normal":
-                std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
+            elif self.distribution == "scaled_normal":
+                std = (self.max_std - self.min_std) * torch.sigmoid((std + self.init_std) / 2) + self.min_std
+                dist = Normal(torch.tanh(mean), std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
             if is_training:
                 actions = actions_dist.rsample()
