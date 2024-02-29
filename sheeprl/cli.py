@@ -223,7 +223,15 @@ def eval_algorithm(cfg: DictConfig):
     task = importlib.import_module(f"{module}.{evaluation_file}")
     command = task.__dict__[entrypoint]
     if getattr(cfg, "disable_grads", True):
-        command = torch.no_grad(command)
+
+        def no_grad(func):
+            def wrapper(*args, **kwargs):
+                with torch.no_grad():
+                    return func(*args, **kwargs)
+
+            return wrapper
+
+        command = no_grad(command)
     fabric.launch(command, cfg, state)
 
 
