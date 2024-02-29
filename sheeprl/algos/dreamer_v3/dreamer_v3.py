@@ -39,7 +39,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, save_configs
+from sheeprl.utils.utils import Ratio, polynomial_decay, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -543,7 +543,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    updates_before_training = cfg.algo.train_every // policy_steps_per_update
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
@@ -557,6 +556,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
         if not cfg.buffer.checkpoint:
             learning_starts += start_step
+
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -688,16 +692,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
             player.init_states(dones_idxes)
 
-        updates_before_training -= 1
-
         # Train the agent
-        if update >= learning_starts and updates_before_training <= 0:
+        repeats = ratio(policy_step / world_size)
+        if update >= learning_starts and repeats > 0:
             local_data = rb.sample_tensors(
                 cfg.algo.per_rank_batch_size,
                 sequence_length=cfg.algo.per_rank_sequence_length,
-                n_samples=(
-                    cfg.algo.per_rank_pretrain_steps if update == learning_starts else cfg.algo.per_rank_gradient_steps
-                ),
+                n_samples=repeats,
                 dtype=None,
                 device=fabric.device,
                 from_numpy=cfg.buffer.from_numpy,
@@ -727,7 +728,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     )
                     per_rank_gradient_steps += 1
                 train_step += world_size
-            updates_before_training = cfg.algo.train_every // policy_steps_per_update
             if cfg.algo.actor.expl_decay:
                 expl_decay_steps += 1
                 actor.expl_amount = polynomial_decay(
@@ -746,6 +746,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log("Params/replay_ratio", per_rank_gradient_steps * world_size / policy_step, policy_step)
 
             # Sync distributed timers
             if not timer.disabled:
@@ -784,6 +787,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "expl_decay_steps": expl_decay_steps,
                 "moments": moments.state_dict(),
+                "ratio": ratio.state_dict(),
                 "update": update * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
