@@ -714,7 +714,7 @@ class Actor(nn.Module):
                 actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
             elif self.distribution == "scaled_normal":
-                std = (self.max_std - self.min_std) * torch.sigmoid((std + self.init_std) / 2) + self.min_std
+                std = (self.max_std - self.min_std) * torch.sigmoid((std + self.init_std) + 2.0) + self.min_std
                 dist = Normal(torch.tanh(mean), std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
             if is_training:
