@@ -43,6 +43,15 @@ torch_backends_cudnn_benchmark: True
 # unlike torch.use_deterministic_algorithms() which will make other PyTorch operations behave deterministically, too.
 torch_backends_cudnn_deterministic: False
 
+# From: https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+# By design, all cuBLAS API routines from a given toolkit version, generate the same bit-wise results at every run
+# when executed on GPUs with the same architecture and the same number of SMs.
+# However, bit-wise reproducibility is not guaranteed across toolkit versions
+# because the implementation might differ due to some implementation changes.
+# This guarantee holds when a single CUDA stream is active only. 
+# If multiple concurrent streams are active, the library may optimize total performance by picking different internal implementations.
+cublas_workspace_config: null  # Possible values are: ":4096:8" or ":16:8"
+
 # Output folders
 exp_name: ${algo.name}_${env.id}
 run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}

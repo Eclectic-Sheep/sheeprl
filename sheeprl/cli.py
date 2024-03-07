@@ -173,6 +173,8 @@ def run_algorithm(cfg: Dict[str, Any]):
     # https://github.com/Lightning-AI/pytorch-lightning/blob/f23b3b1e7fdab1d325f79f69a28706d33144f27e/src/lightning/fabric/strategies/launchers/multiprocessing.py#L112
     def reproducible(func):
         def wrapper(fabric: Fabric, cfg: Dict[str, Any], *args, **kwargs):
+            if cfg.cublas_workspace_config is not None:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = cfg.cublas_workspace_config
             fabric.seed_everything(cfg.seed)
             torch.backends.cudnn.benchmark = cfg.torch_backends_cudnn_benchmark
             torch.backends.cudnn.deterministic = cfg.torch_backends_cudnn_deterministic
