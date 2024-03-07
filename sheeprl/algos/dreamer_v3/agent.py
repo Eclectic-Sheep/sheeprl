@@ -595,7 +595,7 @@ class Actor(nn.Module):
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
         distribution_cfg (Dict[str, Any]): The configs of the distributions.
-        init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
+        init_std (float): the amount to sum to the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
             Default to 1.0.
@@ -667,7 +667,7 @@ class Actor(nn.Module):
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
         self.actions_dim = actions_dim
         self.is_continuous = is_continuous
-        self.init_std = torch.tensor(init_std)
+        self.init_std = init_std
         self.min_std = min_std
         self.max_std = max_std
         self._unimix = unimix
@@ -714,7 +714,7 @@ class Actor(nn.Module):
                 actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
             elif self.distribution == "scaled_normal":
-                std = (self.max_std - self.min_std) * torch.sigmoid((std + self.init_std) + 2.0) + self.min_std
+                std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
                 dist = Normal(torch.tanh(mean), std, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
             if is_training:

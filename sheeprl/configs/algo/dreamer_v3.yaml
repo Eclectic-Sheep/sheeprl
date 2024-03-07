@@ -109,8 +109,7 @@ actor:
   ent_coef: 3e-4
   min_std: 0.1
   max_std: 1.0
-  init_std: 0.0
-  objective_mix: 1.0
+  init_std: 2.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
@@ -120,6 +119,7 @@ actor:
   expl_min: 0.0
   expl_decay: False
   max_step_expl_decay: 0
+  unimix: ${algo.unimix}
 
   # Disttributed percentile model (used to scale the values)
   moments:
