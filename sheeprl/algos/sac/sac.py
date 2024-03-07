@@ -91,8 +91,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
-    fabric.seed_everything(cfg.seed)
-    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
