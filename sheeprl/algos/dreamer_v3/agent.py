@@ -319,7 +319,10 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
-        out = self.rnn(feat, recurrent_state)
+        if self.pt_gru_cell:
+            out = self.rnn(feat.squeeze(0), recurrent_state.squeeze(0)).unsqueeze(0)
+        else:
+            out = self.rnn(feat, recurrent_state)
         return out
 
 
