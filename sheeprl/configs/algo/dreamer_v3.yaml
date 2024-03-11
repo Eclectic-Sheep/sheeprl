@@ -60,6 +60,7 @@ world_model:
     recurrent_state_size: 4096
     layer_norm: True
     dense_units: ${algo.dense_units}
+    pt_gru_cell: True  # Whether to use the PyTorch GRU cell
 
   # Prior
   transition_model:

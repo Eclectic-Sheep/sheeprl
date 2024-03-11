@@ -287,6 +287,7 @@ class RecurrentModel(nn.Module):
         dense_units: int,
         activation_fn: nn.Module = nn.SiLU,
         layer_norm: bool = True,
+        pt_gru_cell: bool = True,
     ) -> None:
         super().__init__()
         self.mlp = MLP(
@@ -298,7 +299,13 @@ class RecurrentModel(nn.Module):
             norm_layer=[nn.LayerNorm] if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units, "eps": 1e-3}] if layer_norm else None,
         )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True)
+        self.pt_gru_cell = pt_gru_cell
+        if self.pt_gru_cell:
+            self.rnn = torch.nn.GRUCell(dense_units, recurrent_state_size, bias=False)
+        else:
+            self.rnn = LayerNormGRUCell(
+                dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True
+            )
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
