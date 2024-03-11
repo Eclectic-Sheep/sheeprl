@@ -83,9 +83,9 @@ atari = [
 ]
 minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
 minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
-diambra = ["diambra==0.0.16", "diambra-arena==2.2.2"]
-crafter = ["crafter==1.8.1"]
-mlflow = ["mlflow==2.8.0"]
+diambra = ["diambra==0.0.17", "diambra-arena==2.2.6"]
+crafter = ["crafter==1.8.3"]
+mlflow = ["mlflow==2.11.1"]
 supermario = ["gym-super-mario-bros==7.4.0", "gym<0.26"]
 
 [tool.ruff]
