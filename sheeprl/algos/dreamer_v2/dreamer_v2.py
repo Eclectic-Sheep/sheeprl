@@ -1,6 +1,7 @@
 """Dreamer-V2 implementation from [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 Adapted from the original implementation from https://github.com/danijar/dreamerv2
 """
+
 from __future__ import annotations
 
 import copy
@@ -419,8 +420,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
-    fabric.seed_everything(cfg.seed)
-    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from)
