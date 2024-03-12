@@ -166,7 +166,24 @@ def run_algorithm(cfg: Dict[str, Any]):
         for k in keys_to_remove:
             cfg.model_manager.models.pop(k, None)
         cfg.model_manager.disabled == cfg.model_manager.disabled or len(cfg.model_manager.models) == 0
-    fabric.launch(command, cfg, **kwargs)
+
+    # This function is used to make the algorithm reproducible.
+    # It can be an overkill since Fabric already captures everything we're setting here
+    # when multiprocessing is used with a `spawn` method (default with DDP strategy).
+    # https://github.com/Lightning-AI/pytorch-lightning/blob/f23b3b1e7fdab1d325f79f69a28706d33144f27e/src/lightning/fabric/strategies/launchers/multiprocessing.py#L112
+    def reproducible(func):
+        def wrapper(fabric: Fabric, cfg: Dict[str, Any], *args, **kwargs):
+            if cfg.cublas_workspace_config is not None:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = cfg.cublas_workspace_config
+            fabric.seed_everything(cfg.seed)
+            torch.backends.cudnn.benchmark = cfg.torch_backends_cudnn_benchmark
+            torch.backends.cudnn.deterministic = cfg.torch_backends_cudnn_deterministic
+            torch.use_deterministic_algorithms(cfg.torch_use_deterministic_algorithms)
+            return func(fabric, cfg, *args, **kwargs)
+
+        return wrapper
+
+    fabric.launch(reproducible(command), cfg, **kwargs)
 
 
 def eval_algorithm(cfg: DictConfig):

@@ -35,8 +35,6 @@ def player(
     # Initialize the fabric object
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
     device = fabric.device
-    fabric.seed_everything(cfg.seed)
-    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
@@ -377,8 +375,6 @@ def trainer(
     )
     fabric.launch()
     device = fabric.device
-    fabric.seed_everything(cfg.seed)
-    torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
