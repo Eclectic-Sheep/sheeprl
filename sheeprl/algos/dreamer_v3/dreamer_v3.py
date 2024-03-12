@@ -108,23 +108,43 @@ def train(
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-    posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
     recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
     priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
-    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
-    posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
-    for i in range(0, sequence_length):
-        recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
-            posterior, recurrent_state, batch_actions[i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
-        )
-        recurrent_states[i] = recurrent_state
-        priors_logits[i] = prior_logits
-        posteriors[i] = posterior
-        posteriors_logits[i] = posterior_logits
+    if cfg.algo.decoupled_rssm:
+        posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
+        for i in range(0, sequence_length):
+            if i == 0:
+                posterior = torch.zeros_like(posteriors[:1])
+            else:
+                posterior = posteriors[i - 1 : i]
+            recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                posterior,
+                recurrent_state,
+                batch_actions[i : i + 1],
+                data["is_first"][i : i + 1],
+            )
+            recurrent_states[i] = recurrent_state
+            priors_logits[i] = prior_logits
+    else:
+        posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+        posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
+        posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
+        for i in range(0, sequence_length):
+            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                posterior,
+                recurrent_state,
+                batch_actions[i : i + 1],
+                embedded_obs[i : i + 1],
+                data["is_first"][i : i + 1],
+            )
+            recurrent_states[i] = recurrent_state
+            priors_logits[i] = prior_logits
+            posteriors[i] = posterior
+            posteriors_logits[i] = posterior_logits
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # Compute predictions for the observations
@@ -457,6 +477,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        decoupled_rssm=cfg.algo.decoupled_rssm,
     )
 
     # Optimizers
