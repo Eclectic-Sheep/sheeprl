@@ -162,7 +162,7 @@ cython_debug/
 .vscode
 logs
 poetry.lock
-notebooks
+private_notebooks
 pytest_*
 !sheeprl/configs/env
 .diambra*
