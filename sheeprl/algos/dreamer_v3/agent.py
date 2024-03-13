@@ -825,10 +825,8 @@ class Actor(nn.Module):
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
             if self._action_clip > 0.0:
-                with torch.no_grad():
-                    actions *= torch.full_like(actions, self._action_clip) / torch.maximum(
-                        torch.full_like(actions, self._action_clip), torch.abs(actions)
-                    )
+                action_clip = torch.full_like(actions, self._action_clip)
+                actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
             actions = [actions]
             actions_dist = [actions_dist]
         else:
