@@ -713,6 +713,8 @@ class Actor(nn.Module):
             Defaults to 0.01.
         expl_amount (float): the exploration amount to use during training.
             Default to 0.0.
+        action_clip (float): the action clip parameter.
+            Default to 1.0.
     """
 
     def __init__(
@@ -730,6 +732,7 @@ class Actor(nn.Module):
         layer_norm: bool = True,
         unimix: float = 0.01,
         expl_amount: float = 0.0,
+        action_clip: float = 1.0,
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
@@ -769,6 +772,7 @@ class Actor(nn.Module):
         self.max_std = max_std
         self._unimix = unimix
         self._expl_amount = expl_amount
+        self._action_clip = action_clip
 
     @property
     def expl_amount(self) -> float:
@@ -820,6 +824,11 @@ class Actor(nn.Module):
                 sample = actions_dist.sample((100,))
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+            if self._action_clip > 0.0:
+                with torch.no_grad():
+                    actions *= torch.full_like(actions, self._action_clip) / torch.maximum(
+                        torch.full_like(actions, self._action_clip), torch.abs(actions)
+                    )
             actions = [actions]
             actions_dist = [actions_dist]
         else:
@@ -882,6 +891,7 @@ class MinedojoActor(Actor):
         layer_norm: bool = True,
         unimix: float = 0.01,
         expl_amount: float = 0.0,
+        action_clip: float = 1.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -896,6 +906,7 @@ class MinedojoActor(Actor):
             layer_norm=layer_norm,
             unimix=unimix,
             expl_amount=expl_amount,
+            action_clip=action_clip,
         )
 
     def forward(
@@ -1195,7 +1206,7 @@ def build_agent(
         continue_model.apply(init_weights),
     )
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
-    actor: nn.Module = actor_cls(
+    actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -1207,6 +1218,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
         unimix=cfg.algo.unimix,
+        action_clip=actor_cfg.action_clip,
     )
     critic = MLP(
         input_dims=latent_state_size,

@@ -14,7 +14,7 @@ horizon: 15
 
 # Training recipe
 train_every: 16
-learning_starts: 65536
+learning_starts: 1024
 per_rank_pretrain_steps: 1
 per_rank_gradient_steps: 1
 per_rank_sequence_length: ???
@@ -121,6 +121,7 @@ actor:
   expl_decay: False
   max_step_expl_decay: 0
   unimix: ${algo.unimix}
+  action_clip: 1.0
 
   # Disttributed percentile model (used to scale the values)
   moments:
