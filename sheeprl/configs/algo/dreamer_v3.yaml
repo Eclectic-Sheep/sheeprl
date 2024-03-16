@@ -14,7 +14,7 @@ horizon: 15
 
 # Training recipe
 train_every: 16
-learning_starts: 65536
+learning_starts: 1024
 per_rank_pretrain_steps: 1
 per_rank_gradient_steps: 1
 per_rank_sequence_length: ???
@@ -109,8 +109,8 @@ actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
-  init_std: 0.0
-  objective_mix: 1.0
+  max_std: 1.0
+  init_std: 2.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
@@ -120,6 +120,8 @@ actor:
   expl_min: 0.0
   expl_decay: False
   max_step_expl_decay: 0
+  unimix: ${algo.unimix}
+  action_clip: 1.0
 
   # Disttributed percentile model (used to scale the values)
   moments:
