@@ -12,6 +12,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies.single_device import SingleDeviceStrategy
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
@@ -91,6 +92,12 @@ def player(
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)
+    agent = SingleDeviceStrategy(
+        device=fabric.device,
+        accelerator=fabric.accelerator,
+        checkpoint_io=fabric._connector.checkpoint_io,
+        precision=fabric._precision,
+    ).setup_module(agent)
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
@@ -267,7 +274,7 @@ def player(
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
         torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-        next_values = agent.get_value(torch_obs)
+        _, _, _, next_values = agent(torch_obs)
         returns, advantages = gae(
             local_data["rewards"].to(torch.float64),
             local_data["values"],

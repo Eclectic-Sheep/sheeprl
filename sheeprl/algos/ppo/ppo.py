@@ -178,6 +178,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         observation_space,
         state["agent"] if cfg.checkpoint.resume_from else None,
     )
+    player_agent = _FabricModule(agent.module, precision=fabric._precision)
 
     # Define the optimizer
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
@@ -275,7 +276,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_obs = {
                         k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
                     }
-                    actions, logprobs, _, values = agent.module(torch_obs)
+                    actions, logprobs, _, values = player_agent(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
@@ -303,7 +304,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                 torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
                     with torch.no_grad():
-                        vals = agent.module.get_value(real_next_obs).cpu().numpy()
+                        vals = player_agent.get_value(real_next_obs).cpu().numpy()
                         rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                 rewards = rewards.reshape(cfg.env.num_envs, -1)
@@ -348,7 +349,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.no_grad():
             normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-            next_values = agent.module.get_value(torch_obs)
+            _, _, _, next_values = player_agent(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],
@@ -445,7 +446,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.module, fabric, cfg, log_dir)
+        test(player_agent, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models
