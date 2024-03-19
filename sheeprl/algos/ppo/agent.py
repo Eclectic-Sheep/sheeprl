@@ -87,6 +87,7 @@ class PPOAgent(nn.Module):
         screen_size: int,
         distribution_cfg: Dict[str, Any],
         is_continuous: bool = False,
+        detach_actor: bool = False,
     ):
         super().__init__()
         self.is_continuous = is_continuous
@@ -148,13 +149,16 @@ class PPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
+        self.detach_actor = detach_actor
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor, Tensor]:
         feat = self.feature_extractor(obs)
-        actor_out: List[Tensor] = self.actor(feat.detach())
         values = self.critic(feat)
+        if self.detach_actor:
+            feat = feat.detach()
+        actor_out: List[Tensor] = self.actor(feat)
         if self.is_continuous:
             mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
             std = log_std.exp()

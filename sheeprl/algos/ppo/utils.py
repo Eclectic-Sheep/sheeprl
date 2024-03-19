@@ -23,7 +23,7 @@ MODELS_TO_REGISTER = {"agent"}
 
 
 @torch.no_grad()
-def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOAgent | _FabricModule, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False

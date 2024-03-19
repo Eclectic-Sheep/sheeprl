@@ -447,6 +447,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
         test_agent = unwrap_fabric(agent)
+        test_agent.feature_extractor = _FabricModule(test_agent.feature_extractor, fabric._precision)
+        test_agent.actor = _FabricModule(test_agent.actor, fabric._precision)
         test(test_agent, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
