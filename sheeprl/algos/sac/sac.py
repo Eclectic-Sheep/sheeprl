@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
+from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -146,6 +147,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     agent = build_agent(
         fabric, cfg, observation_space, action_space, state["agent"] if cfg.checkpoint.resume_from else None
     )
+    actor = _FabricModule(agent.actor.module, precision=fabric._precision)
 
     # Optimizers
     qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all")
@@ -239,9 +241,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                with torch.no_grad():
+                with torch.inference_mode():
                     torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                    actions, _ = agent.actor.module(torch_obs)
+                    actions, _ = actor(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
@@ -389,7 +391,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.actor.module, fabric, cfg, log_dir)
+        test(actor, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac.utils import log_models
