@@ -7,7 +7,6 @@ import gymnasium
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
@@ -63,6 +62,18 @@ class MLPEncoder(nn.Module):
         return self.model(x)
 
 
+class PPOActor(nn.Module):
+    def __init__(self, actor_backbone: torch.nn.Module, actor_heads: torch.nn.ModuleList, is_continuous: bool) -> None:
+        super().__init__()
+        self.actor_backbone = actor_backbone
+        self.actor_heads = actor_heads
+        self.is_continuous = is_continuous
+
+    def forward(self, x: Tensor) -> List[Tensor]:
+        x = self.actor_backbone(x)
+        return [head(x) for head in self.actor_heads]
+
+
 class PPOAgent(nn.Module):
     def __init__(
         self,
@@ -78,6 +89,7 @@ class PPOAgent(nn.Module):
         is_continuous: bool = False,
     ):
         super().__init__()
+        self.is_continuous = is_continuous
         self.distribution_cfg = distribution_cfg
         self.actions_dim = actions_dim
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
@@ -101,7 +113,6 @@ class PPOAgent(nn.Module):
             else None
         )
         self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
-        self.is_continuous = is_continuous
         features_dim = self.feature_extractor.output_dim
         self.critic = MLP(
             input_dims=features_dim,
@@ -115,7 +126,7 @@ class PPOAgent(nn.Module):
                 else None
             ),
         )
-        self.actor_backbone = (
+        actor_backbone = (
             MLP(
                 input_dims=features_dim,
                 output_dim=None,
@@ -133,21 +144,19 @@ class PPOAgent(nn.Module):
             else nn.Identity()
         )
         if is_continuous:
-            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
         else:
-            self.actor_heads = nn.ModuleList(
-                [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
-            )
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor, Tensor]:
         feat = self.feature_extractor(obs)
-        out: Tensor = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
+        actor_out: List[Tensor] = self.actor(feat.detach())
         values = self.critic(feat)
         if self.is_continuous:
-            mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
+            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
             std = log_std.exp()
             normal = Independent(
                 Normal(mean, std, validate_args=self.distribution_cfg.validate_args),
@@ -170,7 +179,7 @@ class PPOAgent(nn.Module):
             if actions is None:
                 should_append = True
                 actions: List[Tensor] = []
-            for i, logits in enumerate(pre_dist):
+            for i, logits in enumerate(actor_out):
                 actions_dist.append(
                     OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 )
@@ -191,15 +200,14 @@ class PPOAgent(nn.Module):
 
     def get_greedy_actions(self, obs: Dict[str, Tensor]) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs)
-        out = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
-        if self.is_continuous:
-            return [torch.chunk(pre_dist[0], 2, -1)[0]]
+        actor_out: List[Tensor] = self.actor(feat)
+        if self.actor.is_continuous:
+            return [torch.chunk(actor_out[0], 2, -1)[0]]
         else:
             return tuple(
                 [
                     OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
-                    for logits in pre_dist
+                    for logits in actor_out
                 ]
             )
 
@@ -211,7 +219,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> _FabricModule:
+) -> PPOAgent:
     agent = PPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -226,6 +234,7 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    agent = fabric.setup_module(agent)
-
+    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
+    agent.critic = fabric.setup_module(agent.critic)
+    agent.actor = fabric.setup_module(agent.actor)
     return agent

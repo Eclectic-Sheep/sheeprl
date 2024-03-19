@@ -12,7 +12,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from lightning.fabric.strategies.single_device import SingleDeviceStrategy
+from lightning.fabric.wrappers import _FabricModule
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
@@ -92,12 +92,7 @@ def player(
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)
-    agent = SingleDeviceStrategy(
-        device=fabric.device,
-        accelerator=fabric.accelerator,
-        checkpoint_io=fabric._connector.checkpoint_io,
-        precision=fabric._precision,
-    ).setup_module(agent)
+    agent = _FabricModule(agent, precision=fabric._precision)
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
