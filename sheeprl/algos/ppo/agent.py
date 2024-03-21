@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -12,6 +13,7 @@ from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
+from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class CNNEncoder(nn.Module):
@@ -87,7 +89,6 @@ class PPOAgent(nn.Module):
         screen_size: int,
         distribution_cfg: Dict[str, Any],
         is_continuous: bool = False,
-        detach_actor: bool = False,
     ):
         super().__init__()
         self.is_continuous = is_continuous
@@ -149,15 +150,12 @@ class PPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
-        self.detach_actor = detach_actor
 
     def forward(
-        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
+        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None, greedy: bool = False
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor, Tensor]:
         feat = self.feature_extractor(obs)
         values = self.critic(feat)
-        if self.detach_actor:
-            feat = feat.detach()
         actor_out: List[Tensor] = self.actor(feat)
         if self.is_continuous:
             mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
@@ -168,7 +166,10 @@ class PPOAgent(nn.Module):
                 validate_args=self.distribution_cfg.validate_args,
             )
             if actions is None:
-                actions = normal.sample()
+                if greedy:
+                    actions = mean
+                else:
+                    actions = normal.sample()
             else:
                 # always composed by a tuple of one element containing all the
                 # continuous actions
@@ -189,7 +190,10 @@ class PPOAgent(nn.Module):
                 )
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
-                    actions.append(actions_dist[-1].sample())
+                    if greedy:
+                        actions.append(actions_dist[-1].mode)
+                    else:
+                        actions.append(actions_dist[-1].sample())
                 actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
             return (
                 tuple(actions),
@@ -223,7 +227,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> PPOAgent:
+) -> Tuple[PPOAgent, PPOAgent]:
     agent = PPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -238,7 +242,16 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
-    return agent
+    player_agent = copy.deepcopy(agent)
+
+    # Setup training agent
+    agent = fabric.setup_module(agent)
+
+    # Setup player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player_agent = fabric_player.setup_module(player_agent)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.parameters(), player_agent.parameters()):
+        player_p.data = agent_p.data
+    return agent, player_agent

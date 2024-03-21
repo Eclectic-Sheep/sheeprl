@@ -24,7 +24,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs, unwrap_fabric
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
 def train(
@@ -170,7 +170,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
     # Create the actor and critic models
-    agent = build_agent(
+    agent, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -275,7 +275,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_obs = {
                         k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
                     }
-                    actions, logprobs, _, values = agent(torch_obs)
+                    actions, logprobs, _, values = player(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
@@ -302,8 +302,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                     torch_v = torch_v.view(-1, *v.shape[-2:])
                                     torch_v = torch_v / 255.0 - 0.5
                                 real_next_obs[k][i] = torch_v
-                        vals = agent.get_value(real_next_obs)
-                        # _, _, _, vals = agent(real_next_obs)
+                        _, _, _, vals = player(real_next_obs)
                         rewards[truncated_envs] += vals.cpu().numpy().reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
@@ -348,8 +347,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.inference_mode():
             normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-            next_values = agent.get_value(torch_obs)
-            # _, _, _, next_values = agent(torch_obs)
+            _, _, _, next_values = player(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],
@@ -446,10 +444,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test_agent = unwrap_fabric(agent)
-        test_agent.feature_extractor = _FabricModule(test_agent.feature_extractor, fabric._precision)
-        test_agent.actor = _FabricModule(test_agent.actor, fabric._precision)
-        test(test_agent, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models

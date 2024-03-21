@@ -12,7 +12,6 @@ from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from lightning.fabric.wrappers import _FabricModule
 from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
@@ -22,6 +21,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -29,7 +29,7 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def player(
     fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
@@ -92,7 +92,8 @@ def player(
         "is_continuous": is_continuous,
     }
     agent = PPOAgent(**agent_args).to(device)
-    agent = _FabricModule(agent, precision=fabric._precision)
+    fabric_player = get_single_device_fabric(fabric)
+    agent = fabric_player.setup_module(agent, move_to_device=False)
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
@@ -192,18 +193,17 @@ def player(
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                with torch.no_grad():
-                    # Sample an action given the observation received by the environment
-                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                    torch_obs = {
-                        k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
-                    }
-                    actions, logprobs, _, values = agent(torch_obs)
-                    if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
-                    else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
-                    actions = torch.cat(actions, -1).cpu().numpy()
+                # Sample an action given the observation received by the environment
+                normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
+                torch_obs = {
+                    k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
+                }
+                actions, logprobs, _, values = agent(torch_obs)
+                if is_continuous:
+                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                else:
+                    real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
                 obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
@@ -225,9 +225,8 @@ def player(
                                 torch_v = torch_v.view(-1, *v.shape[-2:])
                                 torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
-                    with torch.no_grad():
-                        vals = agent.get_value(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
+                    _, _, _, vals = agent(real_next_obs)
+                    rewards[truncated_envs] += vals.cpu().numpy().reshape(rewards[truncated_envs].shape)
                 dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                 rewards = rewards.reshape(cfg.env.num_envs, -1)
 

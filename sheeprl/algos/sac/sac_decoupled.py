@@ -21,6 +21,7 @@ from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -28,7 +29,7 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import save_configs
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def player(
     fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
 ):
@@ -96,6 +97,8 @@ def player(
         action_low=action_space.low,
         action_high=action_space.high,
     ).to(device)
+    fabric_player = get_single_device_fabric(fabric)
+    actor = fabric_player.setup_module(actor, move_to_device=False)
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
@@ -177,10 +180,9 @@ def player(
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                with torch.no_grad():
-                    torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                    actions, _ = actor(torch_obs)
-                    actions = actions.cpu().numpy()
+                torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                actions, _ = actor(torch_obs)
+                actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
             dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
