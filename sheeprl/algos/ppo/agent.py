@@ -242,16 +242,16 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    player_agent = copy.deepcopy(agent)
+    player = copy.deepcopy(agent)
 
     # Setup training agent
     agent = fabric.setup_module(agent)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)
-    player_agent = fabric_player.setup_module(player_agent)
+    player = fabric_player.setup_module(player)
 
     # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.parameters(), player_agent.parameters()):
+    for agent_p, player_p in zip(agent.parameters(), player.parameters()):
         player_p.data = agent_p.data
-    return agent, player_agent
+    return agent, player
