@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -10,6 +11,7 @@ from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.models.models import MLP
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
+from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class MLPEncoder(nn.Module):
@@ -181,7 +183,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> _FabricModule:
+) -> Tuple[_FabricModule, _FabricModule]:
     agent = A2CAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -194,6 +196,16 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
+    player = copy.deepcopy(agent)
+
+    # Setup training agent
     agent = fabric.setup_module(agent)
 
-    return agent
+    # Setup player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = fabric_player.setup_module(player)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, player
