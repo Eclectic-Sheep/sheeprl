@@ -54,6 +54,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         state["actor"],
     )
     player = PlayerDV3(
+        fabric,
         world_model.encoder.module,
         world_model.rssm,
         actor.module,
@@ -61,7 +62,6 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
         decoupled_rssm=cfg.algo.decoupled_rssm,
     )

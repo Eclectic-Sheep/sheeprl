@@ -10,10 +10,9 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor, device, nn
+from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
 from torch.distributions.utils import probs_to_logits
-from torch.nn.modules import Module
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
@@ -24,6 +23,7 @@ from sheeprl.utils.distribution import (
     OneHotCategoricalValidateArgs,
     TruncatedNormal,
 )
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -339,9 +339,9 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        transition_model: nn.Module,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
@@ -485,9 +485,9 @@ class DecoupledRSSM(RSSM):
 
     def __init__(
         self,
-        recurrent_model: Module,
-        representation_model: Module,
-        transition_model: Module,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
@@ -554,53 +554,54 @@ class PlayerDV3(nn.Module):
     The model of the Dreamer_v3 player.
 
     Args:
-        encoder (_FabricModule): the encoder.
-        recurrent_model (_FabricModule): the recurrent model.
-        representation_model (_FabricModule): the representation model.
+        fabric (_FabricModule): the fabric module.
+        encoder (MultiEncoder): the encoder.
+        rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         transition_model (_FabricModule): the transition model.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
+        decoupled_rssm (bool, optional): whether to use the DecoupledRSSM model.
     """
 
     def __init__(
         self,
-        encoder: _FabricModule,
+        fabric: Fabric,
+        encoder: MultiEncoder,
         rssm: RSSM | DecoupledRSSM,
-        actor: _FabricModule,
+        actor: Actor | MinedojoActor,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: device = "cpu",
         discrete_size: int = 32,
         actor_type: str | None = None,
         decoupled_rssm: bool = False,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
+        single_device_fabric = get_single_device_fabric(fabric)
+        self.encoder = single_device_fabric.setup_module(encoder)
         if decoupled_rssm:
             rssm_cls = DecoupledRSSM
         else:
             rssm_cls = RSSM
         self.rssm = rssm_cls(
-            recurrent_model=rssm.recurrent_model.module,
-            representation_model=rssm.representation_model.module,
-            transition_model=rssm.transition_model.module,
+            recurrent_model=single_device_fabric.setup_module(rssm.recurrent_model.module),
+            representation_model=single_device_fabric.setup_module(rssm.representation_model.module),
+            transition_model=single_device_fabric.setup_module(rssm.transition_model.module),
             distribution_cfg=actor.distribution_cfg,
             discrete=rssm.discrete,
             unimix=rssm.unimix,
         )
-        self.actor = actor
-        self.device = device
+        self.actor = single_device_fabric.setup_module(actor)
+        self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
@@ -1256,8 +1257,12 @@ def build_agent(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
+    single_device_fabric = get_single_device_fabric(fabric)
+    target_critic = single_device_fabric.setup_module(target_critic)
 
     return world_model, actor, critic, target_critic
