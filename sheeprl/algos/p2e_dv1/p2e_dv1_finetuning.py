@@ -143,15 +143,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
 
     player = PlayerDV1(
-        world_model.encoder.module,
-        world_model.rssm.recurrent_model.module,
-        world_model.rssm.representation_model.module,
-        actor_exploration.module if cfg.algo.player.actor_type == "exploration" else actor_task.module,
+        fabric,
+        world_model.encoder,
+        world_model.rssm.recurrent_model,
+        world_model.rssm.representation_model,
+        actor_exploration if cfg.algo.player.actor_type == "exploration" else actor_task,
         actions_dim,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
         actor_type=cfg.algo.player.actor_type,
     )
 
