@@ -43,7 +43,18 @@ def train(
         batch_size = batch_size if batch_size > 0 else num_sequences
     else:
         batch_size = 1
-    with Join([agent._forward_module]) if fabric.world_size > 1 else nullcontext():
+    with (
+        Join(
+            [
+                agent.feature_extractor._forward_module,
+                agent.rnn._forward_module,
+                agent.actor._forward_module,
+                agent.critic._forward_module,
+            ]
+        )
+        if fabric.world_size > 1
+        else nullcontext()
+    ):
         for _ in range(cfg.algo.update_epochs):
             sampler = BatchSampler(
                 RandomSampler(range(num_sequences)),
