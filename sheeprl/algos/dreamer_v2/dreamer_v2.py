@@ -498,6 +498,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["target_critic"] if cfg.checkpoint.resume_from else None,
     )
     player = PlayerDV2(
+        fabric,
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
@@ -506,7 +507,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
     )
 
@@ -629,26 +629,26 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
-        # Measure environment interaction time: this considers both the model forward
-        # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            # Sample an action given the observation received by the environment
-            if (
-                update <= learning_starts
-                and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.env.wrapper._target_.lower()
-            ):
-                real_actions = actions = np.array(envs.action_space.sample())
-                if not is_continuous:
-                    actions = np.concatenate(
-                        [
-                            F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                            for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                        ],
-                        axis=-1,
-                    )
-            else:
-                with torch.no_grad():
+        with torch.inference_mode():
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                # Sample an action given the observation received by the environment
+                if (
+                    update <= learning_starts
+                    and cfg.checkpoint.resume_from is None
+                    and "minedojo" not in cfg.env.wrapper._target_.lower()
+                ):
+                    real_actions = actions = np.array(envs.action_space.sample())
+                    if not is_continuous:
+                        actions = np.concatenate(
+                            [
+                                F.one_hot(torch.as_tensor(act), act_dim).numpy()
+                                for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
+                            ],
+                            axis=-1,
+                        )
+                else:
                     normalized_obs = {}
                     for k in obs_keys:
                         torch_obs = torch.as_tensor(obs[k][np.newaxis], dtype=torch.float32, device=device)
@@ -667,58 +667,58 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
-            step_data["is_first"] = copy.deepcopy(step_data["dones"])
-            next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated).astype(np.uint8)
-            if cfg.dry_run and buffer_type == "episode":
-                dones = np.ones_like(dones)
+                step_data["is_first"] = copy.deepcopy(step_data["dones"])
+                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
+                dones = np.logical_or(dones, truncated).astype(np.uint8)
+                if cfg.dry_run and buffer_type == "episode":
+                    dones = np.ones_like(dones)
 
-        if cfg.metric.log_level > 0 and "final_info" in infos:
-            for i, agent_ep_info in enumerate(infos["final_info"]):
-                if agent_ep_info is not None:
-                    ep_rew = agent_ep_info["episode"]["r"]
-                    ep_len = agent_ep_info["episode"]["l"]
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+            if cfg.metric.log_level > 0 and "final_info" in infos:
+                for i, agent_ep_info in enumerate(infos["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
-        # Save the real next observation
-        real_next_obs = copy.deepcopy(next_obs)
-        if "final_observation" in infos:
-            for idx, final_obs in enumerate(infos["final_observation"]):
-                if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+            # Save the real next observation
+            real_next_obs = copy.deepcopy(next_obs)
+            if "final_observation" in infos:
+                for idx, final_obs in enumerate(infos["final_observation"]):
+                    if final_obs is not None:
+                        for k, v in final_obs.items():
+                            real_next_obs[k][idx] = v
 
-        for k in obs_keys:  # [N_envs, N_obs]
-            step_data[k] = real_next_obs[k][np.newaxis]
+            for k in obs_keys:  # [N_envs, N_obs]
+                step_data[k] = real_next_obs[k][np.newaxis]
 
-        # Next_obs becomes the new obs
-        obs = next_obs
+            # Next_obs becomes the new obs
+            obs = next_obs
 
-        step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
-        step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
-        step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
+            step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
+            step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
+            step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-        # Reset and save the observation coming from the automatic reset
-        dones_idxes = dones.nonzero()[0].tolist()
-        reset_envs = len(dones_idxes)
-        if reset_envs > 0:
-            reset_data = {}
-            for k in obs_keys:
-                reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-            reset_data["dones"] = np.zeros((1, reset_envs, 1))
-            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
-            reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-            reset_data["is_first"] = np.ones_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-            # Reset dones so that `is_first` is updated
-            for d in dones_idxes:
-                step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
-            # Reset internal agent states
-            player.init_states(dones_idxes)
+            # Reset and save the observation coming from the automatic reset
+            dones_idxes = dones.nonzero()[0].tolist()
+            reset_envs = len(dones_idxes)
+            if reset_envs > 0:
+                reset_data = {}
+                for k in obs_keys:
+                    reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
+                reset_data["dones"] = np.zeros((1, reset_envs, 1))
+                reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
+                reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+                reset_data["is_first"] = np.ones_like(reset_data["dones"])
+                rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
+                # Reset dones so that `is_first` is updated
+                for d in dones_idxes:
+                    step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                # Reset internal agent states
+                player.init_states(dones_idxes)
 
         updates_before_training -= 1
 
@@ -738,7 +738,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(next(iter(local_data.values())).shape[0]):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                        for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
+                        for cp, tcp in zip(critic.module.parameters(), target_critic.module.parameters()):
                             tcp.data.copy_(cp.data)
                     batch = {k: v[i].float() for k, v in local_data.items()}
                     train(

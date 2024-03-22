@@ -20,6 +20,7 @@ from sheeprl.utils.distribution import (
     OneHotCategoricalValidateArgs,
     TruncatedNormal,
 )
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 
 
@@ -61,9 +62,9 @@ class CNNEncoder(nn.Module):
                 layer_args={"kernel_size": 4, "stride": 2},
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                norm_args=[{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)] if layer_norm else None
+                ),
             ),
             nn.Flatten(-3, -1),
         )
@@ -172,12 +173,12 @@ class CNNDecoder(nn.Module):
                 ],
                 activation=[activation, activation, activation, None],
                 norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                norm_args=[
-                    {"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])
-                ]
-                + [None]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
+                    + [None]
+                    if layer_norm
+                    else None
+                ),
             ),
         )
 
@@ -743,6 +744,7 @@ class PlayerDV2(nn.Module):
     The model of the Dreamer_v2 player.
 
     Args:
+        fabric: the fabric of the model.
         encoder (nn.Module): the encoder.
         recurrent_model (nn.Module): the recurrent model.
         representation_model (nn.Module): the representation model.
@@ -751,7 +753,6 @@ class PlayerDV2(nn.Module):
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
@@ -761,6 +762,7 @@ class PlayerDV2(nn.Module):
 
     def __init__(
         self,
+        fabric: Fabric,
         encoder: nn.Module,
         recurrent_model: nn.Module,
         representation_model: nn.Module,
@@ -769,16 +771,16 @@ class PlayerDV2(nn.Module):
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.actor = actor
-        self.device = device
+        fabric_player = get_single_device_fabric(fabric)
+        self.encoder = fabric_player.setup_module(encoder)
+        self.recurrent_model = fabric_player.setup_module(recurrent_model)
+        self.representation_model = fabric_player.setup_module(representation_model)
+        self.actor = fabric_player.setup_module(actor)
+        self.device = fabric_player.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
@@ -871,7 +873,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -894,7 +896,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
-        The target critic (nn.Module).
+        The target critic (_FabricModule).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -943,9 +945,11 @@ def build_agent(
         activation=eval(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-        if world_model_cfg.representation_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            if world_model_cfg.representation_model.layer_norm
+            else None
+        ),
     )
     transition_model = MLP(
         input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -954,9 +958,11 @@ def build_agent(
         activation=eval(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-        if world_model_cfg.transition_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            if world_model_cfg.transition_model.layer_norm
+            else None
+        ),
     )
     rssm = RSSM(
         recurrent_model=recurrent_model.apply(init_weights),
@@ -999,15 +1005,19 @@ def build_agent(
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
-        norm_args=[
-            {"normalized_shape": world_model_cfg.reward_model.dense_units}
-            for _ in range(world_model_cfg.reward_model.mlp_layers)
-        ]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
+        norm_layer=(
+            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
+        norm_args=(
+            [
+                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                for _ in range(world_model_cfg.reward_model.mlp_layers)
+            ]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
     )
     if world_model_cfg.use_continues:
         continue_model = MLP(
@@ -1016,15 +1026,19 @@ def build_agent(
             hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
             activation=eval(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
-            norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
-            norm_args=[
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
-                for _ in range(world_model_cfg.discount_model.mlp_layers)
-            ]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
+            norm_layer=(
+                [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
+            norm_args=(
+                [
+                    {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                    for _ in range(world_model_cfg.discount_model.mlp_layers)
+                ]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
         )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1053,9 +1067,11 @@ def build_agent(
         activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
@@ -1079,8 +1095,12 @@ def build_agent(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
+    single_device_fabric = get_single_device_fabric(fabric)
+    target_critic = single_device_fabric.setup_module(target_critic)
 
     return world_model, actor, critic, target_critic
