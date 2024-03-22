@@ -17,6 +17,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -221,6 +222,7 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
+        fabric (Fabric): the fabric object.
         encoder (nn.Module): the encoder.
         recurrent_model (nn.Module): the recurrent model.
         representation_model (nn.Module): the representation model.
@@ -229,13 +231,13 @@ class PlayerDV1(nn.Module):
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
 
     def __init__(
         self,
+        fabric: Fabric,
         encoder: nn.Module,
         recurrent_model: nn.Module,
         representation_model: nn.Module,
@@ -244,22 +246,22 @@ class PlayerDV1(nn.Module):
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.actor = actor
-        self.device = device
+        fabric_player = get_single_device_fabric(fabric)
+        self.encoder = fabric_player.setup_module(encoder)
+        self.recurrent_model = fabric_player.setup_module(recurrent_model)
+        self.representation_model = fabric_player.setup_module(representation_model)
+        self.actor = fabric_player.setup_module(actor)
+        self.device = fabric_player.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
-        self.init_states()
         self.actor_type = actor_type
+        self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.

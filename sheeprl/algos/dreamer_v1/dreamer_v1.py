@@ -231,7 +231,10 @@ def train(
     world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
         world_model_grads = fabric.clip_gradients(
-            module=world_model, optimizer=world_optimizer, max_norm=cfg.algo.world_model.clip_gradients
+            module=world_model,
+            optimizer=world_optimizer,
+            max_norm=cfg.algo.world_model.clip_gradients,
+            error_if_nonfinite=False,
         )
     world_optimizer.step()
 
@@ -337,7 +340,10 @@ def train(
     actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
         actor_grads = fabric.clip_gradients(
-            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients
+            module=actor,
+            optimizer=actor_optimizer,
+            max_norm=cfg.algo.actor.clip_gradients,
+            error_if_nonfinite=False,
         )
     actor_optimizer.step()
 
@@ -362,7 +368,10 @@ def train(
     critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients
+            module=critic,
+            optimizer=critic_optimizer,
+            max_norm=cfg.algo.critic.clip_gradients,
+            error_if_nonfinite=False,
         )
     critic_optimizer.step()
 
@@ -472,6 +481,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["critic"] if cfg.checkpoint.resume_from else None,
     )
     player = PlayerDV1(
+        fabric,
         world_model.encoder.module,
         world_model.rssm.recurrent_model.module,
         world_model.rssm.representation_model.module,
@@ -480,7 +490,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
     )
 
     # Optimizers
