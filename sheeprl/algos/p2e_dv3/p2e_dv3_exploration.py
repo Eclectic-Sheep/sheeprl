@@ -640,14 +640,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     player = PlayerDV3(
-        world_model.encoder.module,
+        fabric,
+        world_model.encoder,
         world_model.rssm,
-        actor_exploration.module,
+        actor_exploration,
         actions_dim,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
         actor_type=cfg.algo.player.actor_type,
     )
