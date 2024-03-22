@@ -249,12 +249,12 @@ class PlayerDV1(nn.Module):
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        fabric_player = get_single_device_fabric(fabric)
-        self.encoder = fabric_player.setup_module(encoder)
-        self.recurrent_model = fabric_player.setup_module(recurrent_model)
-        self.representation_model = fabric_player.setup_module(representation_model)
-        self.actor = fabric_player.setup_module(actor)
-        self.device = fabric_player.device
+        single_device_fabric = get_single_device_fabric(fabric)
+        self.encoder = single_device_fabric.setup_module(encoder)
+        self.recurrent_model = single_device_fabric.setup_module(recurrent_model)
+        self.representation_model = single_device_fabric.setup_module(representation_model)
+        self.actor = single_device_fabric.setup_module(actor)
+        self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
