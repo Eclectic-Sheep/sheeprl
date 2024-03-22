@@ -71,6 +71,9 @@ class CNNEncoder(CNN):
         return self._conv_output_shape
 
     def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
         x = torch.cat([obs[k] for k in self.keys], dim=-3)
         x = cnn_forward(self.model, x, x.shape[-3:], (-1,))
         if detach_encoder_features:
@@ -102,7 +105,10 @@ class MLPEncoder(nn.Module):
         self.input_dim = input_dim
 
     def forward(self, obs: Dict[str, Tensor], *args, detach_encoder_features: bool = False, **kwargs) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-1).type(torch.float32)
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
+        x = torch.cat([obs[k] for k in self.keys], dim=-1)
         x = self.model(x)
         if detach_encoder_features:
             x = x.detach()
@@ -406,6 +412,11 @@ class SACAEAgent(nn.Module):
     def critic_target(self) -> SACAECritic:
         return self._critic_target
 
+    @critic_target.setter
+    def critic_target(self, critic_target: SACAECritic | _FabricModule) -> None:
+        self._critic_target = critic_target
+        return
+
     @property
     def alpha(self) -> float:
         return self._log_alpha.exp().item()
@@ -561,5 +572,6 @@ def build_agent(
     decoder = fabric.setup_module(decoder)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critic = fabric.setup_module(agent.critic)
+    agent.critic_target = _FabricModule(agent.critic_target, precision=fabric._precision)
 
     return agent, encoder, decoder
