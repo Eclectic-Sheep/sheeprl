@@ -154,6 +154,11 @@ class DROQAgent(nn.Module):
     def qfs_target(self) -> nn.ModuleList:
         return self._qfs_target
 
+    @qfs_target.setter
+    def qfs_target(self, qfs_target: nn.ModuleList) -> None:
+        self._qfs_target = qfs_target
+        return
+
     @property
     def alpha(self) -> float:
         return self._log_alpha.exp().item()
@@ -237,5 +242,8 @@ def build_agent(
         agent.load_state_dict(agent_state)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+    agent.qfs_target = nn.ModuleList(
+        [_FabricModule(target, precision=fabric._precision) for target in agent._qfs_target]
+    )
 
     return agent
