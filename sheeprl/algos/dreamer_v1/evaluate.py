@@ -55,10 +55,10 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     )
     player = PlayerDV1(
         fabric,
-        world_model.encoder.module,
-        world_model.rssm.recurrent_model.module,
-        world_model.rssm.representation_model.module,
-        actor.module,
+        world_model.encoder,
+        world_model.rssm.recurrent_model,
+        world_model.rssm.representation_model,
+        actor,
         actions_dim,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,

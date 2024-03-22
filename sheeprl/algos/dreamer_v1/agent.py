@@ -223,10 +223,10 @@ class PlayerDV1(nn.Module):
 
     Args:
         fabric (Fabric): the fabric object.
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        encoder (nn.Module| _FabricModule): the encoder.
+        recurrent_model (nn.Module| _FabricModule): the recurrent model.
+        representation_model (nn.Module| _FabricModule): the representation model.
+        actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
@@ -238,10 +238,10 @@ class PlayerDV1(nn.Module):
     def __init__(
         self,
         fabric: Fabric,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        encoder: nn.Module | _FabricModule,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
@@ -250,10 +250,18 @@ class PlayerDV1(nn.Module):
     ) -> None:
         super().__init__()
         single_device_fabric = get_single_device_fabric(fabric)
-        self.encoder = single_device_fabric.setup_module(encoder)
-        self.recurrent_model = single_device_fabric.setup_module(recurrent_model)
-        self.representation_model = single_device_fabric.setup_module(representation_model)
-        self.actor = single_device_fabric.setup_module(actor)
+        self.encoder = single_device_fabric.setup_module(
+            getattr(encoder, "module", encoder),
+        )
+        self.recurrent_model = single_device_fabric.setup_module(
+            getattr(recurrent_model, "module", recurrent_model),
+        )
+        self.representation_model = single_device_fabric.setup_module(
+            getattr(representation_model, "module", representation_model)
+        )
+        self.actor = single_device_fabric.setup_module(
+            getattr(actor, "module", actor),
+        )
         self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size

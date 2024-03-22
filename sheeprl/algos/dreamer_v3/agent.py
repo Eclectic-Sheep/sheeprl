@@ -574,9 +574,9 @@ class PlayerDV3(nn.Module):
     def __init__(
         self,
         fabric: Fabric,
-        encoder: MultiEncoder,
+        encoder: MultiEncoder | _FabricModule,
         rssm: RSSM | DecoupledRSSM,
-        actor: Actor | MinedojoActor,
+        actor: Actor | MinedojoActor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
@@ -587,20 +587,26 @@ class PlayerDV3(nn.Module):
     ) -> None:
         super().__init__()
         single_device_fabric = get_single_device_fabric(fabric)
-        self.encoder = single_device_fabric.setup_module(encoder)
+        self.encoder = single_device_fabric.setup_module(getattr(encoder, "module", encoder))
         if decoupled_rssm:
             rssm_cls = DecoupledRSSM
         else:
             rssm_cls = RSSM
         self.rssm = rssm_cls(
-            recurrent_model=single_device_fabric.setup_module(rssm.recurrent_model.module),
-            representation_model=single_device_fabric.setup_module(rssm.representation_model.module),
-            transition_model=single_device_fabric.setup_module(rssm.transition_model.module),
+            recurrent_model=single_device_fabric.setup_module(
+                getattr(rssm.recurrent_model, "module", rssm.recurrent_model)
+            ),
+            representation_model=single_device_fabric.setup_module(
+                getattr(rssm.representation_model, "module", rssm.representation_model)
+            ),
+            transition_model=single_device_fabric.setup_module(
+                getattr(rssm.transition_model, "module", rssm.transition_model)
+            ),
             distribution_cfg=actor.distribution_cfg,
             discrete=rssm.discrete,
             unimix=rssm.unimix,
         )
-        self.actor = single_device_fabric.setup_module(actor)
+        self.actor = single_device_fabric.setup_module(getattr(actor, "module", actor))
         self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
