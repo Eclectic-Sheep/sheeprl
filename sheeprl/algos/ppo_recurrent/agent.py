@@ -1,3 +1,4 @@
+import copy
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -8,9 +9,10 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal
 
-from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder
+from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor
 from sheeprl.models.models import MLP, MultiEncoder
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
+from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class RecurrentModel(nn.Module):
@@ -26,9 +28,11 @@ class RecurrentModel(nn.Module):
                 activation=eval(pre_rnn_mlp_cfg.activation),
                 layer_args={"bias": pre_rnn_mlp_cfg.bias},
                 norm_layer=[nn.LayerNorm] if pre_rnn_mlp_cfg.layer_norm else None,
-                norm_args=[{"normalized_shape": pre_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
-                if pre_rnn_mlp_cfg.layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": pre_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
+                    if pre_rnn_mlp_cfg.layer_norm
+                    else None
+                ),
             )
         else:
             self._pre_mlp = nn.Identity()
@@ -45,9 +49,11 @@ class RecurrentModel(nn.Module):
                 activation=eval(post_rnn_mlp_cfg.activation),
                 layer_args={"bias": post_rnn_mlp_cfg.bias},
                 norm_layer=[nn.LayerNorm] if post_rnn_mlp_cfg.layer_norm else None,
-                norm_args=[{"normalized_shape": post_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
-                if post_rnn_mlp_cfg.layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": post_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
+                    if post_rnn_mlp_cfg.layer_norm
+                    else None
+                ),
             )
             self._output_dim = post_rnn_mlp_cfg.dense_units
         else:
@@ -165,6 +171,7 @@ class RecurrentPPOAgent(nn.Module):
             self.actor_heads = nn.ModuleList(
                 [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
             )
+        self.actor = PPOActor(self.actor_backbone, self.actor_heads, is_continuous)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tensor = self.reset_hidden_states()
@@ -245,8 +252,7 @@ class RecurrentPPOAgent(nn.Module):
         )
 
     def get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
-        features = self.actor_backbone(input)
-        pre_dist: List[Tensor] = [head(features) for head in self.actor_heads]
+        pre_dist: List[Tensor] = self.actor(input)
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
@@ -296,7 +302,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> RecurrentPPOAgent:
+) -> Tuple[RecurrentPPOAgent, RecurrentPPOAgent]:
     agent = RecurrentPPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -314,6 +320,23 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    agent = fabric.setup_module(agent)
+    player_agent = copy.deepcopy(agent)
 
-    return agent
+    # Setup training agent
+    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
+    agent.rnn = fabric.setup_module(agent.rnn)
+    agent.critic = fabric.setup_module(agent.critic)
+    agent.actor = fabric.setup_module(agent.actor)
+
+    # Setup player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player_agent.feature_extractor = fabric_player.setup_module(player_agent.feature_extractor)
+    player_agent.rnn = fabric_player.setup_module(player_agent.rnn)
+    player_agent.critic = fabric_player.setup_module(player_agent.critic)
+    player_agent.actor = fabric_player.setup_module(player_agent.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.parameters(), player_agent.parameters()):
+        player_p.data = agent_p.data
+
+    return agent, player_agent

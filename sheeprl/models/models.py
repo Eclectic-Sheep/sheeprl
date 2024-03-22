@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 import warnings
 from math import prod
 from typing import Dict, Optional, Sequence, Union, no_type_check
