@@ -274,14 +274,14 @@ class ActionsAsObservationWrapper(gym.Wrapper):
             low = 0
             high = 1
             self._action_shape = self.action_space.n
-        self.observation_space["actions"] = gym.spaces.Box(
+        self.observation_space["action_stack"] = gym.spaces.Box(
             low=low, high=high, shape=(self._action_shape * num_stack,), dtype=np.float32
         )
 
     def step(self, action: Any) -> Tuple[Any | SupportsFloat | bool | Dict[str, Any]]:
         self._actions.append(action)
         obs, reward, done, truncated, info = super().step(action)
-        obs["actions"] = self._get_actions_stack()
+        obs["action_stack"] = self._get_actions_stack()
         return obs, reward, done, truncated, info
 
     def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any | Dict[str, Any]]:
@@ -291,7 +291,7 @@ class ActionsAsObservationWrapper(gym.Wrapper):
             [self._actions.append(np.zeros((self._action_shape,))) for _ in range(self._num_stack * self._dilation)]
         else:
             [self._actions.append(0) for _ in range(self._num_stack * self._dilation)]
-        obs["actions"] = self._get_actions_stack()
+        obs["action_stack"] = self._get_actions_stack()
         return obs, info
 
     def _get_actions_stack(self) -> np.ndarray:
