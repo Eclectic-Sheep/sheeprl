@@ -264,8 +264,8 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         self.observation_space = copy.deepcopy(self.env.observation_space)
         if self._is_continuous:
             self._action_shape = self.action_space.shape[0]
-            low = np.resize(self.action_space.low, self._action_shape * (num_stack // dilation))
-            high = np.resize(self.action_space.high, self._action_shape * (num_stack // dilation))
+            low = np.resize(self.action_space.low, self._action_shape * num_stack)
+            high = np.resize(self.action_space.high, self._action_shape * num_stack)
         elif self._is_multidiscrete:
             low = 0
             high = max(self.action_space.nvec)
@@ -275,7 +275,7 @@ class ActionsAsObservationWrapper(gym.Wrapper):
             high = 1
             self._action_shape = self.action_space.n
         self.observation_space["actions"] = gym.spaces.Box(
-            low=low, high=high, shape=(self._action_shape * (num_stack // dilation),), dtype=np.float32
+            low=low, high=high, shape=(self._action_shape * num_stack,), dtype=np.float32
         )
 
     def step(self, action: Any) -> Tuple[Any | SupportsFloat | bool | Dict[str, Any]]:
