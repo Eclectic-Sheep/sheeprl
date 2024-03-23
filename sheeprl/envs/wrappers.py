@@ -251,3 +251,60 @@ class GrayscaleRenderWrapper(gym.Wrapper):
             if len(frame.shape) == 3 and frame.shape[-1] == 1:
                 frame = frame.repeat(3, axis=-1)
         return frame
+
+
+class ActionsAsObservationWrapper(gym.Wrapper):
+    def __init__(self, env: Env, num_stack: int, dilation: int = 1):
+        super().__init__(env)
+        self._num_stack = num_stack
+        self._dilation = dilation
+        self._actions = deque(maxlen=num_stack * dilation)
+        self._is_continuous = isinstance(self.env.action_space, gym.spaces.Box)
+        self._is_multidiscrete = isinstance(self.env.action_space, gym.spaces.MultiDiscrete)
+        self.observation_space = copy.deepcopy(self.env.observation_space)
+        if self._is_continuous:
+            self._action_shape = self.action_space.shape[0]
+            low = np.resize(self.action_space.low, self._action_shape * (num_stack // dilation))
+            high = np.resize(self.action_space.high, self._action_shape * (num_stack // dilation))
+        elif self._is_multidiscrete:
+            low = 0
+            high = max(self.action_space.nvec)
+            self._action_shape = len(self.env.nvec.shape)
+        else:
+            low = 0
+            high = 1
+            self._action_shape = self.action_space.n
+        self.observation_space["actions"] = gym.spaces.Box(
+            low=low, high=high, shape=(self._action_shape * (num_stack // dilation),), dtype=np.float32
+        )
+
+    def step(self, action: Any) -> Tuple[Any | SupportsFloat | bool | Dict[str, Any]]:
+        self._actions.append(action)
+        obs, reward, done, truncated, info = super().step(action)
+        obs["actions"] = self._get_actions_stack()
+        return obs, reward, done, truncated, info
+
+    def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any | Dict[str, Any]]:
+        obs, info = super().reset(seed=seed, options=options)
+        self._actions.clear()
+        if self._is_multidiscrete or self._is_continuous:
+            [self._actions.append(np.zeros((self._action_shape,))) for _ in range(self._num_stack * self._dilation)]
+        else:
+            [self._actions.append(0) for _ in range(self._num_stack * self._dilation)]
+        obs["actions"] = self._get_actions_stack()
+        return obs, info
+
+    def _get_actions_stack(self) -> np.ndarray:
+        actions_stack = list(self._actions)[self._dilation - 1 :: self._dilation]
+        if self._is_continuous:
+            actions = np.concatenate(actions_stack, axis=0)
+        elif self._is_multidiscrete:
+            actions = np.concatenate(actions_stack, axis=0)
+        else:
+            action_list = []
+            for action in actions_stack:
+                one_hot_action = np.zeros(self.action_space.n)
+                one_hot_action[action] = 1
+                action_list.append(one_hot_action)
+            actions = np.concatenate(action_list, axis=0)
+        return actions.astype(np.float32)
