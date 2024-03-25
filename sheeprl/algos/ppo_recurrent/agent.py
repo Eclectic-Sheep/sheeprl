@@ -26,9 +26,11 @@ class RecurrentModel(nn.Module):
                 activation=eval(pre_rnn_mlp_cfg.activation),
                 layer_args={"bias": pre_rnn_mlp_cfg.bias},
                 norm_layer=[nn.LayerNorm] if pre_rnn_mlp_cfg.layer_norm else None,
-                norm_args=[{"normalized_shape": pre_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
-                if pre_rnn_mlp_cfg.layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": pre_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
+                    if pre_rnn_mlp_cfg.layer_norm
+                    else None
+                ),
             )
         else:
             self._pre_mlp = nn.Identity()
@@ -45,9 +47,11 @@ class RecurrentModel(nn.Module):
                 activation=eval(post_rnn_mlp_cfg.activation),
                 layer_args={"bias": post_rnn_mlp_cfg.bias},
                 norm_layer=[nn.LayerNorm] if post_rnn_mlp_cfg.layer_norm else None,
-                norm_args=[{"normalized_shape": post_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
-                if post_rnn_mlp_cfg.layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": post_rnn_mlp_cfg.dense_units, "eps": 1e-3}]
+                    if post_rnn_mlp_cfg.layer_norm
+                    else None
+                ),
             )
             self._output_dim = post_rnn_mlp_cfg.dense_units
         else:
