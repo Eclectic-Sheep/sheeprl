@@ -126,9 +126,11 @@ def build_agent(
                     flatten_dim=None,
                     layer_args={"bias": not critic_cfg.layer_norm},
                     norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-                    norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-                    if critic_cfg.layer_norm
-                    else None,
+                    norm_args=(
+                        [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+                        if critic_cfg.layer_norm
+                        else None
+                    ),
                 ),
             }
             critics_exploration[k]["module"].apply(init_weights)

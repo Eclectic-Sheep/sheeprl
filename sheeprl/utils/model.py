@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
