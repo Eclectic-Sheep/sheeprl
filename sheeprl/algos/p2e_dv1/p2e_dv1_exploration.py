@@ -626,26 +626,26 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
-        # Measure environment interaction time: this considers both the model forward
-        # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            # Sample an action given the observation received by the environment
-            if (
-                update <= learning_starts
-                and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.env.wrapper._target_.lower()
-            ):
-                real_actions = actions = np.array(envs.action_space.sample())
-                if not is_continuous:
-                    actions = np.concatenate(
-                        [
-                            F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                            for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                        ],
-                        axis=-1,
-                    )
-            else:
-                with torch.no_grad():
+        with torch.inference_mode():
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                # Sample an action given the observation received by the environment
+                if (
+                    update <= learning_starts
+                    and cfg.checkpoint.resume_from is None
+                    and "minedojo" not in cfg.env.wrapper._target_.lower()
+                ):
+                    real_actions = actions = np.array(envs.action_space.sample())
+                    if not is_continuous:
+                        actions = np.concatenate(
+                            [
+                                F.one_hot(torch.as_tensor(act), act_dim).numpy()
+                                for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
+                            ],
+                            axis=-1,
+                        )
+                else:
                     normalized_obs = {}
                     for k in obs_keys:
                         torch_obs = torch.as_tensor(obs[k][np.newaxis], dtype=torch.float32, device=device)
@@ -663,57 +663,57 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         real_actions = (
                             torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
-            next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated).astype(np.uint8)
+                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
+                dones = np.logical_or(dones, truncated).astype(np.uint8)
 
-        if cfg.metric.log_level > 0 and "final_info" in infos:
-            for i, agent_ep_info in enumerate(infos["final_info"]):
-                if agent_ep_info is not None:
-                    ep_rew = agent_ep_info["episode"]["r"]
-                    ep_len = agent_ep_info["episode"]["l"]
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+            if cfg.metric.log_level > 0 and "final_info" in infos:
+                for i, agent_ep_info in enumerate(infos["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
-        # Save the real next observation
-        real_next_obs = copy.deepcopy(next_obs)
-        if "final_observation" in infos:
-            for idx, final_obs in enumerate(infos["final_observation"]):
-                if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+            # Save the real next observation
+            real_next_obs = copy.deepcopy(next_obs)
+            if "final_observation" in infos:
+                for idx, final_obs in enumerate(infos["final_observation"]):
+                    if final_obs is not None:
+                        for k, v in final_obs.items():
+                            real_next_obs[k][idx] = v
 
-        for k in obs_keys:
-            if k in cfg.algo.cnn_keys.encoder:
-                next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-                real_next_obs[k] = real_next_obs[k].reshape(cfg.env.num_envs, -1, *real_next_obs[k].shape[-2:])
-            step_data[k] = real_next_obs[k][np.newaxis]
-
-        # next_obs becomes the new obs
-        obs = next_obs
-
-        step_data["dones"] = dones[np.newaxis]
-        step_data["actions"] = actions[np.newaxis]
-        step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
-
-        # Reset and save the observation coming from the automatic reset
-        dones_idxes = dones.nonzero()[0].tolist()
-        reset_envs = len(dones_idxes)
-        if reset_envs > 0:
-            reset_data = {}
             for k in obs_keys:
-                reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-            reset_data["dones"] = np.zeros((1, reset_envs, 1))
-            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
-            reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-            # Reset dones so that `is_first` is updated
-            for d in dones_idxes:
-                step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
-            # Reset internal agent states
-            player.init_states(reset_envs=dones_idxes)
+                if k in cfg.algo.cnn_keys.encoder:
+                    next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
+                    real_next_obs[k] = real_next_obs[k].reshape(cfg.env.num_envs, -1, *real_next_obs[k].shape[-2:])
+                step_data[k] = real_next_obs[k][np.newaxis]
+
+            # next_obs becomes the new obs
+            obs = next_obs
+
+            step_data["dones"] = dones[np.newaxis]
+            step_data["actions"] = actions[np.newaxis]
+            step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
+
+            # Reset and save the observation coming from the automatic reset
+            dones_idxes = dones.nonzero()[0].tolist()
+            reset_envs = len(dones_idxes)
+            if reset_envs > 0:
+                reset_data = {}
+                for k in obs_keys:
+                    reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
+                reset_data["dones"] = np.zeros((1, reset_envs, 1))
+                reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
+                reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+                rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
+                # Reset dones so that `is_first` is updated
+                for d in dones_idxes:
+                    step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                # Reset internal agent states
+                player.init_states(reset_envs=dones_idxes)
 
         updates_before_training -= 1
 
@@ -835,7 +835,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     # task test zero-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        player.actor = actor_task.module
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "zero-shot")
 

@@ -218,6 +218,7 @@ def test_ppo_recurrent(standard_args, start_time):
         "algo.per_rank_batch_size=1",
         "algo.per_rank_sequence_length=2",
         "algo.update_epochs=2",
+        "fabric.precision=32",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
