@@ -28,6 +28,7 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -1082,8 +1083,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     # task test zero-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        player.actor = actor_task
         player.actor_type = "task"
+        fabric_player = get_single_device_fabric(fabric)
+        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

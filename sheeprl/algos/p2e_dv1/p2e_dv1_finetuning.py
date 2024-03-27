@@ -19,6 +19,7 @@ from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -31,6 +32,9 @@ from sheeprl.utils.utils import polynomial_decay, save_configs
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
+    # Single-device fabric object
+    fabric_player = get_single_device_fabric(fabric)
+
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -345,8 +349,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         # Train the agent
         if update >= learning_starts and updates_before_training <= 0:
             if player.actor_type == "exploration":
-                player.actor = actor_task
                 player.actor_type = "task"
+                player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(cfg.algo.per_rank_gradient_steps):
                     sample = rb.sample_tensors(
@@ -451,8 +455,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     envs.close()
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        player.actor = actor_task
         player.actor_type = "task"
+        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
