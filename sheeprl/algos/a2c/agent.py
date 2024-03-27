@@ -9,6 +9,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
+from sheeprl.algos.ppo.agent import PPOActor
 from sheeprl.models.models import MLP
 from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -94,7 +95,7 @@ class A2CAgent(nn.Module):
         )
 
         # Actor
-        self.actor_backbone = MLP(
+        actor_backbone = MLP(
             input_dims=features_dim,
             output_dim=None,
             hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
@@ -109,19 +110,17 @@ class A2CAgent(nn.Module):
         )
         if is_continuous:
             # Output is a tuple of two elements: mean and log_std, one for every action
-            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
         else:
             # Output is a tuple of one element: logits, one for every action
-            self.actor_heads = nn.ModuleList(
-                [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
-            )
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous=is_continuous)
 
     def forward(
-        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
+        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None, greedy: bool = False
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
         feat = self.feature_extractor(obs)
-        out: Tensor = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
+        pre_dist: List[Tensor] = self.actor(feat)
         values = self.critic(feat)
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
@@ -132,7 +131,7 @@ class A2CAgent(nn.Module):
                 validate_args=self.distribution_cfg.validate_args,
             )
             if actions is None:
-                actions = normal.sample()
+                actions = normal.mode if greedy else normal.sample()
             else:
                 # always composed by a tuple of one element containing all the
                 # continuous actions
@@ -151,29 +150,13 @@ class A2CAgent(nn.Module):
                     OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 )
                 if should_append:
-                    actions.append(actions_dist[-1].sample())
+                    actions.append(actions_dist[-1].mode if greedy else actions_dist[-1].sample())
                 actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
             return tuple(actions), torch.stack(actions_logprobs, dim=-1).sum(dim=-1, keepdim=True), values
 
     def get_value(self, obs: Dict[str, Tensor]) -> Tensor:
         feat = self.feature_extractor(obs)
         return self.critic(feat)
-
-    def get_greedy_actions(self, obs: Dict[str, Tensor]) -> Sequence[Tensor]:
-        feat = self.feature_extractor(obs)
-        out = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
-        if self.is_continuous:
-            # Just take the mean of the distribution
-            return [torch.chunk(pre_dist[0], 2, -1)[0]]
-        else:
-            # Take the mode of the distribution
-            return tuple(
-                [
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
-                    for logits in pre_dist
-                ]
-            )
 
 
 def build_agent(

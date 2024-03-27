@@ -191,32 +191,8 @@ class RecurrentPPOAgent(nn.Module):
         )
         return states
 
-    def get_greedy_actions(
-        self,
-        obs: Dict[str, Tensor],
-        prev_states: Tuple[Tensor, Tensor],
-        prev_actions: Tensor,
-        mask: Optional[Tensor] = None,
-    ) -> Tuple[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
-        embedded_obs = self.feature_extractor(obs)
-        out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
-        pre_dist = self.get_pre_dist(out)
-        actions = []
-        if self.is_continuous:
-            dist = Independent(
-                Normal(*pre_dist, validate_args=self.distribution_cfg.validate_args),
-                1,
-                validate_args=self.distribution_cfg.validate_args,
-            )
-            actions.append(dist.mode)
-        else:
-            for logits in pre_dist:
-                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
-                actions.append(dist.mode)
-        return tuple(actions), states
-
-    def get_sampled_actions(
-        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
+    def get_actions(
+        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None, greedy: bool = False
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor]:
         logprobs = []
         entropies = []
@@ -228,19 +204,16 @@ class RecurrentPPOAgent(nn.Module):
                 validate_args=self.distribution_cfg.validate_args,
             )
             if actions is None:
-                actions = dist.sample()
+                sampled_actions.append(dist.mode if greedy else dist.sample())
             else:
-                # always composed by a tuple of one element containing all the
-                # continuous actions
-                actions = actions[0]
-            sampled_actions.append(actions)
+                sampled_actions.append(actions[0])
             entropies.append(dist.entropy())
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
                 if actions is None:
-                    sampled_actions.append(dist.sample())
+                    sampled_actions.append(dist.mode if greedy else dist.sample())
                 else:
                     sampled_actions.append(actions[i])
                 entropies.append(dist.entropy())

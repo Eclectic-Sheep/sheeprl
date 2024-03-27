@@ -41,7 +41,7 @@ def test(agent: PPOAgent | _FabricModule, fabric: Fabric, cfg: Dict[str, Any], l
 
     while not done:
         # Act greedly through the environment
-        actions = agent.get_greedy_actions(obs)
+        actions, _, _, _ = agent(obs, greedy=True)
         if agent.is_continuous:
             actions = torch.cat(actions, dim=-1)
         else:

@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 import torch
 from lightning import Fabric
+from lightning.fabric.wrappers import _FabricModule
 
 from sheeprl.algos.a2c.agent import A2CAgent
 from sheeprl.utils.env import make_env
@@ -10,7 +11,7 @@ AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Los
 
 
 @torch.no_grad()
-def test(agent: A2CAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: A2CAgent | _FabricModule, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -25,10 +26,11 @@ def test(agent: A2CAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
 
     while not done:
         # Act greedly through the environment
+        actions, _, _ = agent(obs, greedy=True)
         if agent.is_continuous:
-            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+            actions = torch.cat(actions, dim=-1)
         else:
-            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+            actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))

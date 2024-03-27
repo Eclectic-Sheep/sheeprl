@@ -258,7 +258,9 @@ class SACAEContinuousActor(nn.Module):
         # Orthogonal init
         self.apply(weight_init)
 
-    def forward(self, obs: Tensor, detach_encoder_features: bool = False) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, obs: Tensor, detach_encoder_features: bool = False, greedy: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -273,11 +275,14 @@ class SACAEContinuousActor(nn.Module):
         features = self.encoder(obs, detach_encoder_features=detach_encoder_features)
         x = self.model(features)
         mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
-        # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
-        return self.get_actions_and_log_probs(mean, log_std.exp())
+        if greedy:
+            return torch.tanh(mean) * self.action_scale + self.action_bias
+        else:
+            log_std = self.fc_logstd(x)
+            # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+            log_std = torch.tanh(log_std)
+            log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+            return self.get_actions_and_log_probs(mean, log_std.exp())
 
     def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
@@ -312,21 +317,6 @@ class SACAEContinuousActor(nn.Module):
         log_prob = log_prob.sum(-1, keepdim=True)
 
         return action, log_prob
-
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        """Get the action given the input observation greedily
-
-        Args:
-            obs (Tensor): input observation
-
-        Returns:
-            action
-        """
-        features = self.encoder(obs)
-        x = self.model(features)
-        mean = self.fc_mean(x)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return mean
 
 
 class SACAEAgent(nn.Module):

@@ -26,12 +26,14 @@ def standard_args():
         "hydra/hydra_logging=disabled",
         "dry_run=True",
         "checkpoint.save_last=False",
-        "metric.log_level=0",
-        "metric.disable_timer=True",
         "env.num_envs=1",
-        "fabric.devices=auto",
         f"env.sync_env={_IS_WINDOWS}",
         "env.capture_video=False",
+        "fabric.devices=auto",
+        "fabric.accelerator=cpu",
+        "fabric.precision=bf16-true",
+        "metric.log_level=0",
+        "metric.disable_timer=True",
     ]
     if os.environ.get("MLFLOW_TRACKING_URI", None) is not None:
         args.extend(["logger@metric.logger=mlflow", "model_manager.disabled=False", "metric.log_level=1"])
@@ -45,7 +47,6 @@ def start_time():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    os.environ["LT_ACCELERATOR"] = "cpu"
     os.environ["LT_DEVICES"] = str(devices)
     if _IS_WINDOWS and devices != "1":
         pytest.skip()

@@ -206,19 +206,6 @@ class PPOAgent(nn.Module):
         feat = self.feature_extractor(obs)
         return self.critic(feat)
 
-    def get_greedy_actions(self, obs: Dict[str, Tensor]) -> Sequence[Tensor]:
-        feat = self.feature_extractor(obs)
-        actor_out: List[Tensor] = self.actor(feat)
-        if self.actor.is_continuous:
-            return [torch.chunk(actor_out[0], 2, -1)[0]]
-        else:
-            return tuple(
-                [
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
-                    for logits in actor_out
-                ]
-            )
-
 
 def build_agent(
     fabric: Fabric,
