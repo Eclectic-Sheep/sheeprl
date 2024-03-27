@@ -345,6 +345,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         # Train the agent
         if update >= learning_starts and updates_before_training <= 0:
             if player.actor_type == "exploration":
+                player.actor = actor_task
                 player.actor_type = "task"
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(cfg.algo.per_rank_gradient_steps):
@@ -450,6 +451,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     envs.close()
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
+        player.actor = actor_task
         player.actor_type = "task"
         test(player, fabric, cfg, log_dir, "few-shot")
 
