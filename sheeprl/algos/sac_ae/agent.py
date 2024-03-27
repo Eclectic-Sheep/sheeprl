@@ -13,6 +13,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
@@ -562,6 +563,10 @@ def build_agent(
     decoder = fabric.setup_module(decoder)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critic = fabric.setup_module(agent.critic)
-    agent.critic_target = _FabricModule(agent.critic_target, precision=fabric._precision)
+
+    # Wrap the target critic with a single-device fabric. This lets the target critic
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.critic_target = fabric_player.setup_module(agent.critic_target)
 
     return agent, encoder, decoder

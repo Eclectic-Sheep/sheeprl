@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -299,8 +300,10 @@ def build_agent(
         agent.load_state_dict(agent_state)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
-    agent.qfs_target = nn.ModuleList(
-        [_FabricModule(target, precision=fabric._precision) for target in agent._qfs_target]
-    )
+
+    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     return agent
