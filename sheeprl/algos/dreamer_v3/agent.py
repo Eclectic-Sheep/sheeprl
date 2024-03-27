@@ -20,13 +20,13 @@ from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs, OneHotCategoricalValidateArgs
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.utils.model import LayerNormChannelLast, LayerNormFP32, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
 class CNNEncoder(nn.Module):
     """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
+    kernel_size=3, stride=2 and padding=1. No bias is used if a `LayerNormFP32`
     is used after the convolution. This 4-stages model assumes that the image
     is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
     be concatenated on the channel dimension and fed to the encoder.
@@ -83,7 +83,7 @@ class CNNEncoder(nn.Module):
 
 class MLPEncoder(nn.Module):
     """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    N is specified by `mlp_layers`. No bias is used if a `LayerNormFP32` is used after the linear layer.
     If more than one vector is to be encoded, then those will concatenated on the last
     dimension before being fed to the encoder.
 
@@ -121,7 +121,7 @@ class MLPEncoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_layer=[LayerNormFP32 for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=(
                 [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
             ),
@@ -138,7 +138,7 @@ class CNNDecoder(nn.Module):
     """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
     of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
     images are to be reconstructed, then it will create a dictionary with an entry
-    for every reconstructed image. No bias is used if a `nn.LayerNorm` is used after
+    for every reconstructed image. No bias is used if a `LayerNormFP32` is used after
     the `nn.Conv2dTranspose` layer.
 
     Args:
@@ -211,7 +211,7 @@ class CNNDecoder(nn.Module):
 
 class MLPDecoder(nn.Module):
     """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    N is specified by `mlp_layers`. No bias is used if a `LayerNormFP32` is used after the linear layer.
     If more than one vector is to be decoded, then it will create a dictionary with an entry
     for every reconstructed vector.
 
@@ -248,7 +248,7 @@ class MLPDecoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_layer=[LayerNormFP32 for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=(
                 [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
             ),
@@ -263,7 +263,7 @@ class MLPDecoder(nn.Module):
 class RecurrentModel(nn.Module):
     """Recurrent model for the model-base Dreamer-V3 agent.
     This implementation uses the `sheeprl.models.models.LayerNormGRUCell`, which combines
-    the standard GRUCell from PyTorch with the `nn.LayerNorm`, where the normalization is applied
+    the standard GRUCell from PyTorch with the `LayerNormFP32`, where the normalization is applied
     right after having computed the projection from the input to the weight space.
 
     Args:
@@ -291,10 +291,18 @@ class RecurrentModel(nn.Module):
             hidden_sizes=[dense_units],
             activation=activation_fn,
             layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm] if layer_norm else None,
+            norm_layer=[LayerNormFP32] if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units, "eps": 1e-3}] if layer_norm else None,
         )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True)
+        self.rnn = LayerNormGRUCell(
+            dense_units,
+            recurrent_state_size,
+            bias=False,
+            batch_first=False,
+            layer_norm=True,
+            layer_norm_kwargs={"eps": 1e-3},
+        )
+        self.recurrent_state_size = recurrent_state_size
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
@@ -335,7 +343,7 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
+        recurrent_model: RecurrentModel,
         representation_model: nn.Module,
         transition_model: nn.Module,
         distribution_cfg: Dict[str, Any],
@@ -349,6 +357,14 @@ class RSSM(nn.Module):
         self.discrete = discrete
         self.unimix = unimix
         self.distribution_cfg = distribution_cfg
+        self.initial_recurrent_state = nn.Parameter(
+            torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+        )
+
+    def get_initial_states(self, batch_shape: Sequence[int] | torch.Size) -> Tuple[Tensor, Tensor]:
+        initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
+        initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
+        return initial_recurrent_state, initial_posterior
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -380,11 +396,14 @@ class RSSM(nn.Module):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
+
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
@@ -583,18 +602,7 @@ class PlayerDV3(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = encoder
-        if decoupled_rssm:
-            rssm_cls = DecoupledRSSM
-        else:
-            rssm_cls = RSSM
-        self.rssm = rssm_cls(
-            recurrent_model=rssm.recurrent_model.module,
-            representation_model=rssm.representation_model.module,
-            transition_model=rssm.transition_model.module,
-            distribution_cfg=actor.distribution_cfg,
-            discrete=rssm.discrete,
-            unimix=rssm.unimix,
-        )
+        self.rssm = rssm
         self.actor = actor
         self.device = device
         self.actions_dim = actions_dim
@@ -617,18 +625,12 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.tanh(
-                torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            )
-            self.stochastic_state = self.rssm._transition(self.recurrent_state, sample_state=False)[1].reshape(
-                1, self.num_envs, -1
-            )
+            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.tanh(torch.zeros_like(self.recurrent_state[:, reset_envs]))
-            self.stochastic_state[:, reset_envs] = self.rssm._transition(
-                self.recurrent_state[:, reset_envs], sample_state=False
-            )[1].reshape(1, len(reset_envs), -1)
+            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
 
     def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
         """
@@ -756,7 +758,7 @@ class Actor(nn.Module):
             activation=activation,
             flatten_dim=None,
             layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_layer=[LayerNormFP32 for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=(
                 [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
             ),
@@ -1092,9 +1094,9 @@ def build_agent(
         activation=eval(world_model_cfg.representation_model.dense_act),
         layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
+        norm_layer=[LayerNormFP32] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size, "eps": 1e-3}]
             if world_model_cfg.representation_model.layer_norm
             else None
         ),
@@ -1106,9 +1108,9 @@ def build_agent(
         activation=eval(world_model_cfg.transition_model.dense_act),
         layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
+        norm_layer=[LayerNormFP32] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size, "eps": 1e-3}]
             if world_model_cfg.transition_model.layer_norm
             else None
         ),
@@ -1124,7 +1126,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
-    )
+    ).to(fabric.device)
     cnn_decoder = (
         CNNDecoder(
             keys=cfg.algo.cnn_keys.decoder,
@@ -1162,13 +1164,13 @@ def build_agent(
         layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
         flatten_dim=None,
         norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+            [LayerNormFP32 for _ in range(world_model_cfg.reward_model.mlp_layers)]
             if world_model_cfg.reward_model.layer_norm
             else None
         ),
         norm_args=(
             [
-                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                {"normalized_shape": world_model_cfg.reward_model.dense_units, "eps": 1e-3}
                 for _ in range(world_model_cfg.reward_model.mlp_layers)
             ]
             if world_model_cfg.reward_model.layer_norm
@@ -1183,13 +1185,13 @@ def build_agent(
         layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
         flatten_dim=None,
         norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+            [LayerNormFP32 for _ in range(world_model_cfg.discount_model.mlp_layers)]
             if world_model_cfg.discount_model.layer_norm
             else None
         ),
         norm_args=(
             [
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                {"normalized_shape": world_model_cfg.discount_model.dense_units, "eps": 1e-3}
                 for _ in range(world_model_cfg.discount_model.mlp_layers)
             ]
             if world_model_cfg.discount_model.layer_norm
@@ -1225,9 +1227,9 @@ def build_agent(
         activation=eval(critic_cfg.dense_act),
         layer_args={"bias": not critic_cfg.layer_norm},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
+        norm_layer=[LayerNormFP32 for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            [{"normalized_shape": critic_cfg.dense_units, "eps": 1e-3} for _ in range(critic_cfg.mlp_layers)]
             if critic_cfg.layer_norm
             else None
         ),

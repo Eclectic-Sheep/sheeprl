@@ -28,7 +28,7 @@ buffer:
 
 # Algorithm
 algo:
-  train_every: 16
+  replay_ratio: 0.015625
   learning_starts: 65536
   cnn_keys:
     encoder:

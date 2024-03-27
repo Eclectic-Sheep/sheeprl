@@ -38,7 +38,7 @@ algo:
   total_steps: 10000000
   per_rank_batch_size: 8
   learning_starts: 65536
-  train_every: 8
+  replay_ratio: 0.125
   cnn_keys:
     encoder:
       - frame

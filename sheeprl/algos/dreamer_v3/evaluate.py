@@ -54,9 +54,9 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         state["actor"],
     )
     player = PlayerDV3(
-        world_model.encoder.module,
+        world_model.encoder,
         world_model.rssm,
-        actor.module,
+        actor,
         actions_dim,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,

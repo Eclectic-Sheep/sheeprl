@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import rich.syntax
@@ -195,3 +195,34 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
 
 def save_configs(cfg: dotdict, log_dir: str):
     OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)
+
+
+class Ratio:
+    """Directly taken from Hafner et al. (2023) implementation:
+    https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/embodied/core/when.py#L26
+    """
+
+    def __init__(self, ratio: float):
+        if ratio < 0:
+            raise ValueError(f"Ratio must be non-negative, got {ratio}")
+        self._ratio: float = ratio
+        self._prev: float | None = None
+
+    def __call__(self, step: float):
+        step = int(step)
+        if self._ratio == 0:
+            return 0
+        if self._prev is None:
+            self._prev = step
+            return 1
+        repeats = round((step - self._prev) * self._ratio)
+        self._prev += repeats / self._ratio
+        return repeats
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {"_ratio": self._ratio, "_prev": self._prev}
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]):
+        self._ratio = state_dict["_ratio"]
+        self._prev = state_dict["_prev"]
+        return self

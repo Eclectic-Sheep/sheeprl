@@ -1,15 +1,16 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 import warnings
 from math import prod
-from typing import Dict, Optional, Sequence, Union, no_type_check
+from typing import Any, Dict, Optional, Sequence, Union, no_type_check
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from sheeprl.utils.model import ArgsType, ModuleType, cnn_forward, create_layers, miniblock
+from sheeprl.utils.model import ArgsType, LayerNormFP32, ModuleType, cnn_forward, create_layers, miniblock
 
 
 class MLP(nn.Module):
@@ -346,7 +347,13 @@ class LayerNormGRUCell(nn.Module):
     """
 
     def __init__(
-        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
+        self,
+        input_size: int,
+        hidden_size: int,
+        bias: bool = True,
+        batch_first: bool = False,
+        layer_norm: bool = False,
+        layer_norm_kwargs: Dict[str, Any] = {},
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -355,7 +362,7 @@ class LayerNormGRUCell(nn.Module):
         self.batch_first = batch_first
         self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
         if layer_norm:
-            self.layer_norm = torch.nn.LayerNorm(3 * hidden_size)
+            self.layer_norm = LayerNormFP32(3 * hidden_size, **layer_norm_kwargs)
         else:
             self.layer_norm = nn.Identity()
 

@@ -28,7 +28,7 @@ algo:
   mlp_keys:
     encoder: []
   learning_starts: 16384
-  train_every: 4
+  replay_ratio: 0.25
 
 # Metric
 metric:

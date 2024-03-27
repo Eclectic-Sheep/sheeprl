@@ -30,6 +30,5 @@ buffer:
 
 # Algorithm
 algo:
-  train_every: 1
   total_steps: 100000
   learning_starts: 1024
