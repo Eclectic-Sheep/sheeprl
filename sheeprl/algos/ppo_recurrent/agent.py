@@ -203,19 +203,25 @@ class RecurrentPPOAgent(nn.Module):
                 1,
                 validate_args=self.distribution_cfg.validate_args,
             )
-            if actions is None:
-                sampled_actions.append(dist.mode if greedy else dist.sample())
+            if greedy:
+                sampled_actions.append(dist.mode)
             else:
-                sampled_actions.append(actions[0])
+                if actions is None:
+                    sampled_actions.append(dist.sample())
+                else:
+                    sampled_actions.append(actions[0])
             entropies.append(dist.entropy())
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
-                if actions is None:
-                    sampled_actions.append(dist.mode if greedy else dist.sample())
+                if greedy:
+                    sampled_actions.append(dist.mode)
                 else:
-                    sampled_actions.append(actions[i])
+                    if actions is None:
+                        sampled_actions.append(dist.sample())
+                    else:
+                        sampled_actions.append(actions[i])
                 entropies.append(dist.entropy())
                 logprobs.append(dist.log_prob(sampled_actions[-1]))
         return (
@@ -243,6 +249,7 @@ class RecurrentPPOAgent(nn.Module):
         prev_states: Tuple[Tensor, Tensor],
         actions: Optional[List[Tensor]] = None,
         mask: Optional[Tensor] = None,
+        greedy: bool = False,
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """Compute actor logits and critic values.
 
@@ -264,7 +271,7 @@ class RecurrentPPOAgent(nn.Module):
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         values = self.get_values(out)
         pre_dist = self.get_pre_dist(out)
-        actions, logprobs, entropies = self.get_sampled_actions(pre_dist, actions)
+        actions, logprobs, entropies = self.get_actions(pre_dist, actions, greedy=greedy)
         return actions, logprobs, entropies, values, states
 
 

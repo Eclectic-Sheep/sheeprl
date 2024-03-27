@@ -47,7 +47,7 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_di
         actions = torch.zeros(1, 1, sum(agent.actions_dim), device=fabric.device)
     while not done:
         # Act greedly through the environment
-        actions, _, _, _, state = agent(next_obs, state, actions, greedy=True)
+        actions, _, _, _, state = agent(next_obs, actions, state, greedy=True)
         if agent.is_continuous:
             real_actions = torch.cat(actions, -1)
             actions = torch.cat(actions, dim=-1).view(1, 1, -1)
