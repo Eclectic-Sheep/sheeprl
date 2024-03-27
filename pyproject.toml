@@ -64,7 +64,7 @@ homepage = "https://eclecticsheep.ai"
 repository = "https://github.com/Eclectic-Sheep/sheeprl"
 
 [project.optional-dependencies]
-test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage"]
+test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage", "importlib-resources>=6.2.0"]
 dev = [
   "pre-commit==3.5.0",
   "mypy==1.2.0",
