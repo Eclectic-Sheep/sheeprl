@@ -26,6 +26,7 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -207,6 +208,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["encoder"] if cfg.checkpoint.resume_from else None,
         state["decoder"] if cfg.checkpoint.resume_from else None,
     )
+    fabric_player = get_single_device_fabric(fabric)
+    actor = fabric_player.setup_module(agent.actor.module)
 
     # Optimizers
     qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters(), _convert_="all")
@@ -313,10 +316,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             if update < learning_starts:
                 actions = envs.action_space.sample()
             else:
-                with torch.no_grad():
+                with torch.inference_mode():
                     normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
                     torch_obs = {k: torch.from_numpy(v).to(device).float() for k, v in normalized_obs.items()}
-                    actions, _ = agent.actor.module(torch_obs)
+                    actions, _ = actor(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             dones = np.logical_or(dones, truncated)
@@ -471,7 +474,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.actor.module, fabric, cfg, log_dir)
+        test(actor, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac_ae.utils import log_models

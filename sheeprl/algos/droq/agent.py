@@ -11,6 +11,7 @@ from torch import Tensor
 
 from sheeprl.algos.sac.agent import SACActor
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -154,6 +155,11 @@ class DROQAgent(nn.Module):
     def qfs_target(self) -> nn.ModuleList:
         return self._qfs_target
 
+    @qfs_target.setter
+    def qfs_target(self, qfs_target: nn.ModuleList) -> None:
+        self._qfs_target = qfs_target
+        return
+
     @property
     def alpha(self) -> float:
         return self._log_alpha.exp().item()
@@ -237,5 +243,10 @@ def build_agent(
         agent.load_state_dict(agent_state)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+
+    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     return agent

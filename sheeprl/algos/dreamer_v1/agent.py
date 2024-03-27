@@ -17,6 +17,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -221,45 +222,54 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        fabric (Fabric): the fabric object.
+        encoder (nn.Module| _FabricModule): the encoder.
+        recurrent_model (nn.Module| _FabricModule): the recurrent model.
+        representation_model (nn.Module| _FabricModule): the representation model.
+        actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
 
     def __init__(
         self,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        fabric: Fabric,
+        encoder: nn.Module | _FabricModule,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.actor = actor
-        self.device = device
+        single_device_fabric = get_single_device_fabric(fabric)
+        self.encoder = single_device_fabric.setup_module(
+            getattr(encoder, "module", encoder),
+        )
+        self.recurrent_model = single_device_fabric.setup_module(
+            getattr(recurrent_model, "module", recurrent_model),
+        )
+        self.representation_model = single_device_fabric.setup_module(
+            getattr(representation_model, "module", representation_model)
+        )
+        self.actor = single_device_fabric.setup_module(
+            getattr(actor, "module", actor),
+        )
+        self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
-        self.init_states()
         self.actor_type = actor_type
+        self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.

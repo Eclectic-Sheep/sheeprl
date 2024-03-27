@@ -15,6 +15,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
@@ -73,6 +74,9 @@ class CNNEncoder(CNN):
         return self._conv_output_shape
 
     def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
         x = torch.cat([obs[k] for k in self.keys], dim=-3)
         x = cnn_forward(self.model, x, x.shape[-3:], (-1,))
         if detach_encoder_features:
@@ -104,7 +108,10 @@ class MLPEncoder(nn.Module):
         self.input_dim = input_dim
 
     def forward(self, obs: Dict[str, Tensor], *args, detach_encoder_features: bool = False, **kwargs) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-1).type(torch.float32)
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
+        x = torch.cat([obs[k] for k in self.keys], dim=-1)
         x = self.model(x)
         if detach_encoder_features:
             x = x.detach()
@@ -254,7 +261,9 @@ class SACAEContinuousActor(nn.Module):
         # Orthogonal init
         self.apply(weight_init)
 
-    def forward(self, obs: Tensor, detach_encoder_features: bool = False) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, obs: Tensor, detach_encoder_features: bool = False, greedy: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -269,11 +278,14 @@ class SACAEContinuousActor(nn.Module):
         features = self.encoder(obs, detach_encoder_features=detach_encoder_features)
         x = self.model(features)
         mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
-        # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
-        return self.get_actions_and_log_probs(mean, log_std.exp())
+        if greedy:
+            return torch.tanh(mean) * self.action_scale + self.action_bias
+        else:
+            log_std = self.fc_logstd(x)
+            # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+            log_std = torch.tanh(log_std)
+            log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+            return self.get_actions_and_log_probs(mean, log_std.exp())
 
     def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
@@ -308,21 +320,6 @@ class SACAEContinuousActor(nn.Module):
         log_prob = log_prob.sum(-1, keepdim=True)
 
         return action, log_prob
-
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        """Get the action given the input observation greedily
-
-        Args:
-            obs (Tensor): input observation
-
-        Returns:
-            action
-        """
-        features = self.encoder(obs)
-        x = self.model(features)
-        mean = self.fc_mean(x)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return mean
 
 
 class SACAEAgent(nn.Module):
@@ -407,6 +404,11 @@ class SACAEAgent(nn.Module):
     @property
     def critic_target(self) -> SACAECritic:
         return self._critic_target
+
+    @critic_target.setter
+    def critic_target(self, critic_target: SACAECritic | _FabricModule) -> None:
+        self._critic_target = critic_target
+        return
 
     @property
     def alpha(self) -> float:
@@ -563,5 +565,10 @@ def build_agent(
     decoder = fabric.setup_module(decoder)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critic = fabric.setup_module(agent.critic)
+
+    # Wrap the target critic with a single-device fabric. This lets the target critic
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.critic_target = fabric_player.setup_module(agent.critic_target)
 
     return agent, encoder, decoder
