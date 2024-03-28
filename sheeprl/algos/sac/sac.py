@@ -27,7 +27,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import save_configs
+from sheeprl.utils.utils import Ratio, save_configs
 
 
 def train(
@@ -211,6 +211,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if not cfg.buffer.checkpoint:
             learning_starts += start_step
 
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
+
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -232,6 +237,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs = envs.reset(seed=cfg.seed)[0]
     obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
+    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
@@ -282,12 +289,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        if update >= learning_starts:
-            training_steps = learning_starts if update == learning_starts else 1
-
+        per_rank_gradient_steps = ratio(policy_step / world_size)
+        if update >= learning_starts and per_rank_gradient_steps > 0:
             # We sample one time to reduce the communications between processes
             sample = rb.sample_tensors(
-                batch_size=training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
+                batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
                 sample_next_obs=cfg.buffer.sample_next_obs,
                 dtype=None,
                 device=device,
@@ -334,6 +340,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         cfg,
                         policy_steps_per_update,
                     )
+                    cumulative_per_rank_gradient_steps += 1
                 train_step += world_size
 
         # Log metrics
@@ -343,6 +350,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:
@@ -376,6 +388,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
+                "ratio": ratio.state_dict(),
                 "update": update * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,

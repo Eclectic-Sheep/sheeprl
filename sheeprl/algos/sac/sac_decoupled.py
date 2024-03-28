@@ -26,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import save_configs
+from sheeprl.utils.utils import Ratio, save_configs
 
 
 @torch.inference_mode()
@@ -149,6 +149,11 @@ def player(
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
 
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
+
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -170,6 +175,8 @@ def player(
     obs = envs.reset(seed=cfg.seed)[0]
     obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
+    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs
 
@@ -219,7 +226,9 @@ def player(
         obs = next_obs
 
         # Send data to the training agents
-        if update >= learning_starts:
+        per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
+        cumulative_per_rank_gradient_steps += per_rank_gradient_steps
+        if update >= learning_starts and per_rank_gradient_steps > 0:
             # Send local info to the trainers
             if not first_info_sent:
                 world_collective.broadcast_object_list(
@@ -228,12 +237,8 @@ def player(
                 first_info_sent = True
 
             # Sample data to be sent to the trainers
-            training_steps = learning_starts if update == learning_starts else 1
             sample = rb.sample_tensors(
-                batch_size=training_steps
-                * cfg.algo.per_rank_gradient_steps
-                * cfg.algo.per_rank_batch_size
-                * (fabric.world_size - 1),
+                batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size * (fabric.world_size - 1),
                 sample_next_obs=cfg.buffer.sample_next_obs,
                 dtype=None,
                 device=device,
@@ -241,8 +246,7 @@ def player(
             )
             # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
             chunks = {
-                k: v.float().split(training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
-                for k, v in sample.items()
+                k: v.float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size) for k, v in sample.items()
             }
             # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
             chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
@@ -268,6 +272,13 @@ def player(
             if aggregator and not aggregator.disabled:
                 fabric.log_dict(aggregator.compute(), policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio",
+                cumulative_per_rank_gradient_steps * (fabric.world_size - 1) / policy_step,
+                policy_step,
+            )
 
             # Sync timers
             if not timer.disabled:
@@ -401,7 +412,7 @@ def trainer(
     if not MetricAggregator.disabled:
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
-    # Receive data from player reagrding the:
+    # Receive data from player regarding the:
     # * update
     # * last_log
     # * last_checkpoint
