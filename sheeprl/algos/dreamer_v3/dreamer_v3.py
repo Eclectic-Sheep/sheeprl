@@ -685,7 +685,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 player.init_states(dones_idxes)
 
         # Train the agent
-        repeats = ratio(policy_step)
+        repeats = ratio(policy_step / world_size)
         if update >= learning_starts and repeats > 0:
             local_data = rb.sample_tensors(
                 cfg.algo.per_rank_batch_size,
