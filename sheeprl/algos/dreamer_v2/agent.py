@@ -566,9 +566,9 @@ class Actor(nn.Module):
     def add_exploration_noise(
         self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         if self.is_continuous:
             actions = torch.cat(actions, -1)
-            expl_amount = self._get_expl_amount(step)
             if expl_amount > 0.0:
                 actions = torch.clip(Normal(actions, expl_amount).sample(), -1, 1)
             expl_actions = [actions]
@@ -581,7 +581,7 @@ class Actor(nn.Module):
                     .to(act.device)
                 )
                 expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
+                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
                 )
         return tuple(expl_actions)
 

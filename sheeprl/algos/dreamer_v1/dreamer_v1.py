@@ -684,16 +684,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if update >= learning_starts and repeats > 0:
             # Start training
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                sample = rb.sample_tensors(
+                    batch_size=cfg.algo.per_rank_batch_size,
+                    sequence_length=cfg.algo.per_rank_sequence_length,
+                    n_samples=repeats,
+                    dtype=None,
+                    device=device,
+                    from_numpy=cfg.buffer.from_numpy,
+                )  # [N_samples, Seq_len, Batch_size, ...]
                 for i in range(repeats):
-                    sample = rb.sample_tensors(
-                        batch_size=cfg.algo.per_rank_batch_size,
-                        sequence_length=cfg.algo.per_rank_sequence_length,
-                        n_samples=1,
-                        dtype=None,
-                        device=device,
-                        from_numpy=cfg.buffer.from_numpy,
-                    )  # [N_samples, Seq_len, Batch_size, ...]
-                    batch = {k: v[0].float() for k, v in sample.items()}
+                    batch = {k: v[i].float() for k, v in sample.items()}
                     train(
                         fabric,
                         world_model,

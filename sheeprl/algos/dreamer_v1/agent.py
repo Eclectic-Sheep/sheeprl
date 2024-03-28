@@ -241,7 +241,7 @@ class PlayerDV1(nn.Module):
         encoder: nn.Module | _FabricModule,
         recurrent_model: nn.Module | _FabricModule,
         representation_model: nn.Module | _FabricModule,
-        actor: nn.Module | _FabricModule,
+        actor: DV2Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
