@@ -28,8 +28,6 @@ AGGREGATOR_KEYS = {
     "Loss/continue_loss",
     "Loss/ensemble_loss",
     "State/kl",
-    "Params/exploration_amount_task",
-    "Params/exploration_amount_exploration",
     "State/post_entropy",
     "State/prior_entropy",
     "Grads/world_model",
