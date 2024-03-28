@@ -14,6 +14,7 @@ from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -116,9 +117,11 @@ def build_agent(
         activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor_task.apply(init_weights)
     critic_task.apply(init_weights)
@@ -135,6 +138,8 @@ def build_agent(
     target_critic_task = copy.deepcopy(critic_task.module)
     if target_critic_task_state:
         target_critic_task.load_state_dict(target_critic_task_state)
+    single_device_fabric = get_single_device_fabric(fabric)
+    target_critic_task = single_device_fabric.setup_module(target_critic_task)
 
     # initialize the ensembles with different seeds to be sure they have different weights
     ens_list = []

@@ -22,6 +22,7 @@ from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -146,6 +147,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     agent = build_agent(
         fabric, cfg, observation_space, action_space, state["agent"] if cfg.checkpoint.resume_from else None
     )
+    fabric_player = get_single_device_fabric(fabric)
+    actor = fabric_player.setup_module(agent.actor.module)
 
     # Optimizers
     qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all")
@@ -239,9 +242,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                with torch.no_grad():
+                with torch.inference_mode():
                     torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                    actions, _ = agent.actor.module(torch_obs)
+                    actions, _ = actor(torch_obs)
                     actions = actions.cpu().numpy()
             next_obs, rewards, dones, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
@@ -389,7 +392,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.actor.module, fabric, cfg, log_dir)
+        test(actor, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac.utils import log_models

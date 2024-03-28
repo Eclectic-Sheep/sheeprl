@@ -45,7 +45,7 @@ def test(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log
 
     while not done:
         # Act greedly through the environment
-        action = actor.get_greedy_actions(next_obs)
+        action = actor(next_obs, greedy=True)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(action.cpu().numpy().reshape(env.action_space.shape))
