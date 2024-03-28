@@ -588,6 +588,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
+    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
@@ -680,19 +682,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 # Reset internal agent states
                 player.init_states(reset_envs=dones_idxes)
 
-        repeats = ratio(policy_step / world_size)
-        if update >= learning_starts and repeats > 0:
+        per_rank_gradient_steps = ratio(policy_step / world_size)
+        if update >= learning_starts and per_rank_gradient_steps > 0:
             # Start training
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 sample = rb.sample_tensors(
                     batch_size=cfg.algo.per_rank_batch_size,
                     sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=repeats,
+                    n_samples=per_rank_gradient_steps,
                     dtype=None,
                     device=device,
                     from_numpy=cfg.buffer.from_numpy,
                 )  # [N_samples, Seq_len, Batch_size, ...]
-                for i in range(repeats):
+                for i in range(per_rank_gradient_steps):
                     batch = {k: v[i].float() for k, v in sample.items()}
                     train(
                         fabric,
@@ -706,6 +708,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         aggregator,
                         cfg,
                     )
+                    cumulative_per_rank_gradient_steps += 1
                 train_step += world_size
             if aggregator:
                 aggregator.update("Params/exploration_amount", actor._get_expl_amount(policy_step))
@@ -717,6 +720,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:

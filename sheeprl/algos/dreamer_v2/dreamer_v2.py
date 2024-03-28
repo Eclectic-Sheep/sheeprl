@@ -622,6 +622,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     player.init_states()
 
     per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
@@ -717,9 +718,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 player.init_states(dones_idxes)
 
         # Train the agent
-        repeats = ratio(policy_step / world_size)
-        if update >= learning_starts and repeats > 0:
-            n_samples = cfg.algo.per_rank_pretrain_steps if update == learning_starts else ratio
+        per_rank_gradient_steps = ratio(policy_step / world_size)
+        if update >= learning_starts and per_rank_gradient_steps > 0:
+            n_samples = cfg.algo.per_rank_pretrain_steps if update == learning_starts else per_rank_gradient_steps
             local_data = rb.sample_tensors(
                 batch_size=cfg.algo.per_rank_batch_size,
                 sequence_length=cfg.algo.per_rank_sequence_length,
@@ -730,7 +731,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             )
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(n_samples):
-                    if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         for cp, tcp in zip(critic.module.parameters(), target_critic.module.parameters()):
                             tcp.data.copy_(cp.data)
                     batch = {k: v[i].float() for k, v in local_data.items()}
@@ -748,7 +749,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         cfg,
                         actions_dim,
                     )
-                    per_rank_gradient_steps += 1
+                    cumulative_per_rank_gradient_steps += 1
                 train_step += world_size
 
         # Log metrics
@@ -760,7 +761,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 aggregator.reset()
 
             # Log replay ratio
-            fabric.log("Params/replay_ratio", per_rank_gradient_steps * world_size / policy_step, policy_step)
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:
