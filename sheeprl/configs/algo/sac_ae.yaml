@@ -7,6 +7,7 @@ defaults:
 name: sac_ae
 
 # Training recipe
+replay_ratio: 1.0
 learning_starts: 1000
 
 # Model related parameters
@@ -53,12 +54,12 @@ decoder:
 tau: 0.01
 hidden_size: 1024
 actor:
-  network_frequency: 2
+  update_freq: 2
   optimizer:
     lr: 1e-3
     eps: 1e-08
 critic:
-  target_network_frequency: 2
+  target_network_update_freq: 2
   optimizer:
     lr: 1e-3
     eps: 1e-08
