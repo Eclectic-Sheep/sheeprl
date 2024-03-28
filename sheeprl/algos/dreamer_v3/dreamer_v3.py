@@ -578,7 +578,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["is_first"] = np.ones_like(step_data["dones"])
     player.init_states()
 
-    per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
@@ -699,7 +698,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(per_rank_gradient_steps):
                     if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                        tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
+                        tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                         for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
                             tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                     batch = {k: v[i].float() for k, v in local_data.items()}

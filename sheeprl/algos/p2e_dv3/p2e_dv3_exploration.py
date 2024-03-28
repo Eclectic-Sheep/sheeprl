@@ -33,7 +33,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, save_configs
+from sheeprl.utils.utils import Ratio, save_configs
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -768,7 +768,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
-    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
     train_step = 0
@@ -785,26 +784,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    updates_before_training = cfg.algo.train_every // policy_steps_per_update
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        actor_task.expl_amount = polynomial_decay(
-            expl_decay_steps,
-            initial=cfg.algo.actor.expl_amount,
-            final=cfg.algo.actor.expl_min,
-            max_decay_steps=max_step_expl_decay,
-        )
-        actor_exploration.expl_amount = polynomial_decay(
-            expl_decay_steps,
-            initial=cfg.algo.actor.expl_amount,
-            final=cfg.algo.actor.expl_min,
-            max_decay_steps=max_step_expl_decay,
-        )
         if not cfg.buffer.checkpoint:
             learning_starts += start_step
+
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -832,7 +822,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["is_first"] = np.ones_like(step_data["dones"])
     player.init_states()
 
-    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
@@ -864,7 +854,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_action(preprocessed_obs, mask)
+                    real_actions = actions = player.get_actions(preprocessed_obs, mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
@@ -938,25 +928,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
                 player.init_states(dones_idxes)
 
-        updates_before_training -= 1
-
         # Train the agent
-        if update >= learning_starts and updates_before_training <= 0:
+        per_rank_gradient_steps = ratio(policy_step / world_size)
+        if update >= learning_starts and per_rank_gradient_steps > 0:
             local_data = rb.sample_tensors(
                 cfg.algo.per_rank_batch_size,
                 sequence_length=cfg.algo.per_rank_sequence_length,
-                n_samples=(
-                    cfg.algo.per_rank_pretrain_steps if update == learning_starts else cfg.algo.per_rank_gradient_steps
-                ),
+                n_samples=per_rank_gradient_steps,
                 dtype=None,
                 device=fabric.device,
                 from_numpy=cfg.buffer.from_numpy,
             )
             # Start training
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                for i in range(next(iter(local_data.values())).shape[0]):
-                    if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                        tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
+                for i in range(per_rank_gradient_steps):
+                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                        tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                         for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                             tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                         for k in critics_exploration.keys():
@@ -988,25 +975,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         moments_exploration=moments_exploration,
                         moments_task=moments_task,
                     )
+                    cumulative_per_rank_gradient_steps += 1
                 train_step += world_size
-            updates_before_training = cfg.algo.train_every // policy_steps_per_update
-            if cfg.algo.actor.expl_decay:
-                expl_decay_steps += 1
-                actor_task.expl_amount = polynomial_decay(
-                    expl_decay_steps,
-                    initial=cfg.algo.actor.expl_amount,
-                    final=cfg.algo.actor.expl_min,
-                    max_decay_steps=max_step_expl_decay,
-                )
-                actor_exploration.expl_amount = polynomial_decay(
-                    expl_decay_steps,
-                    initial=cfg.algo.actor.expl_amount,
-                    final=cfg.algo.actor.expl_min,
-                    max_decay_steps=max_step_expl_decay,
-                )
-            if aggregator and not aggregator.disabled:
-                aggregator.update("Params/exploration_amount_task", actor_task.expl_amount)
-                aggregator.update("Params/exploration_amount_exploration", actor_exploration.expl_amount)
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
@@ -1015,6 +985,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:
@@ -1061,7 +1036,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_task_optimizer": actor_task_optimizer.state_dict(),
                 "critic_task_optimizer": critic_task_optimizer.state_dict(),
                 "ensemble_optimizer": ensemble_optimizer.state_dict(),
-                "expl_decay_steps": expl_decay_steps,
+                "ratio": ratio.state_dict(),
                 "update": update * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * world_size,
                 "actor_exploration": actor_exploration.state_dict(),

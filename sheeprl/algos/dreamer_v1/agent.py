@@ -288,7 +288,7 @@ class PlayerDV1(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(
+    def get_exploration_actions(
         self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
     ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
