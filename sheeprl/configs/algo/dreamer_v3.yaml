@@ -14,7 +14,7 @@ horizon: 15
 
 # Training recipe
 replay_ratio: 1
-learning_starts: 65536
+learning_starts: 1024
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
