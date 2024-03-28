@@ -610,7 +610,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_action(preprocessed_obs, mask)
+                    real_actions = actions = player.get_actions(preprocessed_obs, mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
@@ -696,7 +696,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 from_numpy=cfg.buffer.from_numpy,
             )
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                for i in range(next(iter(local_data.values())).shape[0]):
+                for i in range(repeats):
                     if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
                         tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                         for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):

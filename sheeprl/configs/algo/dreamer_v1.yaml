@@ -100,8 +100,7 @@ actor:
   clip_gradients: 100.0
   expl_amount: 0.3
   expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 200000
+  expl_decay: 0.0
 
   # Actor optimizer
   optimizer:

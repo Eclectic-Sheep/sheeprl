@@ -288,32 +288,38 @@ class PlayerDV1(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Tensor, mask: Optional[Dict[str, Tensor]] = None) -> Sequence[Tensor]:
+    def get_exploration_action(
+        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+    ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
+            sample_actions (bool): whether or not to sample the actions.
+                Default to True.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
+            step (int): the step of the training, used for the exploration amount.
+                Default to 0.
 
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_greedy_action(obs, mask=mask)
+        actions = self.get_actions(obs, sample_actions=sample_actions, mask=mask)
         expl_actions = None
         if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
+            expl_actions = self.actor.add_exploration_noise(actions, step=step, mask=mask)
             self.actions = torch.cat(expl_actions, dim=-1)
         return expl_actions or actions
 
-    def get_greedy_action(
-        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+    def get_actions(
+        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
-            is_training (bool): whether it is training.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
@@ -329,7 +335,7 @@ class PlayerDV1(nn.Module):
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
             validate_args=self.validate_args,
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -488,6 +494,9 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
+        expl_amount=actor_cfg.expl_amount,
+        expl_decay=actor_cfg.expl_decay,
+        expl_min=actor_cfg.expl_min,
     )
     critic = MLP(
         input_dims=latent_state_size,

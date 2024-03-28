@@ -18,11 +18,7 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import (
-    OneHotCategoricalStraightThroughValidateArgs,
-    OneHotCategoricalValidateArgs,
-    TruncatedNormal,
-)
+from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs, TruncatedNormal
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
@@ -641,29 +637,10 @@ class PlayerDV3(nn.Module):
                 self.recurrent_state[:, reset_envs], sample_state=False
             )[1].reshape(1, len(reset_envs), -1)
 
-    def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
-        """
-        Return the actions with a certain amount of noise for exploration.
-
-        Args:
-            obs (Dict[str, Tensor]): the current observations.
-            mask (Dict[str, Tensor], optional): the mask of the actions.
-                Default to None.
-
-        Returns:
-            The actions the agent has to perform.
-        """
-        actions = self.get_greedy_action(obs, mask=mask)
-        expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
-            self.actions = torch.cat(expl_actions, dim=-1)
-        return expl_actions or actions
-
-    def get_greedy_action(
+    def get_actions(
         self,
         obs: Dict[str, Tensor],
-        is_training: bool = True,
+        sample_actions: bool = True,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -671,7 +648,7 @@ class PlayerDV3(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            is_training (bool): whether it is training.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
 
         Returns:
@@ -688,7 +665,7 @@ class PlayerDV3(nn.Module):
         self.stochastic_state = self.stochastic_state.view(
             *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -720,8 +697,6 @@ class Actor(nn.Module):
             then `p = (1 - self.unimix) * p + self.unimix * unif`,
             where `unif = `1 / self.discrete`.
             Defaults to 0.01.
-        expl_amount (float): the exploration amount to use during training.
-            Default to 0.0.
     """
 
     def __init__(
@@ -737,7 +712,6 @@ class Actor(nn.Module):
         mlp_layers: int = 5,
         layer_norm: bool = True,
         unimix: float = 0.01,
-        expl_amount: float = 0.0,
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
@@ -775,18 +749,9 @@ class Actor(nn.Module):
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
         self._unimix = unimix
-        self._expl_amount = expl_amount
-
-    @property
-    def expl_amount(self) -> float:
-        return self._expl_amount
-
-    @expl_amount.setter
-    def expl_amount(self, amount: float):
-        self._expl_amount = amount
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -794,6 +759,10 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            sample_actions (bool): whether or not to sample the actions.
+                Default to True.
+            mask (Dict[str, Tensor], optional): the mask to use on the actions.
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -821,7 +790,7 @@ class Actor(nn.Module):
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
                 dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
-            if is_training:
+            if sample_actions:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
@@ -838,7 +807,7 @@ class Actor(nn.Module):
                         logits=self._uniform_mix(logits), validate_args=self.distribution_cfg.validate_args
                     )
                 )
-                if is_training:
+                if sample_actions:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
@@ -851,27 +820,6 @@ class Actor(nn.Module):
             probs = (1 - self._unimix) * probs + self._unimix * uniform
             logits = probs_to_logits(probs)
         return logits
-
-    def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
-    ) -> Sequence[Tensor]:
-        if self.is_continuous:
-            actions = torch.cat(actions, -1)
-            if self._expl_amount > 0.0:
-                actions = torch.clip(Normal(actions, self._expl_amount).sample(), -1, 1)
-            expl_actions = [actions]
-        else:
-            expl_actions = []
-            for act in actions:
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
-                    .sample()
-                    .to(act.device)
-                )
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
-                )
-        return tuple(expl_actions)
 
 
 class MinedojoActor(Actor):
@@ -888,7 +836,6 @@ class MinedojoActor(Actor):
         mlp_layers: int = 5,
         layer_norm: bool = True,
         unimix: float = 0.01,
-        expl_amount: float = 0.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -902,11 +849,10 @@ class MinedojoActor(Actor):
             mlp_layers=mlp_layers,
             layer_norm=layer_norm,
             unimix=unimix,
-            expl_amount=expl_amount,
         )
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -914,6 +860,10 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            sample_actions (bool): whether or not to sample the actions.
+                Default to True.
+            mask (Dict[str, Tensor], optional): the mask to apply to the actions.
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -950,58 +900,13 @@ class MinedojoActor(Actor):
                     logits=logits, validate_args=self.distribution_cfg.validate_args
                 )
             )
-            if is_training:
+            if sample_actions:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
             if functional_action is None:
                 functional_action = actions[0].argmax(dim=-1)  # [T, B]
         return tuple(actions), tuple(actions_dist)
-
-    def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
-    ) -> Sequence[Tensor]:
-        expl_actions = []
-        functional_action = actions[0].argmax(dim=-1)
-        for i, act in enumerate(actions):
-            logits = torch.zeros_like(act)
-            # Exploratory action must respect the constraints of the environment
-            if mask is not None:
-                if i == 0:
-                    logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
-                elif i == 1:
-                    mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
-                    for t in range(functional_action.shape[0]):
-                        for b in range(functional_action.shape[1]):
-                            sampled_action = functional_action[t, b].item()
-                            if sampled_action == 15:  # Craft action
-                                logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
-                elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                    mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
-                    for t in range(functional_action.shape[0]):
-                        for b in range(functional_action.shape[1]):
-                            sampled_action = functional_action[t, b].item()
-                            if sampled_action in {16, 17}:  # Equip/Place action
-                                logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
-                            elif sampled_action == 18:  # Destroy action
-                                logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = (
-                OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
-            )
-            expl_amount = self.expl_amount
-            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-            # to satisfy the constraints of the environment
-            if (
-                i in {1, 2}
-                and actions[0].argmax() != expl_actions[0].argmax()
-                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-            ):
-                expl_amount = 2
-            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
-            if mask is not None and i == 0:
-                functional_action = expl_actions[0].argmax(dim=-1)
-        return tuple(expl_actions)
 
 
 def build_agent(
