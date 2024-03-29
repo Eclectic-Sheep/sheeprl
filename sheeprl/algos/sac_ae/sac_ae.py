@@ -465,6 +465,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "alpha_optimizer": alpha_optimizer.state_dict(),
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
+                "ratio": ratio.state_dict(),
                 "update": update * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
