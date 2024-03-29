@@ -39,6 +39,8 @@ algo:
     encoder: []
   learning_starts: 1024
   replay_ratio: 0.5
+  per_rank_batch_size: 2
+  per_rank_sequence_lenght: 4
 
 # Metric
 metric:

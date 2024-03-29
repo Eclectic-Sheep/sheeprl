@@ -171,7 +171,7 @@ def train(
         1,
         validate_args=validate_args,
     )
-    continue_targets = 1 - data["terminated"]
+    continues_targets = 1 - data["terminated"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
@@ -191,7 +191,7 @@ def train(
         cfg.algo.world_model.kl_free_nats,
         cfg.algo.world_model.kl_regularizer,
         pc,
-        continue_targets,
+        continues_targets,
         cfg.algo.world_model.continue_scale_factor,
         validate_args=validate_args,
     )
@@ -255,8 +255,8 @@ def train(
         1,
         validate_args=validate_args,
     ).mode
-    true_done = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
-    continues = torch.cat((true_done, continues[1:]))
+    true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
+    continues = torch.cat((true_continue, continues[1:]))
 
     # Estimate lambda-values
     lambda_values = compute_lambda_values(
