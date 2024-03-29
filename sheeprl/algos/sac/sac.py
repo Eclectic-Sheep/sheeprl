@@ -212,7 +212,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             learning_starts += start_step
 
     # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio)
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
     if cfg.checkpoint.resume_from:
         ratio.load_state_dict(state["ratio"])
 
@@ -289,59 +289,60 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        per_rank_gradient_steps = ratio(policy_step / world_size)
-        if update >= learning_starts and per_rank_gradient_steps > 0:
-            # We sample one time to reduce the communications between processes
-            sample = rb.sample_tensors(
-                batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
-                sample_next_obs=cfg.buffer.sample_next_obs,
-                dtype=None,
-                device=device,
-                from_numpy=cfg.buffer.from_numpy,
-            )  # [G*B]
-            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
-            for k, v in gathered_data.items():
-                gathered_data[k] = v.float()  # [G*B*World]
-                if fabric.world_size > 1:
-                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=2)
-                else:
-                    gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=1)
-            idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
-            if world_size > 1:
-                dist_sampler: DistributedSampler = DistributedSampler(
-                    idxes_to_sample,
-                    num_replicas=world_size,
-                    rank=fabric.global_rank,
-                    shuffle=True,
-                    seed=cfg.seed,
-                    drop_last=False,
-                )
-                sampler: BatchSampler = BatchSampler(
-                    sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                )
-            else:
-                sampler = BatchSampler(
-                    sampler=idxes_to_sample, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                )
-
-            # Start training
-            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                for batch_idxes in sampler:
-                    batch = {k: v[batch_idxes] for k, v in gathered_data.items()}
-                    train(
-                        fabric,
-                        agent,
-                        actor_optimizer,
-                        qf_optimizer,
-                        alpha_optimizer,
-                        batch,
-                        aggregator,
-                        update,
-                        cfg,
-                        policy_steps_per_update,
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / world_size)
+            if per_rank_gradient_steps > 0:
+                # We sample one time to reduce the communications between processes
+                sample = rb.sample_tensors(
+                    batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
+                    sample_next_obs=cfg.buffer.sample_next_obs,
+                    dtype=None,
+                    device=device,
+                    from_numpy=cfg.buffer.from_numpy,
+                )  # [G*B]
+                gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
+                for k, v in gathered_data.items():
+                    gathered_data[k] = v.float()  # [G*B*World]
+                    if fabric.world_size > 1:
+                        gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=2)
+                    else:
+                        gathered_data[k] = gathered_data[k].flatten(start_dim=0, end_dim=1)
+                idxes_to_sample = list(range(next(iter(gathered_data.values())).shape[0]))
+                if world_size > 1:
+                    dist_sampler: DistributedSampler = DistributedSampler(
+                        idxes_to_sample,
+                        num_replicas=world_size,
+                        rank=fabric.global_rank,
+                        shuffle=True,
+                        seed=cfg.seed,
+                        drop_last=False,
                     )
-                    cumulative_per_rank_gradient_steps += 1
-                train_step += world_size
+                    sampler: BatchSampler = BatchSampler(
+                        sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+                    )
+                else:
+                    sampler = BatchSampler(
+                        sampler=idxes_to_sample, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+                    )
+
+                # Start training
+                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                    for batch_idxes in sampler:
+                        batch = {k: v[batch_idxes] for k, v in gathered_data.items()}
+                        train(
+                            fabric,
+                            agent,
+                            actor_optimizer,
+                            qf_optimizer,
+                            alpha_optimizer,
+                            batch,
+                            aggregator,
+                            update,
+                            cfg,
+                            policy_steps_per_update,
+                        )
+                        cumulative_per_rank_gradient_steps += 1
+                    train_step += world_size
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):

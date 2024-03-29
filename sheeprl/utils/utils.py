@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import warnings
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -202,19 +203,32 @@ class Ratio:
     https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/embodied/core/when.py#L26
     """
 
-    def __init__(self, ratio: float):
+    def __init__(self, ratio: float, pretrain_steps: int = 0):
+        if pretrain_steps < 0:
+            raise ValueError(f"'pretrain_steps' must be non-negative, got {pretrain_steps}")
         if ratio < 0:
-            raise ValueError(f"Ratio must be non-negative, got {ratio}")
-        self._ratio: float = ratio
-        self._prev: float | None = None
+            raise ValueError(f"'ratio' must be non-negative, got {ratio}")
+        self._pretrain_steps = pretrain_steps
+        self._ratio = ratio
+        self._prev = None
 
-    def __call__(self, step: float):
+    def __call__(self, step) -> int:
         step = int(step)
         if self._ratio == 0:
             return 0
         if self._prev is None:
             self._prev = step
-            return 1
+            if self._pretrain_steps > 0:
+                if step < self._pretrain_steps:
+                    warnings.warn(
+                        "The number of pretrain steps is greater than the number of current steps. This could lead to "
+                        f"a higher ratio than the one specified ({self._ratio}). Setting the 'pretrain_steps' equal to "
+                        "the number of current steps."
+                    )
+                    self._pretrain_steps = step
+                return round(self._pretrain_steps * self._ratio)
+            else:
+                return 1
         repeats = round((step - self._prev) * self._ratio)
         self._prev += repeats / self._ratio
         return repeats

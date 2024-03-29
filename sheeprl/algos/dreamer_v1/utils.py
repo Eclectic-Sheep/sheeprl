@@ -31,7 +31,6 @@ AGGREGATOR_KEYS = {
     "State/post_entropy",
     "State/prior_entropy",
     "State/kl",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",

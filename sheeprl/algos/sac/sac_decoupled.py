@@ -150,7 +150,7 @@ def player(
         learning_starts += start_step
 
     # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio)
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
     if cfg.checkpoint.resume_from:
         ratio.load_state_dict(state["ratio"])
 
@@ -226,46 +226,48 @@ def player(
         obs = next_obs
 
         # Send data to the training agents
-        per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
-        cumulative_per_rank_gradient_steps += per_rank_gradient_steps
-        if update >= learning_starts and per_rank_gradient_steps > 0:
-            # Send local info to the trainers
-            if not first_info_sent:
-                world_collective.broadcast_object_list(
-                    [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
+            cumulative_per_rank_gradient_steps += per_rank_gradient_steps
+            if per_rank_gradient_steps > 0:
+                # Send local info to the trainers
+                if not first_info_sent:
+                    world_collective.broadcast_object_list(
+                        [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
+                    )
+                    first_info_sent = True
+
+                # Sample data to be sent to the trainers
+                sample = rb.sample_tensors(
+                    batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size * (fabric.world_size - 1),
+                    sample_next_obs=cfg.buffer.sample_next_obs,
+                    dtype=None,
+                    device=device,
+                    from_numpy=cfg.buffer.from_numpy,
                 )
-                first_info_sent = True
+                # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+                chunks = {
+                    k: v.float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
+                    for k, v in sample.items()
+                }
+                # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
+                chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
+                world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
-            # Sample data to be sent to the trainers
-            sample = rb.sample_tensors(
-                batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size * (fabric.world_size - 1),
-                sample_next_obs=cfg.buffer.sample_next_obs,
-                dtype=None,
-                device=device,
-                from_numpy=cfg.buffer.from_numpy,
-            )
-            # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
-            chunks = {
-                k: v.float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size) for k, v in sample.items()
-            }
-            # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
-            chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
-            world_collective.scatter_object_list([None], [None] + chunks, src=0)
+                # Wait the trainers to finish
+                player_trainer_collective.broadcast(flattened_parameters, src=1)
 
-            # Wait the trainers to finish
-            player_trainer_collective.broadcast(flattened_parameters, src=1)
+                # Convert back the parameters
+                torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
-            # Convert back the parameters
-            torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
+                # Logs trainers-only metrics
+                if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
+                    # Gather metrics from the trainers
+                    metrics = [None]
+                    player_trainer_collective.broadcast_object_list(metrics, src=1)
 
-            # Logs trainers-only metrics
-            if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
-                # Gather metrics from the trainers
-                metrics = [None]
-                player_trainer_collective.broadcast_object_list(metrics, src=1)
-
-                # Log metrics
-                fabric.log_dict(metrics[0], policy_step)
+                    # Log metrics
+                    fabric.log_dict(metrics[0], policy_step)
 
         # Logs player-only metrics
         if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:

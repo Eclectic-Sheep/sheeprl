@@ -126,6 +126,8 @@ In the `algo` folder one can find all the configurations for every algorithm imp
 
 ```yaml
 # sheeprl/configs/algo/dreamer_v3.yaml
+# Dreamer-V3 XL configuration
+
 defaults:
   - default
   - /optim@world_model.optimizer: adam
@@ -139,8 +141,8 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-learning_starts: 65536
-per_rank_pretrain_steps: 1
+replay_ratio: 1
+learning_starts: 1024
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -157,6 +159,7 @@ dense_act: torch.nn.SiLU
 cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
+decoupled_rssm: False
 
 # World model
 world_model:
@@ -239,10 +242,6 @@ actor:
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
-  expl_amount: 0.0
-  expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
 
   # Disttributed percentile model (used to scale the values)
   moments:

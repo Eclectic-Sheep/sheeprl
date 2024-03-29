@@ -725,7 +725,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             learning_starts += start_step
 
     # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio)
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
     if cfg.checkpoint.resume_from:
         ratio.load_state_dict(state["ratio"])
 
@@ -855,52 +855,55 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 player.init_states(dones_idxes)
 
         # Train the agent
-        per_rank_gradient_steps = ratio(policy_step / world_size)
-        if update >= learning_starts and per_rank_gradient_steps > 0:
-            n_samples = cfg.algo.per_rank_pretrain_steps if update == learning_starts else per_rank_gradient_steps
-            local_data = rb.sample_tensors(
-                batch_size=cfg.algo.per_rank_batch_size,
-                sequence_length=cfg.algo.per_rank_sequence_length,
-                n_samples=n_samples,
-                dtype=None,
-                device=fabric.device,
-                from_numpy=cfg.buffer.from_numpy,
-            )
-            # Start training
-            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                for i in range(n_samples):
-                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
-                        for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
-                            tcp.data.copy_(cp.data)
-                        for cp, tcp in zip(
-                            critic_exploration.module.parameters(), target_critic_exploration.parameters()
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / world_size)
+            if per_rank_gradient_steps > 0:
+                local_data = rb.sample_tensors(
+                    batch_size=cfg.algo.per_rank_batch_size,
+                    sequence_length=cfg.algo.per_rank_sequence_length,
+                    n_samples=per_rank_gradient_steps,
+                    dtype=None,
+                    device=fabric.device,
+                    from_numpy=cfg.buffer.from_numpy,
+                )
+                # Start training
+                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                    for i in range(per_rank_gradient_steps):
+                        if (
+                            cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
+                            == 0
                         ):
-                            tcp.data.copy_(cp.data)
-                    batch = {k: v[i].float() for k, v in local_data.items()}
-                    train(
-                        fabric,
-                        world_model,
-                        actor_task,
-                        critic_task,
-                        target_critic_task,
-                        world_optimizer,
-                        actor_task_optimizer,
-                        critic_task_optimizer,
-                        batch,
-                        aggregator,
-                        cfg,
-                        ensembles=ensembles,
-                        ensemble_optimizer=ensemble_optimizer,
-                        actor_exploration=actor_exploration,
-                        critic_exploration=critic_exploration,
-                        target_critic_exploration=target_critic_exploration,
-                        actor_exploration_optimizer=actor_exploration_optimizer,
-                        critic_exploration_optimizer=critic_exploration_optimizer,
-                        is_continuous=is_continuous,
-                        actions_dim=actions_dim,
-                    )
-                    cumulative_per_rank_gradient_steps += 1
-                train_step += world_size
+                            for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
+                                tcp.data.copy_(cp.data)
+                            for cp, tcp in zip(
+                                critic_exploration.module.parameters(), target_critic_exploration.parameters()
+                            ):
+                                tcp.data.copy_(cp.data)
+                        batch = {k: v[i].float() for k, v in local_data.items()}
+                        train(
+                            fabric,
+                            world_model,
+                            actor_task,
+                            critic_task,
+                            target_critic_task,
+                            world_optimizer,
+                            actor_task_optimizer,
+                            critic_task_optimizer,
+                            batch,
+                            aggregator,
+                            cfg,
+                            ensembles=ensembles,
+                            ensemble_optimizer=ensemble_optimizer,
+                            actor_exploration=actor_exploration,
+                            critic_exploration=critic_exploration,
+                            target_critic_exploration=target_critic_exploration,
+                            actor_exploration_optimizer=actor_exploration_optimizer,
+                            critic_exploration_optimizer=critic_exploration_optimizer,
+                            is_continuous=is_continuous,
+                            actions_dim=actions_dim,
+                        )
+                        cumulative_per_rank_gradient_steps += 1
+                    train_step += world_size
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):

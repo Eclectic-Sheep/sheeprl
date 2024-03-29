@@ -13,6 +13,7 @@ hidden_size: 256
 # Training recipe
 replay_ratio: 1.0
 learning_starts: 100
+per_rank_pretrain_steps: 0
 
 # Model related parameters
 # Actor
