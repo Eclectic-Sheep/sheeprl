@@ -711,7 +711,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         cumulative_per_rank_gradient_steps += 1
                     train_step += world_size
                 if aggregator:
-                    aggregator.update("Params/exploration_amount", actor.expl_amount)
+                    aggregator.update("Params/exploration_amount", actor._get_expl_amount(policy_step))
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
