@@ -95,6 +95,9 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
+        expl_amount=actor_cfg.expl_amount,
+        expl_decay=actor_cfg.expl_decay,
+        expl_min=actor_cfg.expl_min,
     )
     critic_task = MLP(
         input_dims=latent_state_size,
