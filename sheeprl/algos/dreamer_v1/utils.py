@@ -34,6 +34,7 @@ AGGREGATOR_KEYS = {
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
+    "Params/exploration_amount",
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
