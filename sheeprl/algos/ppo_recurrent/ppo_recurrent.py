@@ -335,7 +335,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             tuple(s[:, truncated_envs, ...] for s in states),
                         )
                         vals = player.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
                     rewards = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
 

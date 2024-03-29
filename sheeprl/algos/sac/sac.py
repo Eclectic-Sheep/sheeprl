@@ -45,7 +45,7 @@ def train(
 ):
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
-        data["next_observations"], data["rewards"], data["dones"], cfg.algo.gamma
+        data["next_observations"], data["rewards"], data["terminated"], cfg.algo.gamma
     )
     qf_values = agent.get_q_values(data["observations"], data["actions"])
     qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
@@ -253,9 +253,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
                     actions, _ = actor(torch_obs)
                     actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions)
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
-            dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
@@ -277,7 +276,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         [v for k, v in final_obs.items() if k in cfg.algo.mlp_keys.encoder], axis=-1
                     )
 
-        step_data["dones"] = dones[np.newaxis]
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
         step_data["actions"] = actions[np.newaxis]
         step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
