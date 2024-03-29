@@ -61,6 +61,7 @@ class CheckpointCallback:
         player_trainer_collective: TorchCollective,
         ckpt_path: str,
         replay_buffer: Optional["ReplayBuffer"] = None,
+        ratio_state_dict: Dict[str, Any] | None = None,
     ):
         state = [None]
         player_trainer_collective.broadcast_object_list(state, src=1)
@@ -68,6 +69,8 @@ class CheckpointCallback:
         if replay_buffer is not None:
             rb_state = self._ckpt_rb(replay_buffer)
             state["rb"] = replay_buffer
+        if ratio_state_dict is not None:
+            state["ratio"] = ratio_state_dict
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)

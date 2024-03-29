@@ -309,6 +309,7 @@ def player(
                 player_trainer_collective=player_trainer_collective,
                 ckpt_path=ckpt_path,
                 replay_buffer=rb if cfg.buffer.checkpoint else None,
+                ratio_state_dict=ratio.state_dict(),
             )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
@@ -322,6 +323,7 @@ def player(
             player_trainer_collective=player_trainer_collective,
             ckpt_path=ckpt_path,
             replay_buffer=rb if cfg.buffer.checkpoint else None,
+            ratio_state_dict=ratio.state_dict(),
         )
 
     envs.close()
