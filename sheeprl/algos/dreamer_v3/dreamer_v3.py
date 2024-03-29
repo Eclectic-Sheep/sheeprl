@@ -171,7 +171,7 @@ def train(
         1,
         validate_args=validate_args,
     )
-    continue_targets = 1 - data["dones"]
+    continue_targets = 1 - data["terminated"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
@@ -255,7 +255,7 @@ def train(
         1,
         validate_args=validate_args,
     ).mode
-    true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
+    true_done = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 
     # Estimate lambda-values
@@ -573,9 +573,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
-    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["is_first"] = np.ones_like(step_data["dones"])
+    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["is_first"] = np.ones_like(step_data["terminated"])
     player.init_states()
 
     cumulative_per_rank_gradient_steps = 0
@@ -622,16 +623,21 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
                 rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-                dones = np.logical_or(dones, truncated).astype(np.uint8)
+                next_obs, rewards, terminated, truncated, infos = envs.step(
+                    real_actions.reshape(envs.action_space.shape)
+                )
+                dones = np.logical_or(terminated, truncated).astype(np.uint8)
 
-            step_data["is_first"] = np.zeros_like(step_data["dones"])
+            step_data["is_first"] = np.zeros_like(step_data["terminated"])
             if "restart_on_exception" in infos:
                 for i, agent_roe in enumerate(infos["restart_on_exception"]):
                     if agent_roe and not dones[i]:
                         last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
-                        rb.buffer[i]["dones"][last_inserted_idx] = np.ones_like(
-                            rb.buffer[i]["dones"][last_inserted_idx]
+                        rb.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
+                            rb.buffer[i]["terminated"][last_inserted_idx]
+                        )
+                        rb.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
+                            rb.buffer[i]["truncated"][last_inserted_idx]
                         )
                         rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
                             rb.buffer[i]["is_first"][last_inserted_idx]
@@ -663,7 +669,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             obs = next_obs
 
             rewards = rewards.reshape((1, cfg.env.num_envs, -1))
-            step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
+            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
             step_data["rewards"] = clip_rewards_fn(rewards)
 
             dones_idxes = dones.nonzero()[0].tolist()
@@ -672,15 +679,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data = {}
                 for k in obs_keys:
                     reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
-                reset_data["dones"] = np.ones((1, reset_envs, 1))
+                reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
+                reset_data["truncated"] = step_data["truncated"][:, dones_idxes]
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
-                reset_data["is_first"] = np.zeros_like(reset_data["dones"])
+                reset_data["is_first"] = np.zeros_like(reset_data["terminated"])
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
 
                 # Reset already inserted step data
                 step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
-                step_data["dones"][:, dones_idxes] = np.zeros_like(step_data["dones"][:, dones_idxes])
+                step_data["terminated"][:, dones_idxes] = np.zeros_like(step_data["terminated"][:, dones_idxes])
+                step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
                 step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
                 player.init_states(dones_idxes)
 
