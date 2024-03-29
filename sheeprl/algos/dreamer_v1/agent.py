@@ -23,8 +23,8 @@ from sheeprl.utils.utils import init_weights
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
 # to go to retrieve the class
-DV1Actor = DV2Actor
-DV1MinedojoActor = DV2MinedojoActor
+Actor = DV2Actor
+MinedojoActor = DV2MinedojoActor
 
 
 class RecurrentModel(nn.Module):
@@ -241,7 +241,7 @@ class PlayerDV1(nn.Module):
         encoder: nn.Module | _FabricModule,
         recurrent_model: nn.Module | _FabricModule,
         representation_model: nn.Module | _FabricModule,
-        actor: DV1Actor | _FabricModule,
+        actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
@@ -483,7 +483,7 @@ def build_agent(
         continue_model.apply(init_weights) if world_model_cfg.use_continues else None,
     )
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
-    actor: Union[DV1Actor, DV1MinedojoActor] = actor_cls(
+    actor: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
