@@ -11,7 +11,7 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-replay_ratio: 2
+replay_ratio: 0.2
 learning_starts: 1000
 per_rank_pretrain_steps: 100
 per_rank_sequence_length: ???
