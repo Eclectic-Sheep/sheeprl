@@ -123,9 +123,9 @@ class DiambraWrapper(gym.Wrapper):
         if self._action_type == "discrete" and isinstance(action, np.ndarray):
             action = action.squeeze()
             action = action.item()
-        obs, reward, done, truncated, infos = self.env.step(action)
+        obs, reward, terminated, truncated, infos = self.env.step(action)
         infos["env_domain"] = "DIAMBRA"
-        return self._convert_obs(obs), reward, done or infos.get("env_done", False), truncated, infos
+        return self._convert_obs(obs), reward, terminated or infos.get("env_done", False), truncated, infos
 
     def render(self, mode: str = "rgb_array", **kwargs) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
         return self.env.render()
