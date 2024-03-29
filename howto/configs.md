@@ -139,10 +139,8 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-train_every: 16
 learning_starts: 65536
 per_rank_pretrain_steps: 1
-per_rank_gradient_steps: 1
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -266,7 +264,7 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
-  target_network_update_freq: 1
+  per_rank_target_network_update_freq: 1
   tau: 0.02
   bins: 255
   clip_gradients: 100.0
@@ -410,7 +408,7 @@ buffer:
 algo:
   learning_starts: 1024
   total_steps: 100000
-  train_every: 1
+  
   dense_units: 512
   mlp_layers: 2
   world_model:

@@ -376,7 +376,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             # Start training
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(per_rank_gradient_steps):
-                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
                         tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                         for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                             tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)

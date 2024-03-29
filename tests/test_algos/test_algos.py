@@ -114,8 +114,8 @@ def test_sac_ae(standard_args, start_time):
         "algo.hidden_size=4",
         "algo.dense_units=4",
         "algo.cnn_channels_multiplier=2",
-        "algo.actor.network_frequency=1",
-        "algo.decoder.update_freq=1",
+        "algo.actor.per_rank_update_freq=1",
+        "algo.decoder.per_rank_update_freq=1",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -459,7 +459,6 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
         "algo.layer_norm=True",
-        "algo.train_every=1",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
     ]
@@ -494,7 +493,6 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
         "algo.layer_norm=True",
-        "algo.train_every=1",
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
@@ -538,7 +536,6 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
         "algo.layer_norm=True",
-        "algo.train_every=1",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
     ]

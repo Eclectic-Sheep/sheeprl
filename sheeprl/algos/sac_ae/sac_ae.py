@@ -73,12 +73,12 @@ def train(
         aggregator.update("Loss/value_loss", qf_loss)
 
     # Update the target networks with EMA
-    if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+    if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
         agent.critic_target_ema()
         agent.critic_encoder_target_ema()
 
     # Update the actor
-    if cumulative_per_rank_gradient_steps % cfg.algo.actor.update_freq == 0:
+    if cumulative_per_rank_gradient_steps % cfg.algo.actor.per_rank_update_freq == 0:
         actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
         qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
         min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
@@ -99,7 +99,7 @@ def train(
             aggregator.update("Loss/alpha_loss", alpha_loss)
 
     # Update the decoder
-    if cumulative_per_rank_gradient_steps % cfg.algo.decoder.update_freq == 0:
+    if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
         hidden = encoder(normalized_obs)
         reconstruction = decoder(hidden)
         reconstruction_loss = 0

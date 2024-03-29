@@ -11,9 +11,8 @@ horizon: 15
 name: dreamer_v1
 
 # Training recipe
-train_every: 1000
+replay_ratio: 0.1
 learning_starts: 5000
-per_rank_gradient_steps: 100
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -91,7 +90,7 @@ world_model:
 
 # Actor
 actor:
-  cls: sheeprl.algos.dreamer_v1.agent.Actor
+  cls: sheeprl.algos.dreamer_v1.agent.DV1Actor
   min_std: 0.1
   init_std: 5.0
   dense_act: ${algo.dense_act}

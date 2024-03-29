@@ -123,7 +123,7 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
-  target_network_update_freq: 100
+  per_rank_target_network_update_freq: 100
   clip_gradients: 100.0
 
   # Critic optimizer

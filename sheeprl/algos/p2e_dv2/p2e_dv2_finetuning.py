@@ -375,7 +375,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             # Start training
             with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                 for i in range(n_samples):
-                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
+                    if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
                         for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                             tcp.data.copy_(cp.data)
                     batch = {k: v[i].float() for k, v in local_data.items()}

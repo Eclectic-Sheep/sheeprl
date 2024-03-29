@@ -39,7 +39,7 @@ encoder:
 # Decoder
 decoder:
   l2_lambda: 1e-6
-  update_freq: 1
+  per_rank_update_freq: 1
   cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}
@@ -54,12 +54,12 @@ decoder:
 tau: 0.01
 hidden_size: 1024
 actor:
-  update_freq: 2
+  per_rank_update_freq: 2
   optimizer:
     lr: 1e-3
     eps: 1e-08
 critic:
-  target_network_update_freq: 2
+  per_rank_target_network_update_freq: 2
   optimizer:
     lr: 1e-3
     eps: 1e-08
