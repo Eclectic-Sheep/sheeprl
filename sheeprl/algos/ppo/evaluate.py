@@ -50,6 +50,7 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     )
     # Create the actor and critic models
     _, agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
+    del _
     test(agent, fabric, cfg, log_dir)
 
 
