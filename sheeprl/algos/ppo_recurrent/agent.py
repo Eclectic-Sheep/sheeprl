@@ -151,7 +151,7 @@ class RecurrentPPOAgent(nn.Module):
         )
 
         # Actor
-        self.actor_backbone = MLP(
+        actor_backbone = MLP(
             input_dims=self.rnn_hidden_size,
             output_dim=None,
             hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
@@ -165,12 +165,10 @@ class RecurrentPPOAgent(nn.Module):
             ),
         )
         if is_continuous:
-            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, int(sum(actions_dim)) * 2)])
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, int(sum(actions_dim)) * 2)])
         else:
-            self.actor_heads = nn.ModuleList(
-                [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
-            )
-        self.actor = PPOActor(self.actor_backbone, self.actor_heads, is_continuous)
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tensor = self.reset_hidden_states()
@@ -190,13 +188,118 @@ class RecurrentPPOAgent(nn.Module):
         )
         return states
 
-    def get_actions(
-        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None, greedy: bool = False
+    def _get_actions(
+        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor]:
         logprobs = []
         entropies = []
         sampled_actions = []
         if self.is_continuous:
+            dist = Independent(Normal(*pre_dist), 1)
+            if actions is None:
+                sampled_actions.append(dist.sample())
+            else:
+                sampled_actions.append(actions[0])
+            entropies.append(dist.entropy())
+            logprobs.append(dist.log_prob(actions))
+        else:
+            for i, logits in enumerate(pre_dist):
+                dist = OneHotCategorical(logits=logits)
+                if actions is None:
+                    sampled_actions.append(dist.sample())
+                else:
+                    sampled_actions.append(actions[i])
+                entropies.append(dist.entropy())
+                logprobs.append(dist.log_prob(sampled_actions[-1]))
+        return (
+            tuple(sampled_actions),
+            torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
+            torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
+        )
+
+    def _get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
+        pre_dist: List[Tensor] = self.actor(input)
+        if self.is_continuous:
+            mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
+            std = log_std.exp()
+            return (mean, std)
+        else:
+            return tuple(pre_dist)
+
+    def _get_values(self, input: Tensor) -> Tensor:
+        return self.critic(input)
+
+    def forward(
+        self,
+        obs: Dict[str, Tensor],
+        prev_actions: Tensor,
+        prev_states: Tuple[Tensor, Tensor],
+        actions: Optional[List[Tensor]] = None,
+        mask: Optional[Tensor] = None,
+    ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor, Tensor, Tuple[Tensor, Tensor]]:
+        """Compute actor logits and critic values.
+
+        Args:
+            obs (Tensor): observations collected (possibly padded with zeros).
+            prev_actions (Tensor): the previous actions.
+            prev_states (Tuple[Tensor, Tensor]): the previous state of the LSTM.
+            actions (List[Tensor], optional): the actions from the replay buffer.
+            mask (Tensor, optional): the mask of the padded sequences.
+
+        Returns:
+            actions (Tuple[Tensor, ...]): the sampled actions
+            logprobs (Tensor): the log probabilities of the actions w.r.t. their distributions.
+            entropies (Tensor): the entropies of the actions distributions.
+            values (Tensor): the state values.
+            states (Tuple[Tensor, Tensor]): the new recurrent states (hx, cx).
+        """
+        embedded_obs = self.feature_extractor(obs)
+        out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
+        values = self._get_values(out)
+        pre_dist = self._get_pre_dist(out)
+        actions, logprobs, entropies = self._get_actions(pre_dist, actions)
+        return actions, logprobs, entropies, values, states
+
+
+class RecurrentPPOPlayer(nn.Module):
+    def __init__(
+        self,
+        feature_extractor: MultiEncoder,
+        rnn: RecurrentModel,
+        actor: PPOActor,
+        critic: nn.Module,
+        rnn_hidden_size: int,
+        actions_dim: Sequence[int],
+    ) -> None:
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.rnn = rnn
+        self.critic = critic
+        self.actor = actor
+        self.rnn_hidden_size = rnn_hidden_size
+        self.actions_dim = actions_dim
+
+    @property
+    def initial_states(self) -> Tuple[Tensor, Tensor]:
+        return self._initial_states
+
+    @initial_states.setter
+    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
+        self._initial_states = value
+
+    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
+        states = (
+            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
+            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
+        )
+        return states
+
+    def _get_actions(
+        self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None, greedy: bool = False
+    ) -> Tuple[Tuple[Tensor, ...], Tensor]:
+        logprobs = []
+        sampled_actions = []
+        if self.actor.is_continuous:
             dist = Independent(Normal(*pre_dist), 1)
             if greedy:
                 sampled_actions.append(dist.mode)
@@ -205,7 +308,6 @@ class RecurrentPPOAgent(nn.Module):
                     sampled_actions.append(dist.sample())
                 else:
                     sampled_actions.append(actions[0])
-            entropies.append(dist.entropy())
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
@@ -217,24 +319,22 @@ class RecurrentPPOAgent(nn.Module):
                         sampled_actions.append(dist.sample())
                     else:
                         sampled_actions.append(actions[i])
-                entropies.append(dist.entropy())
                 logprobs.append(dist.log_prob(sampled_actions[-1]))
         return (
             tuple(sampled_actions),
             torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
-            torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
         )
 
-    def get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
+    def _get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
         pre_dist: List[Tensor] = self.actor(input)
-        if self.is_continuous:
+        if self.actor.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
             return (mean, std)
         else:
             return tuple(pre_dist)
 
-    def get_values(self, input: Tensor) -> Tensor:
+    def _get_values(self, input: Tensor) -> Tensor:
         return self.critic(input)
 
     def forward(
@@ -264,10 +364,48 @@ class RecurrentPPOAgent(nn.Module):
         """
         embedded_obs = self.feature_extractor(obs)
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
-        values = self.get_values(out)
-        pre_dist = self.get_pre_dist(out)
-        actions, logprobs, entropies = self.get_actions(pre_dist, actions, greedy=greedy)
-        return actions, logprobs, entropies, values, states
+        values = self._get_values(out)
+        pre_dist = self._get_pre_dist(out)
+        actions, logprobs = self._get_actions(pre_dist, actions, greedy=greedy)
+        return actions, logprobs, values, states
+
+    def get_values(
+        self,
+        obs: Dict[str, Tensor],
+        prev_actions: Tensor,
+        prev_states: Tuple[Tensor, Tensor],
+        mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        embedded_obs = self.feature_extractor(obs)
+        out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
+        return self._get_values(out), states
+
+    def get_actions(
+        self,
+        obs: Dict[str, Tensor],
+        prev_actions: Tensor,
+        prev_states: Tuple[Tensor, Tensor],
+        mask: Optional[Tensor] = None,
+        greedy: bool = False,
+    ) -> Tuple[Sequence[Tensor], Tuple[Tensor, Tensor]]:
+        embedded_obs = self.feature_extractor(obs)
+        out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
+        pre_dist = self._get_pre_dist(out)
+        sampled_actions = []
+        if self.actor.is_continuous:
+            dist = Independent(Normal(*pre_dist), 1)
+            if greedy:
+                sampled_actions.append(dist.mode)
+            else:
+                sampled_actions.append(dist.sample())
+        else:
+            for logits in pre_dist:
+                dist = OneHotCategorical(logits=logits)
+                if greedy:
+                    sampled_actions.append(dist.mode)
+                else:
+                    sampled_actions.append(dist.sample())
+        return tuple(sampled_actions), states
 
 
 def build_agent(
@@ -277,7 +415,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[RecurrentPPOAgent, RecurrentPPOAgent]:
+) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
     agent = RecurrentPPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -295,7 +433,16 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    player = copy.deepcopy(agent)
+
+    # Setup player agent
+    player = RecurrentPPOPlayer(
+        copy.deepcopy(agent.feature_extractor),
+        copy.deepcopy(agent.rnn),
+        copy.deepcopy(agent.actor),
+        copy.deepcopy(agent.critic),
+        cfg.algo.rnn.lstm.hidden_size,
+        actions_dim,
+    )
 
     # Setup training agent
     agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
@@ -311,7 +458,12 @@ def build_agent(
     player.actor = fabric_player.setup_module(player.actor)
 
     # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.parameters(), player.parameters()):
+    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
         player_p.data = agent_p.data
-
+    for agent_p, player_p in zip(agent.rnn.parameters(), player.rnn.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
+        player_p.data = agent_p.data
     return agent, player
