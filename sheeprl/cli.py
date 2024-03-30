@@ -59,6 +59,9 @@ def run_algorithm(cfg: Dict[str, Any]):
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
 
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
+
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
     # 'register_algorithm'-decorated entrypoint;
@@ -199,6 +202,9 @@ def eval_algorithm(cfg: DictConfig):
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
 
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
+
     # TODO: change the number of devices when FSDP will be supported
     accelerator = cfg.fabric.get("accelerator", "auto")
     fabric: Fabric = hydra.utils.instantiate(
@@ -323,7 +329,6 @@ def check_configs(cfg: Dict[str, Any]):
             UserWarning,
         )
         cfg.model_manager.disabled = True
-    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
 
 def check_configs_evaluation(cfg: DictConfig):
@@ -334,7 +339,6 @@ def check_configs_evaluation(cfg: DictConfig):
         )
     if cfg.checkpoint_path is None:
         raise ValueError("You must specify the evaluation checkpoint path")
-    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
