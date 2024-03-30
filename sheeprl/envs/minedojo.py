@@ -245,6 +245,8 @@ class MineDojoWrapper(gym.Wrapper):
             action[3] = 12
 
         obs, reward, done, info = self.env.step(action)
+        terminated = done and not info.get("TimeLimit.truncated", False)
+        truncated = done and info.get("TimeLimit.truncated", False)
         self._pos = {
             "x": float(obs["location_stats"]["pos"][0]),
             "y": float(obs["location_stats"]["pos"][1]),
@@ -252,17 +254,19 @@ class MineDojoWrapper(gym.Wrapper):
             "pitch": float(obs["location_stats"]["pitch"].item()),
             "yaw": float(obs["location_stats"]["yaw"].item()),
         }
-        info = {
-            "life_stats": {
-                "life": float(obs["life_stats"]["life"].item()),
-                "oxygen": float(obs["life_stats"]["oxygen"].item()),
-                "food": float(obs["life_stats"]["food"].item()),
-            },
-            "location_stats": copy.deepcopy(self._pos),
-            "action": a.tolist(),
-            "biomeid": float(obs["location_stats"]["biome_id"].item()),
-        }
-        return self._convert_obs(obs), reward, done, False, info
+        info.update(
+            {
+                "life_stats": {
+                    "life": float(obs["life_stats"]["life"].item()),
+                    "oxygen": float(obs["life_stats"]["oxygen"].item()),
+                    "food": float(obs["life_stats"]["food"].item()),
+                },
+                "location_stats": copy.deepcopy(self._pos),
+                "action": a.tolist(),
+                "biomeid": float(obs["location_stats"]["biome_id"].item()),
+            }
+        )
+        return self._convert_obs(obs), reward, terminated, truncated, info
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
