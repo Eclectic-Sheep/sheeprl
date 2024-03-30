@@ -317,7 +317,10 @@ class ReplayBuffer:
             Dict[str, Tensor]: the sampled dictionary, containing the sampled array,
             one for every key, with a shape of [n_samples, batch_size, ...]
         """
-        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
+        n_samples = kwargs.pop("n_samples", 1)
+        samples = self.sample(
+            batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, n_samples=n_samples, **kwargs
+        )
         return {
             k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
         }

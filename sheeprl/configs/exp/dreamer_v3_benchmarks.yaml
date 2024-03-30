@@ -26,7 +26,7 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 1024
-  train_every: 16
+  replay_ratio: 1
   dense_units: 8
   mlp_layers: 1
   world_model:

@@ -14,6 +14,7 @@ from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -109,6 +110,7 @@ def build_agent(
         unimix=cfg.algo.unimix,
     )
 
+    single_device_fabric = get_single_device_fabric(fabric)
     critics_exploration = {}
     intrinsic_critics = 0
     for k, v in cfg.algo.critics_exploration.items():
@@ -126,9 +128,11 @@ def build_agent(
                     flatten_dim=None,
                     layer_args={"bias": not critic_cfg.layer_norm},
                     norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-                    norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-                    if critic_cfg.layer_norm
-                    else None,
+                    norm_args=(
+                        [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+                        if critic_cfg.layer_norm
+                        else None
+                    ),
                 ),
             }
             critics_exploration[k]["module"].apply(init_weights)
@@ -140,6 +144,9 @@ def build_agent(
             critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
             if critics_exploration_state:
                 critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
+            critics_exploration[k]["target_module"] = single_device_fabric.setup_module(
+                critics_exploration[k]["target_module"]
+            )
 
     if intrinsic_critics == 0:
         raise RuntimeError("You must specify at least one intrinsic critic (`reward_type='intrinsic'`)")

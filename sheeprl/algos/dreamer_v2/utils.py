@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
 import gymnasium as gym
 import torch
@@ -34,7 +34,6 @@ AGGREGATOR_KEYS = {
     "State/post_entropy",
     "State/prior_entropy",
     "State/kl",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
@@ -107,7 +106,7 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: Union["PlayerDV2", "PlayerDV1"],
+    player: "PlayerDV2" | "PlayerDV1",
     fabric: Fabric,
     cfg: Dict[str, Any],
     log_dir: str,
@@ -143,7 +142,7 @@ def test(
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
             elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
-        real_actions = player.get_greedy_action(
+        real_actions = player.get_actions(
             preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
         )
         if player.actor.is_continuous:

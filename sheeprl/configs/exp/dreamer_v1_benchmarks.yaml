@@ -26,10 +26,10 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 1024
-  train_every: 16
+  
   dense_units: 8
   mlp_layers: 1
-  per_rank_gradient_steps: 1
+  
   world_model:
     stochastic_size: 4
     encoder:

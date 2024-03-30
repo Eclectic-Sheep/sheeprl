@@ -20,6 +20,7 @@ from sheeprl.utils.distribution import (
     OneHotCategoricalValidateArgs,
     TruncatedNormal,
 )
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 
 
@@ -61,9 +62,9 @@ class CNNEncoder(nn.Module):
                 layer_args={"kernel_size": 4, "stride": 2},
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                norm_args=[{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)] if layer_norm else None
+                ),
             ),
             nn.Flatten(-3, -1),
         )
@@ -172,12 +173,12 @@ class CNNDecoder(nn.Module):
                 ],
                 activation=[activation, activation, activation, None],
                 norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                norm_args=[
-                    {"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])
-                ]
-                + [None]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
+                    + [None]
+                    if layer_norm
+                    else None
+                ),
             ),
         )
 
@@ -434,6 +435,10 @@ class Actor(nn.Module):
             Default to False.
         expl_amount (float): the exploration amount to use during training.
             Default to 0.0.
+        expl_decay (float): the exploration decay to use during training.
+            Default to 0.0.
+        expl_min (float): the exploration amount minimum to use during training.
+            Default to 0.0.
     """
 
     def __init__(
@@ -449,6 +454,8 @@ class Actor(nn.Module):
         mlp_layers: int = 4,
         layer_norm: bool = False,
         expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
@@ -484,17 +491,17 @@ class Actor(nn.Module):
         self.min_std = min_std
         self.distribution_cfg = distribution_cfg
         self._expl_amount = expl_amount
+        self._expl_decay = expl_decay
+        self._expl_min = expl_min
 
-    @property
-    def expl_amount(self) -> float:
-        return self._expl_amount
-
-    @expl_amount.setter
-    def expl_amount(self, amount: float):
-        self._expl_amount = amount
+    def _get_expl_amount(self, step: int) -> Tensor:
+        amount = self._expl_amount
+        if self._expl_decay:
+            amount *= 0.5 ** float(step) / self._expl_decay
+        return max(amount, self._expl_min)
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -502,7 +509,7 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            is_training (bool): whether it is in the training phase.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
@@ -533,7 +540,7 @@ class Actor(nn.Module):
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
                 dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
                 actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
-            if is_training:
+            if sample_actions:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
@@ -550,19 +557,20 @@ class Actor(nn.Module):
                         logits=logits, validate_args=self.distribution_cfg.validate_args
                     )
                 )
-                if is_training:
+                if sample_actions:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
         return tuple(actions), tuple(actions_dist)
 
     def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+        self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         if self.is_continuous:
             actions = torch.cat(actions, -1)
-            if self._expl_amount > 0.0:
-                actions = torch.clip(Normal(actions, self._expl_amount).sample(), -1, 1)
+            if expl_amount > 0.0:
+                actions = torch.clip(Normal(actions, expl_amount).sample(), -1, 1)
             expl_actions = [actions]
         else:
             expl_actions = []
@@ -573,7 +581,7 @@ class Actor(nn.Module):
                     .to(act.device)
                 )
                 expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
+                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
                 )
         return tuple(expl_actions)
 
@@ -592,6 +600,8 @@ class MinedojoActor(Actor):
         mlp_layers: int = 4,
         layer_norm: bool = False,
         expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -605,10 +615,12 @@ class MinedojoActor(Actor):
             mlp_layers=mlp_layers,
             layer_norm=layer_norm,
             expl_amount=expl_amount,
+            expl_decay=expl_decay,
+            expl_min=expl_min,
         )
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -616,7 +628,7 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            is_training (bool): whether it is in the training phase.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
@@ -656,7 +668,7 @@ class MinedojoActor(Actor):
                     logits=logits, validate_args=self.distribution_cfg.validate_args
                 )
             )
-            if is_training:
+            if sample_actions:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
@@ -665,7 +677,7 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
     def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+        self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         expl_actions = []
         functional_action = actions[0].argmax(dim=-1)
@@ -695,7 +707,7 @@ class MinedojoActor(Actor):
             sample = (
                 OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
             )
-            expl_amount = self.expl_amount
+            expl_amount = self._get_expl_amount(step)
             # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
             # to satisfy the constraints of the environment
             if (
@@ -743,15 +755,15 @@ class PlayerDV2(nn.Module):
     The model of the Dreamer_v2 player.
 
     Args:
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        fabric: the fabric of the model.
+        encoder (nn.Module | _FabricModule): the encoder.
+        recurrent_model (nn.Module | _FabricModule): the recurrent model.
+        representation_model (nn.Module | _FabricModule): the representation model.
+        actor (nn.Module | _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
@@ -761,24 +773,33 @@ class PlayerDV2(nn.Module):
 
     def __init__(
         self,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        fabric: Fabric,
+        encoder: nn.Module | _FabricModule,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.actor = actor
-        self.device = device
+        fabric_player = get_single_device_fabric(fabric)
+        self.encoder = fabric_player.setup_module(
+            getattr(encoder, "module", encoder),
+        )
+        self.recurrent_model = fabric_player.setup_module(
+            getattr(recurrent_model, "module", recurrent_model),
+        )
+        self.representation_model = fabric_player.setup_module(
+            getattr(representation_model, "module", representation_model),
+        )
+        self.actor = fabric_player.setup_module(
+            getattr(actor, "module", actor),
+        )
+        self.device = fabric_player.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.discrete_size = discrete_size
@@ -806,30 +827,10 @@ class PlayerDV2(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
-        """
-        Return the actions with a certain amount of noise for exploration.
-
-        Args:
-            obs (Dict[str, Tensor]): the current observations.
-            is_continuous (bool): whether or not the actions are continuous.
-            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
-                Default to None.
-
-        Returns:
-            The actions the agent has to perform.
-        """
-        actions = self.get_greedy_action(obs, mask=mask)
-        expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
-            self.actions = torch.cat(expl_actions, dim=-1)
-        return expl_actions or actions
-
-    def get_greedy_action(
+    def get_actions(
         self,
         obs: Dict[str, Tensor],
-        is_training: bool = True,
+        sample_actions: bool = True,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -837,7 +838,7 @@ class PlayerDV2(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            is_training (bool): whether it is training.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
@@ -856,7 +857,7 @@ class PlayerDV2(nn.Module):
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -871,7 +872,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -894,7 +895,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
-        The target critic (nn.Module).
+        The target critic (_FabricModule).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -943,9 +944,11 @@ def build_agent(
         activation=eval(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-        if world_model_cfg.representation_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            if world_model_cfg.representation_model.layer_norm
+            else None
+        ),
     )
     transition_model = MLP(
         input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -954,9 +957,11 @@ def build_agent(
         activation=eval(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-        if world_model_cfg.transition_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            if world_model_cfg.transition_model.layer_norm
+            else None
+        ),
     )
     rssm = RSSM(
         recurrent_model=recurrent_model.apply(init_weights),
@@ -999,15 +1004,19 @@ def build_agent(
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
-        norm_args=[
-            {"normalized_shape": world_model_cfg.reward_model.dense_units}
-            for _ in range(world_model_cfg.reward_model.mlp_layers)
-        ]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
+        norm_layer=(
+            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
+        norm_args=(
+            [
+                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                for _ in range(world_model_cfg.reward_model.mlp_layers)
+            ]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
     )
     if world_model_cfg.use_continues:
         continue_model = MLP(
@@ -1016,15 +1025,19 @@ def build_agent(
             hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
             activation=eval(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
-            norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
-            norm_args=[
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
-                for _ in range(world_model_cfg.discount_model.mlp_layers)
-            ]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
+            norm_layer=(
+                [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
+            norm_args=(
+                [
+                    {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                    for _ in range(world_model_cfg.discount_model.mlp_layers)
+                ]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
         )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1053,9 +1066,11 @@ def build_agent(
         activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
@@ -1079,8 +1094,12 @@ def build_agent(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
+    single_device_fabric = get_single_device_fabric(fabric)
+    target_critic = single_device_fabric.setup_module(target_critic)
 
     return world_model, actor, critic, target_critic

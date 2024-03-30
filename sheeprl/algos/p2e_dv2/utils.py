@@ -29,8 +29,6 @@ AGGREGATOR_KEYS = {
     "State/kl",
     "State/post_entropy",
     "State/prior_entropy",
-    "Params/exploration_amount_task",
-    "Params/exploration_amount_exploration",
     "Rewards/intrinsic",
     "Values_exploration/predicted_values",
     "Values_exploration/lambda_values",

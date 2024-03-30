@@ -17,6 +17,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -221,45 +222,54 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        fabric (Fabric): the fabric object.
+        encoder (nn.Module| _FabricModule): the encoder.
+        recurrent_model (nn.Module| _FabricModule): the recurrent model.
+        representation_model (nn.Module| _FabricModule): the representation model.
+        actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
 
     def __init__(
         self,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        fabric: Fabric,
+        encoder: nn.Module | _FabricModule,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.actor = actor
-        self.device = device
+        single_device_fabric = get_single_device_fabric(fabric)
+        self.encoder = single_device_fabric.setup_module(
+            getattr(encoder, "module", encoder),
+        )
+        self.recurrent_model = single_device_fabric.setup_module(
+            getattr(recurrent_model, "module", recurrent_model),
+        )
+        self.representation_model = single_device_fabric.setup_module(
+            getattr(representation_model, "module", representation_model)
+        )
+        self.actor = single_device_fabric.setup_module(
+            getattr(actor, "module", actor),
+        )
+        self.device = single_device_fabric.device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
         self.validate_args = self.actor.distribution_cfg.validate_args
-        self.init_states()
         self.actor_type = actor_type
+        self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -278,32 +288,38 @@ class PlayerDV1(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Tensor, mask: Optional[Dict[str, Tensor]] = None) -> Sequence[Tensor]:
+    def get_exploration_actions(
+        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+    ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
+            sample_actions (bool): whether or not to sample the actions.
+                Default to True.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
+            step (int): the step of the training, used for the exploration amount.
+                Default to 0.
 
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_greedy_action(obs, mask=mask)
+        actions = self.get_actions(obs, sample_actions=sample_actions, mask=mask)
         expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
+        if self.actor._expl_amount > 0:
+            expl_actions = self.actor.add_exploration_noise(actions, step=step, mask=mask)
             self.actions = torch.cat(expl_actions, dim=-1)
         return expl_actions or actions
 
-    def get_greedy_action(
-        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+    def get_actions(
+        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
-            is_training (bool): whether it is training.
+            sample_actions (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
@@ -319,7 +335,7 @@ class PlayerDV1(nn.Module):
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
             validate_args=self.validate_args,
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -478,6 +494,9 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
+        expl_amount=actor_cfg.expl_amount,
+        expl_decay=actor_cfg.expl_decay,
+        expl_min=actor_cfg.expl_min,
     )
     critic = MLP(
         input_dims=latent_state_size,

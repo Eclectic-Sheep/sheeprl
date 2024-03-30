@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -88,7 +89,7 @@ class SACActor(nn.Module):
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
-    def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, obs: Tensor, greedy: bool = False) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -102,9 +103,12 @@ class SACActor(nn.Module):
         """
         x = self.model(obs)
         mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
-        std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
-        return self.get_actions_and_log_probs(mean, std)
+        if greedy:
+            return torch.tanh(mean) * self.action_scale + self.action_bias
+        else:
+            log_std = self.fc_logstd(x)
+            std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
+            return self.get_actions_and_log_probs(mean, std)
 
     def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
@@ -139,20 +143,6 @@ class SACActor(nn.Module):
         log_prob = log_prob.sum(-1, keepdim=True)
 
         return action, log_prob
-
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        """Get the action given the input observation greedily
-
-        Args:
-            obs (Tensor): input observation
-
-        Returns:
-            action
-        """
-        x = self.model(obs)
-        mean = self.fc_mean(x)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return mean
 
 
 class SACAgent(nn.Module):
@@ -238,6 +228,11 @@ class SACAgent(nn.Module):
     def qfs_target(self) -> nn.ModuleList:
         return self._qfs_target
 
+    @qfs_target.setter
+    def qfs_target(self, qfs_target: nn.ModuleList) -> None:
+        self._qfs_target = qfs_target
+        return
+
     @property
     def alpha(self) -> float:
         return self._log_alpha.exp().item()
@@ -305,5 +300,10 @@ def build_agent(
         agent.load_state_dict(agent_state)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+
+    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     return agent
