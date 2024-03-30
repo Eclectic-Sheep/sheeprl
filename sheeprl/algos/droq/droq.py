@@ -270,7 +270,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             learning_starts += start_step
 
     # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio)
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
     if cfg.checkpoint.resume_from:
         ratio.load_state_dict(state["ratio"])
 
@@ -348,21 +348,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        per_rank_gradient_steps = ratio(policy_step / world_size)
-        if update >= learning_starts and per_rank_gradient_steps > 0:
-            train(
-                fabric,
-                agent,
-                actor_optimizer,
-                qf_optimizer,
-                alpha_optimizer,
-                rb,
-                aggregator,
-                cfg,
-                per_rank_gradient_steps,
-            )
-            train_step += world_size
-            cumulative_per_rank_gradient_steps += per_rank_gradient_steps
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / world_size)
+            if per_rank_gradient_steps > 0:
+                train(
+                    fabric,
+                    agent,
+                    actor_optimizer,
+                    qf_optimizer,
+                    alpha_optimizer,
+                    rb,
+                    aggregator,
+                    cfg,
+                    per_rank_gradient_steps,
+                )
+                train_step += world_size
+                cumulative_per_rank_gradient_steps += per_rank_gradient_steps
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):

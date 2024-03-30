@@ -31,10 +31,10 @@ AGGREGATOR_KEYS = {
     "State/post_entropy",
     "State/prior_entropy",
     "State/kl",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
+    "Params/exploration_amount",
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
