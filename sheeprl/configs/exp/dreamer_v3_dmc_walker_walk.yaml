@@ -12,6 +12,7 @@ seed: 5
 # Environment
 env:
   num_envs: 4
+  action_repeat: 2
   max_episode_steps: -1
   wrapper:
     domain_name: walker
@@ -25,13 +26,13 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 100000
+  size: 1_000_000
   checkpoint: True
   memmap: True
 
 # Algorithm
 algo:
-  total_steps: 1000000
+  total_steps: 500_000
   cnn_keys:
     encoder:
       - rgb
