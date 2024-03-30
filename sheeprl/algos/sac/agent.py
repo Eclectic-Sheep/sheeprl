@@ -271,9 +271,22 @@ class SACAgent(nn.Module):
 
 
 class SACPlayer(nn.Module):
-    def __init__(self, actor: SACActor):
+    def __init__(
+        self,
+        feature_extractor: nn.Module,
+        fc_mean: nn.Module,
+        fc_logstd: nn.Module,
+        action_low: Union[SupportsFloat, NDArray] = -1.0,
+        action_high: Union[SupportsFloat, NDArray] = 1.0,
+    ):
         super().__init__()
-        self.actor = actor
+        self.model = feature_extractor
+        self.fc_mean = fc_mean
+        self.fc_logstd = fc_logstd
+
+        # Action rescaling buffers
+        self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
     def forward(self, obs: Tensor, greedy: bool = False) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """Given an observation, it returns a tanh-squashed
@@ -287,17 +300,17 @@ class SACPlayer(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        x = self.actor.model(obs)
-        mean = self.actor.fc_mean(x)
+        x = self.model(obs)
+        mean = self.fc_mean(x)
         if greedy:
-            return torch.tanh(mean) * self.actor.action_scale + self.actor.action_bias
+            return torch.tanh(mean) * self.action_scale + self.action_bias
         else:
-            log_std = self.actor.fc_logstd(x)
+            log_std = self.fc_logstd(x)
             std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
             normal = torch.distributions.Normal(mean, std)
             x_t = normal.rsample()
             y_t = torch.tanh(x_t)
-            actions = y_t * self.actor.action_scale + self.actor.action_bias
+            actions = y_t * self.action_scale + self.action_bias
             return actions
 
 
@@ -328,7 +341,13 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup player agent
-    player = SACPlayer(copy.deepcopy(agent.actor))
+    player = SACPlayer(
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
 
     # Setup training agent
     agent.actor = fabric.setup_module(agent.actor)
@@ -340,9 +359,13 @@ def build_agent(
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     # Setup player agent
-    player.actor = fabric_player.setup_module(player.actor)
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
 
     # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
         player_p.data = agent_p.data
     return agent, player
