@@ -12,7 +12,7 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from omegaconf import DictConfig
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent
+from torch.distributions import Distribution, Independent, OneHotCategorical
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
@@ -23,7 +23,6 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuf
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
     MSEDistribution,
-    OneHotCategoricalValidateArgs,
     SymlogDistribution,
     TwoHotEncodingDistribution,
 )
@@ -108,7 +107,6 @@ def train(
     """
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -162,11 +160,7 @@ def train(
     pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states.detach()), dims=1)
 
     # Compute the distribution over the terminal steps, if required
-    pc = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    pc = Independent(BernoulliSafeMode(logits=world_model.continue_model(latent_states.detach())), 1)
     continue_targets = 1 - data["dones"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
@@ -269,11 +263,7 @@ def train(
     for k, critic in critics_exploration.items():
         # Predict values and continues
         predicted_values = TwoHotEncodingDistribution(critic["module"](imagined_trajectories), dims=1).mean
-        continues = Independent(
-            BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ).mode
+        continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
         true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
         continues = torch.cat((true_done, continues[1:]))
 
@@ -413,11 +403,7 @@ def train(
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic_task(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
+    continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_done, continues[1:]))
 
@@ -501,25 +487,11 @@ def train(
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update(
             "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
         aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())

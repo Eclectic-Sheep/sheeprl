@@ -11,14 +11,21 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
+from torch.distributions import (
+    Distribution,
+    Independent,
+    Normal,
+    OneHotCategoricalStraightThrough,
+    TanhTransform,
+    TransformedDistribution,
+)
 from torch.distributions.utils import probs_to_logits
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs, TruncatedNormal
+from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
@@ -418,9 +425,7 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
         """
@@ -435,9 +440,7 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.transition_model(recurrent_out)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, sample=sample_state, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -540,9 +543,7 @@ class DecoupledRSSM(RSSM):
         """
         logits: Tensor = self.representation_model(embedded_obs)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
 class PlayerDV3(nn.Module):
@@ -609,7 +610,6 @@ class PlayerDV3(nn.Module):
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
         self.actor_type = actor_type
         self.decoupled_rssm = decoupled_rssm
 
@@ -776,20 +776,14 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(
-                    TransformedDistribution(
-                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
-                    ),
-                    1,
-                    validate_args=self.distribution_cfg.validate_args,
-                )
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                actions_dist = Independent(dist, 1)
             if sample_actions:
                 actions = actions_dist.rsample()
             else:
@@ -802,11 +796,7 @@ class Actor(nn.Module):
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(
-                    OneHotCategoricalStraightThroughValidateArgs(
-                        logits=self._uniform_mix(logits), validate_args=self.distribution_cfg.validate_args
-                    )
-                )
+                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
                 if sample_actions:
                     actions.append(actions_dist[-1].rsample())
                 else:
@@ -895,11 +885,7 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(
-                OneHotCategoricalStraightThroughValidateArgs(
-                    logits=logits, validate_args=self.distribution_cfg.validate_args
-                )
-            )
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
             if sample_actions:
                 actions.append(actions_dist[-1].rsample())
             else:

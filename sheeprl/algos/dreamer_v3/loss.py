@@ -2,10 +2,8 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, Independent
+from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
-
-from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 
 
 def reconstruction_loss(
@@ -67,32 +65,14 @@ def reconstruction_loss(
     reward_loss = -pr.log_prob(rewards)
     # KL balancing
     dyn_loss = kl = kl_divergence(
-        Independent(
-            OneHotCategoricalStraightThroughValidateArgs(
-                logits=posteriors_logits.detach(), validate_args=validate_args
-            ),
-            1,
-            validate_args=validate_args,
-        ),
-        Independent(
-            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits, validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
     free_nats = torch.full_like(dyn_loss, kl_free_nats)
     dyn_loss = kl_dynamic * torch.maximum(dyn_loss, free_nats)
     repr_loss = kl_divergence(
-        Independent(
-            OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits, validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ),
-        Independent(
-            OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
     )
     repr_loss = kl_representation * torch.maximum(repr_loss, free_nats)
     kl_loss = dyn_loss + repr_loss

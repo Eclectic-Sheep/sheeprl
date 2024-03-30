@@ -10,6 +10,7 @@ import torch
 from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf, open_dict
+from torch.distributions import Distribution
 
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger
@@ -263,7 +264,6 @@ def check_configs(cfg: Dict[str, Any]):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     decoupled = False
     algo_name = cfg.algo.name
     for _, _algos in algorithm_registry.items():
@@ -323,6 +323,7 @@ def check_configs(cfg: Dict[str, Any]):
             UserWarning,
         )
         cfg.model_manager.disabled = True
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
 
 def check_configs_evaluation(cfg: DictConfig):
@@ -331,9 +332,9 @@ def check_configs_evaluation(cfg: DictConfig):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     if cfg.checkpoint_path is None:
         raise ValueError("You must specify the evaluation checkpoint path")
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
