@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "Sheep us in your research paper! Use this for citations 🐑"
+title: "SheepRL"
+abstract: "A easy to use, easy to customize, production oriented framework for State of the Art Reinforcement Learning."
+date-released: 2023-05-17
+authors:
+  - name: "EclecticSheep"
+  - family-names: "Angioni"
+    given-names: "Davide"
+  - family-names: "Belotti"
+    given-names: "Federico"
+  - family-names: "Can Malli"
+    given-names: "Refik"
+  - family-names: "Milesi"
+    given-names: "Michele"
+version: 0.5.4
+license: "Apache-2.0"
+url: "https://eclecticsheep.ai"
+repository-code: "https://github.com/Eclectic-Sheep/sheeprl/"
+keywords:
+  - reinforcement learning
+  - deep learning
+  - artificial intelligence

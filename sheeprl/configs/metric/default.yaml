@@ -1,0 +1,27 @@
+defaults:
+  - _self_
+  - /logger@logger: tensorboard
+
+log_every: 5000
+disable_timer: False
+
+# Level of Logging:
+#   0: No log
+#   1: Log everything
+log_level: 1
+
+# Metric related parameters. Please have a look at
+# https://torchmetrics.readthedocs.io/en/stable/references/metric.html#torchmetrics.Metric
+# for more information
+sync_on_compute: False
+
+aggregator:
+  _target_: sheeprl.utils.metric.MetricAggregator
+  raise_on_missing: False
+  metrics:
+    Rewards/rew_avg: 
+      _target_: torchmetrics.MeanMetric
+      sync_on_compute: ${metric.sync_on_compute}
+    Game/ep_len_avg: 
+      _target_: torchmetrics.MeanMetric
+      sync_on_compute: ${metric.sync_on_compute}

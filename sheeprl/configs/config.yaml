@@ -1,0 +1,58 @@
+# @package _global_
+
+# Specify here the default training configuration
+defaults:
+  - _self_
+  - algo: default.yaml
+  - buffer: default.yaml
+  - checkpoint: default.yaml
+  - distribution: default.yaml
+  - env: default.yaml
+  - fabric: default.yaml
+  - metric: default.yaml
+  - model_manager: default.yaml
+  - hydra: default.yaml
+  - exp: ???
+
+num_threads: 1
+float32_matmul_precision: "high"
+
+# Set it to True to run a single optimization step
+dry_run: False
+
+# Reproducibility
+seed: 42
+
+# For more information about reproducibility in PyTorch, see https://pytorch.org/docs/stable/notes/randomness.html
+
+# torch.use_deterministic_algorithms() lets you configure PyTorch to use deterministic algorithms
+# instead of nondeterministic ones where available,
+# and to throw an error if an operation is known to be nondeterministic (and without a deterministic alternative).
+torch_use_deterministic_algorithms: False
+
+# Disabling the benchmarking feature with torch.backends.cudnn.benchmark = False 
+# causes cuDNN to deterministically select an algorithm, possibly at the cost of reduced performance.
+# However, if you do not need reproducibility across multiple executions of your application, 
+# then performance might improve if the benchmarking feature is enabled with torch.backends.cudnn.benchmark = True.
+torch_backends_cudnn_benchmark: True
+
+# While disabling CUDA convolution benchmarking (discussed above) ensures that CUDA selects the same algorithm each time an application is run,
+# that algorithm itself may be nondeterministic, unless either torch.use_deterministic_algorithms(True)
+# or torch.backends.cudnn.deterministic = True is set. 
+# The latter setting controls only this behavior, 
+# unlike torch.use_deterministic_algorithms() which will make other PyTorch operations behave deterministically, too.
+torch_backends_cudnn_deterministic: False
+
+# From: https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+# By design, all cuBLAS API routines from a given toolkit version, generate the same bit-wise results at every run
+# when executed on GPUs with the same architecture and the same number of SMs.
+# However, bit-wise reproducibility is not guaranteed across toolkit versions
+# because the implementation might differ due to some implementation changes.
+# This guarantee holds when a single CUDA stream is active only. 
+# If multiple concurrent streams are active, the library may optimize total performance by picking different internal implementations.
+cublas_workspace_config: null  # Possible values are: ":4096:8" or ":16:8"
+
+# Output folders
+exp_name: ${algo.name}_${env.id}
+run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
+root_dir: ${algo.name}/${env.id}

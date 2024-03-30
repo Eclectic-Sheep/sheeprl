@@ -1,0 +1,29 @@
+defaults:
+  - default
+  - _self_
+
+models: 
+  world_model:
+    model_name: "${exp_name}_world_model"
+    description: "P2E_DV1 World Model used in ${env.id} Environment"
+    tags: {}
+  ensembles:
+    model_name: "${exp_name}_ensembles"
+    description: "P2E_DV1 Ensembles used in ${env.id} Environment"
+    tags: {}
+  actor_exploration:
+    model_name: "${exp_name}_actor_exploration"
+    description: "P2E_DV1 Actor Exploration used in ${env.id} Environment"
+    tags: {}
+  critic_exploration:
+    model_name: "${exp_name}_critic_exploration"
+    description: "P2E_DV1 Critic Exploration used in ${env.id} Environment"
+    tags: {}
+  actor_task:
+    model_name: "${exp_name}_actor_task"
+    description: "P2E_DV1 Actor Exploration used in ${env.id} Environment"
+    tags: {}
+  critic_task:
+    model_name: "${exp_name}_critic_task"
+    description: "P2E_DV1 Critic Exploration used in ${env.id} Environment"
+    tags: {}

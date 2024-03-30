@@ -1,0 +1,12 @@
+defaults:
+  - sac
+  - _self_
+
+name: droq
+
+# Training recipe
+replay_ratio: 20.0
+
+# Override from `sac` config
+critic:
+  dropout: 0.01

@@ -1,0 +1,63 @@
+# @package _global_
+
+defaults:
+  - dreamer_v2
+  - override /env: crafter
+  - _self_
+
+# Experiment
+seed: 0
+total_steps: 1000000
+
+# Environment
+env:
+  id: reward
+  num_envs: 1
+  reward_as_observation: True
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  size: 2000000
+  type: episode
+  checkpoint: True
+  prioritize_ends: True
+
+# The CNN and MLP keys of the decoder are the same as those of the encoder by default
+cnn_keys:
+  encoder:
+    - rgb
+  decoder:
+    - rgb
+mlp_keys:
+  encoder:
+    - reward
+  decoder: []
+
+# Algorithm
+algo:
+  gamma: 0.999
+  layer_norm: True
+  learning_starts: 10000
+  per_rank_pretrain_steps: 1
+  world_model:
+    kl_free_nats: 0.0
+    use_continues: True
+    recurrent_model:
+      recurrent_state_size: 1024
+    transition_model:
+      hidden_size: 1024
+    representation_model:
+      hidden_size: 1024
+    optimizer:
+      lr: 1e-4
+  actor:
+    ent_coef: 3e-3
+    optimizer:
+      lr: 1e-4
+  critic:
+    optimizer:
+      lr: 1e-4

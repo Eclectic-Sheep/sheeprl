@@ -1,0 +1,6 @@
+defaults:
+  - gym
+  - _self_
+
+id: Walker2d-v4
+sync_env: True

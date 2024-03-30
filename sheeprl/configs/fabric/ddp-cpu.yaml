@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+devices: 0
+strategy: "ddp"
+accelerator: "cpu"

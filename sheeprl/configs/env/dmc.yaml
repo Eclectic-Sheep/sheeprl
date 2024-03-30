@@ -1,0 +1,20 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: ${env.wrapper.domain_name}_${env.wrapper.task_name}
+action_repeat: 1
+max_episode_steps: 1000
+sync_env: True
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.dmc.DMCWrapper
+  domain_name: walker
+  task_name: walk
+  width: ${env.screen_size}
+  height: ${env.screen_size}
+  seed: null
+  from_pixels: True
+  from_vectors: True

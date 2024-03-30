@@ -1,0 +1,34 @@
+defaults:
+  - dreamer_v2
+  - /optim@ensembles.optimizer: adam
+  - _self_
+
+name: p2e_dv2
+intrinsic_reward_multiplier: 1
+
+player:
+  actor_type: exploration
+
+ensembles:
+  n: 10 # the number of the ensembles
+  dense_act: ${algo.dense_act}
+  mlp_layers: ${algo.mlp_layers}
+  dense_units: ${algo.dense_units}
+  layer_norm: ${algo.layer_norm}
+  clip_gradients: 100
+  optimizer:
+    lr: 3e-4
+    eps: 1e-5
+    weight_decay: 1e-6
+
+# Override from `dreamer_v2` config
+dense_units: 400
+world_model:
+  recurrent_model:
+    recurrent_state_size: 400
+  representation_model:
+    hidden_size: 400
+  transition_model:
+    hidden_size: 400
+actor:
+  cls: sheeprl.algos.p2e_dv2.agent.Actor

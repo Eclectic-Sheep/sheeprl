@@ -1,0 +1,24 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+fabric:
+  accelerator: cpu
+
+env:
+  capture_video: True
+
+seed: null
+num_threads: 1
+disable_grads: True
+checkpoint_path: ???
+float32_matmul_precision: "high"

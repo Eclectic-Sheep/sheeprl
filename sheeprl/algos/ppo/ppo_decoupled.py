@@ -1,249 +1,333 @@
 import copy
 import os
-import time
 import warnings
-from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import timedelta
+from typing import Any, Dict
 
 import gymnasium as gym
+import hydra
+import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv
 from lightning.fabric import Fabric
-from lightning.fabric.fabric import _is_using_cli
-from lightning.fabric.loggers import TensorBoardLogger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.strategies import DDPStrategy
-from tensordict import TensorDict
-from tensordict.tensordict import TensorDictBase, make_tensordict
-from torch import Tensor
 from torch.distributed.algorithms.join import Join
-from torch.distributions import Categorical
-from torch.optim import Adam
 from torch.utils.data import BatchSampler, RandomSampler
-from torchmetrics import MeanMetric
+from torchmetrics import SumMetric
 
-from sheeprl.algos.ppo.args import PPOArgs
+from sheeprl.algos.ppo.agent import PPOAgent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import test
-from sheeprl.data import ReplayBuffer
-from sheeprl.models.models import MLP
-from sheeprl.utils.callback import CheckpointCallback
+from sheeprl.algos.ppo.utils import normalize_obs, test
+from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.parser import HfArgumentParser
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, make_env, normalize_tensor, polynomial_decay
+from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
-# Simple wrapper to let torch.distributed.algorithms.join.Join
-# correctly injects fake communication hooks when we are
-# working with uneven inputs
-class Agent(torch.nn.Module):
-    def __init__(self, actor, critic) -> None:
-        super().__init__()
-        self.actor = actor
-        self.critic = critic
-
-    def forward(self, obs: Tensor) -> Tensor:
-        return self.actor(obs), self.critic(obs)
-
-
-@torch.no_grad()
-def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_collective: TorchCollective):
-    root_dir = (
-        args.root_dir
-        if args.root_dir is not None
-        else os.path.join("logs", "ppo_decoupled", datetime.today().strftime("%Y-%m-%d_%H-%M-%S"))
-    )
-    run_name = (
-        args.run_name if args.run_name is not None else f"{args.env_id}_{args.exp_name}_{args.seed}_{int(time.time())}"
-    )
-    logger = TensorBoardLogger(root_dir=root_dir, name=run_name)
-    logger.log_hyperparams(asdict(args))
-
-    # Initialize Fabric object
-    fabric = Fabric(loggers=logger, callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
+@torch.inference_mode()
+def player(
+    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
+):
+    # Initialize the fabric object
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        state = fabric.load(cfg.checkpoint.resume_from)
 
     # Environment setup
-    envs = SyncVectorEnv(
+    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    envs = vectorized_env(
         [
             make_env(
-                args.env_id,
-                args.seed + i,
+                cfg,
+                cfg.seed + i,
                 0,
-                args.capture_video,
-                logger.log_dir,
+                log_dir,
                 "train",
-                mask_velocities=args.mask_vel,
                 vector_env_idx=i,
             )
-            for i in range(args.num_envs)
+            for i in range(cfg.env.num_envs)
         ]
     )
-    if not isinstance(envs.single_action_space, gym.spaces.Discrete):
-        raise ValueError("Only discrete action space is supported")
+    observation_space = envs.single_observation_space
+
+    if not isinstance(observation_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
+    if cfg.metric.log_level > 0:
+        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+
+    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        envs.single_action_space.shape
+        if is_continuous
+        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
+    )
 
     # Create the actor and critic models
-    actor = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
-        activation=torch.nn.ReLU,
-    ).to(device)
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=1,
-        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
-        activation=torch.nn.ReLU,
-    ).to(device)
+    agent_args = {
+        "actions_dim": actions_dim,
+        "obs_space": observation_space,
+        "encoder_cfg": cfg.algo.encoder,
+        "actor_cfg": cfg.algo.actor,
+        "critic_cfg": cfg.algo.critic,
+        "cnn_keys": cfg.algo.cnn_keys.encoder,
+        "mlp_keys": cfg.algo.mlp_keys.encoder,
+        "screen_size": cfg.env.screen_size,
+        "distribution_cfg": cfg.distribution,
+        "is_continuous": is_continuous,
+    }
+    agent = PPOAgent(**agent_args).to(device)
+    fabric_player = get_single_device_fabric(fabric)
+    agent = fabric_player.setup_module(agent, move_to_device=False)
+
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
+    # Send (possibly updated, by the make_env method for example) cfg to the trainers
+    if cfg.checkpoint.resume_from:
+        cfg.algo.per_rank_batch_size = state["batch_size"] // (world_collective.world_size - 1)
+    cfg.checkpoint.log_dir = log_dir
+    world_collective.broadcast_object_list([cfg], src=0)
+
+    # Broadcast the parameters needed to the trainers to instantiate the PPOAgent
+    world_collective.broadcast_object_list([agent_args], src=0)
 
     flattened_parameters = torch.empty_like(
-        torch.nn.utils.convert_parameters.parameters_to_vector(list(actor.parameters()) + list(critic.parameters())),
+        torch.nn.utils.convert_parameters.parameters_to_vector(list(agent.parameters())),
         device=device,
     )
 
     # Receive the first weights from the rank-1, a.k.a. the first of the trainers
     # In this way we are sure that before the first iteration everyone starts with the same parameters
     player_trainer_collective.broadcast(flattened_parameters, src=1)
-    torch.nn.utils.convert_parameters.vector_to_parameters(
-        flattened_parameters, list(actor.parameters()) + list(critic.parameters())
-    )
+    torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
     # Metrics
-    with device:
-        aggregator = MetricAggregator(
-            {
-                "Rewards/rew_avg": MeanMetric(sync_on_compute=False),
-                "Game/ep_len_avg": MeanMetric(sync_on_compute=False),
-                "Time/step_per_second": MeanMetric(sync_on_compute=False),
-            }
-        )
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    rb = ReplayBuffer(args.rollout_steps, args.num_envs, device=device, memmap=args.memmap_buffer)
-    step_data = TensorDict({}, batch_size=[args.num_envs], device=device)
+    rb = ReplayBuffer(
+        cfg.buffer.size,
+        cfg.env.num_envs,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        obs_keys=obs_keys,
+    )
 
     # Global variables
-    global_step = 0
-    start_time = time.perf_counter()
-    single_global_step = int(args.num_envs * args.rollout_steps)
-    num_updates = args.total_steps // single_global_step if not args.dry_run else 1
-    if single_global_step < world_collective.world_size - 1:
+    start_step = (
+        # + 1 because the checkpoint is at the end of the update step
+        # (when resuming from a checkpoint, the update at the checkpoint
+        # is ended and you have to start with the next one)
+        state["update"] + 1
+        if cfg.checkpoint.resume_from
+        else 1
+    )
+    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
+    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+
+    # Warning for log and checkpoint every
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the metrics will be logged at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if cfg.checkpoint.every % policy_steps_per_update != 0:
+        warnings.warn(
+            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
+            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            "the checkpoint will be saved at the nearest greater multiple of the "
+            "policy_steps_per_update value."
+        )
+    if policy_steps_per_update < world_collective.world_size - 1:
         raise RuntimeError(
             "The number of trainers ({}) is greater than the available collected data ({}). ".format(
-                world_collective.world_size - 1, single_global_step
+                world_collective.world_size - 1, policy_steps_per_update
             )
             + "Consider to lower the number of trainers at least to the size of available collected data"
         )
     chunks_sizes = [
-        len(chunk) for chunk in torch.tensor_split(torch.arange(single_global_step), world_collective.world_size - 1)
+        len(chunk)
+        for chunk in torch.tensor_split(torch.arange(policy_steps_per_update), world_collective.world_size - 1)
     ]
 
     # Broadcast num_updates to all the world
-    update_t = torch.tensor([num_updates], device=device, dtype=torch.float32)
+    update_t = torch.as_tensor([num_updates], device=device, dtype=torch.float32)
     world_collective.broadcast(update_t, src=0)
 
-    with device:
-        # Get the first environment observation and start the optimization
-        next_obs = torch.tensor(envs.reset(seed=args.seed)[0], device=device)
-        next_done = torch.zeros(args.num_envs, 1).to(device)
+    # Get the first environment observation and start the optimization
+    step_data = {}
+    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    for k in obs_keys:
+        if k in cfg.algo.cnn_keys.encoder:
+            next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
+        step_data[k] = next_obs[k][np.newaxis]
 
-    for update in range(1, num_updates + 1):
-        for _ in range(0, args.rollout_steps):
-            global_step += args.num_envs
+    params = {"update": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
+    world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
+    for _ in range(start_step, num_updates + 1):
+        for _ in range(0, cfg.algo.rollout_steps):
+            policy_step += cfg.env.num_envs
 
-            # Sample an action given the observation received by the environment
-            actions_logits = actor(next_obs)
-            dist = Categorical(logits=actions_logits.unsqueeze(-2))
-            action = dist.sample()
-            logprob = dist.log_prob(action)
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                # Sample an action given the observation received by the environment
+                normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
+                torch_obs = {
+                    k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
+                }
+                actions, logprobs, _, values = agent(torch_obs)
+                if is_continuous:
+                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                else:
+                    real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                actions = torch.cat(actions, -1).cpu().numpy()
 
-            # Compute the value of the current observation
-            value = critic(next_obs)
-
-            # Store the current step data
-            step_data["dones"] = next_done
-            step_data["values"] = value
-            step_data["actions"] = action
-            step_data["logprobs"] = logprob
-            step_data["observations"] = next_obs
-
-            # Single environment step
-            next_obs, reward, done, truncated, info = envs.step(action.cpu().numpy().reshape(envs.action_space.shape))
-
-            with device:
-                next_obs = torch.tensor(next_obs)
-                next_done = (
-                    torch.logical_or(torch.tensor(done), torch.tensor(truncated)).view(args.num_envs, -1).float()
-                )  # [N_envs, 1]
-
-                # Save reward for the last (observation, action) pair
-                step_data["rewards"] = torch.tensor(reward).view(args.num_envs, -1)  # [N_envs, 1]
-
-            if "final_info" in info:
-                for i, agent_final_info in enumerate(info["final_info"]):
-                    if agent_final_info is not None and "episode" in agent_final_info:
-                        fabric.print(
-                            f"Rank-0: global_step={global_step}, reward_env_{i}={agent_final_info['episode']['r'][0]}"
+                # Single environment step
+                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                truncated_envs = np.nonzero(truncated)[0]
+                if len(truncated_envs) > 0:
+                    real_next_obs = {
+                        k: torch.empty(
+                            len(truncated_envs),
+                            *observation_space[k].shape,
+                            dtype=torch.float32,
+                            device=device,
                         )
-                        aggregator.update("Rewards/rew_avg", agent_final_info["episode"]["r"][0])
-                        aggregator.update("Game/ep_len_avg", agent_final_info["episode"]["l"][0])
+                        for k in obs_keys
+                    }
+                    for i, truncated_env in enumerate(truncated_envs):
+                        for k, v in info["final_observation"][truncated_env].items():
+                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                            if k in cfg.algo.cnn_keys.encoder:
+                                torch_v = torch_v.view(-1, *v.shape[-2:])
+                                torch_v = torch_v / 255.0 - 0.5
+                            real_next_obs[k][i] = torch_v
+                    _, _, _, vals = agent(real_next_obs)
+                    rewards[truncated_envs] += vals.cpu().numpy().reshape(rewards[truncated_envs].shape)
+                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                rewards = rewards.reshape(cfg.env.num_envs, -1)
+
+            # Update the step data
+            step_data["dones"] = dones[np.newaxis]
+            step_data["values"] = values.cpu().numpy()[np.newaxis]
+            step_data["actions"] = actions[np.newaxis]
+            step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
+            step_data["rewards"] = rewards[np.newaxis]
+            if cfg.buffer.memmap:
+                step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
             # Append data to buffer
-            rb.add(step_data.unsqueeze(0))
+            rb.add(step_data, validate_args=cfg.buffer.validate_args)
+
+            # Update the observation and dones
+            next_obs = {}
+            for k in obs_keys:
+                _obs = obs[k]
+                if k in cfg.algo.cnn_keys.encoder:
+                    _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
+                step_data[k] = _obs[np.newaxis]
+                next_obs[k] = _obs
+
+            if cfg.metric.log_level > 0 and "final_info" in info:
+                for i, agent_ep_info in enumerate(info["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+
+        # Transform the data into PyTorch Tensors
+        local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        next_values = critic(next_obs)
+        normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
+        torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+        _, _, _, next_values = agent(torch_obs)
         returns, advantages = gae(
-            rb["rewards"],
-            rb["values"],
-            rb["dones"],
+            local_data["rewards"].to(torch.float64),
+            local_data["values"],
+            local_data["dones"],
             next_values,
-            next_done,
-            args.rollout_steps,
-            args.gamma,
-            args.gae_lambda,
+            cfg.algo.rollout_steps,
+            cfg.algo.gamma,
+            cfg.algo.gae_lambda,
         )
 
         # Add returns and advantages to the buffer
-        rb["returns"] = returns.float()
-        rb["advantages"] = advantages.float()
-
-        # Flatten the batch
-        local_data = rb.buffer.view(-1)
+        local_data["returns"] = returns.float()
+        local_data["advantages"] = advantages.float()
+        local_data["rewards"] = local_data["rewards"].float()
 
         # Send data to the training agents
         # Split data in an even way, when possible
-        perm = torch.randperm(local_data.shape[0], device=device)
-        chunks = local_data[perm].split(chunks_sizes)
+        perm = torch.randperm(local_data[next(iter(local_data.keys()))].shape[0], device=device)
+        # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+        chunks = {k: v[perm].flatten(0, 1).split(chunks_sizes) for k, v in local_data.items()}
+        # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
+        chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
         world_collective.scatter_object_list([None], [None] + chunks, src=0)
-
-        # Gather metrics from the trainers to be plotted
-        metrics = [None]
-        player_trainer_collective.broadcast_object_list(metrics, src=1)
 
         # Wait the trainers to finish
         player_trainer_collective.broadcast(flattened_parameters, src=1)
 
         # Convert back the parameters
-        torch.nn.utils.convert_parameters.vector_to_parameters(
-            flattened_parameters, list(actor.parameters()) + list(critic.parameters())
-        )
+        torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, list(agent.parameters()))
 
-        # Log metrics
-        aggregator.update("Time/step_per_second", int(global_step / (time.perf_counter() - start_time)))
-        fabric.log_dict(metrics[0], global_step)
-        fabric.log_dict(aggregator.compute(), global_step)
-        aggregator.reset()
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
+            # Gather metrics from the trainers
+            metrics = [None]
+            player_trainer_collective.broadcast_object_list(metrics, src=1)
+            metrics = metrics[0]
+
+            # Log metrics
+            fabric.log_dict(metrics, policy_step)
+            if aggregator and not aggregator.disabled:
+                fabric.log_dict(aggregator.compute(), policy_step)
+                aggregator.reset()
+
+            # Sync timers
+            if not timer.disabled:
+                timer_metrics = timer.compute()
+                fabric.log(
+                    "Time/sps_env_interaction",
+                    ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
+                timer.reset()
+
+            # Reset counters
+            last_log = policy_step
 
         # Checkpoint model
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-            ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{update}_{fabric.global_rank}.ckpt"
+        if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
+            last_checkpoint = policy_step
+            ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
             fabric.call(
                 "on_checkpoint_player",
                 fabric=fabric,
@@ -254,66 +338,68 @@ def player(args: PPOArgs, world_collective: TorchCollective, player_trainer_coll
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
 
     # Last Checkpoint
-    ckpt_path = fabric.logger.log_dir + f"/checkpoint/ckpt_{num_updates}_{fabric.global_rank}.ckpt"
-    fabric.call(
-        "on_checkpoint_player",
-        fabric=fabric,
-        player_trainer_collective=player_trainer_collective,
-        ckpt_path=ckpt_path,
-    )
+    if cfg.checkpoint.save_last:
+        ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+        fabric.call(
+            "on_checkpoint_player",
+            fabric=fabric,
+            player_trainer_collective=player_trainer_collective,
+            ckpt_path=ckpt_path,
+        )
 
     envs.close()
-    if fabric.is_global_zero:
-        test_env = make_env(
-            args.env_id,
-            None,
-            0,
-            args.capture_video,
-            fabric.logger.log_dir,
-            "test",
-            mask_velocities=args.mask_vel,
-            vector_env_idx=0,
-        )()
-        test(actor, test_env, fabric, args)
+    if fabric.is_global_zero and cfg.algo.run_test:
+        test(agent, fabric, cfg, log_dir)
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.ppo.utils import log_models
+        from sheeprl.utils.mlflow import register_model
+
+        models_to_log = {"agent": agent}
+        register_model(fabric, log_models, cfg, models_to_log)
 
 
 def trainer(
-    args: PPOArgs,
     world_collective: TorchCollective,
     player_trainer_collective: TorchCollective,
     optimization_pg: CollectibleGroup,
+    cfg: Dict[str, Any],
 ):
     global_rank = world_collective.rank
+    group_world_size = world_collective.world_size - 1
 
     # Initialize Fabric
-    fabric = Fabric(strategy=DDPStrategy(process_group=optimization_pg), callbacks=[CheckpointCallback()])
-    if not _is_using_cli():
-        fabric.launch()
+    cfg.fabric.pop("loggers", None)
+    cfg.fabric.pop("strategy", None)
+    fabric: Fabric = hydra.utils.instantiate(
+        cfg.fabric, strategy=DDPStrategy(process_group=optimization_pg), _convert_="all"
+    )
+    fabric.launch()
     device = fabric.device
-    fabric.seed_everything(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+
+    # Resume from checkpoint
+    if cfg.checkpoint.resume_from:
+        state = fabric.load(cfg.checkpoint.resume_from)
+
+    # Receive (possibly updated, by the make_env method for example) cfg from the player
+    data = [None]
+    world_collective.broadcast_object_list(data, src=0)
+    cfg: Dict[str, Any] = data[0]
 
     # Environment setup
-    envs = SyncVectorEnv([make_env(args.env_id, 0, 0, False, None, mask_velocities=args.mask_vel)])
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    agent_args = [None]
+    world_collective.broadcast_object_list(agent_args, src=0)
 
-    # Create the actor and critic models
-    actor = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=envs.single_action_space.n,
-        hidden_sizes=(args.actor_hidden_size, args.actor_hidden_size),
-        activation=torch.nn.ReLU,
-    )
-    critic = MLP(
-        input_dims=envs.single_observation_space.shape,
-        output_dim=1,
-        hidden_sizes=(args.critic_hidden_size, args.critic_hidden_size),
-        activation=torch.nn.ReLU,
-    )
-    agent = Agent(actor, critic)
+    # Define the agent and the optimizer
+    agent = PPOAgent(**agent_args[0])
+    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
-    # Define the agent and the optimizer and setup them with Fabric
-    optimizer = Adam(agent.parameters(), lr=args.lr, eps=1e-4)
+    # Load the state from the checkpoint
+    if cfg.checkpoint.resume_from:
+        agent.load_state_dict(state["agent"])
+        optimizer.load_state_dict(state["optimizer"])
+
+    # Setup agent and optimizer with Fabric
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
@@ -330,156 +416,213 @@ def trainer(
     num_updates = num_updates.item()
 
     # Linear learning rate scheduler
-    if args.anneal_lr:
+    if cfg.algo.anneal_lr:
         from torch.optim.lr_scheduler import PolynomialLR
 
         scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        if cfg.checkpoint.resume_from:
+            scheduler.load_state_dict(state["scheduler"])
 
     # Metrics
-    with fabric.device:
-        aggregator = MetricAggregator(
-            {
-                "Loss/value_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/policy_loss": MeanMetric(process_group=optimization_pg),
-                "Loss/entropy_loss": MeanMetric(process_group=optimization_pg),
-            }
-        )
+    aggregator = None
+    if not MetricAggregator.disabled:
+        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Start training
-    update = 0
-    initial_ent_coef = copy.deepcopy(args.ent_coef)
-    initial_clip_coef = copy.deepcopy(args.clip_coef)
+    last_train = 0
+    train_step = 0
+
+    policy_steps_per_update = cfg.env.num_envs * cfg.algo.rollout_steps
+    params = [None]
+    world_collective.scatter_object_list(params, [None for _ in range(world_collective.world_size)], src=0)
+    params = params[0]
+    update = params["update"]
+    policy_step = update * policy_steps_per_update
+    last_log = params["last_log"]
+    last_checkpoint = params["last_checkpoint"]
+    initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
+    initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
     while True:
         # Wait for data
         data = [None]
         world_collective.scatter_object_list(data, [None for _ in range(world_collective.world_size)], src=0)
         data = data[0]
-        if not isinstance(data, TensorDictBase) and data == -1:
+        if not isinstance(data, dict) and data == -1:
             # Last Checkpoint
-            if global_rank == 1:
+            if cfg.checkpoint.save_last:
                 state = {
-                    "agent": actor.state_dict(),
+                    "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
-                    "args": asdict(args),
-                    "update_step": update,
-                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
+                    "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                    "update": update,
+                    "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
+                    "last_log": last_log,
+                    "last_checkpoint": last_checkpoint,
                 }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+                ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+                fabric.call(
+                    "on_checkpoint_trainer",
+                    fabric=fabric,
+                    player_trainer_collective=player_trainer_collective,
+                    ckpt_path=ckpt_path,
+                    state=state,
+                )
             return
-        data = make_tensordict(data, device=device)
-        update += 1
+
+        train_step += group_world_size
 
         # Prepare sampler
-        indexes = list(range(data.shape[0]))
-        sampler = BatchSampler(RandomSampler(indexes), batch_size=args.per_rank_batch_size, drop_last=False)
+        indexes = list(range(data[next(iter(data.keys()))].shape[0]))
+        sampler = BatchSampler(RandomSampler(indexes), batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
-        # The Join context is needed because there can be the possibility
-        # that some ranks receive less data
-        with Join([agent._forward_module]):
-            for _ in range(args.update_epochs):
-                for batch_idxes in sampler:
-                    batch = data[batch_idxes]
-                    actions_logits, new_values = agent(batch["observations"])
+        # Start training
+        with timer(
+            "Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute, process_group=optimization_pg
+        ):
+            # The Join context is needed because there can be the possibility
+            # that some ranks receive less data
+            with Join([agent._forward_module]):
+                for _ in range(cfg.algo.update_epochs):
+                    for batch_idxes in sampler:
+                        batch = {k: data[k][batch_idxes] for k in data.keys()}
+                        normalized_obs = normalize_obs(
+                            batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                        )
+                        _, logprobs, entropy, new_values = agent(
+                            normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+                        )
 
-                    dist = Categorical(logits=actions_logits.unsqueeze(-2))
-                    if args.normalize_advantages:
-                        batch["advantages"] = normalize_tensor(batch["advantages"])
+                        if cfg.algo.normalize_advantages:
+                            batch["advantages"] = normalize_tensor(batch["advantages"])
 
-                    # Policy loss
-                    pg_loss = policy_loss(
-                        dist.log_prob(batch["actions"]),
-                        batch["logprobs"],
-                        batch["advantages"],
-                        args.clip_coef,
-                        args.loss_reduction,
-                    )
+                        # Policy loss
+                        pg_loss = policy_loss(
+                            logprobs,
+                            batch["logprobs"],
+                            batch["advantages"],
+                            cfg.algo.clip_coef,
+                            cfg.algo.loss_reduction,
+                        )
 
-                    # Value loss
-                    v_loss = value_loss(
-                        new_values,
-                        batch["values"],
-                        batch["returns"],
-                        args.clip_coef,
-                        args.clip_vloss,
-                        args.loss_reduction,
-                    )
+                        # Value loss
+                        v_loss = value_loss(
+                            new_values,
+                            batch["values"],
+                            batch["returns"],
+                            cfg.algo.clip_coef,
+                            cfg.algo.clip_vloss,
+                            cfg.algo.loss_reduction,
+                        )
 
-                    # Entropy loss
-                    ent_loss = entropy_loss(dist.entropy(), args.loss_reduction)
+                        # Entropy loss
+                        ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
 
-                    # Equation (9) in the paper
-                    loss = pg_loss + args.vf_coef * v_loss + args.ent_coef * ent_loss
+                        # Equation (9) in the paper
+                        loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
 
-                    optimizer.zero_grad(set_to_none=True)
-                    fabric.backward(loss)
-                    if args.max_grad_norm > 0.0:
-                        fabric.clip_gradients(agent, optimizer, max_norm=args.max_grad_norm)
-                    optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        fabric.backward(loss)
+                        if cfg.algo.max_grad_norm > 0.0:
+                            fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+                        optimizer.step()
 
-                    # Update metrics
-                    aggregator.update("Loss/policy_loss", pg_loss.detach())
-                    aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
+                        # Update metrics
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Loss/policy_loss", pg_loss.detach())
+                            aggregator.update("Loss/value_loss", v_loss.detach())
+                            aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
-        # Send updated weights to the player
-        metrics = aggregator.compute()
-        aggregator.reset()
         if global_rank == 1:
-            if args.anneal_lr:
-                metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
-            else:
-                metrics["Info/learning_rate"] = args.lr
-            metrics["Info/clip_coef"] = args.clip_coef
-            metrics["Info/ent_coef"] = args.ent_coef
-            player_trainer_collective.broadcast_object_list(
-                [metrics], src=1
-            )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
             player_trainer_collective.broadcast(
                 torch.nn.utils.convert_parameters.parameters_to_vector(agent.parameters()),
                 src=1,
             )
 
-        if args.anneal_lr:
+        if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
+            # Sync distributed metrics
+            metrics = {}
+            if aggregator and not aggregator.disabled:
+                metrics.update(aggregator.compute())
+                aggregator.reset()
+
+            # Sync distributed timers
+            if not timer.disabled:
+                timers = timer.compute()
+                metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
+                timer.reset()
+
+            # Send metrics to the player
+            if global_rank == 1:
+                if cfg.algo.anneal_lr:
+                    metrics["Info/learning_rate"] = scheduler.get_last_lr()[0]
+                else:
+                    metrics["Info/learning_rate"] = cfg.algo.optimizer.lr
+                metrics["Info/clip_coef"] = cfg.algo.clip_coef
+                metrics["Info/ent_coef"] = cfg.algo.ent_coef
+                player_trainer_collective.broadcast_object_list(
+                    [metrics], src=1
+                )  # Broadcast metrics: fake send with object list between rank-0 and rank-1
+
+            # Reset counters
+            last_log = policy_step
+            last_train = train_step
+
+        if cfg.algo.anneal_lr:
             scheduler.step()
 
-        if args.anneal_clip_coef:
-            args.clip_coef = polynomial_decay(
+        if cfg.algo.anneal_clip_coef:
+            cfg.algo.clip_coef = polynomial_decay(
                 update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
-        if args.anneal_ent_coef:
-            args.ent_coef = polynomial_decay(
+        if cfg.algo.anneal_ent_coef:
+            cfg.algo.ent_coef = polynomial_decay(
                 update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
             )
 
         # Checkpoint model on rank-0: send it everything
-        if (args.checkpoint_every > 0 and update % args.checkpoint_every == 0) or args.dry_run:
-            if global_rank == 1:
-                state = {
-                    "agent": actor.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "args": asdict(args),
-                    "update_step": update,
-                    "scheduler": scheduler.state_dict() if args.anneal_lr else None,
-                }
-                fabric.call("on_checkpoint_trainer", player_trainer_collective=player_trainer_collective, state=state)
+        if cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every:
+            last_checkpoint = policy_step
+            state = {
+                "agent": agent.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
+                "update": update,
+                "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
+            }
+            ckpt_path = cfg.checkpoint.log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
+            fabric.call(
+                "on_checkpoint_trainer",
+                fabric=fabric,
+                player_trainer_collective=player_trainer_collective,
+                ckpt_path=ckpt_path,
+                state=state,
+            )
+        update += 1
+        policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
 
 @register_algorithm(decoupled=True)
-def main():
-    devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices == "1":
+def main(fabric: Fabric, cfg: Dict[str, Any]):
+    if fabric.world_size == 1:
         raise RuntimeError(
             "Please run the script with the number of devices greater than 1: "
-            "`lightning run model --devices=2 sheeprl.py ...`"
+            "`python sheeprl.py exp=ppo_decoupled fabric.devices=2 ...`"
         )
 
-    parser = HfArgumentParser(PPOArgs)
-    args: PPOArgs = parser.parse_args_into_dataclasses()[0]
+    if "minedojo" in cfg.env.wrapper._target_.lower():
+        raise ValueError(
+            "MineDojo is not currently supported by PPO agent, since it does not take "
+            "into consideration the action masks provided by the environment, but needed "
+            "in order to play correctly the game. "
+            "As an alternative you can use one of the Dreamers' agents."
+        )
 
-    if args.share_data:
+    if cfg.buffer.share_data:
         warnings.warn(
-            "You have called the script with `--share_data=True`: "
+            "You have called the script with `buffer.share_data=True`: "
             "decoupled scripts splits collected data in an almost-even way between the number of trainers"
         )
 
@@ -506,10 +649,6 @@ def main():
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(args, world_collective, player_trainer_collective)
+        player(fabric, cfg, world_collective, player_trainer_collective)
     else:
-        trainer(args, world_collective, player_trainer_collective, optimization_pg)
-
-
-if __name__ == "__main__":
-    main()
+        trainer(world_collective, player_trainer_collective, optimization_pg, cfg)

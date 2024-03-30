@@ -1,0 +1,24 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - _self_
+  - env: default.yaml
+
+hydra:
+  run:
+    dir: logs/envs/${env.id}/${agent}
+
+seed: 42
+exp_name: "default"
+root_dir: $env_logs
+run_name: ${env.id}
+agent: ???
+
+algo:
+  cnn_keys:
+    encoder: []
+    decoder: ${algo.cnn_keys.encoder}
+  mlp_keys:
+    encoder: []
+    decoder: ${algo.mlp_keys.encoder}

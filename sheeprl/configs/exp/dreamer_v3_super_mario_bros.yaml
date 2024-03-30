@@ -1,0 +1,35 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /algo: dreamer_v3_S
+  - override /env: super_mario_bros
+  - _self_
+
+# Experiment
+seed: 5
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+  memmap: True
+
+# Algorithm
+algo:
+  total_steps: 1000000
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder: []
+  learning_starts: 16384
+  replay_ratio: 0.25
+
+# Metric
+metric:
+  log_every: 5000

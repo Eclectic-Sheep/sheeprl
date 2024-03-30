@@ -1,0 +1,16 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: crafter_reward
+action_repeat: 1
+capture_video: False
+reward_as_observation: True
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.crafter.CrafterWrapper
+  id: ${env.id}
+  screen_size: ${env.screen_size}
+  seed: ${seed}

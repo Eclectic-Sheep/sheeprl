@@ -103,7 +103,7 @@ def test_mlp_cast_dropout_args(batch_size, input_dims, hidden_sizes):
     assert all([x.p == 0.6 for x in mlp.model if isinstance(x, nn.Dropout)])
 
 
-def test_mlp_cast_dropout_args(batch_size, input_dims, hidden_sizes):
+def test_mlp_cast_multiple_dropout_args(batch_size, input_dims, hidden_sizes):
     mlp = MLP(
         input_dims=input_dims,
         hidden_sizes=hidden_sizes,

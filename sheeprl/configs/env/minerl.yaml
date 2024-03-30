@@ -1,0 +1,24 @@
+defaults:
+  - minecraft
+  - _self_
+
+# Override from `minecraft` config
+id: custom_navigate
+action_repeat: 1
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: sheeprl.envs.minerl.MineRLWrapper
+  id: ${env.id}
+  height: ${env.screen_size}
+  width: ${env.screen_size}
+  pitch_limits:
+    - ${env.min_pitch}
+    - ${env.max_pitch}
+  seed: null
+  break_speed_multiplier: ${env.break_speed_multiplier}
+  multihot_inventory: True
+  sticky_attack: ${env.sticky_attack}
+  sticky_jump: ${env.sticky_jump}
+  dense: True
+  extreme: False

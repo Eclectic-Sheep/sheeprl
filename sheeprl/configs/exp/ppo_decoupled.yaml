@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - ppo
+  - override /algo: ppo_decoupled
+  - override /env: gym
+  - _self_
+
+fabric:
+  strategy: ddp
+  devices: 2

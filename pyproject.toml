@@ -1,3 +1,7 @@
+[virtualenvs]
+create = true
+in-project = true
+
 [build-system]
 requires = ["setuptools >= 61.0.0"]
 build-backend = "setuptools.build_meta"
@@ -11,19 +15,30 @@ authors = [
   { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
   { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
 ]
+maintainers = [
+  { name = "Federico Belotti", email = "federico.belotti@orobix.com" },
+  { name = "Davide Angioni", email = "davide.angioni@orobix.com" },
+  { name = "Refik Can Malli", email = "refikcan.malli@orobix.com" },
+  { name = "Michele Milesi", email = "michele.milesi@orobix.com" },
+]
 keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
 license = { file = "LICENSE" }
-readme = { file = "README.md", content-type = "text/markdown" }
+readme = { file = "docs/README.md", content-type = "text/markdown" }
 requires-python = ">=3.8,<3.11"
-classifiers = ["Programming Language :: Python"]
+classifiers = ["Programming Language :: Python", "Topic :: Scientific/Engineering :: Artificial Intelligence"]
 dependencies = [
-  "gymnasium[box2d]==0.28.*",
-  "moviepy==1.0.*",
-  "tensordict==0.1.*",
+  "gymnasium==0.29.*",
+  "pygame >=2.1.3",
+  "moviepy>=1.0.3",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
-  "lightning==2.0.*",
-  "lightning-utilities<0.9",
+  "lightning==2.1.*",
+  "lightning-utilities<=0.9",
+  "hydra-core==1.3.0",
+  "torchmetrics",
+  "rich==13.5.*",
+  "opencv-python==4.8.0.*",
+  "torch>=2.0,!=2.2.0"
 ]
 dynamic = ["version"]
 
@@ -31,31 +46,47 @@ dynamic = ["version"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["sheeprl", "sheeprl.*"]
+include = ["sheeprl", "sheeprl.*", "hydra_plugins"]
+exclude = ["tests*", "build*", "dist*", "notebooks*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sheeprl.__init__.__version__"}
+readme = {file = ["docs/README.md"], content-type = "text/markdown"}
 
 [project.scripts]
 sheeprl = "sheeprl.cli:run"
+sheeprl-eval = "sheeprl.cli:evaluation"
+sheeprl-agents = "sheeprl.available_agents:available_agents"
+sheeprl-registration = "sheeprl.cli:registration"
 
 [project.urls]
 homepage = "https://eclecticsheep.ai"
 repository = "https://github.com/Eclectic-Sheep/sheeprl"
 
 [project.optional-dependencies]
-test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage"]
+test = ["pytest==7.3.1", "pytest-timeout==2.1.0", "pytest-coverage", "importlib_resources>=6.2.0"]
 dev = [
-  "pre-commit==2.20.0",
+  "pre-commit==3.5.0",
   "mypy==1.2.0",
-  "black==23.3.0",
-  "isort==5.12.0",
-  "autoflake==2.1.1",
+  "black==23.12.1",
+  "isort==5.13.2",
+  "autoflake==2.2.1",
+  "ruff==0.1.11",
 ]
-mujoco = ["mujoco==2.3.3", "gymnasium[mujoco]==0.28.*"]
-dmc = ["dm_control==1.0.11"]
+mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==0.29.*"]
+dmc = ["dm_control>=1.0.12"]
+box2d = ["gymnasium[box2d]==0.29.*"]
 atari = [
-  "gymnasium[atari]==0.28.*",
-  "gymnasium[accept-rom-license]==0.28.*",
-  "gymnasium[other]==0.28.*",
+  "gymnasium[atari]==0.29.*",
+  "gymnasium[accept-rom-license]==0.29.*",
+  "gymnasium[other]==0.29.*",
 ]
+minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
+minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
+diambra = ["diambra==0.0.17", "diambra-arena==2.2.6"]
+crafter = ["crafter==1.8.3"]
+mlflow = ["mlflow==2.11.1"]
+supermario = ["gym-super-mario-bros==7.4.0", "gym<0.26"]
 
 [tool.ruff]
 line-length = 120
@@ -67,9 +98,10 @@ select = [
 ]
 ignore = [
   "E731", # Do not assign a lambda expression, use a def
+  "E402", # Module level import not at top of file
 ]
 # Exclude a variety of commonly ignored directories.
-exclude = [".git", "docs", "_notebooks"]
+exclude = [".git", "docs", "_notebooks", "examples"]
 ignore-init-module-imports = true
 
 # Black formatting
@@ -110,7 +142,7 @@ markers = ["benchmark: mark test as a benchmark"]
 
 # Pytest coverage
 [tool.coverage.run]
-omit = []
+omit = ["./sheeprl/envs/*", "./sheeprl/available_agents.py", "sheeprl/utils/mlflow.py"]
 
 [tool.prettier]
 tab_width = 2
@@ -165,3 +197,25 @@ disallow_untyped_defs = false
 no_implicit_reexport = false
 # This one can be tricky to get passing if you use a lot of untyped libraries
 warn_return_any = false
+
+
+[tool.bumpver]
+current_version = "0.5.4"
+version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
+commit_message = "bump version {old_version} -> {new_version}"
+tag_message = "v{new_version}"
+tag_scope = "default"
+pre_commit_hook = ""
+post_commit_hook = ""
+commit = true
+tag = true
+push = true
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+]
+"sheeprl/__init__.py" = [
+    '^__version__ = "{version}"$',
+]
+

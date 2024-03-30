@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - ppo
+  - override /algo: ppo_recurrent
+  - override /model_manager: ppo_recurrent
+  - _self_
+
+algo:
+  per_rank_num_batches: 8
+  per_rank_sequence_length: 16
+  total_steps: 409000
+  rollout_steps: 512
+  update_epochs: 8
+
+# Environment
+env:
+  num_envs: 16
+
+buffer:
+  memmap: False

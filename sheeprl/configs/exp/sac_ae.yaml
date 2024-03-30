@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - sac
+  - override /algo: sac_ae
+  - override /model_manager: sac_ae
+  - _self_
+
+# Algorithm
+algo:
+  per_rank_batch_size: 128
+
+# Environmment
+env:
+  frame_stack: 3
+
+metric:
+  aggregator:
+    metrics:
+      Loss/reconstruction_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
