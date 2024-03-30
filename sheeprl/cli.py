@@ -10,6 +10,7 @@ import torch
 from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf, open_dict
+from torch.distributions import Distribution
 
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger
@@ -57,6 +58,9 @@ def run_algorithm(cfg: Dict[str, Any]):
     # Torch settings
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
+
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -198,6 +202,9 @@ def eval_algorithm(cfg: DictConfig):
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
 
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
+
     # TODO: change the number of devices when FSDP will be supported
     accelerator = cfg.fabric.get("accelerator", "auto")
     fabric: Fabric = hydra.utils.instantiate(
@@ -263,7 +270,6 @@ def check_configs(cfg: Dict[str, Any]):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     decoupled = False
     algo_name = cfg.algo.name
     for _, _algos in algorithm_registry.items():
@@ -331,7 +337,6 @@ def check_configs_evaluation(cfg: DictConfig):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     if cfg.checkpoint_path is None:
         raise ValueError("You must specify the evaluation checkpoint path")
 

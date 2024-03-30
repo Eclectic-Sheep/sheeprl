@@ -7,11 +7,10 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Independent, Normal
+from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.fabric import get_single_device_fabric
 
 
@@ -198,11 +197,7 @@ class RecurrentPPOAgent(nn.Module):
         entropies = []
         sampled_actions = []
         if self.is_continuous:
-            dist = Independent(
-                Normal(*pre_dist, validate_args=self.distribution_cfg.validate_args),
-                1,
-                validate_args=self.distribution_cfg.validate_args,
-            )
+            dist = Independent(Normal(*pre_dist), 1)
             if greedy:
                 sampled_actions.append(dist.mode)
             else:
@@ -214,7 +209,7 @@ class RecurrentPPOAgent(nn.Module):
             logprobs.append(dist.log_prob(actions))
         else:
             for i, logits in enumerate(pre_dist):
-                dist = OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
+                dist = OneHotCategorical(logits=logits)
                 if greedy:
                     sampled_actions.append(dist.mode)
                 else:

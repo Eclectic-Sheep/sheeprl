@@ -35,8 +35,8 @@ The three losses of DreamerV2 are implemented in the `loss.py` file. The *recons
 The reconstruction loss is computed as follows:
 ```python
 def reconstruction_loss(
-    po: Distribution,
-    observations: Tensor,
+    po: Dict[str, Distribution],
+    observations: Dict[str, Tensor],
     pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
@@ -48,32 +48,35 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     discount_scale_factor: float = 1.0,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    device = observations.device
-    observation_loss = -po.log_prob(observations).mean()
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    observation_loss = -sum([po[k].log_prob(observations[k]).mean() for k in po.keys()])
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
-    lhs = kl_divergence(
-        OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits.detach()),
-        OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits),
+    lhs = kl = kl_divergence(
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
     )
     rhs = kl_divergence(
-        OneHotCategoricalStraightThroughValidateArgs(logits=posteriors_logits),
-        OneHotCategoricalStraightThroughValidateArgs(logits=priors_logits.detach()),
+        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
     )
-    kl_free_nats = torch.tensor([kl_free_nats], device=lhs.device)
     if kl_free_avg:
-        loss_lhs = torch.maximum(lhs.mean(), kl_free_nats)
-        loss_rhs = torch.maximum(rhs.mean(), kl_free_nats)
+        lhs = lhs.mean()
+        rhs = rhs.mean()
+        free_nats = torch.full_like(lhs, kl_free_nats)
+        loss_lhs = torch.maximum(lhs, free_nats)
+        loss_rhs = torch.maximum(rhs, free_nats)
     else:
+        free_nats = torch.full_like(lhs, kl_free_nats)
         loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
         loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
-    continue_loss = torch.tensor(0, device=device)
     if pc is not None and continue_targets is not None:
         continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()
+    else:
+        continue_loss = torch.zeros_like(reward_loss)
     reconstruction_loss = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
-    return reconstruction_loss, kl_loss, reward_loss, observation_loss, continue_loss
+    return reconstruction_loss, kl, kl_loss, reward_loss, observation_loss, continue_loss
 ```
 Here it is necessary to define some hyper-parameters, such as *(i)* the `kl_free_nats`, which is the minimum value of the *KL loss* (default to 0); or *(ii)* the `kl_regularizer` parameter to scale the *KL loss*; *(iii)* wheter to compute or not the *continue loss*; *(iv)* `discount_scale_factor`, the parameter to scale the *continue loss*.
 
