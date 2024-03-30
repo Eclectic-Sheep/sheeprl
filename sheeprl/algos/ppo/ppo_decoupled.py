@@ -36,6 +36,7 @@ def player(
     cfg: Dict[str, Any],
 ):
     # Initialize Fabric player-only
+    os.environ["LT_DEVICES"] = "1"
     cfg.fabric.pop("devices", None)
     cfg.fabric.pop("loggers", None)
     cfg.fabric.pop("strategy", None)
