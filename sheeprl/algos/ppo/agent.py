@@ -151,20 +151,17 @@ class PPOAgent(nn.Module):
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
 
     def forward(
-        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None, greedy: bool = False
+        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor, Tensor]:
         feat = self.feature_extractor(obs)
-        values = self.critic(feat)
         actor_out: List[Tensor] = self.actor(feat)
+        values = self.critic(feat)
         if self.is_continuous:
             mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
             std = log_std.exp()
             normal = Independent(Normal(mean, std), 1)
             if actions is None:
-                if greedy:
-                    actions = mean
-                else:
-                    actions = normal.sample()
+                actions = normal.sample()
             else:
                 # always composed by a tuple of one element containing all the
                 # continuous actions
@@ -183,10 +180,7 @@ class PPOAgent(nn.Module):
                 actions_dist.append(OneHotCategorical(logits=logits))
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
-                    if greedy:
-                        actions.append(actions_dist[-1].mode)
-                    else:
-                        actions.append(actions_dist[-1].sample())
+                    actions.append(actions_dist[-1].sample())
                 actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
             return (
                 tuple(actions),
@@ -195,9 +189,65 @@ class PPOAgent(nn.Module):
                 values,
             )
 
-    def get_value(self, obs: Dict[str, Tensor]) -> Tensor:
+
+class PPOPlayer(nn.Module):
+    def __init__(self, feature_extractor: MultiEncoder, actor: PPOActor, critic: nn.Module) -> None:
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.critic = critic
+        self.actor = actor
+
+    def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
+        feat = self.feature_extractor(obs)
+        values = self.critic(feat)
+        actor_out: List[Tensor] = self.actor(feat)
+        if self.actor.is_continuous:
+            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
+            std = log_std.exp()
+            normal = Independent(Normal(mean, std), 1)
+            actions = normal.sample()
+            log_prob = normal.log_prob(actions)
+            return tuple([actions]), log_prob.unsqueeze(dim=-1), values
+        else:
+            actions_dist: List[Distribution] = []
+            actions_logprobs: List[Tensor] = []
+            actions: List[Tensor] = []
+            for i, logits in enumerate(actor_out):
+                actions_dist.append(OneHotCategorical(logits=logits))
+                actions.append(actions_dist[-1].sample())
+                actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
+            return (
+                tuple(actions),
+                torch.stack(actions_logprobs, dim=-1).sum(dim=-1, keepdim=True),
+                values,
+            )
+
+    def get_values(self, obs: Dict[str, Tensor]) -> Tensor:
         feat = self.feature_extractor(obs)
         return self.critic(feat)
+
+    def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
+        feat = self.feature_extractor(obs)
+        actor_out: List[Tensor] = self.actor(feat)
+        if self.actor.is_continuous:
+            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
+            if greedy:
+                actions = mean
+            else:
+                std = log_std.exp()
+                normal = Independent(Normal(mean, std), 1)
+                actions = normal.sample()
+            return tuple([actions])
+        else:
+            actions: List[Tensor] = []
+            actions_dist: List[Distribution] = []
+            for logits in actor_out:
+                actions_dist.append(OneHotCategorical(logits=logits))
+                if greedy:
+                    actions.append(actions_dist[-1].mode)
+                else:
+                    actions.append(actions_dist[-1].sample())
+            return tuple(actions)
 
 
 def build_agent(
@@ -207,7 +257,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[PPOAgent, PPOAgent]:
+) -> Tuple[PPOAgent, PPOPlayer]:
     agent = PPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -222,16 +272,26 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    player = copy.deepcopy(agent)
+
+    # Setup player agent
+    player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
     # Setup training agent
-    agent = fabric.setup_module(agent)
+    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
+    agent.critic = fabric.setup_module(agent.critic)
+    agent.actor = fabric.setup_module(agent.actor)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)
-    player = fabric_player.setup_module(player)
+    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
+    player.critic = fabric_player.setup_module(player.critic)
+    player.actor = fabric_player.setup_module(player.actor)
 
     # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.parameters(), player.parameters()):
+    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
         player_p.data = agent_p.data
     return agent, player
