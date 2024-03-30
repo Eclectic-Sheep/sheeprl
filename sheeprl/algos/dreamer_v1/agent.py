@@ -150,7 +150,6 @@ class RSSM(nn.Module):
             self.representation_model(torch.cat((recurrent_state, embedded_obs), -1)),
             event_shape=1,
             min_std=self.min_std,
-            validate_args=self.distribution_cfg.validate_args,
         )
         return posterior_mean_std, posterior
 
@@ -165,9 +164,7 @@ class RSSM(nn.Module):
             The prior state (Tensor): the sampled prior state predicted by the transition model.
         """
         prior_mean_std = self.transition_model(recurrent_out)
-        return compute_stochastic_state(
-            prior_mean_std, event_shape=1, min_std=self.min_std, validate_args=self.distribution_cfg.validate_args
-        )
+        return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """One-step imagination of the next latent state.
@@ -267,7 +264,6 @@ class PlayerDV1(nn.Module):
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
         self.actor_type = actor_type
         self.init_states()
 
@@ -333,7 +329,6 @@ class PlayerDV1(nn.Module):
         )
         _, self.stochastic_state = compute_stochastic_state(
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
-            validate_args=self.validate_args,
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
         self.actions = torch.cat(actions, -1)

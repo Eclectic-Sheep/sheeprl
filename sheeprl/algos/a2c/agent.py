@@ -9,11 +9,10 @@ import torch.nn as nn
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal
+from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import PPOActor
 from sheeprl.models.models import MLP
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.fabric import get_single_device_fabric
 
 
@@ -127,11 +126,7 @@ class A2CAgent(nn.Module):
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
-            normal = Independent(
-                Normal(mean, std, validate_args=self.distribution_cfg.validate_args),
-                1,
-                validate_args=self.distribution_cfg.validate_args,
-            )
+            normal = Independent(Normal(mean, std), 1)
             if actions is None:
                 actions = normal.mode if greedy else normal.sample()
             else:
@@ -148,9 +143,7 @@ class A2CAgent(nn.Module):
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(pre_dist):
-                actions_dist.append(
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
-                )
+                actions_dist.append(OneHotCategorical(logits=logits))
                 if should_append:
                     actions.append(actions_dist[-1].mode if greedy else actions_dist[-1].sample())
                 actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))

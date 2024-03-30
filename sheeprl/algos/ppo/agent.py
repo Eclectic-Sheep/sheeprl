@@ -9,10 +9,9 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal
+from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.fabric import get_single_device_fabric
 
 
@@ -160,11 +159,7 @@ class PPOAgent(nn.Module):
         if self.is_continuous:
             mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
             std = log_std.exp()
-            normal = Independent(
-                Normal(mean, std, validate_args=self.distribution_cfg.validate_args),
-                1,
-                validate_args=self.distribution_cfg.validate_args,
-            )
+            normal = Independent(Normal(mean, std), 1)
             if actions is None:
                 if greedy:
                     actions = mean
@@ -185,9 +180,7 @@ class PPOAgent(nn.Module):
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(actor_out):
-                actions_dist.append(
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
-                )
+                actions_dist.append(OneHotCategorical(logits=logits))
                 actions_entropies.append(actions_dist[-1].entropy())
                 if should_append:
                     if greedy:
