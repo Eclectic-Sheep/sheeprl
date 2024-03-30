@@ -20,7 +20,6 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
-    validate_args: bool = False,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 5 in
@@ -49,8 +48,6 @@ def reconstruction_loss(
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
-        validate_args (bool): Whether or not to validate distributions arguments.
-            Default to False.
 
     Returns:
         observation_loss (Tensor): the value of the observation loss.
