@@ -21,6 +21,7 @@ from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -33,11 +34,7 @@ def player(
     fabric: Fabric, world_collective: TorchCollective, player_trainer_collective: TorchCollective, cfg: Dict[str, Any]
 ):
     # Initialize Fabric player-only
-    os.environ["LT_DEVICES"] = "1"
-    cfg.fabric.pop("devices", None)
-    cfg.fabric.pop("loggers", None)
-    cfg.fabric.pop("strategy", None)
-    fabric_player: Fabric = hydra.utils.instantiate(cfg.fabric, devices=1, _convert_="all")
+    fabric_player = get_single_device_fabric(fabric)
     log_dir = get_log_dir(fabric_player, cfg.root_dir, cfg.run_name, False)
     device = fabric_player.device
     rank = fabric.global_rank

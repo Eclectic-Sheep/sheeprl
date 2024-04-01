@@ -1,3 +1,5 @@
+from unittest import mock
+
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import XLAAccelerator
 from lightning.fabric.strategies import SingleDeviceStrategy, SingleDeviceXLAStrategy
@@ -23,4 +25,11 @@ def get_single_device_fabric(fabric: Fabric) -> Fabric:
         checkpoint_io=None,
         precision=fabric._precision,
     )
-    return Fabric(strategy=strategy)
+    with mock.patch.dict("os.environ") as patched_os:
+        patched_os.pop("LT_DEVICES", None)
+        patched_os.pop("LT_STRATEGY", None)
+        patched_os.pop("LT_NUM_NODES", None)
+        patched_os.pop("LT_PRECISION", None)
+        patched_os.pop("LT_ACCELERATOR", None)
+        single_device_fabric = Fabric(strategy=strategy)
+    return single_device_fabric
