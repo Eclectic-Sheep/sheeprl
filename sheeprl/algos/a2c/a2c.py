@@ -243,11 +243,31 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                     # Single environment step
-                    obs, rewards, done, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-
-                dones = np.logical_or(done, truncated)
-                dones = dones.reshape(cfg.env.num_envs, -1)
-                rewards = rewards.reshape(cfg.env.num_envs, -1)
+                    obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                    truncated_envs = np.nonzero(truncated)[0]
+                    if len(truncated_envs) > 0:
+                        real_next_obs = {
+                            k: torch.empty(
+                                len(truncated_envs),
+                                *observation_space[k].shape,
+                                dtype=torch.float32,
+                                device=device,
+                            )
+                            for k in obs_keys
+                        }
+                        for i, truncated_env in enumerate(truncated_envs):
+                            for k, v in info["final_observation"][truncated_env].items():
+                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                                if k in cfg.algo.cnn_keys.encoder:
+                                    torch_v = torch_v.view(-1, *v.shape[-2:])
+                                    torch_v = torch_v / 255.0 - 0.5
+                                real_next_obs[k][i] = torch_v
+                        _, _, vals = player(real_next_obs)
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.cpu().numpy().reshape(
+                            rewards[truncated_envs].shape
+                        )
+                    dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                    rewards = rewards.reshape(cfg.env.num_envs, -1)
 
                 # Update the step data
                 step_data["dones"] = dones[np.newaxis]

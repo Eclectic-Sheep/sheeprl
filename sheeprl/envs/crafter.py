@@ -50,7 +50,7 @@ class CrafterWrapper(gym.Wrapper):
 
     def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         obs, reward, done, info = self.env.step(action)
-        return self._convert_obs(obs), reward, done, False, info
+        return self._convert_obs(obs), reward, done and info["discount"] == 0, done and info["discount"] != 0, info
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None

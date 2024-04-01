@@ -269,12 +269,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
-    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     if cfg.dry_run:
-        step_data["dones"] = step_data["dones"] + 1
+        step_data["terminated"] = step_data["terminated"] + 1
+        step_data["truncated"] = step_data["truncated"] + 1
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["is_first"] = np.ones_like(step_data["dones"])
+    step_data["is_first"] = np.ones_like(step_data["terminated"])
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
@@ -304,9 +306,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                         torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                     )
 
-                step_data["is_first"] = copy.deepcopy(step_data["dones"])
-                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-                dones = np.logical_or(dones, truncated).astype(np.uint8)
+                step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
+                next_obs, rewards, terminated, truncated, infos = envs.step(
+                    real_actions.reshape(envs.action_space.shape)
+                )
+                dones = np.logical_or(terminated, truncated).astype(np.uint8)
                 if cfg.dry_run and buffer_type == "episode":
                     dones = np.ones_like(dones)
 
@@ -334,7 +338,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             # Next_obs becomes the new obs
             obs = next_obs
 
-            step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
+            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
             step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
             step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -346,14 +351,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 reset_data = {}
                 for k in obs_keys:
                     reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-                reset_data["dones"] = np.zeros((1, reset_envs, 1))
+                reset_data["terminated"] = np.zeros((1, reset_envs, 1))
+                reset_data["truncated"] = np.zeros((1, reset_envs, 1))
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-                reset_data["is_first"] = np.ones_like(reset_data["dones"])
+                reset_data["is_first"] = np.ones_like(reset_data["terminated"])
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 # Reset dones so that `is_first` is updated
                 for d in dones_idxes:
-                    step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
                 # Reset internal agent states
                 player.init_states(dones_idxes)
 

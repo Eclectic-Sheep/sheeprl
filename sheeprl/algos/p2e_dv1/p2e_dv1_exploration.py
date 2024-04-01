@@ -134,9 +134,9 @@ def train(
     qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
-        continue_targets = (1 - data["dones"]) * cfg.algo.gamma
+        continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
-        qc = continue_targets = None
+        qc = continues_targets = None
     posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
     priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
@@ -151,7 +151,7 @@ def train(
         cfg.algo.world_model.kl_free_nats,
         cfg.algo.world_model.kl_regularizer,
         qc,
-        continue_targets,
+        continues_targets,
         cfg.algo.world_model.continue_scale_factor,
     )
     fabric.backward(rec_loss)
@@ -580,7 +580,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if k in cfg.algo.cnn_keys.encoder:
             obs[k] = obs[k].reshape(cfg.env.num_envs, -1, *obs[k].shape[-2:])
         step_data[k] = obs[k][np.newaxis]
-    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -627,8 +628,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         real_actions = (
                             torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
-                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-                dones = np.logical_or(dones, truncated).astype(np.uint8)
+                next_obs, rewards, terminated, truncated, infos = envs.step(
+                    real_actions.reshape(envs.action_space.shape)
+                )
+                dones = np.logical_or(terminated, truncated).astype(np.uint8)
 
             if cfg.metric.log_level > 0 and "final_info" in infos:
                 for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -657,7 +660,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # next_obs becomes the new obs
             obs = next_obs
 
-            step_data["dones"] = dones[np.newaxis]
+            step_data["terminated"] = terminated[np.newaxis]
+            step_data["truncated"] = truncated[np.newaxis]
             step_data["actions"] = actions[np.newaxis]
             step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -669,13 +673,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data = {}
                 for k in obs_keys:
                     reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-                reset_data["dones"] = np.zeros((1, reset_envs, 1))
+                reset_data["terminated"] = np.zeros((1, reset_envs, 1))
+                reset_data["truncated"] = np.zeros((1, reset_envs, 1))
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-                # Reset dones so that `is_first` is updated
                 for d in dones_idxes:
-                    step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(reset_envs=dones_idxes)
 

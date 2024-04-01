@@ -367,7 +367,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         1, cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
 
-        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.int8)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.int8)
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data, validate_args=cfg.buffer.validate_args)
