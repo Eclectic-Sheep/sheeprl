@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-import time
 import warnings
 from typing import Any, Dict, Optional, Union
 
@@ -26,7 +25,6 @@ from sheeprl.algos.sac_ae.utils import preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -62,7 +60,10 @@ def train(
 
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
-        normalized_next_obs, data["rewards"], data["dones"], cfg.algo.gamma
+        normalized_next_obs,
+        data["rewards"],
+        data["terminated"],
+        cfg.algo.gamma,
     )
     qf_values = agent.get_q_values(normalized_obs, data["actions"])
     qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
@@ -195,7 +196,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent, encoder, decoder = build_agent(
+    agent, encoder, decoder, player = build_agent(
         fabric,
         cfg,
         observation_space,
@@ -204,20 +205,32 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["encoder"] if cfg.checkpoint.resume_from else None,
         state["decoder"] if cfg.checkpoint.resume_from else None,
     )
-    fabric_player = get_single_device_fabric(fabric)
-    actor = fabric_player.setup_module(agent.actor.module)
 
     # Optimizers
-    qf_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=agent.critic.parameters(), _convert_="all")
-    actor_optimizer = hydra.utils.instantiate(
-        cfg.algo.actor.optimizer, params=agent.actor.parameters(), _convert_="all"
+    qf_optimizer = hydra.utils.instantiate(
+        cfg.algo.critic.optimizer,
+        params=agent.critic.parameters(),
+        _convert_="all",
     )
-    alpha_optimizer = hydra.utils.instantiate(cfg.algo.alpha.optimizer, params=[agent.log_alpha], _convert_="all")
+    actor_optimizer = hydra.utils.instantiate(
+        cfg.algo.actor.optimizer,
+        params=agent.actor.parameters(),
+        _convert_="all",
+    )
+    alpha_optimizer = hydra.utils.instantiate(
+        cfg.algo.alpha.optimizer,
+        params=[agent.log_alpha],
+        _convert_="all",
+    )
     encoder_optimizer = hydra.utils.instantiate(
-        cfg.algo.encoder.optimizer, params=encoder.parameters(), _convert_="all"
+        cfg.algo.encoder.optimizer,
+        params=encoder.parameters(),
+        _convert_="all",
     )
     decoder_optimizer = hydra.utils.instantiate(
-        cfg.algo.decoder.optimizer, params=decoder.parameters(), _convert_="all"
+        cfg.algo.decoder.optimizer,
+        params=decoder.parameters(),
+        _convert_="all",
     )
 
     if cfg.checkpoint.resume_from:
@@ -271,7 +284,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    time.time()
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
@@ -322,10 +334,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with torch.inference_mode():
                     normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
                     torch_obs = {k: torch.from_numpy(v).to(device).float() for k, v in normalized_obs.items()}
-                    actions, _ = actor(torch_obs)
-                    actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated)
+                    actions = player(torch_obs).cpu().numpy()
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -357,7 +367,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         1, cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
 
-        step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -483,7 +493,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(actor, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac_ae.utils import log_models
