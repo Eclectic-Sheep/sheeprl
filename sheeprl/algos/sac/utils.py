@@ -41,7 +41,7 @@ def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         )  # [N_envs, N_obs]
     while not done:
         # Act greedly through the environment
-        action = actor(next_obs, greedy=True)
+        action = actor.get_actions(next_obs, greedy=True)
 
         # Single environment step
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))

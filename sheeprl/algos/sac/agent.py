@@ -89,7 +89,7 @@ class SACActor(nn.Module):
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
-    def forward(self, obs: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -107,7 +107,7 @@ class SACActor(nn.Module):
         std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
         return self._get_actions_and_log_probs(mean, std)
 
-    def _get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
+    def _get_actions_and_log_probs(self, mean: Tensor, std: Tensor) -> Tuple[Tensor, Tensor]:
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -245,9 +245,6 @@ class SACAgent(nn.Module):
     def get_actions_and_log_probs(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         return self.actor(obs)
 
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        return self.actor.get_greedy_actions(obs)
-
     def get_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return torch.cat([self.qfs[i](obs, action) for i in range(len(self.qfs))], dim=-1)
 
@@ -288,7 +285,7 @@ class SACPlayer(nn.Module):
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
-    def forward(self, obs: Tensor, greedy: bool = False) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -312,6 +309,9 @@ class SACPlayer(nn.Module):
             y_t = torch.tanh(x_t)
             actions = y_t * self.action_scale + self.action_bias
             return actions
+
+    def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
+        return self(obs, greedy=greedy)
 
 
 def build_agent(
