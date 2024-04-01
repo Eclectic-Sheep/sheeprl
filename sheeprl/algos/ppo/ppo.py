@@ -302,7 +302,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                     torch_v = torch_v.view(-1, *v.shape[-2:])
                                     torch_v = torch_v / 255.0 - 0.5
                                 real_next_obs[k][i] = torch_v
-                        vals = agent.get_values(real_next_obs).cpu().numpy()
+                        vals = player.get_values(real_next_obs).cpu().numpy()
                         rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
