@@ -4,16 +4,15 @@ from typing import Any, Dict
 
 import torch
 from lightning import Fabric
-from lightning.fabric.wrappers import _FabricModule
 
-from sheeprl.algos.a2c.agent import A2CAgent
+from sheeprl.algos.ppo.agent import PPOPlayer
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
 
 
 @torch.no_grad()
-def test(agent: A2CAgent | _FabricModule, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -28,8 +27,8 @@ def test(agent: A2CAgent | _FabricModule, fabric: Fabric, cfg: Dict[str, Any], l
 
     while not done:
         # Act greedly through the environment
-        actions, _, _ = agent(obs, greedy=True)
-        if agent.is_continuous:
+        actions = agent.get_actions(obs, greedy=True)
+        if agent.actor.is_continuous:
             actions = torch.cat(actions, dim=-1)
         else:
             actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
