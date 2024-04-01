@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium
@@ -234,32 +235,23 @@ class PlayerDV1(nn.Module):
 
     def __init__(
         self,
-        fabric: Fabric,
-        encoder: nn.Module | _FabricModule,
-        recurrent_model: nn.Module | _FabricModule,
-        representation_model: nn.Module | _FabricModule,
+        encoder: MultiEncoder | _FabricModule,
+        recurrent_model: RecurrentModel | _FabricModule,
+        representation_model: MLP | _FabricModule,
         actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
+        device: str | torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        single_device_fabric = get_single_device_fabric(fabric)
-        self.encoder = single_device_fabric.setup_module(
-            getattr(encoder, "module", encoder),
-        )
-        self.recurrent_model = single_device_fabric.setup_module(
-            getattr(recurrent_model, "module", recurrent_model),
-        )
-        self.representation_model = single_device_fabric.setup_module(
-            getattr(representation_model, "module", representation_model)
-        )
-        self.actor = single_device_fabric.setup_module(
-            getattr(actor, "module", actor),
-        )
-        self.device = single_device_fabric.device
+        self.encoder = encoder
+        self.recurrent_model = recurrent_model
+        self.representation_model = representation_model
+        self.actor = actor
+        self.device = device
         self.actions_dim = actions_dim
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
@@ -344,7 +336,7 @@ def build_agent(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, PlayerDV1]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -365,6 +357,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The player (PlayerDV1).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -511,6 +504,20 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV1(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm.recurrent_model),
+        copy.deepcopy(world_model.rssm.representation_model),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -523,4 +530,19 @@ def build_agent(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    return world_model, actor, critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
+    player.representation_model = fabric_player.setup_module(player.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, player
