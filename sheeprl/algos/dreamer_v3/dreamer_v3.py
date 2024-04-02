@@ -586,7 +586,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_actions(preprocessed_obs, mask)
+                    real_actions = actions = player.get_actions(preprocessed_obs, mask=mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()

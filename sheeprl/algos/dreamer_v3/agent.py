@@ -314,6 +314,7 @@ class RecurrentModel(nn.Module):
             layer_norm_cls=layer_norm_cls,
             layer_norm_kw=layer_norm_kw,
         )
+        self.recurrent_state_size = recurrent_state_size
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
