@@ -51,6 +51,9 @@ Finally, we added sticky actions for the `jump` and `attack` actions. You can se
 >
 > The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).
 
+> [!NOTE]
+> The `env.sticky_attack` parameter is set to `0` if the `env.break_speed_multiplier > 1`.
+
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
