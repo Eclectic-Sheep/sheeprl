@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
@@ -233,3 +234,19 @@ class LayerNormChannelLast(nn.LayerNorm):
         x = super().forward(x)
         x = x.permute(0, 3, 1, 2)
         return x
+
+
+class LayerNormChannelLastFP32(LayerNormChannelLast):
+    def forward(self, x: Tensor) -> Tensor:
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        out = super().forward(x)
+        return out.to(input_dtype)
+
+
+class LayerNormFP32(nn.LayerNorm):
+    def forward(self, x: Tensor) -> Tensor:
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        out = super().forward(x)
+        return out.to(input_dtype)
