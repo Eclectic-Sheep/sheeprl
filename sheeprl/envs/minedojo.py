@@ -245,8 +245,9 @@ class MineDojoWrapper(gym.Wrapper):
             action[3] = 12
 
         obs, reward, done, info = self.env.step(action)
-        terminated = done and not info.get("TimeLimit.truncated", False)
-        truncated = done and info.get("TimeLimit.truncated", False)
+        is_timelimit = info.get("TimeLimit.truncated", False)
+        terminated = done and not is_timelimit
+        truncated = done and is_timelimit
         self._pos = {
             "x": float(obs["location_stats"]["pos"][0]),
             "y": float(obs["location_stats"]["pos"][1]),
