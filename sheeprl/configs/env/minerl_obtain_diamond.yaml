@@ -1,0 +1,12 @@
+defaults:
+  - minerl
+  - _self_
+
+id: custom_obtain_diamond
+action_repeat: 1
+max_episode_steps: 36000
+num_envs: 16
+
+wrapper:
+  multihot_inventory: True
+  dense: False

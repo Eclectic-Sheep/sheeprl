@@ -5,6 +5,9 @@ defaults:
 # Override from `minecraft` config
 id: custom_navigate
 action_repeat: 1
+max_episode_steps: 12000
+reward_as_observation: True
+num_envs: 4
 
 # Wrapper to be instantiated
 wrapper:
@@ -17,7 +20,7 @@ wrapper:
     - ${env.max_pitch}
   seed: null
   break_speed_multiplier: ${env.break_speed_multiplier}
-  multihot_inventory: True
+  multihot_inventory: False
   sticky_attack: ${env.sticky_attack}
   sticky_jump: ${env.sticky_jump}
   dense: True

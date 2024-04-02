@@ -85,7 +85,7 @@ class MineRLWrapper(gym.Wrapper):
         self._height = height
         self._width = width
         self._pitch_limits = pitch_limits
-        self._sticky_attack = sticky_attack
+        self._sticky_attack = 0 if break_speed_multiplier > 1 else sticky_attack
         self._sticky_jump = sticky_jump
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
@@ -303,7 +303,6 @@ class MineRLWrapper(gym.Wrapper):
             "pitch": next_pitch,
             "yaw": next_yaw,
         }
-        info = {}
         return self._convert_obs(obs), reward, done, False, info
 
     def reset(
