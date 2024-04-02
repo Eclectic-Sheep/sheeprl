@@ -69,6 +69,7 @@ Finally, we added sticky actions for the `jump` and `attack` actions. You can se
 For more information about the MineDojo action space, check [here](https://docs.minedojo.org/sections/core_api/action_space.html).
 
 > [!NOTE]
+>
 > Since the MineDojo environments have a multi-discrete action space, the sticky actions can be easily implemented. The agent will perform the selected action and the sticky actions simultaneously.
 >
 > The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).
