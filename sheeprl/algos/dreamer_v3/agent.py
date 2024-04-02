@@ -646,18 +646,12 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.tanh(
-                torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            )
-            self.stochastic_state = self.rssm._transition(self.recurrent_state, sample_state=False)[1].reshape(
-                1, self.num_envs, -1
-            )
+            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.tanh(torch.zeros_like(self.recurrent_state[:, reset_envs]))
-            self.stochastic_state[:, reset_envs] = self.rssm._transition(
-                self.recurrent_state[:, reset_envs], sample_state=False
-            )[1].reshape(1, len(reset_envs), -1)
+            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
+            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
 
     def get_actions(
         self,
