@@ -38,9 +38,22 @@ algo:
       - rgb
   mlp_keys:
     encoder: []
-  learning_starts: 1024
+  learning_starts: 1300
   replay_ratio: 0.5
 
 # Metric
 metric:
   log_every: 5000
+
+fabric:
+  accelerator: cuda
+  precision: bf16-mixed
+  # precision: None
+  # plugins:
+  #   - _target_: lightning.fabric.plugins.precision.MixedPrecision
+  #     precision: 16-mixed
+  #     device: cuda
+  #     scaler:
+  #       _target_: torch.cuda.amp.GradScaler
+  #       init_scale: 1e4
+  #       growth_interval: 1000
