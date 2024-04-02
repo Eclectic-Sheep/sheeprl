@@ -97,7 +97,7 @@ def train(
             next_target_qf_value = agent.get_next_target_q_values(
                 critic_batch_data["next_observations"],
                 critic_batch_data["rewards"],
-                critic_batch_data["dones"],
+                critic_batch_data["terminated"],
                 cfg.algo.gamma,
             )
             for qf_value_idx in range(agent.num_critics):
@@ -310,8 +310,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     # Sample an action given the observation received by the environment
                     actions, _ = actor(torch.from_numpy(obs).to(device))
                     actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated)
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -340,7 +339,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
-        step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data, validate_args=cfg.buffer.validate_args)
 

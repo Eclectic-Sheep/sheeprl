@@ -26,7 +26,7 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 1_000_000
+  size: 500_000
   checkpoint: True
   memmap: True
 
@@ -38,7 +38,7 @@ algo:
       - rgb
   mlp_keys:
     encoder: []
-  learning_starts: 1024
+  learning_starts: 1300
   
 
 # Metric

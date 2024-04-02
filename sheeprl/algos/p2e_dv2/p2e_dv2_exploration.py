@@ -152,9 +152,9 @@ def train(
     # compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
-        continue_targets = (1 - data["dones"]) * cfg.algo.gamma
+        continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
-        pc = continue_targets = None
+        pc = continues_targets = None
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
@@ -174,7 +174,7 @@ def train(
         cfg.algo.world_model.kl_free_avg,
         cfg.algo.world_model.kl_regularizer,
         pc,
-        continue_targets,
+        continues_targets,
         cfg.algo.world_model.discount_scale_factor,
     )
     fabric.backward(rec_loss)
@@ -260,8 +260,8 @@ def train(
 
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
-        continues = torch.cat((true_done, continues[1:]))
+        true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
+        continues = torch.cat((true_continue, continues[1:]))
     else:
         continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
 
@@ -359,8 +359,8 @@ def train(
     predicted_rewards = world_model.reward_model(imagined_trajectories)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
         continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-        true_done = (1 - data["dones"]).reshape(1, -1, 1) * cfg.algo.gamma
-        continues = torch.cat((true_done, continues[1:]))
+        true_continue = (1 - data["terminated"]).reshape(1, -1, 1) * cfg.algo.gamma
+        continues = torch.cat((true_continue, continues[1:]))
     else:
         continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
@@ -713,12 +713,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
-    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     if cfg.dry_run:
-        step_data["dones"] = step_data["dones"] + 1
+        step_data["terminated"] = step_data["terminated"] + 1
+        step_data["truncated"] = step_data["truncated"] + 1
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["is_first"] = np.ones_like(step_data["dones"])
+    step_data["is_first"] = np.ones_like(step_data["terminated"])
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
@@ -764,9 +766,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
-                step_data["is_first"] = copy.deepcopy(step_data["dones"])
-                next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-                dones = np.logical_or(dones, truncated).astype(np.uint8)
+                step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
+                next_obs, rewards, terminated, truncated, infos = envs.step(
+                    real_actions.reshape(envs.action_space.shape)
+                )
+                dones = np.logical_or(terminated, truncated).astype(np.uint8)
                 if cfg.dry_run and buffer_type == "episode":
                     dones = np.ones_like(dones)
 
@@ -794,7 +798,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Next_obs becomes the new obs
             obs = next_obs
 
-            step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
+            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
             step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
             step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -806,14 +811,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data = {}
                 for k in obs_keys:
                     reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-                reset_data["dones"] = np.zeros((1, reset_envs, 1))
+                reset_data["terminated"] = np.zeros((1, reset_envs, 1))
+                reset_data["truncated"] = np.zeros((1, reset_envs, 1))
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-                reset_data["is_first"] = np.ones_like(reset_data["dones"])
+                reset_data["is_first"] = np.ones_like(reset_data["terminated"])
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 # Reset dones so that `is_first` is updated
                 for d in dones_idxes:
-                    step_data["dones"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(dones_idxes)
 

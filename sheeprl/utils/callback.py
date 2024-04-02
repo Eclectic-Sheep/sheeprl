@@ -105,14 +105,14 @@ class CheckpointCallback:
         """
         if isinstance(rb, ReplayBuffer):
             # clone the true done
-            state = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].copy()
+            state = rb["truncated"][(rb._pos - 1) % rb.buffer_size, :].copy()
             # substitute the last done with all True values (all the environment are truncated)
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = 1
         elif isinstance(rb, EnvIndependentReplayBuffer):
             state = []
             for b in rb.buffer:
-                state.append(b["dones"][(b._pos - 1) % b.buffer_size, :].copy())
-                b["dones"][(b._pos - 1) % b.buffer_size, :] = True
+                state.append(b["truncated"][(b._pos - 1) % b.buffer_size, :].copy())
+                b["truncated"][(b._pos - 1) % b.buffer_size, :] = 1
         elif isinstance(rb, EpisodeBuffer):
             # remove open episodes from the buffer because the state of the environment is not saved
             state = rb._open_episodes
@@ -133,10 +133,10 @@ class CheckpointCallback:
         """
         if isinstance(rb, ReplayBuffer):
             # reinsert the true dones in the buffer
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = state
+            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = state
         elif isinstance(rb, EnvIndependentReplayBuffer):
             for i, b in enumerate(rb.buffer):
-                b["dones"][(b._pos - 1) % b.buffer_size, :] = state[i]
+                b["truncated"][(b._pos - 1) % b.buffer_size, :] = state[i]
         elif isinstance(rb, EpisodeBuffer):
             # reinsert the open episodes to continue the training
             rb._open_episodes = state

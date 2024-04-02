@@ -62,9 +62,14 @@ Moreover, we restrict the look-up/down actions between `min_pitch` and `max_pitc
 In addition, we added the forward action when the agent selects one of the following actions: `jump`, `sprint`, and `sneak`.
 Finally, we added sticky actions for the `jump` and `attack` actions. You can set the values of the `sticky_jump` and `sticky_attack` parameters through the `env.sticky_jump` and `env.sticky_attack` cli arguments, respectively. The sticky actions, if set, force the agent to repeat the selected actions for a certain number of steps.
 
+> [!NOTE]
+>
+> The `env.sticky_attack` parameter is set to `0` if the `env.break_speed_multiplier > 1`.
+
 For more information about the MineDojo action space, check [here](https://docs.minedojo.org/sections/core_api/action_space.html).
 
 > [!NOTE]
+>
 > Since the MineDojo environments have a multi-discrete action space, the sticky actions can be easily implemented. The agent will perform the selected action and the sticky actions simultaneously.
 >
 > The action repeat in the Minecraft environments is set to 1, indeed, It makes no sense to force the agent to repeat an action such as crafting (it may not have enough material for the second action).

@@ -308,7 +308,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     actions = torch_actions.cpu().numpy()
 
                     # Single environment step
-                    next_obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                    next_obs, rewards, terminated, truncated, info = envs.step(
+                        real_actions.reshape(envs.action_space.shape)
+                    )
                     truncated_envs = np.nonzero(truncated)[0]
                     if len(truncated_envs) > 0:
                         real_next_obs = {
@@ -333,8 +335,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             tuple(s[:, truncated_envs, ...] for s in states),
                         )
                         vals = player.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
-                    dones = np.logical_or(dones, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+                    dones = np.logical_or(terminated, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
                     rewards = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
 
                 step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1)

@@ -206,7 +206,7 @@ def player(
                 actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
                     real_next_obs = {
@@ -229,7 +229,7 @@ def player(
                     rewards[truncated_envs] += cfg.algo.gamma * vals.cpu().numpy().reshape(
                         rewards[truncated_envs].shape
                     )
-                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                 rewards = rewards.reshape(cfg.env.num_envs, -1)
 
             # Update the step data

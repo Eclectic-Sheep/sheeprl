@@ -220,13 +220,14 @@ class DMCWrapper(gym.Wrapper):
         action = self._convert_action(action)
         time_step = self.env.step(action)
         reward = time_step.reward or 0.0
-        done = time_step.last()
         obs = self._get_obs(time_step)
         self.current_state = _flatten_obs(time_step.observation)
         extra = {}
         extra["discount"] = time_step.discount
         extra["internal_state"] = self.env.physics.get_state().copy()
-        return obs, reward, done, False, extra
+        truncated = time_step.last() and time_step.discount == 1
+        terminated = False if time_step.first() else time_step.last() and time_step.discount == 0
+        return obs, reward, terminated, truncated, extra
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None

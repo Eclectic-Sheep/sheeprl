@@ -9,7 +9,6 @@ from typing import Dict, List, Union
 
 from minerl.herobraine.hero import handlers
 from minerl.herobraine.hero.handler import Handler
-from minerl.herobraine.hero.mc import MS_PER_STEP
 
 from sheeprl.envs.minerl_envs.backend import CustomSimpleEmbodimentEnvSpec
 
@@ -28,7 +27,7 @@ class CustomObtain(CustomSimpleEmbodimentEnvSpec):
         dense,
         reward_schedule: List[Dict[str, Union[str, int, float]]],
         *args,
-        max_episode_steps=6000,
+        max_episode_steps=None,
         **kwargs,
     ):
         # 6000 for obtain iron  (5 mins)
@@ -138,10 +137,7 @@ class CustomObtain(CustomSimpleEmbodimentEnvSpec):
         return [handlers.DefaultWorldGenerator(force_reset=True)]
 
     def create_server_quit_producers(self) -> List[Handler]:
-        return [
-            handlers.ServerQuitFromTimeUp(time_limit_ms=self.max_episode_steps * MS_PER_STEP),
-            handlers.ServerQuitWhenAnyAgentFinishes(),
-        ]
+        return [handlers.ServerQuitWhenAnyAgentFinishes()]
 
     def create_server_decorators(self) -> List[Handler]:
         return []
@@ -175,6 +171,9 @@ class CustomObtain(CustomSimpleEmbodimentEnvSpec):
 
 class CustomObtainDiamond(CustomObtain):
     def __init__(self, dense, *args, **kwargs):
+        # The time limit is handled outside because MineRL does not provide a way
+        # to distinguish between terminated and truncated
+        kwargs.pop("max_episode_steps", None)
         super(CustomObtainDiamond, self).__init__(
             *args,
             target_item="diamond",
@@ -193,7 +192,7 @@ class CustomObtainDiamond(CustomObtain):
                 dict(type="iron_pickaxe", amount=1, reward=256),
                 dict(type="diamond", amount=1, reward=1024),
             ],
-            max_episode_steps=18000,
+            max_episode_steps=None,
             **kwargs,
         )
 
@@ -251,6 +250,9 @@ item are given here::
 
 class CustomObtainIronPickaxe(CustomObtain):
     def __init__(self, dense, *args, **kwargs):
+        # The time limit is handled outside because MineRL does not provide a way
+        # to distinguish between terminated and truncated
+        kwargs.pop("max_episode_steps", None)
         super(CustomObtainIronPickaxe, self).__init__(
             *args,
             target_item="iron_pickaxe",
@@ -268,6 +270,7 @@ class CustomObtainIronPickaxe(CustomObtain):
                 dict(type="iron_ingot", amount=1, reward=128),
                 dict(type="iron_pickaxe", amount=1, reward=256),
             ],
+            max_episode_steps=None,
             **kwargs,
         )
 
