@@ -123,7 +123,7 @@ class SACActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        normal = torch.distributions.Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
+        normal = torch.distributions.Normal(mean, std)
 
         # Reparameterization trick (mean + std * N(0,1))
         x_t = normal.rsample()

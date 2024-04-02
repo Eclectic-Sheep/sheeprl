@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.distributions import Distribution, Independent
+from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
@@ -30,7 +30,6 @@ from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
     MSEDistribution,
-    OneHotCategoricalValidateArgs,
     SymlogDistribution,
     TwoHotEncodingDistribution,
 )
@@ -92,7 +91,6 @@ def train(
 
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -166,11 +164,7 @@ def train(
     pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
     # Compute the distribution over the terminal steps, if required
-    pc = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(latent_states), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    pc = Independent(BernoulliSafeMode(logits=world_model.continue_model(latent_states)), 1)
     continues_targets = 1 - data["terminated"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
@@ -193,7 +187,6 @@ def train(
         pc,
         continues_targets,
         cfg.algo.world_model.continue_scale_factor,
-        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     world_model_grads = None
@@ -250,11 +243,7 @@ def train(
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
+    continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
     true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
     continues = torch.cat((true_continue, continues[1:]))
 
@@ -344,25 +333,11 @@ def train(
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update(
             "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update("Loss/policy_loss", policy_loss.detach())
         aggregator.update("Loss/value_loss", value_loss.detach())

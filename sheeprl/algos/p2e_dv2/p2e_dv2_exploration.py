@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from torch import Tensor, nn
-from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.distributions.utils import logits_to_probs
 from torchmetrics import SumMetric
 
@@ -22,7 +22,6 @@ from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -106,7 +105,6 @@ def train(
     """
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -146,27 +144,14 @@ def train(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # compute the distribution over the reconstructed observations
-    po = {
-        k: Independent(
-            Normal(rec_obs, 1, validate_args=validate_args), len(rec_obs.shape[2:]), validate_args=validate_args
-        )
-        for k, rec_obs in decoded_information.items()
-    }
+    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
 
     # compute the distribution over the rewards
-    pr = Independent(
-        Normal(world_model.reward_model(latent_states.detach()), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
 
     # compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        pc = Independent(
-            Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        )
+        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
         continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
         pc = continues_targets = None
@@ -191,7 +176,6 @@ def train(
         pc,
         continues_targets,
         cfg.algo.world_model.discount_scale_factor,
-        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     world_grad = None
@@ -218,9 +202,7 @@ def train(
                 -1,
             )
         )[:-1]
-        next_obs_embedding_dist = Independent(
-            Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
-        )
+        next_obs_embedding_dist = Independent(Normal(out, 1), 1)
         loss -= next_obs_embedding_dist.log_prob(posteriors.view(sequence_length, batch_size, -1).detach()[1:]).mean()
     loss.backward()
     ensemble_grad = None
@@ -328,11 +310,7 @@ def train(
         )
     actor_exploration_optimizer.step()
 
-    qv = Independent(
-        Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
     critic_exploration_optimizer.zero_grad(set_to_none=True)
     value_loss_exploration = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values_exploration.detach()))
     fabric.backward(value_loss_exploration)
@@ -432,9 +410,8 @@ def train(
     actor_task_optimizer.step()
 
     qv = Independent(
-        Normal(critic_task(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
+        Normal(critic_task(imagined_trajectories.detach())[:-1], 1),
         1,
-        validate_args=validate_args,
     )
     critic_task_optimizer.zero_grad(set_to_none=True)
     value_loss_task = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values_task.detach()))
@@ -457,25 +434,11 @@ def train(
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update(
             "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
         aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())

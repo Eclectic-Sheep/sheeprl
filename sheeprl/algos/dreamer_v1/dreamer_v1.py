@@ -101,7 +101,6 @@ def train(
     """
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
@@ -166,32 +165,17 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size observations.shape
-    qo = {
-        k: Independent(
-            Normal(rec_obs, 1, validate_args=validate_args),
-            len(rec_obs.shape[2:]),
-            validate_args=validate_args,
-        )
-        for k, rec_obs in decoded_information.items()
-    }
+    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
 
     # compute predictions for the rewards
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the number of rewards
-    qr = Independent(
-        Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
 
     # compute predictions for terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(
-            Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        )
+        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
         continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
         qc = continues_targets = None
@@ -200,16 +184,8 @@ def train(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size equal to the stochastic size
-    posteriors_dist = Independent(
-        Normal(posteriors_mean, posteriors_std, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
-    priors_dist = Independent(
-        Normal(priors_mean, priors_std, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
+    priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
     # world model optimization step
     world_optimizer.zero_grad(set_to_none=True)
@@ -351,11 +327,7 @@ def train(
     # (to match the dimension with the lambda values),
     # it removes the last imagined state in the trajectory
     # because it is used only for computing correclty the lambda values
-    qv = Independent(
-        Normal(critic(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
     # critic optimization step
     critic_optimizer.zero_grad(set_to_none=True)
@@ -681,8 +653,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 for d in dones_idxes:
-                    step_data["terminated"][0, d] = np.zeros_like(step_data["dones"][0, d])
-                    step_data["truncated"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(reset_envs=dones_idxes)
 

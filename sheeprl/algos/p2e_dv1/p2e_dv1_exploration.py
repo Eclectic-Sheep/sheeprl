@@ -98,7 +98,6 @@ def train(
     """
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     device = fabric.device
@@ -131,32 +130,15 @@ def train(
     latent_states = torch.cat((posteriors, recurrent_states), -1)
 
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    qo = {
-        k: Independent(
-            Normal(rec_obs, 1, validate_args=validate_args), len(rec_obs.shape[2:]), validate_args=validate_args
-        )
-        for k, rec_obs in decoded_information.items()
-    }
-    qr = Independent(
-        Normal(world_model.reward_model(latent_states.detach()), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(
-            Bernoulli(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        )
+        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
         continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
         qc = continues_targets = None
-    posteriors_dist = Independent(
-        Normal(posteriors_mean, posteriors_std, validate_args=validate_args), 1, validate_args=validate_args
-    )
-    priors_dist = Independent(
-        Normal(priors_mean, priors_std, validate_args=validate_args), 1, validate_args=validate_args
-    )
+    posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
+    priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
     world_optimizer.zero_grad(set_to_none=True)
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
@@ -188,9 +170,7 @@ def train(
     ensemble_optimizer.zero_grad(set_to_none=True)
     for ens in ensembles:
         out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
-        next_obs_embedding_dist = Independent(
-            Normal(out, 1, validate_args=validate_args), 1, validate_args=validate_args
-        )
+        next_obs_embedding_dist = Independent(Normal(out, 1), 1)
         loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
     loss.backward()
     ensemble_grad = None
@@ -268,11 +248,7 @@ def train(
         )
     actor_exploration_optimizer.step()
 
-    qv = Independent(
-        Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
     critic_exploration_optimizer.zero_grad(set_to_none=True)
     value_loss_exploration = critic_loss(qv, lambda_values_exploration.detach(), discount[..., 0])
     fabric.backward(value_loss_exploration)
@@ -334,11 +310,7 @@ def train(
         )
     actor_task_optimizer.step()
 
-    qv = Independent(
-        Normal(critic_task(imagined_trajectories.detach())[:-1], 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
     critic_task_optimizer.zero_grad(set_to_none=True)
     value_loss_task = critic_loss(qv, lambda_values_task.detach(), discount[..., 0])
     fabric.backward(value_loss_task)

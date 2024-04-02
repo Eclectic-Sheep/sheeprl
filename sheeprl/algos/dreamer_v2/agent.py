@@ -11,15 +11,19 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
+from torch.distributions import (
+    Distribution,
+    Independent,
+    Normal,
+    OneHotCategorical,
+    OneHotCategoricalStraightThrough,
+    TanhTransform,
+    TransformedDistribution,
+)
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import (
-    OneHotCategoricalStraightThroughValidateArgs,
-    OneHotCategoricalValidateArgs,
-    TruncatedNormal,
-)
+from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
 
@@ -374,9 +378,7 @@ class RSSM(nn.Module):
             posterior (Tensor): the sampled posterior stochastic state.
         """
         logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -388,9 +390,7 @@ class RSSM(nn.Module):
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -525,21 +525,15 @@ class Actor(nn.Module):
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(
-                    TransformedDistribution(
-                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
-                    ),
-                    1,
-                    validate_args=self.distribution_cfg.validate_args,
-                )
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                actions_dist = Independent(dist, 1)
             if sample_actions:
                 actions = actions_dist.rsample()
             else:
@@ -552,11 +546,7 @@ class Actor(nn.Module):
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(
-                    OneHotCategoricalStraightThroughValidateArgs(
-                        logits=logits, validate_args=self.distribution_cfg.validate_args
-                    )
-                )
+                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
                 if sample_actions:
                     actions.append(actions_dist[-1].rsample())
                 else:
@@ -575,11 +565,7 @@ class Actor(nn.Module):
         else:
             expl_actions = []
             for act in actions:
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
-                    .sample()
-                    .to(act.device)
-                )
+                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
                 expl_actions.append(
                     torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
                 )
@@ -663,11 +649,7 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(
-                OneHotCategoricalStraightThroughValidateArgs(
-                    logits=logits, validate_args=self.distribution_cfg.validate_args
-                )
-            )
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
             if sample_actions:
                 actions.append(actions_dist[-1].rsample())
             else:
@@ -704,9 +686,7 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = (
-                OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
-            )
+            sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
             expl_amount = self._get_expl_amount(step)
             # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
             # to satisfy the constraints of the environment
@@ -805,7 +785,6 @@ class PlayerDV2(nn.Module):
         self.discrete_size = discrete_size
         self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
         self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -851,9 +830,7 @@ class PlayerDV2(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
-        stochastic_state = compute_stochastic_state(
-            posterior_logits, discrete=self.discrete_size, validate_args=self.validate_args
-        )
+        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )

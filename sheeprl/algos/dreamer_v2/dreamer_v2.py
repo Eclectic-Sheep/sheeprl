@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.distributions import Bernoulli, Distribution, Independent, Normal
+from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
@@ -26,7 +26,6 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -114,7 +113,6 @@ def train(
 
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -162,29 +160,14 @@ def train(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # Compute the distribution over the reconstructed observations
-    po = {
-        k: Independent(
-            Normal(rec_obs, 1, validate_args=validate_args),
-            len(rec_obs.shape[2:]),
-            validate_args=validate_args,
-        )
-        for k, rec_obs in decoded_information.items()
-    }
+    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
 
     # Compute the distribution over the rewards
-    pr = Independent(
-        Normal(world_model.reward_model(latent_states), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
 
     # Compute the distribution over the terminal steps, if required
     if cfg.algo.world_model.use_continues and world_model.continue_model:
-        pc = Independent(
-            Bernoulli(logits=world_model.continue_model(latent_states), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        )
+        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
         continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
     else:
         pc = continues_targets = None
@@ -209,7 +192,6 @@ def train(
         pc,
         continues_targets,
         cfg.algo.world_model.discount_scale_factor,
-        validate_args=validate_args,
     )
     fabric.backward(rec_loss)
     world_model_grads = None
@@ -353,11 +335,7 @@ def train(
     # Predict the values distribution only for the first H (horizon)
     # imagined states (to match the dimension with the lambda values),
     # It removes the last imagined state in the trajectory because it is used for bootstrapping
-    qv = Independent(
-        Normal(critic(imagined_trajectories.detach()[:-1]), 1, validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
+    qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
     # Critic optimization step. Eq. 5 from the paper.
     critic_optimizer.zero_grad(set_to_none=True)
@@ -380,25 +358,11 @@ def train(
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update(
             "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update("Loss/policy_loss", policy_loss.detach())
         aggregator.update("Loss/value_loss", value_loss.detach())
