@@ -83,7 +83,6 @@ class MineDojoWrapper(gym.Wrapper):
             task_id=id,
             image_size=(height, width),
             world_seed=seed,
-            generate_world_type="default",
             fast_reset=True,
             **kwargs,
         )
