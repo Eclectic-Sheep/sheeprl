@@ -354,7 +354,7 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module | _FabricModule,
+        recurrent_model: RecurrentModel | _FabricModule,
         representation_model: nn.Module | _FabricModule,
         transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
@@ -368,6 +368,14 @@ class RSSM(nn.Module):
         self.discrete = discrete
         self.unimix = unimix
         self.distribution_cfg = distribution_cfg
+        self.initial_recurrent_state = nn.Parameter(
+            torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+        )
+
+    def get_initial_states(self, batch_shape: Sequence[int] | torch.Size) -> Tuple[Tensor, Tensor]:
+        initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
+        initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
+        return initial_recurrent_state, initial_posterior
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -399,11 +407,12 @@ class RSSM(nn.Module):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
@@ -535,11 +544,12 @@ class DecoupledRSSM(RSSM):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         return recurrent_state, prior, prior_logits
@@ -614,7 +624,7 @@ class PlayerDV3(nn.Module):
             distribution_cfg=actor.distribution_cfg,
             discrete=rssm.discrete,
             unimix=rssm.unimix,
-        )
+        ).to(single_device_fabric.device)
         self.actor = single_device_fabric.setup_module(getattr(actor, "module", actor))
         self.device = single_device_fabric.device
         self.actions_dim = actions_dim
@@ -997,6 +1007,7 @@ def build_agent(
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+
     recurrent_model = RecurrentModel(
         input_size=int(sum(actions_dim) + stochastic_size),
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -1007,14 +1018,15 @@ def build_agent(
     represention_model_input_size = encoder.output_dim
     if not cfg.algo.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
+    representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
     representation_model = MLP(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=eval(world_model_cfg.representation_model.dense_act),
-        layer_args={"bias": world_model_cfg.representation_model.layer_norm.cls == "torch.nn.Identity"},
+        layer_args={"bias": representation_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)],
+        norm_layer=[representation_ln_cls],
         norm_args=[
             {
                 "normalized_shape": world_model_cfg.representation_model.hidden_size,
@@ -1022,14 +1034,15 @@ def build_agent(
             }
         ],
     )
+    transition_ln_cls = hydra.utils.get_class(world_model_cfg.transition_model.layer_norm.cls)
     transition_model = MLP(
         input_dims=recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
         activation=eval(world_model_cfg.transition_model.dense_act),
-        layer_args={"bias": world_model_cfg.transition_model.layer_norm.cls == "torch.nn.Identity"},
+        layer_args={"bias": transition_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[hydra.utils.get_class(world_model_cfg.transition_model.layer_norm.cls)],
+        norm_layer=[transition_ln_cls],
         norm_args=[
             {
                 "normalized_shape": world_model_cfg.transition_model.hidden_size,
@@ -1037,6 +1050,7 @@ def build_agent(
             }
         ],
     )
+
     if cfg.algo.decoupled_rssm:
         rssm_cls = DecoupledRSSM
     else:
@@ -1048,7 +1062,8 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
-    )
+    ).to(fabric.device)
+
     cnn_decoder = (
         CNNDecoder(
             keys=cfg.algo.cnn_keys.decoder,
@@ -1080,27 +1095,31 @@ def build_agent(
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+
+    reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
-        layer_args={"bias": world_model_cfg.reward_model.layer_norm.cls == "torch.nn.Identity"},
+        layer_args={"bias": reward_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls),
+        norm_layer=reward_ln_cls,
         norm_args={
             "normalized_shape": world_model_cfg.reward_model.dense_units,
             **world_model_cfg.reward_model.layer_norm.kw,
         },
     )
+
+    discount_ln_cls = hydra.utils.get_class(world_model_cfg.discount_model.layer_norm.cls)
     continue_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=eval(world_model_cfg.discount_model.dense_act),
-        layer_args={"bias": world_model_cfg.discount_model.layer_norm.cls == "torch.nn.Identity"},
+        layer_args={"bias": discount_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=hydra.utils.get_class(world_model_cfg.discount_model.layer_norm.cls),
+        norm_layer=discount_ln_cls,
         norm_args={
             "normalized_shape": world_model_cfg.discount_model.dense_units,
             **world_model_cfg.discount_model.layer_norm.kw,
@@ -1113,6 +1132,7 @@ def build_agent(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights),
     )
+
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
@@ -1129,14 +1149,16 @@ def build_agent(
         unimix=cfg.algo.unimix,
         action_clip=actor_cfg.action_clip,
     )
+
+    critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=eval(critic_cfg.dense_act),
-        layer_args={"bias": critic_cfg.layer_norm.cls == "torch.nn.Identity"},
+        layer_args={"bias": critic_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=hydra.utils.get_class(critic_cfg.layer_norm.cls),
+        norm_layer=critic_ln_cls,
         norm_args={
             "normalized_shape": critic_cfg.dense_units,
             **critic_cfg.layer_norm.kw,
