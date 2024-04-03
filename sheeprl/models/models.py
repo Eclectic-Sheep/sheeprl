@@ -363,6 +363,8 @@ class LayerNormGRUCell(nn.Module):
         self.bias = bias
         self.batch_first = batch_first
         self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
+        # Avoid multiple values for the `normalized_shape` argument
+        layer_norm_kw.pop("normalized_shape", None)
         self.layer_norm = layer_norm_cls(3 * hidden_size, **layer_norm_kw)
 
     def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:

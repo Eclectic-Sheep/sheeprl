@@ -75,7 +75,7 @@ class CNNEncoder(nn.Module):
                 activation=activation,
                 norm_layer=[layer_norm_cls] * stages,
                 norm_args=[
-                    {"normalized_shape": (2**i) * channels_multiplier, **layer_norm_kw} for i in range(stages)
+                    {**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)
                 ],
             ),
             nn.Flatten(-3, -1),
@@ -132,7 +132,7 @@ class MLPEncoder(nn.Module):
             activation=activation,
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=layer_norm_cls,
-            norm_args={"normalized_shape": dense_units, **layer_norm_kw},
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.output_dim = dense_units
         self.symlog_inputs = symlog_inputs
@@ -205,7 +205,7 @@ class CNNDecoder(nn.Module):
                 activation=[activation for _ in range(stages - 1)] + [None],
                 norm_layer=[layer_norm_cls for _ in range(stages - 1)] + [None],
                 norm_args=[
-                    {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, **layer_norm_kw}
+                    {**layer_norm_kw, "normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
                     for i in range(stages - 1)
                 ]
                 + [None],
@@ -260,7 +260,7 @@ class MLPDecoder(nn.Module):
             activation=activation,
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=layer_norm_cls,
-            norm_args={"normalized_shape": dense_units, **layer_norm_kw},
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -304,7 +304,7 @@ class RecurrentModel(nn.Module):
             activation=activation_fn,
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=[layer_norm_cls],
-            norm_args=[{"normalized_shape": dense_units, **layer_norm_kw}],
+            norm_args=[{**layer_norm_kw, "normalized_shape": dense_units}],
         )
         self.rnn = LayerNormGRUCell(
             dense_units,
@@ -762,7 +762,7 @@ class Actor(nn.Module):
             flatten_dim=None,
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=layer_norm_cls,
-            norm_args={"normalized_shape": dense_units, **layer_norm_kw},
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
