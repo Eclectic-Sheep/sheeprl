@@ -1024,8 +1024,8 @@ def build_agent(
         norm_layer=[representation_ln_cls],
         norm_args=[
             {
-                "normalized_shape": world_model_cfg.representation_model.hidden_size,
                 **world_model_cfg.representation_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.representation_model.hidden_size,
             }
         ],
     )
@@ -1040,8 +1040,8 @@ def build_agent(
         norm_layer=[transition_ln_cls],
         norm_args=[
             {
-                "normalized_shape": world_model_cfg.transition_model.hidden_size,
                 **world_model_cfg.transition_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.transition_model.hidden_size,
             }
         ],
     )
@@ -1101,8 +1101,8 @@ def build_agent(
         flatten_dim=None,
         norm_layer=reward_ln_cls,
         norm_args={
-            "normalized_shape": world_model_cfg.reward_model.dense_units,
             **world_model_cfg.reward_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.reward_model.dense_units,
         },
     )
 
@@ -1116,8 +1116,8 @@ def build_agent(
         flatten_dim=None,
         norm_layer=discount_ln_cls,
         norm_args={
-            "normalized_shape": world_model_cfg.discount_model.dense_units,
             **world_model_cfg.discount_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.discount_model.dense_units,
         },
     )
     world_model = WorldModel(
@@ -1155,8 +1155,8 @@ def build_agent(
         flatten_dim=None,
         norm_layer=critic_ln_cls,
         norm_args={
-            "normalized_shape": critic_cfg.dense_units,
             **critic_cfg.layer_norm.kw,
+            "normalized_shape": critic_cfg.dense_units,
         },
     )
     actor.apply(init_weights)
