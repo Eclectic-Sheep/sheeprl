@@ -583,7 +583,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in normalized_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_actions(normalized_obs, mask, step=policy_step)
+                    real_actions = actions = player.get_exploration_actions(normalized_obs, mask=mask, step=policy_step)
                     actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, -1).cpu().numpy()
@@ -642,8 +642,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 for d in dones_idxes:
-                    step_data["terminated"][0, d] = np.zeros_like(step_data["dones"][0, d])
-                    step_data["truncated"][0, d] = np.zeros_like(step_data["dones"][0, d])
+                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(reset_envs=dones_idxes)
 

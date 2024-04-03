@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -26,7 +26,7 @@ from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.utils.model import LayerNormChannelLastFP32, LayerNormFP32, ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
@@ -43,8 +43,10 @@ class CNNEncoder(nn.Module):
         image_size (Tuple[int, int]): the image size as (Height,Width).
         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
             will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormChannelLastFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function.
             Defaults to nn.SiLU.
         stages (int, optional): how many stages for the CNN.
@@ -56,7 +58,8 @@ class CNNEncoder(nn.Module):
         input_channels: Sequence[int],
         image_size: Tuple[int, int],
         channels_multiplier: int,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLastFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         stages: int = 4,
     ) -> None:
@@ -68,14 +71,12 @@ class CNNEncoder(nn.Module):
                 input_channels=self.input_dim[0],
                 hidden_channels=(torch.tensor([2**i for i in range(stages)]) * channels_multiplier).tolist(),
                 cnn_layer=nn.Conv2d,
-                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
                 activation=activation,
-                norm_layer=[LayerNormChannelLast for _ in range(stages)] if layer_norm else None,
-                norm_args=(
-                    [{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(stages)]
-                    if layer_norm
-                    else None
-                ),
+                norm_layer=[layer_norm_cls] * stages,
+                norm_args=[
+                    {**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)
+                ],
             ),
             nn.Flatten(-3, -1),
         )
@@ -100,8 +101,10 @@ class MLPEncoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
         symlog_inputs (bool, optional): whether to squash the input with the symlog function.
@@ -114,7 +117,8 @@ class MLPEncoder(nn.Module):
         input_dims: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         symlog_inputs: bool = True,
     ) -> None:
@@ -126,11 +130,9 @@ class MLPEncoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.output_dim = dense_units
         self.symlog_inputs = symlog_inputs
@@ -159,8 +161,10 @@ class CNNDecoder(nn.Module):
         image_size (Tuple[int, int]): the final image size.
         activation (nn.Module, optional): the activation function.
             Defaults to nn.SiLU.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormChannelLastFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         stages (int): how many stages in the CNN decoder.
     """
 
@@ -173,7 +177,8 @@ class CNNDecoder(nn.Module):
         cnn_encoder_output_dim: int,
         image_size: Tuple[int, int],
         activation: nn.Module = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLastFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         stages: int = 4,
     ) -> None:
         super().__init__()
@@ -193,20 +198,17 @@ class CNNDecoder(nn.Module):
                 + [self.output_dim[0]],
                 cnn_layer=nn.ConvTranspose2d,
                 layer_args=[
-                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm} for _ in range(stages - 1)
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity}
+                    for _ in range(stages - 1)
                 ]
                 + [{"kernel_size": 4, "stride": 2, "padding": 1}],
                 activation=[activation for _ in range(stages - 1)] + [None],
-                norm_layer=[LayerNormChannelLast for _ in range(stages - 1)] + [None] if layer_norm else None,
-                norm_args=(
-                    [
-                        {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, "eps": 1e-3}
-                        for i in range(stages - 1)
-                    ]
-                    + [None]
-                    if layer_norm
-                    else None
-                ),
+                norm_layer=[layer_norm_cls for _ in range(stages - 1)] + [None],
+                norm_args=[
+                    {**layer_norm_kw, "normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
+                    for i in range(stages - 1)
+                ]
+                + [None],
             ),
         )
 
@@ -229,8 +231,10 @@ class MLPDecoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
     """
@@ -243,7 +247,8 @@ class MLPDecoder(nn.Module):
         mlp_layers: int = 4,
         dense_units: int = 512,
         activation: ModuleType = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
         self.output_dims = output_dims
@@ -253,11 +258,9 @@ class MLPDecoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -278,8 +281,10 @@ class RecurrentModel(nn.Module):
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
-        layer_norm (bool): whether to use the LayerNorm inside the GRU.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
     """
 
     def __init__(
@@ -288,7 +293,8 @@ class RecurrentModel(nn.Module):
         recurrent_state_size: int,
         dense_units: int,
         activation_fn: nn.Module = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
         self.mlp = MLP(
@@ -296,11 +302,19 @@ class RecurrentModel(nn.Module):
             output_dim=None,
             hidden_sizes=[dense_units],
             activation=activation_fn,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3}] if layer_norm else None,
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=[layer_norm_cls],
+            norm_args=[{**layer_norm_kw, "normalized_shape": dense_units}],
         )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True)
+        self.rnn = LayerNormGRUCell(
+            dense_units,
+            recurrent_state_size,
+            bias=False,
+            batch_first=False,
+            layer_norm_cls=layer_norm_cls,
+            layer_norm_kw=layer_norm_kw,
+        )
+        self.recurrent_state_size = recurrent_state_size
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
@@ -341,7 +355,7 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module | _FabricModule,
+        recurrent_model: RecurrentModel | _FabricModule,
         representation_model: nn.Module | _FabricModule,
         transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
@@ -355,6 +369,14 @@ class RSSM(nn.Module):
         self.discrete = discrete
         self.unimix = unimix
         self.distribution_cfg = distribution_cfg
+        self.initial_recurrent_state = nn.Parameter(
+            torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+        )
+
+    def get_initial_states(self, batch_shape: Sequence[int] | torch.Size) -> Tuple[Tensor, Tensor]:
+        initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
+        initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
+        return initial_recurrent_state, initial_posterior
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -386,11 +408,12 @@ class RSSM(nn.Module):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
@@ -522,11 +545,12 @@ class DecoupledRSSM(RSSM):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         return recurrent_state, prior, prior_logits
@@ -601,7 +625,7 @@ class PlayerDV3(nn.Module):
             distribution_cfg=actor.distribution_cfg,
             discrete=rssm.discrete,
             unimix=rssm.unimix,
-        )
+        ).to(single_device_fabric.device)
         self.actor = single_device_fabric.setup_module(getattr(actor, "module", actor))
         self.device = single_device_fabric.device
         self.actions_dim = actions_dim
@@ -623,18 +647,12 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.tanh(
-                torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            )
-            self.stochastic_state = self.rssm._transition(self.recurrent_state, sample_state=False)[1].reshape(
-                1, self.num_envs, -1
-            )
+            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.tanh(torch.zeros_like(self.recurrent_state[:, reset_envs]))
-            self.stochastic_state[:, reset_envs] = self.rssm._transition(
-                self.recurrent_state[:, reset_envs], sample_state=False
-            )[1].reshape(1, len(reset_envs), -1)
+            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
+            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
 
     def get_actions(
         self,
@@ -691,8 +709,10 @@ class Actor(nn.Module):
             Default to nn.SiLU.
         mlp_layers (int): the number of dense layers.
             Default to 5.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormFP32.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
             distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
             then `p = (1 - self.unimix) * p + self.unimix * unif`,
@@ -714,7 +734,8 @@ class Actor(nn.Module):
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
         action_clip: float = 1.0,
     ) -> None:
@@ -739,11 +760,9 @@ class Actor(nn.Module):
             hidden_sizes=[dense_units] * mlp_layers,
             activation=activation,
             flatten_dim=None,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
@@ -834,7 +853,8 @@ class MinedojoActor(Actor):
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
         action_clip: float = 1.0,
     ) -> None:
@@ -848,7 +868,8 @@ class MinedojoActor(Actor):
             dense_units=dense_units,
             activation=activation,
             mlp_layers=mlp_layers,
-            layer_norm=layer_norm,
+            layer_norm_cls=layer_norm_cls,
+            layer_norm_kw=layer_norm_kw,
             unimix=unimix,
             action_clip=action_clip,
         )
@@ -959,7 +980,8 @@ def build_agent(
             input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
             image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
-            layer_norm=world_model_cfg.encoder.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.cnn_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.encoder.cnn_layer_norm.kw,
             activation=eval(world_model_cfg.encoder.cnn_act),
             stages=cnn_stages,
         )
@@ -973,47 +995,57 @@ def build_agent(
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
-            layer_norm=world_model_cfg.encoder.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder._mlp_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.encoder.mlp_layer_norm.kw,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+
     recurrent_model = RecurrentModel(
-        **world_model_cfg.recurrent_model,
         input_size=int(sum(actions_dim) + stochastic_size),
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        dense_units=world_model_cfg.recurrent_model.dense_units,
+        layer_norm_cls=hydra.utils.get_class(world_model_cfg.recurrent_model.layer_norm.cls),
+        layer_norm_kw=world_model_cfg.recurrent_model.layer_norm.kw,
     )
     represention_model_input_size = encoder.output_dim
     if not cfg.algo.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
+    representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
     representation_model = MLP(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=eval(world_model_cfg.representation_model.dense_act),
-        layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
+        layer_args={"bias": representation_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-            if world_model_cfg.representation_model.layer_norm
-            else None
-        ),
+        norm_layer=[representation_ln_cls],
+        norm_args=[
+            {
+                **world_model_cfg.representation_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.representation_model.hidden_size,
+            }
+        ],
     )
+    transition_ln_cls = hydra.utils.get_class(world_model_cfg.transition_model.layer_norm.cls)
     transition_model = MLP(
         input_dims=recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
         activation=eval(world_model_cfg.transition_model.dense_act),
-        layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
+        layer_args={"bias": transition_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-            if world_model_cfg.transition_model.layer_norm
-            else None
-        ),
+        norm_layer=[transition_ln_cls],
+        norm_args=[
+            {
+                **world_model_cfg.transition_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.transition_model.hidden_size,
+            }
+        ],
     )
+
     if cfg.algo.decoupled_rssm:
         rssm_cls = DecoupledRSSM
     else:
@@ -1025,7 +1057,8 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
-    )
+    ).to(fabric.device)
+
     cnn_decoder = (
         CNNDecoder(
             keys=cfg.algo.cnn_keys.decoder,
@@ -1035,7 +1068,8 @@ def build_agent(
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=eval(world_model_cfg.observation_model.cnn_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
             stages=cnn_stages,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -1049,53 +1083,42 @@ def build_agent(
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=eval(world_model_cfg.observation_model.dense_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.mlp_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+
+    reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
-        layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
+        layer_args={"bias": reward_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-            if world_model_cfg.reward_model.layer_norm
-            else None
-        ),
-        norm_args=(
-            [
-                {"normalized_shape": world_model_cfg.reward_model.dense_units}
-                for _ in range(world_model_cfg.reward_model.mlp_layers)
-            ]
-            if world_model_cfg.reward_model.layer_norm
-            else None
-        ),
+        norm_layer=reward_ln_cls,
+        norm_args={
+            **world_model_cfg.reward_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.reward_model.dense_units,
+        },
     )
+
+    discount_ln_cls = hydra.utils.get_class(world_model_cfg.discount_model.layer_norm.cls)
     continue_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=eval(world_model_cfg.discount_model.dense_act),
-        layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
+        layer_args={"bias": discount_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-            if world_model_cfg.discount_model.layer_norm
-            else None
-        ),
-        norm_args=(
-            [
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
-                for _ in range(world_model_cfg.discount_model.mlp_layers)
-            ]
-            if world_model_cfg.discount_model.layer_norm
-            else None
-        ),
+        norm_layer=discount_ln_cls,
+        norm_args={
+            **world_model_cfg.discount_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.discount_model.dense_units,
+        },
     )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1104,6 +1127,7 @@ def build_agent(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights),
     )
+
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
@@ -1115,23 +1139,25 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
-        layer_norm=actor_cfg.layer_norm,
+        layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
+        layer_norm_kw=actor_cfg.layer_norm.kw,
         unimix=cfg.algo.unimix,
         action_clip=actor_cfg.action_clip,
     )
+
+    critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=eval(critic_cfg.dense_act),
-        layer_args={"bias": not critic_cfg.layer_norm},
+        layer_args={"bias": critic_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-            if critic_cfg.layer_norm
-            else None
-        ),
+        norm_layer=critic_ln_cls,
+        norm_args={
+            **critic_cfg.layer_norm.kw,
+            "normalized_shape": critic_cfg.dense_units,
+        },
     )
     actor.apply(init_weights)
     critic.apply(init_weights)

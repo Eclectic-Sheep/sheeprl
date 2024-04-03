@@ -81,8 +81,8 @@ atari = [
   "gymnasium[accept-rom-license]==0.29.*",
   "gymnasium[other]==0.29.*",
 ]
-minedojo = ["minedojo==0.1", "importlib_resources==5.12.0"]
-minerl = ["setuptools==66.0.0", "minerl==0.4.4"]
+minedojo = ["minedojo==0.1", "importlib_resources==5.12.0", "gym==0.21.0"]
+minerl = ["setuptools==66.0.0", "minerl==0.4.4", "gym==0.19.0"]
 diambra = ["diambra==0.0.17", "diambra-arena==2.2.6"]
 crafter = ["crafter==1.8.3"]
 mlflow = ["mlflow==2.11.1"]

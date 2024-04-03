@@ -54,7 +54,7 @@ class Moments(nn.Module):
         self.register_buffer("high", torch.zeros((), dtype=torch.float32))
 
     def forward(self, x: Tensor, fabric: Fabric) -> Any:
-        gathered_x = fabric.all_gather(x).detach()
+        gathered_x = fabric.all_gather(x).float().detach()
         low = torch.quantile(gathered_x, self._percentile_low)
         high = torch.quantile(gathered_x, self._percentile_high)
         self.low = self._decay * self.low + (1 - self._decay) * low

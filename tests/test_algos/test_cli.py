@@ -129,7 +129,7 @@ def test_resume_from_checkpoint():
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
         f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
@@ -172,7 +172,7 @@ def test_resume_from_checkpoint_env_error():
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
         f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
@@ -225,7 +225,7 @@ def test_resume_from_checkpoint_algo_error():
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
         f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
@@ -280,7 +280,7 @@ def test_evaluate():
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
         f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,

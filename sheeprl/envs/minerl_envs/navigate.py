@@ -9,7 +9,6 @@ from typing import List
 
 import minerl.herobraine.hero.handlers as handlers
 from minerl.herobraine.hero.handler import Handler
-from minerl.herobraine.hero.mc import MS_PER_STEP
 
 from sheeprl.envs.minerl_envs.backend import CustomSimpleEmbodimentEnvSpec
 
@@ -22,7 +21,11 @@ class CustomNavigate(CustomSimpleEmbodimentEnvSpec):
         suffix += "Dense" if dense else ""
         name = "CustomMineRLNavigate{}-v0".format(suffix)
         self.dense, self.extreme = dense, extreme
-        super().__init__(name, *args, max_episode_steps=6000, **kwargs)
+
+        # The time limit is handled outside because MineRL does not provide a way
+        # to distinguish between terminated and truncated
+        kwargs.pop("max_episode_steps", None)
+        super().__init__(name, *args, max_episode_steps=None, **kwargs)
 
     def is_from_folder(self, folder: str) -> bool:
         return folder == "navigateextreme" if self.extreme else folder == "navigate"
@@ -60,7 +63,7 @@ class CustomNavigate(CustomSimpleEmbodimentEnvSpec):
             return [handlers.DefaultWorldGenerator(force_reset=True)]
 
     def create_server_quit_producers(self) -> List[Handler]:
-        return [handlers.ServerQuitFromTimeUp(NAVIGATE_STEPS * MS_PER_STEP), handlers.ServerQuitWhenAnyAgentFinishes()]
+        return [handlers.ServerQuitWhenAnyAgentFinishes()]
 
     def create_server_decorators(self) -> List[Handler]:
         return [

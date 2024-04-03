@@ -69,7 +69,7 @@ class MineDojoWrapper(gym.Wrapper):
         self._pos = kwargs.get("start_position", None)
         self._break_speed_multiplier = kwargs.get("break_speed_multiplier", 100)
         self._start_pos = copy.deepcopy(self._pos)
-        self._sticky_attack = sticky_attack
+        self._sticky_attack = 0 if self._break_speed_multiplier > 1 else sticky_attack
         self._sticky_jump = sticky_jump
         self._sticky_attack_counter = 0
         self._sticky_jump_counter = 0
@@ -83,7 +83,6 @@ class MineDojoWrapper(gym.Wrapper):
             task_id=id,
             image_size=(height, width),
             world_seed=seed,
-            generate_world_type="default",
             fast_reset=True,
             **kwargs,
         )
@@ -245,8 +244,9 @@ class MineDojoWrapper(gym.Wrapper):
             action[3] = 12
 
         obs, reward, done, info = self.env.step(action)
-        terminated = done and not info.get("TimeLimit.truncated", False)
-        truncated = done and info.get("TimeLimit.truncated", False)
+        is_timelimit = info.get("TimeLimit.truncated", False)
+        terminated = done and not is_timelimit
+        truncated = done and is_timelimit
         self._pos = {
             "x": float(obs["location_stats"]["pos"][0]),
             "y": float(obs["location_stats"]["pos"][1]),

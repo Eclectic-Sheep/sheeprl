@@ -60,10 +60,7 @@ def train(
 
     # Update the soft-critic
     next_target_qf_value = agent.get_next_target_q_values(
-        normalized_next_obs,
-        data["rewards"],
-        data["terminated"],
-        cfg.algo.gamma,
+        normalized_next_obs, data["rewards"], data["terminated"], cfg.algo.gamma
     )
     qf_values = agent.get_q_values(normalized_obs, data["actions"])
     qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
@@ -367,8 +364,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         1, cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
                     )
 
-        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.int8)
-        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.int8)
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data, validate_args=cfg.buffer.validate_args)
