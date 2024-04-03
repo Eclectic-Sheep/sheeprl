@@ -279,7 +279,7 @@ class RecurrentModel(nn.Module):
             norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
         )
         self.rnn = LayerNormGRUCell(
-            dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=nn.LayerNorm
+            dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm_cls=nn.LayerNorm
         )
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
