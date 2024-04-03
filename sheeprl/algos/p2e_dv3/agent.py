@@ -106,13 +106,15 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
-        layer_norm=actor_cfg.layer_norm,
+        layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
+        layer_norm_kw=actor_cfg.layer_norm.kw,
         unimix=cfg.algo.unimix,
     )
 
     single_device_fabric = get_single_device_fabric(fabric)
     critics_exploration = {}
     intrinsic_critics = 0
+    critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     for k, v in cfg.algo.critics_exploration.items():
         if v.weight > 0:
             if v.reward_type == "intrinsic":
@@ -126,13 +128,12 @@ def build_agent(
                     hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
                     activation=eval(critic_cfg.dense_act),
                     flatten_dim=None,
-                    layer_args={"bias": not critic_cfg.layer_norm},
-                    norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-                    norm_args=(
-                        [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-                        if critic_cfg.layer_norm
-                        else None
-                    ),
+                    layer_args={"bias": critic_ln_cls == nn.Identity},
+                    norm_layer=critic_ln_cls,
+                    norm_args={
+                        **critic_cfg.layer_norm.kw,
+                        "normalized_shape": critic_cfg.dense_units,
+                    },
                 ),
             }
             critics_exploration[k]["module"].apply(init_weights)
@@ -170,6 +171,7 @@ def build_agent(
     # initialize the ensembles with different seeds to be sure they have different weights
     ens_list = []
     cfg_ensembles = cfg.algo.ensembles
+    ensembles_ln_cls = hydra.utils.get_class(cfg_ensembles.layer_norm.cls)
     with isolate_rng():
         for i in range(cfg_ensembles.n):
             fabric.seed_everything(cfg.seed + i)
@@ -184,15 +186,12 @@ def build_agent(
                     hidden_sizes=[cfg_ensembles.dense_units] * cfg_ensembles.mlp_layers,
                     activation=eval(cfg_ensembles.dense_act),
                     flatten_dim=None,
-                    layer_args={"bias": not cfg.algo.ensembles.layer_norm},
-                    norm_layer=(
-                        [nn.LayerNorm for _ in range(cfg_ensembles.mlp_layers)] if cfg_ensembles.layer_norm else None
-                    ),
-                    norm_args=(
-                        [{"normalized_shape": cfg_ensembles.dense_units} for _ in range(cfg_ensembles.mlp_layers)]
-                        if cfg_ensembles.layer_norm
-                        else None
-                    ),
+                    layer_args={"bias": ensembles_ln_cls == nn.Identity},
+                    norm_layer=ensembles_ln_cls,
+                    norm_args={
+                        **cfg_ensembles.layer_norm.kw,
+                        "normalized_shape": cfg_ensembles.dense_units,
+                    },
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
