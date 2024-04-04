@@ -148,15 +148,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         state["target_critic_task"],
         state["actor_exploration"],
     )
-    player_actor = actor_exploration if cfg.algo.player.actor_type == "exploration" else actor_task
-    player_actor = unwrap_fabric(player_actor)
-    player.actor = fabric_player.setup_module(player_actor)
-    if cfg.algo.player.actor_type == "exploration":
-        for agent_p, p in zip(actor_exploration.parameters(), player.actor.parameters()):
-            p.data = agent_p.data
-    else:
-        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
-            p.data = agent_p.data
 
     # Optimizers
     world_optimizer = hydra.utils.instantiate(
