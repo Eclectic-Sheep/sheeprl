@@ -40,6 +40,7 @@ cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
 decoupled_rssm: False
+learnable_initial_recurrent_state: True
 
 # World model
 world_model:
