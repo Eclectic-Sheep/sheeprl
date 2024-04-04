@@ -22,7 +22,7 @@ from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel, build_agent
+from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
@@ -450,7 +450,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, actor, critic, target_critic = build_agent(
+    world_model, actor, critic, target_critic, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -460,18 +460,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["actor"] if cfg.checkpoint.resume_from else None,
         state["critic"] if cfg.checkpoint.resume_from else None,
         state["target_critic"] if cfg.checkpoint.resume_from else None,
-    )
-    player = PlayerDV2(
-        fabric,
-        world_model.encoder,
-        world_model.rssm.recurrent_model,
-        world_model.rssm.representation_model,
-        actor,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        discrete_size=cfg.algo.world_model.discrete_size,
     )
 
     # Optimizers

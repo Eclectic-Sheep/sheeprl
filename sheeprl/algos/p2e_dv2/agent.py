@@ -11,7 +11,7 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -38,7 +38,17 @@ def build_agent(
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     target_critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module]:
+) -> Tuple[
+    WorldModel,
+    nn.ModuleList,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    PlayerDV2,
+]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -84,7 +94,7 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration = dv2_build_agent(
+    world_model, actor_exploration, critic_exploration, target_critic_exploration, player = dv2_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -187,4 +197,5 @@ def build_agent(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
+        player,
     )

@@ -17,7 +17,7 @@ from torch.distributions import Bernoulli, Distribution, Independent, Normal, On
 from torch.distributions.utils import logits_to_probs
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
@@ -553,6 +553,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
+        player,
     ) = build_agent(
         fabric,
         actions_dim,
@@ -567,20 +568,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
         state["critic_exploration"] if cfg.checkpoint.resume_from else None,
         state["target_critic_exploration"] if cfg.checkpoint.resume_from else None,
-    )
-
-    player = PlayerDV2(
-        fabric,
-        world_model.encoder,
-        world_model.rssm.recurrent_model,
-        world_model.rssm.representation_model,
-        actor_exploration,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        discrete_size=cfg.algo.world_model.discrete_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
