@@ -122,7 +122,7 @@ class MLPEncoder(nn.Module):
         self.output_dim = dense_units
 
     def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -1).type(torch.float32)
+        x = torch.cat([obs[k] for k in self.keys], -1)
         return self.model(x)
 
 
