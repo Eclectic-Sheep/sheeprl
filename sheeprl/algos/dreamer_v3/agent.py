@@ -975,7 +975,7 @@ def build_agent(
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
-            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder._mlp_layer_norm.cls),
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.mlp_layer_norm.cls),
             layer_norm_kw=world_model_cfg.encoder.mlp_layer_norm.kw,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
