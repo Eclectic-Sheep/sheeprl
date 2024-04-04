@@ -220,7 +220,6 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
-        fabric (Fabric): the fabric object.
         encoder (nn.Module| _FabricModule): the encoder.
         recurrent_model (nn.Module| _FabricModule): the recurrent model.
         representation_model (nn.Module| _FabricModule): the representation model.
@@ -229,6 +228,7 @@ class PlayerDV1(nn.Module):
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
+        device (str | torch.device): the device where the model is stored.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
@@ -251,13 +251,12 @@ class PlayerDV1(nn.Module):
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.device = device
         self.actions_dim = actions_dim
+        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
-        self.num_envs = num_envs
+        self.device = device
         self.actor_type = actor_type
-        self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
