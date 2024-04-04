@@ -1208,4 +1208,4 @@ def build_agent(
         p.data = agent_p.data
     for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
         p.data = agent_p.data
-    return world_model, actor, critic, target_critic
+    return world_model, actor, critic, target_critic, player
