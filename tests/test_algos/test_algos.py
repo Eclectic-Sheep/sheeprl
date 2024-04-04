@@ -175,7 +175,7 @@ def test_ppo(standard_args, start_time, env_id):
         f"run_name={run_name}",
         f"env.id={env_id}",
         "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -198,7 +198,7 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"run_name={run_name}",
         f"env.id={env_id}",
         "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -249,6 +249,8 @@ def test_dreamer_v1(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -283,6 +285,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -324,6 +328,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=2",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -356,6 +362,8 @@ def test_dreamer_v2(standard_args, env_id, start_time):
         "algo.layer_norm=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -390,6 +398,8 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -431,6 +441,8 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=2",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -460,6 +472,8 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=8",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
     ]
@@ -496,6 +510,8 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
         "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
@@ -539,6 +555,8 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=8",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
     ]
