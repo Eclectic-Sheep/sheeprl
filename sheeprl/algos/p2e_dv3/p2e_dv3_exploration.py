@@ -15,7 +15,7 @@ from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
+from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -597,6 +597,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         target_critic_task,
         actor_exploration,
         critics_exploration,
+        player,
     ) = build_agent(
         fabric,
         actions_dim,
@@ -610,19 +611,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["target_critic_task"] if cfg.checkpoint.resume_from else None,
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
         state["critics_exploration"] if cfg.checkpoint.resume_from else None,
-    )
-
-    player = PlayerDV3(
-        fabric,
-        world_model.encoder,
-        world_model.rssm,
-        actor_exploration,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        discrete_size=cfg.algo.world_model.discrete_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
