@@ -8,10 +8,8 @@ from lightning import Fabric
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.utils.env import make_env
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
-from sheeprl.utils.utils import unwrap_fabric
 
 
 @register_evaluation(algorithms=["p2e_dv1_exploration", "p2e_dv1_finetuning"])
@@ -46,16 +44,15 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
     # Create the actor and critic models
-    _, _, actor_task, _, _, _, player = build_agent(
+    cfg.algo.player.actor_type = "task"
+    _, _, _, _, _, _, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
         cfg,
         observation_space,
-        state["world_model"],
-        state["actor_task"],
+        world_model_state=state["world_model"],
+        actor_task_state=state["actor_task"],
     )
     del _
-    fabric_player = get_single_device_fabric(fabric)
-    player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
     test(player, fabric, cfg, log_dir, sample_actions=False)
