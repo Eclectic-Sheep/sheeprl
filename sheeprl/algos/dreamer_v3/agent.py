@@ -370,17 +370,23 @@ class RSSM(nn.Module):
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
+        learnable_initial_recurrent_state: bool = True,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.transition_model = transition_model
+        self.distribution_cfg = distribution_cfg
         self.discrete = discrete
         self.unimix = unimix
-        self.distribution_cfg = distribution_cfg
-        self.initial_recurrent_state = nn.Parameter(
-            torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
-        )
+        if learnable_initial_recurrent_state:
+            self.initial_recurrent_state = nn.Parameter(
+                torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+            )
+        else:
+            self.register_buffer(
+                "initial_recurrent_state", torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+            )
 
     def get_initial_states(self, batch_shape: Sequence[int] | torch.Size) -> Tuple[Tensor, Tensor]:
         initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
@@ -521,8 +527,17 @@ class DecoupledRSSM(RSSM):
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
+        learnable_initial_recurrent_state: bool = True,
     ) -> None:
-        super().__init__(recurrent_model, representation_model, transition_model, distribution_cfg, discrete, unimix)
+        super().__init__(
+            recurrent_model,
+            representation_model,
+            transition_model,
+            distribution_cfg,
+            discrete,
+            unimix,
+            learnable_initial_recurrent_state,
+        )
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
@@ -1020,7 +1035,7 @@ def build_agent(
         layer_norm_kw=world_model_cfg.recurrent_model.layer_norm.kw,
     )
     represention_model_input_size = encoder.output_dim
-    if not cfg.algo.decoupled_rssm:
+    if not cfg.algo.world_model.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
     representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
     representation_model = MLP(
@@ -1055,7 +1070,7 @@ def build_agent(
         ],
     )
 
-    if cfg.algo.decoupled_rssm:
+    if cfg.algo.world_model.decoupled_rssm:
         rssm_cls = DecoupledRSSM
     else:
         rssm_cls = RSSM
@@ -1066,6 +1081,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
+        learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
     ).to(fabric.device)
 
     cnn_decoder = (

@@ -63,7 +63,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         discrete_size=cfg.algo.world_model.discrete_size,
-        decoupled_rssm=cfg.algo.decoupled_rssm,
+        decoupled_rssm=cfg.algo.world_model.decoupled_rssm,
     )
 
     test(player, fabric, cfg, log_dir, sample_actions=True)

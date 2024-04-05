@@ -112,7 +112,7 @@ def train(
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
-    if cfg.algo.decoupled_rssm:
+    if cfg.algo.world_model.decoupled_rssm:
         posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
             if i == 0:
@@ -450,7 +450,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         discrete_size=cfg.algo.world_model.discrete_size,
-        decoupled_rssm=cfg.algo.decoupled_rssm,
+        decoupled_rssm=cfg.algo.world_model.decoupled_rssm,
     )
 
     # Optimizers
