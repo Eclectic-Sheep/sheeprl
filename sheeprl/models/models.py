@@ -502,3 +502,24 @@ class MultiDecoder(nn.Module):
         if self.mlp_decoder is not None:
             reconstructed_obs.update(self.mlp_decoder(x))
         return reconstructed_obs
+
+
+class LayerNormChannelLast(nn.LayerNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        input_dtype = x.dtype
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x.to(input_dtype)
+
+
+class LayerNorm(nn.LayerNorm):
+    def forward(self, x: Tensor) -> Tensor:
+        input_dtype = x.dtype
+        out = super().forward(x)
+        return out.to(input_dtype)

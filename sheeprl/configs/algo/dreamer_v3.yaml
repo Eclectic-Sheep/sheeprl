@@ -26,11 +26,11 @@ mlp_keys:
 
 # Model related parameters
 cnn_layer_norm:
-  cls: sheeprl.utils.model.LayerNormChannelLastFP32
+  cls: sheeprl.utils.model.LayerNormChannelLast
   kw: 
     eps: 1e-3
 mlp_layer_norm:
-  cls: sheeprl.utils.model.LayerNormFP32
+  cls: sheeprl.utils.model.LayerNorm
   kw: 
     eps: 1e-3
 dense_units: 1024
