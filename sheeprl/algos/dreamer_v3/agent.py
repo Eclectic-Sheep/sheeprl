@@ -661,7 +661,7 @@ class PlayerDV3(nn.Module):
     def get_actions(
         self,
         obs: Dict[str, Tensor],
-        sample_actions: bool = True,
+        greedy: bool = False,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -669,8 +669,8 @@ class PlayerDV3(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
 
         Returns:
             The actions the agent has to perform.
@@ -686,7 +686,7 @@ class PlayerDV3(nn.Module):
         self.stochastic_state = self.stochastic_state.view(
             *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -781,7 +781,7 @@ class Actor(nn.Module):
         self._action_clip = action_clip
 
     def forward(
-        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -789,8 +789,8 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the mask to use on the actions.
                 Default to None.
 
@@ -814,7 +814,7 @@ class Actor(nn.Module):
                 std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
                 dist = Normal(torch.tanh(mean), std)
                 actions_dist = Independent(dist, 1)
-            if sample_actions:
+            if not greedy:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
@@ -830,7 +830,7 @@ class Actor(nn.Module):
             actions: List[Tensor] = []
             for logits in pre_dist:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
-                if sample_actions:
+                if not greedy:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
@@ -879,7 +879,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -887,7 +887,7 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            sample_actions (bool): whether or not to sample the actions.
+            greedy (bool): whether or not to sample the actions.
                 Default to True.
             mask (Dict[str, Tensor], optional): the mask to apply to the actions.
                 Default to None.
@@ -923,7 +923,7 @@ class MinedojoActor(Actor):
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
-            if sample_actions:
+            if not greedy:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
