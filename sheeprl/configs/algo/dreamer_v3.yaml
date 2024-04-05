@@ -39,8 +39,6 @@ dense_act: torch.nn.SiLU
 cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
-decoupled_rssm: False
-learnable_initial_recurrent_state: True
 
 # World model
 world_model:
@@ -52,6 +50,8 @@ world_model:
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
   clip_gradients: 1000.0
+  decoupled_rssm: False
+  learnable_initial_recurrent_state: True
 
   # Encoder
   encoder:
