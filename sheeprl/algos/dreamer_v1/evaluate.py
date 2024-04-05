@@ -54,4 +54,4 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         state["actor"],
     )
     del _
-    test(player, fabric, cfg, log_dir, sample_actions=False)
+    test(player, fabric, cfg, log_dir, greedy=True)

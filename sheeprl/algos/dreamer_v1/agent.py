@@ -276,14 +276,14 @@ class PlayerDV1(nn.Module):
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
     def get_exploration_actions(
-        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
     ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
             step (int): the step of the training, used for the exploration amount.
@@ -292,7 +292,7 @@ class PlayerDV1(nn.Module):
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_actions(obs, sample_actions=sample_actions, mask=mask)
+        actions = self.get_actions(obs, greedy=greedy, mask=mask)
         expl_actions = None
         if self.actor._expl_amount > 0:
             expl_actions = self.actor.add_exploration_noise(actions, step=step, mask=mask)
@@ -300,14 +300,14 @@ class PlayerDV1(nn.Module):
         return expl_actions or actions
 
     def get_actions(
-        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
@@ -321,7 +321,7 @@ class PlayerDV1(nn.Module):
         _, self.stochastic_state = compute_stochastic_state(
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
