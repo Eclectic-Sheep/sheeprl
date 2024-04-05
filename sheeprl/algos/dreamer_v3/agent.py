@@ -518,8 +518,17 @@ class DecoupledRSSM(RSSM):
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
+        learnable_initial_recurrent_state: bool = True,
     ) -> None:
-        super().__init__(recurrent_model, representation_model, transition_model, distribution_cfg, discrete, unimix)
+        super().__init__(
+            recurrent_model,
+            representation_model,
+            transition_model,
+            distribution_cfg,
+            discrete,
+            unimix,
+            learnable_initial_recurrent_state,
+        )
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
