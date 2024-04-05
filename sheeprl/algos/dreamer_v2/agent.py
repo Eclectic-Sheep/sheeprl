@@ -22,10 +22,10 @@ from torch.distributions import (
 )
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
 from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.utils.model import ModuleType, cnn_forward
 
 
 class CNNEncoder(nn.Module):
