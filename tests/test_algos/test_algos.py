@@ -474,8 +474,8 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.cnn_keys.decoder=[rgb]",
         "algo.mlp_keys.encoder=[state]",
         "algo.mlp_keys.decoder=[state]",
-        "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
-        "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -513,8 +513,8 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.mlp_keys.encoder=[state]",
         "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
-        "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
-        "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -557,8 +557,8 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.cnn_keys.decoder=[rgb]",
         "algo.mlp_keys.encoder=[state]",
         "algo.mlp_keys.decoder=[state]",
-        "algo.mlp_layer_norm.cls=torch.nn.LayerNorm",
-        "algo.cnn_layer_norm.cls=sheeprl.utils.model.LayerNormChannelLast",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
     with mock.patch.object(sys, "argv", args):
         run()

@@ -24,9 +24,18 @@ from torch.distributions.utils import probs_to_logits
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
+from sheeprl.models.models import (
+    CNN,
+    MLP,
+    DeCNN,
+    LayerNorm,
+    LayerNormChannelLast,
+    LayerNormGRUCell,
+    MultiDecoder,
+    MultiEncoder,
+)
 from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.model import LayerNormChannelLastFP32, LayerNormFP32, ModuleType, cnn_forward
+from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
@@ -44,7 +53,7 @@ class CNNEncoder(nn.Module):
         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
             will be [1, 2, 4, 8] * `channels_multiplier`.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLastFP32.
+            Defaults to LayerNormChannelLast.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function.
@@ -58,7 +67,7 @@ class CNNEncoder(nn.Module):
         input_channels: Sequence[int],
         image_size: Tuple[int, int],
         channels_multiplier: int,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLastFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         stages: int = 4,
@@ -102,7 +111,7 @@ class MLPEncoder(nn.Module):
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormFP32.
+            Defaults to LayerNorm.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
@@ -117,7 +126,7 @@ class MLPEncoder(nn.Module):
         input_dims: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         symlog_inputs: bool = True,
@@ -162,7 +171,7 @@ class CNNDecoder(nn.Module):
         activation (nn.Module, optional): the activation function.
             Defaults to nn.SiLU.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLastFP32.
+            Defaults to LayerNormChannelLast.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
         stages (int): how many stages in the CNN decoder.
@@ -177,7 +186,7 @@ class CNNDecoder(nn.Module):
         cnn_encoder_output_dim: int,
         image_size: Tuple[int, int],
         activation: nn.Module = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLastFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         stages: int = 4,
     ) -> None:
@@ -232,7 +241,7 @@ class MLPDecoder(nn.Module):
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormFP32.
+            Defaults to LayerNorm.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
@@ -247,7 +256,7 @@ class MLPDecoder(nn.Module):
         mlp_layers: int = 4,
         dense_units: int = 512,
         activation: ModuleType = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
@@ -282,7 +291,7 @@ class RecurrentModel(nn.Module):
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormFP32.
+            Defaults to LayerNorm.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
     """
@@ -293,7 +302,7 @@ class RecurrentModel(nn.Module):
         recurrent_state_size: int,
         dense_units: int,
         activation_fn: nn.Module = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
@@ -710,7 +719,7 @@ class Actor(nn.Module):
         mlp_layers (int): the number of dense layers.
             Default to 5.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormFP32.
+            Defaults to LayerNorm.
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
@@ -734,7 +743,7 @@ class Actor(nn.Module):
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
         action_clip: float = 1.0,
@@ -853,7 +862,7 @@ class MinedojoActor(Actor):
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormFP32,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
         layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
         action_clip: float = 1.0,
