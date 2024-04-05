@@ -1034,7 +1034,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         player.actor_type = "task"
         fabric_player = get_single_device_fabric(fabric)
         player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
-        test(player, fabric, cfg, log_dir, "zero-shot")
+        test(player, fabric, cfg, log_dir, "zero-shot", greedy=False)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models
