@@ -112,7 +112,7 @@ def train(
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
-    if cfg.algo.decoupled_rssm:
+    if cfg.algo.world_model.decoupled_rssm:
         posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
             if i == 0:

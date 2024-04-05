@@ -1015,7 +1015,7 @@ def build_agent(
         layer_norm_kw=world_model_cfg.recurrent_model.layer_norm.kw,
     )
     represention_model_input_size = encoder.output_dim
-    if not cfg.algo.decoupled_rssm:
+    if not cfg.algo.world_model.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
     representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
     representation_model = MLP(
@@ -1050,7 +1050,7 @@ def build_agent(
         ],
     )
 
-    if cfg.algo.decoupled_rssm:
+    if cfg.algo.world_model.decoupled_rssm:
         rssm_cls = DecoupledRSSM
     else:
         rssm_cls = RSSM
@@ -1061,7 +1061,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
-        learnable_initial_recurrent_state=cfg.algo.learnable_initial_recurrent_state,
+        learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
     ).to(fabric.device)
 
     cnn_decoder = (
