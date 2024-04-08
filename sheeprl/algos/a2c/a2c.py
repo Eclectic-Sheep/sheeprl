@@ -10,7 +10,7 @@ from lightning.fabric import Fabric
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.a2c.agent import build_agent
+from sheeprl.algos.a2c.agent import A2CAgent, build_agent
 from sheeprl.algos.a2c.loss import policy_loss, value_loss
 from sheeprl.algos.a2c.utils import test
 from sheeprl.data import ReplayBuffer
@@ -24,7 +24,7 @@ from sheeprl.utils.utils import gae, save_configs
 
 def train(
     fabric: Fabric,
-    agent: torch.nn.Module,
+    agent: A2CAgent,
     optimizer: torch.optim.Optimizer,
     data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator,
@@ -67,7 +67,9 @@ def train(
         # is_accumulating is True for every i except for the last one
         is_accumulating = i < len(sampler) - 1
 
-        with fabric.no_backward_sync(agent, enabled=is_accumulating):
+        with fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating), fabric.no_backward_sync(
+            agent.actor, enabled=is_accumulating
+        ), fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
             _, logprobs, values = agent(obs, torch.split(batch["actions"], agent.actions_dim, dim=-1))
 
             # Policy loss
@@ -262,10 +264,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                     torch_v = torch_v.view(-1, *v.shape[-2:])
                                     torch_v = torch_v / 255.0 - 0.5
                                 real_next_obs[k][i] = torch_v
-                        _, _, vals = player(real_next_obs)
-                        rewards[truncated_envs] += cfg.algo.gamma * vals.cpu().numpy().reshape(
-                            rewards[truncated_envs].shape
-                        )
+                        vals = player.get_values(real_next_obs).cpu().numpy()
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
 
@@ -305,7 +305,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-            _, _, next_values = player(torch_obs)
+            next_values = player.get_values(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],

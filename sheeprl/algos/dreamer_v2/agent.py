@@ -503,7 +503,7 @@ class Actor(nn.Module):
         return max(amount, self._expl_min)
 
     def forward(
-        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -511,8 +511,8 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -536,7 +536,7 @@ class Actor(nn.Module):
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
                 dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
                 actions_dist = Independent(dist, 1)
-            if sample_actions:
+            if not greedy:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
@@ -549,7 +549,7 @@ class Actor(nn.Module):
             actions: List[Tensor] = []
             for logits in pre_dist:
                 actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
-                if sample_actions:
+                if not greedy:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
@@ -608,7 +608,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -616,8 +616,8 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -652,7 +652,7 @@ class MinedojoActor(Actor):
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
             actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
-            if sample_actions:
+            if not greedy:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
@@ -737,7 +737,6 @@ class PlayerDV2(nn.Module):
     The model of the Dreamer_v2 player.
 
     Args:
-        fabric: the fabric of the model.
         encoder (nn.Module | _FabricModule): the encoder.
         recurrent_model (nn.Module | _FabricModule): the recurrent model.
         representation_model (nn.Module | _FabricModule): the representation model.
@@ -746,6 +745,7 @@ class PlayerDV2(nn.Module):
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
+        device (str | torch.device): the device where the model is stored.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
@@ -755,7 +755,6 @@ class PlayerDV2(nn.Module):
 
     def __init__(
         self,
-        fabric: Fabric,
         encoder: nn.Module | _FabricModule,
         recurrent_model: nn.Module | _FabricModule,
         representation_model: nn.Module | _FabricModule,
@@ -764,29 +763,21 @@ class PlayerDV2(nn.Module):
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
+        device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        fabric_player = get_single_device_fabric(fabric)
-        self.encoder = fabric_player.setup_module(
-            getattr(encoder, "module", encoder),
-        )
-        self.recurrent_model = fabric_player.setup_module(
-            getattr(recurrent_model, "module", recurrent_model),
-        )
-        self.representation_model = fabric_player.setup_module(
-            getattr(representation_model, "module", representation_model),
-        )
-        self.actor = fabric_player.setup_module(
-            getattr(actor, "module", actor),
-        )
-        self.device = fabric_player.device
+        self.encoder = encoder
+        self.recurrent_model = recurrent_model
+        self.representation_model = representation_model
+        self.actor = actor
         self.actions_dim = actions_dim
-        self.stochastic_size = stochastic_size
-        self.discrete_size = discrete_size
-        self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
+        self.stochastic_size = stochastic_size
+        self.recurrent_state_size = recurrent_state_size
+        self.device = device
+        self.discrete_size = discrete_size
         self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -811,7 +802,7 @@ class PlayerDV2(nn.Module):
     def get_actions(
         self,
         obs: Dict[str, Tensor],
-        sample_actions: bool = True,
+        greedy: bool = False,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -819,8 +810,8 @@ class PlayerDV2(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -836,7 +827,7 @@ class PlayerDV2(nn.Module):
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -851,7 +842,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV2]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -1062,6 +1053,21 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV2(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm.recurrent_model),
+        copy.deepcopy(world_model.rssm.representation_model),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -1078,7 +1084,21 @@ def build_agent(
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
-    single_device_fabric = get_single_device_fabric(fabric)
-    target_critic = single_device_fabric.setup_module(target_critic)
+    target_critic = fabric_player.setup_module(target_critic)
 
-    return world_model, actor, critic, target_critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
+    player.representation_model = fabric_player.setup_module(player.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, target_critic, player

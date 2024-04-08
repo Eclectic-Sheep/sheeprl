@@ -17,7 +17,7 @@ from torch.distributions import Bernoulli, Independent, Normal
 from torch.distributions.utils import logits_to_probs
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
+from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import test
@@ -29,7 +29,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -433,7 +433,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration = build_agent(
+    world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -445,19 +445,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["critic_task"] if cfg.checkpoint.resume_from else None,
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
         state["critic_exploration"] if cfg.checkpoint.resume_from else None,
-    )
-
-    player = PlayerDV1(
-        fabric,
-        world_model.encoder,
-        world_model.rssm.recurrent_model,
-        world_model.rssm.representation_model,
-        actor_exploration,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
@@ -799,7 +786,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
         fabric_player = get_single_device_fabric(fabric)
-        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
+        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

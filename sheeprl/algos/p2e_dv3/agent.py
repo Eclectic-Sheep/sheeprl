@@ -10,11 +10,12 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
-from sheeprl.algos.dreamer_v3.agent import WorldModel
+from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.utils import unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -36,7 +37,9 @@ def build_agent(
     target_critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critics_exploration_state: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, nn.Module, _FabricModule, Dict[str, Any]]:
+) -> Tuple[
+    WorldModel, nn.ModuleList, _FabricModule, _FabricModule, _FabricModule, _FabricModule, Dict[str, Any], PlayerDV3
+]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -82,7 +85,7 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create task models
-    world_model, actor_task, critic_task, target_critic_task = dv3_build_agent(
+    world_model, actor_task, critic_task, target_critic_task, player = dv3_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -200,6 +203,14 @@ def build_agent(
     for i in range(len(ensembles)):
         ensembles[i] = fabric.setup_module(ensembles[i])
 
+    # Setup player agent
+    if cfg.algo.player.actor_type == "exploration":
+        fabric_player = get_single_device_fabric(fabric)
+        player_actor = unwrap_fabric(actor_exploration)
+        player.actor = fabric_player.setup_module(player_actor)
+        for agent_p, p in zip(actor_exploration.parameters(), player.actor.parameters()):
+            p.data = agent_p.data
+
     return (
         world_model,
         ensembles,
@@ -208,4 +219,5 @@ def build_agent(
         target_critic_task,
         actor_exploration,
         critics_exploration,
+        player,
     )

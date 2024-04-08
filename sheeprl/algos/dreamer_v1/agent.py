@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium
@@ -219,7 +220,6 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
-        fabric (Fabric): the fabric object.
         encoder (nn.Module| _FabricModule): the encoder.
         recurrent_model (nn.Module| _FabricModule): the recurrent model.
         representation_model (nn.Module| _FabricModule): the representation model.
@@ -228,44 +228,35 @@ class PlayerDV1(nn.Module):
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
+        device (str | torch.device): the device where the model is stored.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
 
     def __init__(
         self,
-        fabric: Fabric,
-        encoder: nn.Module | _FabricModule,
-        recurrent_model: nn.Module | _FabricModule,
-        representation_model: nn.Module | _FabricModule,
+        encoder: MultiEncoder | _FabricModule,
+        recurrent_model: RecurrentModel | _FabricModule,
+        representation_model: MLP | _FabricModule,
         actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
+        device: str | torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
-        single_device_fabric = get_single_device_fabric(fabric)
-        self.encoder = single_device_fabric.setup_module(
-            getattr(encoder, "module", encoder),
-        )
-        self.recurrent_model = single_device_fabric.setup_module(
-            getattr(recurrent_model, "module", recurrent_model),
-        )
-        self.representation_model = single_device_fabric.setup_module(
-            getattr(representation_model, "module", representation_model)
-        )
-        self.actor = single_device_fabric.setup_module(
-            getattr(actor, "module", actor),
-        )
-        self.device = single_device_fabric.device
+        self.encoder = encoder
+        self.recurrent_model = recurrent_model
+        self.representation_model = representation_model
+        self.actor = actor
         self.actions_dim = actions_dim
+        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
-        self.num_envs = num_envs
+        self.device = device
         self.actor_type = actor_type
-        self.init_states()
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -285,14 +276,14 @@ class PlayerDV1(nn.Module):
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
     def get_exploration_actions(
-        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
     ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
             step (int): the step of the training, used for the exploration amount.
@@ -301,7 +292,7 @@ class PlayerDV1(nn.Module):
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_actions(obs, sample_actions=sample_actions, mask=mask)
+        actions = self.get_actions(obs, greedy=greedy, mask=mask)
         expl_actions = None
         if self.actor._expl_amount > 0:
             expl_actions = self.actor.add_exploration_noise(actions, step=step, mask=mask)
@@ -309,14 +300,14 @@ class PlayerDV1(nn.Module):
         return expl_actions or actions
 
     def get_actions(
-        self, obs: Tensor, sample_actions: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
-            sample_actions (bool): whether or not to sample the actions.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
@@ -330,7 +321,7 @@ class PlayerDV1(nn.Module):
         _, self.stochastic_state = compute_stochastic_state(
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), sample_actions, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -344,7 +335,7 @@ def build_agent(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, PlayerDV1]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -365,6 +356,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The player (PlayerDV1).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -511,6 +503,20 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV1(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm.recurrent_model),
+        copy.deepcopy(world_model.rssm.representation_model),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -523,4 +529,19 @@ def build_agent(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    return world_model, actor, critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
+    player.representation_model = fabric_player.setup_module(player.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, player

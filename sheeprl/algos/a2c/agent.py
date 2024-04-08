@@ -7,11 +7,10 @@ import gymnasium
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.ppo.agent import PPOActor
+from sheeprl.algos.ppo.agent import PPOActor, PPOPlayer
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric
 
@@ -161,7 +160,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[_FabricModule, _FabricModule]:
+) -> Tuple[A2CAgent, PPOPlayer]:
     agent = A2CAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -174,16 +173,26 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    player = copy.deepcopy(agent)
+
+    # Setup player agent
+    player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
     # Setup training agent
-    agent = fabric.setup_module(agent)
+    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
+    agent.critic = fabric.setup_module(agent.critic)
+    agent.actor = fabric.setup_module(agent.actor)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)
-    player = fabric_player.setup_module(player)
+    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
+    player.critic = fabric_player.setup_module(player.critic)
+    player.actor = fabric_player.setup_module(player.actor)
 
     # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.parameters(), player.parameters()):
+    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
         player_p.data = agent_p.data
     return agent, player

@@ -238,6 +238,14 @@ def print_config(
 
 
 def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
+    """Recursively unwrap the model from _FabricModule. This method returns a deep copy of the model.
+
+    Args:
+        model (_FabricModule | nn.Module): the model to unwrap.
+
+    Returns:
+        nn.Module: the unwrapped model.
+    """
     model = copy.deepcopy(model)
     if isinstance(model, _FabricModule):
         model = model.module

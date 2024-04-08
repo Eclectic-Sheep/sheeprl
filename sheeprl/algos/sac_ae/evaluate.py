@@ -5,7 +5,7 @@ from typing import Any, Dict
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
+from sheeprl.algos.sac_ae.agent import build_agent
 from sheeprl.algos.sac_ae.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -38,8 +38,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
     fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
-    agent: SACAEAgent
-    agent, _, _ = build_agent(
+    _, _, _, agent = build_agent(
         fabric, cfg, observation_space, action_space, state["agent"], state["encoder"], state["decoder"]
     )
-    test(agent.actor, fabric, cfg, log_dir)
+    test(agent, fabric, cfg, log_dir)

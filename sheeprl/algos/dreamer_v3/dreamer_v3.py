@@ -22,7 +22,7 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel, build_agent
+from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
@@ -429,7 +429,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, actor, critic, target_critic = build_agent(
+    world_model, actor, critic, target_critic, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -439,18 +439,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["actor"] if cfg.checkpoint.resume_from else None,
         state["critic"] if cfg.checkpoint.resume_from else None,
         state["target_critic"] if cfg.checkpoint.resume_from else None,
-    )
-    player = PlayerDV3(
-        fabric,
-        world_model.encoder,
-        world_model.rssm,
-        actor,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        discrete_size=cfg.algo.world_model.discrete_size,
-        decoupled_rssm=cfg.algo.world_model.decoupled_rssm,
     )
 
     # Optimizers
@@ -775,7 +763,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir, sample_actions=True)
+        test(player, fabric, cfg, log_dir, greedy=False)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

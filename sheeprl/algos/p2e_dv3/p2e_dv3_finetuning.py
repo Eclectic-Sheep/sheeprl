@@ -11,7 +11,6 @@ import torch
 from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -22,7 +21,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
 
 
 @register_algorithm()
@@ -130,15 +129,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    (
-        world_model,
-        _,
-        actor_task,
-        critic_task,
-        target_critic_task,
-        actor_exploration,
-        _,
-    ) = build_agent(
+    (world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, player) = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -150,20 +141,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         state["critic_task"],
         state["target_critic_task"],
         state["actor_exploration"],
-    )
-
-    # initialize the ensembles with different seeds to be sure they have different weights
-    player = PlayerDV3(
-        fabric,
-        world_model.encoder,
-        world_model.rssm,
-        actor_exploration if cfg.algo.player.actor_type == "exploration" else actor_task,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        discrete_size=cfg.algo.world_model.discrete_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
@@ -374,7 +351,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"
-                    player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
+                    player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
+                    for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+                        p.data = agent_p.data
                 local_data = rb.sample_tensors(
                     cfg.algo.per_rank_batch_size,
                     sequence_length=cfg.algo.per_rank_sequence_length,
@@ -483,8 +462,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
-        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
-        test(player, fabric, cfg, log_dir, "few-shot")
+        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
+        test(player, fabric, cfg, log_dir, "few-shot", greedy=False)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

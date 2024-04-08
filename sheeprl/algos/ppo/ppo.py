@@ -275,7 +275,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_obs = {
                         k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
                     }
-                    actions, logprobs, _, values = player(torch_obs)
+                    actions, logprobs, values = player(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
@@ -302,10 +302,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                     torch_v = torch_v.view(-1, *v.shape[-2:])
                                     torch_v = torch_v / 255.0 - 0.5
                                 real_next_obs[k][i] = torch_v
-                        _, _, _, vals = player(real_next_obs)
-                        rewards[truncated_envs] += cfg.algo.gamma * vals.cpu().numpy().reshape(
-                            rewards[truncated_envs].shape
-                        )
+                        vals = player.get_values(real_next_obs).cpu().numpy()
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
 
@@ -349,7 +347,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.inference_mode():
             normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-            _, _, _, next_values = player(torch_obs)
+            next_values = player.get_values(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],

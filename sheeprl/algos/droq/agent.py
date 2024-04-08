@@ -9,7 +9,7 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACActor
+from sheeprl.algos.sac.agent import SACActor, SACPlayer
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric
 
@@ -215,7 +215,7 @@ def build_agent(
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> DROQAgent:
+) -> Tuple[DROQAgent, SACPlayer]:
     act_dim = prod(action_space.shape)
     obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
@@ -237,10 +237,26 @@ def build_agent(
     ]
     target_entropy = -act_dim
     agent = DROQAgent(
-        actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
+        actor,
+        critics,
+        target_entropy,
+        alpha=cfg.algo.alpha.alpha,
+        tau=cfg.algo.tau,
+        device=fabric.device,
     )
     if agent_state:
         agent.load_state_dict(agent_state)
+
+    # Setup player agent
+    player = SACPlayer(
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+
+    # Setup training agent
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
 
@@ -249,4 +265,14 @@ def build_agent(
     fabric_player = get_single_device_fabric(fabric)
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
-    return agent
+    # Setup player agent
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, player

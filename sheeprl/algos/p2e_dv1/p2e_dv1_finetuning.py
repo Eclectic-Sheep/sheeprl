@@ -13,7 +13,6 @@ import torch
 from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
@@ -24,7 +23,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -133,7 +132,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, _, actor_task, critic_task, actor_exploration, _ = build_agent(
+    world_model, _, actor_task, critic_task, actor_exploration, _, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -144,19 +143,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         state["actor_task"],
         state["critic_task"],
         state["actor_exploration"],
-    )
-
-    player = PlayerDV1(
-        fabric,
-        world_model.encoder,
-        world_model.rssm.recurrent_model,
-        world_model.rssm.representation_model,
-        actor_exploration if cfg.algo.player.actor_type == "exploration" else actor_task,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
@@ -346,7 +332,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"
-                    player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
+                    player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
+                    for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+                        p.data = agent_p.data
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                     sample = rb.sample_tensors(
                         batch_size=cfg.algo.per_rank_batch_size,
@@ -445,7 +433,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
-        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
+        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
         test(player, fabric, cfg, log_dir, "few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

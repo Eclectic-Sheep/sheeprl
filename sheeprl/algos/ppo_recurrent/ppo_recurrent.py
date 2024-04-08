@@ -297,7 +297,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
-                    actions, logprobs, _, values, states = player(
+                    actions, logprobs, values, states = player(
                         torch_obs, prev_actions=torch_prev_actions, prev_states=prev_states
                     )
                     if is_continuous:
@@ -329,12 +329,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                 if k in cfg.algo.cnn_keys.encoder:
                                     torch_v = torch_v.view(1, 1, -1, *torch_v.shape[-2:]) / 255.0 - 0.5
                                 real_next_obs[k][0, i] = torch_v
-                        feat = player.feature_extractor(real_next_obs)
-                        rnn_out, _ = player.rnn(
-                            torch.cat((feat, torch_actions[:, truncated_envs, :]), dim=-1),
+                        vals, _ = player.get_values(
+                            real_next_obs,
+                            torch_actions[:, truncated_envs, :],
                             tuple(s[:, truncated_envs, ...] for s in states),
                         )
-                        vals = player.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
+                        vals = vals.view(rewards[truncated_envs].shape).cpu().numpy()
                         rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
                     rewards = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
@@ -389,9 +389,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.inference_mode():
             normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
-            feat = player.feature_extractor(torch_obs)
-            rnn_out, _ = player.rnn(torch.cat((feat, torch_actions), dim=-1), states)
-            next_values = player.get_values(rnn_out)
+            next_values, _ = player.get_values(torch_obs, torch_actions, states)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],

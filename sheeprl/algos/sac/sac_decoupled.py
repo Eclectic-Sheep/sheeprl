@@ -16,7 +16,7 @@ from lightning.fabric.strategies import DDPStrategy
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic, build_agent
+from sheeprl.algos.sac.agent import SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
@@ -31,15 +31,17 @@ from sheeprl.utils.utils import Ratio, save_configs
 
 @torch.inference_mode()
 def player(
-    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
+    fabric: Fabric, world_collective: TorchCollective, player_trainer_collective: TorchCollective, cfg: Dict[str, Any]
 ):
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
+    # Initialize Fabric player-only
+    fabric_player = get_single_device_fabric(fabric)
+    log_dir = get_log_dir(fabric_player, cfg.root_dir, cfg.run_name, False)
+    device = fabric_player.device
     rank = fabric.global_rank
-    device = fabric.device
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fabric_player.load(cfg.checkpoint.resume_from)
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -89,16 +91,13 @@ def player(
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(action_space.shape)
     obs_dim = sum([prod(observation_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
-    ).to(device)
-    fabric_player = get_single_device_fabric(fabric)
-    actor = fabric_player.setup_module(actor, move_to_device=False)
+    _, actor = build_agent(
+        fabric_player,
+        cfg,
+        observation_space,
+        action_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
+    )
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
@@ -188,7 +187,7 @@ def player(
             else:
                 # Sample an action given the observation received by the environment
                 torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                actions, _ = actor(torch_obs)
+                actions = actor(torch_obs)
                 actions = actions.cpu().numpy()
             next_obs, rewards, terminated, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
@@ -383,7 +382,7 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = build_agent(
+    agent, _ = build_agent(
         fabric,
         cfg,
         envs.single_observation_space,
@@ -579,6 +578,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(fabric, cfg, world_collective, player_trainer_collective)
+        player(fabric, world_collective, player_trainer_collective, cfg)
     else:
         trainer(world_collective, player_trainer_collective, optimization_pg, cfg)

@@ -89,7 +89,7 @@ class SACActor(nn.Module):
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
-    def forward(self, obs: Tensor, greedy: bool = False) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         """Given an observation, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -103,14 +103,11 @@ class SACActor(nn.Module):
         """
         x = self.model(obs)
         mean = self.fc_mean(x)
-        if greedy:
-            return torch.tanh(mean) * self.action_scale + self.action_bias
-        else:
-            log_std = self.fc_logstd(x)
-            std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
-            return self.get_actions_and_log_probs(mean, std)
+        log_std = self.fc_logstd(x)
+        std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
+        return self._get_actions_and_log_probs(mean, std)
 
-    def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
+    def _get_actions_and_log_probs(self, mean: Tensor, std: Tensor) -> Tuple[Tensor, Tensor]:
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -248,9 +245,6 @@ class SACAgent(nn.Module):
     def get_actions_and_log_probs(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         return self.actor(obs)
 
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        return self.actor.get_greedy_actions(obs)
-
     def get_q_values(self, obs: Tensor, action: Tensor) -> Tensor:
         return torch.cat([self.qfs[i](obs, action) for i in range(len(self.qfs))], dim=-1)
 
@@ -273,13 +267,60 @@ class SACAgent(nn.Module):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
 
 
+class SACPlayer(nn.Module):
+    def __init__(
+        self,
+        feature_extractor: nn.Module,
+        fc_mean: nn.Module,
+        fc_logstd: nn.Module,
+        action_low: Union[SupportsFloat, NDArray] = -1.0,
+        action_high: Union[SupportsFloat, NDArray] = 1.0,
+    ):
+        super().__init__()
+        self.model = feature_extractor
+        self.fc_mean = fc_mean
+        self.fc_logstd = fc_logstd
+
+        # Action rescaling buffers
+        self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
+
+    def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
+        """Given an observation, it returns a tanh-squashed
+        sampled action (correctly rescaled to the environment action bounds) and its
+        log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
+
+        Args:
+            obs (Tensor): the observation tensor
+
+        Returns:
+            tanh-squashed action, rescaled to the environment action bounds
+            action log-prob
+        """
+        x = self.model(obs)
+        mean = self.fc_mean(x)
+        if greedy:
+            return torch.tanh(mean) * self.action_scale + self.action_bias
+        else:
+            log_std = self.fc_logstd(x)
+            std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX).exp()
+            normal = torch.distributions.Normal(mean, std)
+            x_t = normal.rsample()
+            y_t = torch.tanh(x_t)
+            actions = y_t * self.action_scale + self.action_bias
+            return actions
+
+    def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
+        return self(obs, greedy=greedy)
+
+
 def build_agent(
     fabric: Fabric,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> SACAgent:
+) -> Tuple[SACAgent, SACPlayer]:
     act_dim = prod(action_space.shape)
     obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
@@ -298,6 +339,17 @@ def build_agent(
     agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
     if agent_state:
         agent.load_state_dict(agent_state)
+
+    # Setup player agent
+    player = SACPlayer(
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+
+    # Setup training agent
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
 
@@ -306,4 +358,14 @@ def build_agent(
     fabric_player = get_single_device_fabric(fabric)
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
-    return agent
+    # Setup player agent
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, player
