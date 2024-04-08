@@ -8,7 +8,7 @@ import copy
 import os
 import warnings
 from functools import partial
-from typing import Any, Dict, Sequence
+from typing import Any, Callable, Dict, Sequence
 
 import gymnasium as gym
 import hydra
@@ -45,6 +45,62 @@ from sheeprl.utils.utils import Ratio, save_configs
 # os.environ["MUJOCO_GL"] = "osmesa"
 
 
+def dynamic_learning(
+    fabric: Fabric,
+    world_model: WorldModel,
+    data: Dict[str, Tensor],
+    batch_actions: Tensor,
+    embedded_obs: Dict[str, Tensor],
+    cfg: Dict[str, Any],
+):
+    batch_size = cfg.algo.per_rank_batch_size
+    sequence_length = cfg.algo.per_rank_sequence_length
+    recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
+    stochastic_size = cfg.algo.world_model.stochastic_size
+    discrete_size = cfg.algo.world_model.discrete_size
+    device = fabric.device
+
+    # Dynamic Learning
+    stoch_state_size = stochastic_size * discrete_size
+    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
+    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
+    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
+
+    if cfg.algo.world_model.decoupled_rssm:
+        posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
+        for i in range(0, sequence_length):
+            if i == 0:
+                posterior = torch.zeros_like(posteriors[:1])
+            else:
+                posterior = posteriors[i - 1 : i]
+            recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                posterior,
+                recurrent_state,
+                batch_actions[i : i + 1],
+                data["is_first"][i : i + 1],
+            )
+            recurrent_states[i] = recurrent_state
+            priors_logits[i] = prior_logits
+    else:
+        posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+        posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
+        posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
+        for i in range(0, sequence_length):
+            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                posterior,
+                recurrent_state,
+                batch_actions[i : i + 1],
+                embedded_obs[i : i + 1],
+                data["is_first"][i : i + 1],
+            )
+            recurrent_states[i] = recurrent_state
+            priors_logits[i] = prior_logits
+            posteriors[i] = posterior
+            posteriors_logits[i] = posterior_logits
+    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+    return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states
+
+
 def train(
     fabric: Fabric,
     world_model: WorldModel,
@@ -60,6 +116,7 @@ def train(
     is_continuous: bool,
     actions_dim: Sequence[int],
     moments: Moments,
+    compiled_dynamic_learning: Callable | None = None,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -106,44 +163,29 @@ def train(
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
-    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
-    if cfg.algo.world_model.decoupled_rssm:
-        posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
-        for i in range(0, sequence_length):
-            if i == 0:
-                posterior = torch.zeros_like(posteriors[:1])
-            else:
-                posterior = posteriors[i - 1 : i]
-            recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                batch_actions[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states[i] = recurrent_state
-            priors_logits[i] = prior_logits
+    # Dynamic Learning
+    if compiled_dynamic_learning:
+        latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
+            fabric,
+            world_model,
+            data,
+            batch_actions,
+            embedded_obs,
+            cfg,
+        )
     else:
-        posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
-        posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
-        posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
-        for i in range(0, sequence_length):
-            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                batch_actions[i : i + 1],
-                embedded_obs[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states[i] = recurrent_state
-            priors_logits[i] = prior_logits
-            posteriors[i] = posterior
-            posteriors_logits[i] = posterior_logits
-    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+        latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = dynamic_learning(
+            fabric,
+            world_model,
+            data,
+            batch_actions,
+            embedded_obs,
+            cfg,
+        )
 
     # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
@@ -429,6 +471,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
+    # Compile dynamic learning method
+    compiled_dynamic_learning = torch.compile(dynamic_learning)
+
     world_model, actor, critic, target_critic, player = build_agent(
         fabric,
         actions_dim,
@@ -693,6 +738,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             is_continuous,
                             actions_dim,
                             moments,
+                            compiled_dynamic_learning,
                         )
                         cumulative_per_rank_gradient_steps += 1
                     train_step += world_size

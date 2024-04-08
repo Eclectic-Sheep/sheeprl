@@ -1187,6 +1187,16 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Compile world model models with torch.compile
+    world_model.encoder = torch.compile(world_model.encoder, fullgraph=True)
+    world_model.observation_model = torch.compile(world_model.observation_model, fullgraph=True)
+    world_model.reward_model = torch.compile(world_model.reward_model, fullgraph=True)
+    world_model.rssm.recurrent_model = torch.compile(world_model.rssm.recurrent_model, fullgraph=True)
+    world_model.rssm.representation_model = torch.compile(world_model.rssm.representation_model, fullgraph=True)
+    world_model.rssm.transition_model = torch.compile(world_model.rssm.transition_model, fullgraph=True)
+    if world_model.continue_model:
+        world_model.continue_model = torch.compile(world_model.continue_model, fullgraph=True)
+
     # Create the player agent
     fabric_player = get_single_device_fabric(fabric)
     player = PlayerDV3(
