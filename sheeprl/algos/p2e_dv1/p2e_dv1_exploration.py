@@ -29,7 +29,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -786,7 +786,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
         fabric_player = get_single_device_fabric(fabric)
-        player.actor = fabric_player.setup_module(getattr(actor_task, "module", actor_task))
+        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
         test(player, fabric, cfg, log_dir, "zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
