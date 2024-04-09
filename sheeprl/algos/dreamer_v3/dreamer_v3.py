@@ -103,27 +103,27 @@ def behaviour_learning(
     posteriors: torch.Tensor,
     recurrent_states: torch.Tensor,
     data: Dict[str, torch.Tensor],
-    cfg: Dict[str, Any],
-    device: torch.device,
     world_model: WorldModel,
     actor: _FabricModule,
-    batch_size: int,
-    sequence_length: int,
     stoch_state_size: int,
     recurrent_state_size: int,
+    batch_size: int,
+    sequence_length: int,
+    horizon: int,
+    device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
     imagined_trajectories = torch.empty(
-        cfg.algo.horizon + 1,
+        horizon + 1,
         batch_size * sequence_length,
         stoch_state_size + recurrent_state_size,
         device=device,
     )
     imagined_trajectories[0] = imagined_latent_state
     imagined_actions = torch.empty(
-        cfg.algo.horizon + 1,
+        horizon + 1,
         batch_size * sequence_length,
         data["actions"].shape[-1],
         device=device,
@@ -145,7 +145,7 @@ def behaviour_learning(
     # where z0 comes from the posterior, while z'i is the imagined states (prior)
 
     # Imagine trajectories in the latent space
-    for i in range(1, cfg.algo.horizon + 1):
+    for i in range(1, horizon + 1):
         imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
@@ -298,14 +298,14 @@ def train(
         posteriors,
         recurrent_states,
         data,
-        cfg,
-        device,
         world_model,
         actor,
-        batch_size,
-        sequence_length,
         stoch_state_size,
         recurrent_state_size,
+        batch_size,
+        sequence_length,
+        cfg.algo.horizon,
+        device,
     )
 
     # Predict values, rewards and continues
