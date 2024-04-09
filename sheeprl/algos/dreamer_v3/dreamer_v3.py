@@ -130,7 +130,8 @@ def behaviour_learning(
         data["actions"].shape[-1],
         device=device,
     )
-    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+    actions_list, _ = actor(imagined_latent_state.detach())
+    actions = torch.cat(actions_list, dim=-1)
     imagined_actions[0] = actions
 
     # The imagination goes like this, with H=3:
@@ -151,7 +152,8 @@ def behaviour_learning(
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         imagined_trajectories[i] = imagined_latent_state
-        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        actions_list, _ = actor(imagined_latent_state.detach())
+        actions = torch.cat(actions_list, dim=-1)
         imagined_actions[i] = actions
 
     return imagined_trajectories, imagined_actions
@@ -172,9 +174,9 @@ def train(
     is_continuous: bool,
     actions_dim: Sequence[int],
     moments: Moments,
-    compiled_dynamic_learning: Callable | None = None,
-    compiled_behaviour_learning: Callable | None = None,
-    compiled_compute_lambda_values: Callable | None = None,
+    compiled_dynamic_learning: Callable,
+    compiled_behaviour_learning: Callable,
+    compiled_compute_lambda_values: Callable,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -225,24 +227,14 @@ def train(
     embedded_obs = world_model.encoder(batch_obs)
 
     # Dynamic Learning
-    if compiled_dynamic_learning:
-        latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
-            fabric,
-            world_model,
-            data,
-            batch_actions,
-            embedded_obs,
-            cfg,
-        )
-    else:
-        latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = dynamic_learning(
-            fabric,
-            world_model,
-            data,
-            batch_actions,
-            embedded_obs,
-            cfg,
-        )
+    latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
+        fabric,
+        world_model,
+        data,
+        batch_actions,
+        embedded_obs,
+        cfg,
+    )
 
     # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
@@ -299,34 +291,19 @@ def train(
     world_optimizer.step()
 
     # Behaviour Learning
-    if compiled_behaviour_learning:
-        imagined_trajectories, imagined_actions = compiled_behaviour_learning(
-            posteriors,
-            recurrent_states,
-            data,
-            cfg,
-            device,
-            world_model,
-            actor,
-            batch_size,
-            sequence_length,
-            stoch_state_size,
-            recurrent_state_size,
-        )
-    else:
-        imagined_trajectories, imagined_actions = behaviour_learning(
-            posteriors,
-            recurrent_states,
-            data,
-            cfg,
-            device,
-            world_model,
-            actor,
-            batch_size,
-            sequence_length,
-            stoch_state_size,
-            recurrent_state_size,
-        )
+    imagined_trajectories, imagined_actions = compiled_behaviour_learning(
+        posteriors,
+        recurrent_states,
+        data,
+        cfg,
+        device,
+        world_model,
+        actor,
+        batch_size,
+        sequence_length,
+        stoch_state_size,
+        recurrent_state_size,
+    )
 
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
@@ -336,20 +313,12 @@ def train(
     continues = torch.cat((true_continue, continues[1:]))
 
     # Estimate lambda-values
-    if compiled_compute_lambda_values:
-        lambda_values = compiled_compute_lambda_values(
-            predicted_rewards[1:],
-            predicted_values[1:],
-            continues[1:] * cfg.algo.gamma,
-            lmbda=cfg.algo.lmbda,
-        )
-    else:
-        lambda_values = compute_lambda_values(
-            predicted_rewards[1:],
-            predicted_values[1:],
-            continues[1:] * cfg.algo.gamma,
-            lmbda=cfg.algo.lmbda,
-        )
+    lambda_values = compiled_compute_lambda_values(
+        predicted_rewards[1:],
+        predicted_values[1:],
+        continues[1:] * cfg.algo.gamma,
+        lmbda=cfg.algo.lmbda,
+    )
 
     # Compute the discounts to multiply the lambda values to
     with torch.no_grad():
@@ -526,19 +495,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
     # Compile dynamic_learning method
-    compiled_dynamic_learning = None
-    if cfg.algo.compile_dynamic_learning:
-        compiled_dynamic_learning = torch.compile(dynamic_learning)
+    compiled_dynamic_learning = torch.compile(dynamic_learning, **cfg.algo.compile_dynamic_learning)
 
     # Compile behaviour_learning method
-    compiled_behaviour_learning = None
-    if cfg.algo.compile_behaviour_learning:
-        compiled_behaviour_learning = torch.compile(behaviour_learning)
+    compiled_behaviour_learning = torch.compile(behaviour_learning, **cfg.algo.compile_behaviour_learning)
 
     # Compile compute_lambda_values method
-    compiled_compute_lambda_values = None
-    if cfg.algo.compile_compute_lambda_values:
-        compiled_compute_lambda_values = torch.compile(compute_lambda_values)
+    compiled_compute_lambda_values = torch.compile(compute_lambda_values, **cfg.algo.compile_compute_lambda_values)
 
     world_model, actor, critic, target_critic, player = build_agent(
         fabric,

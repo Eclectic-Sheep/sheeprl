@@ -1204,36 +1204,26 @@ def build_agent(
     )
 
     # Compile world model models with torch.compile
-    if cfg.algo.world_model.encoder.compile:
-        world_model.encoder = torch.compile(world_model.encoder, **cfg.algo.world_model.encoder.compile_kwargs)
-    if cfg.algo.world_model.observation_model.compile:
-        world_model.observation_model = torch.compile(
-            world_model.observation_model, **cfg.algo.world_model.observation_model.compile_kwargs
-        )
-    if cfg.algo.world_model.reward_model.compile:
-        world_model.reward_model = torch.compile(
-            world_model.reward_model, **cfg.algo.world_model.reward_model.compile_kwargs
-        )
-    if cfg.algo.world_model.recurrent_model.compile:
-        world_model.rssm.recurrent_model = torch.compile(
-            world_model.rssm.recurrent_model, **cfg.algo.world_model.recurrent_model.compile_kwargs
-        )
-    if cfg.algo.world_model.representation_model.compile:
-        world_model.rssm.representation_model = torch.compile(
-            world_model.rssm.representation_model, **cfg.algo.world_model.representation_model.compile_kwargs
-        )
-    if cfg.algo.world_model.transition_model.compile:
-        world_model.rssm.transition_model = torch.compile(
-            world_model.rssm.transition_model, **cfg.algo.world_model.transition_model.compile_kwargs
-        )
-    if cfg.algo.world_model.continue_model and cfg.algo.world_model.continue_model.compile:
+    world_model.encoder = torch.compile(world_model.encoder, **cfg.algo.world_model.encoder.compile)
+    world_model.observation_model = torch.compile(
+        world_model.observation_model, **cfg.algo.world_model.observation_model.compile
+    )
+    world_model.reward_model = torch.compile(world_model.reward_model, **cfg.algo.world_model.reward_model.compile)
+    world_model.rssm.recurrent_model = torch.compile(
+        world_model.rssm.recurrent_model, **cfg.algo.world_model.recurrent_model.compile
+    )
+    world_model.rssm.representation_model = torch.compile(
+        world_model.rssm.representation_model, **cfg.algo.world_model.representation_model.compile
+    )
+    world_model.rssm.transition_model = torch.compile(
+        world_model.rssm.transition_model, **cfg.algo.world_model.transition_model.compile
+    )
+    if cfg.algo.world_model.continue_model:
         world_model.continue_model = torch.compile(
-            world_model.continue_model, **cfg.algo.world_model.continue_model.compile_kwargs
+            world_model.continue_model, **cfg.algo.world_model.continue_model.compile
         )
-    if cfg.algo.actor.compile:
-        actor = torch.compile(actor, **cfg.algo.actor.compile_kwargs)
-    if cfg.algo.critic.compile:
-        critic = torch.compile(critic, **cfg.algo.critic.compile_kwargs)
+    actor = torch.compile(actor, **cfg.algo.actor.compile)
+    critic = torch.compile(critic, **cfg.algo.critic.compile)
 
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
