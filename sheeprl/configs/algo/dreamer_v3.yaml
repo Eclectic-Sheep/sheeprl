@@ -43,13 +43,10 @@ hafner_initialization: True
 # Compile related parameters
 compile_dynamic_learning: 
   disable: False
-  fullgraph: True
 compile_behaviour_learning:
   disable: False
-  fullgraph: True
 compile_compute_lambda_values:
   disable: False
-  fullgraph: True
 
 # World model
 world_model:
