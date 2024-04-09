@@ -541,7 +541,7 @@ class DecoupledRSSM(RSSM):
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -805,26 +805,28 @@ class Actor(nn.Module):
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                dist = Normal(mean, std)
+                dist = Independent(TransformedDistribution(dist, TanhTransform()), 1)
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
+                dist = Normal(mean, std)
+                dist = Independent(dist, 1)
             elif self.distribution == "scaled_normal":
                 std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
                 dist = Normal(torch.tanh(mean), std)
-                actions_dist = Independent(dist, 1)
-            if not greedy:
-                actions = actions_dist.rsample()
+                dist = Independent(dist, 1)
             else:
-                sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
+                raise ValueError(f"Unknown distribution: {self.distribution}")
+            if greedy:
+                sample = dist.sample((100,))
+                log_prob = dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+            else:
+                actions = dist.rsample()
             if self._action_clip > 0.0:
                 action_clip = torch.full_like(actions, self._action_clip)
                 actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
             actions = [actions]
-            actions_dist = [actions_dist]
+            actions_dist = [dist]
         else:
             actions: List[Tensor] = [None for _ in range(len(pre_dist))]
             actions_dist: List[Distribution] = [None for _ in range(len(pre_dist))]
