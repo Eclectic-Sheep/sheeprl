@@ -1189,6 +1189,20 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV3(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
+    )
+
     # Compile world model models with torch.compile
     if cfg.algo.world_model.encoder.compile:
         world_model.encoder = torch.compile(world_model.encoder, **cfg.algo.world_model.encoder.compile_kwargs)
@@ -1220,20 +1234,6 @@ def build_agent(
         actor = torch.compile(actor, **cfg.algo.actor.compile_kwargs)
     if cfg.algo.critic.compile:
         critic = torch.compile(critic, **cfg.algo.critic.compile_kwargs)
-
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-    )
 
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
