@@ -46,27 +46,25 @@ from sheeprl.utils.utils import Ratio, save_configs
 
 
 def dynamic_learning(
-    fabric: Fabric,
     world_model: WorldModel,
     data: Dict[str, Tensor],
     batch_actions: Tensor,
     embedded_obs: Dict[str, Tensor],
-    cfg: Dict[str, Any],
+    stochastic_size: int,
+    discrete_size: int,
+    recurrent_state_size: int,
+    batch_size: int,
+    sequence_length: int,
+    decoupled_rssm: bool,
+    device: torch.device,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    batch_size = cfg.algo.per_rank_batch_size
-    sequence_length = cfg.algo.per_rank_sequence_length
-    recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
-    stochastic_size = cfg.algo.world_model.stochastic_size
-    discrete_size = cfg.algo.world_model.discrete_size
-    device = fabric.device
-
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
     priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
-    if cfg.algo.world_model.decoupled_rssm:
+    if decoupled_rssm:
         posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
             if i == 0:
@@ -228,12 +226,17 @@ def train(
 
     # Dynamic Learning
     latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states = compiled_dynamic_learning(
-        fabric,
         world_model,
         data,
         batch_actions,
         embedded_obs,
-        cfg,
+        stochastic_size,
+        discrete_size,
+        recurrent_state_size,
+        batch_size,
+        sequence_length,
+        cfg.algo.world_model.decoupled_rssm,
+        device,
     )
 
     # Compute predictions for the observations
