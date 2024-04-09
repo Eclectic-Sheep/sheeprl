@@ -35,10 +35,13 @@ mlp_layer_norm:
     eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
-dense_act: torch.nn.SiLU
-cnn_act: torch.nn.SiLU
+dense_act: torch.nn.ReLU
+cnn_act: torch.nn.ReLU
 unimix: 0.01
 hafner_initialization: True
+compile_dynamic_learning: True
+compile_behaviour_learning: True
+compile_compute_lambda_values: True
 
 # World model
 world_model:
@@ -62,24 +65,36 @@ world_model:
     cnn_layer_norm: ${algo.cnn_layer_norm}
     mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
     layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Prior
   transition_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.mlp_layer_norm}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Posterior
   representation_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.mlp_layer_norm}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Decoder
   observation_model:
@@ -90,6 +105,9 @@ world_model:
     cnn_layer_norm: ${algo.cnn_layer_norm}
     mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Reward model
   reward_model:
@@ -98,6 +116,9 @@ world_model:
     layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
     bins: 255
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # Discount model
   discount_model:
@@ -106,6 +127,9 @@ world_model:
     mlp_layers: ${algo.mlp_layers}
     layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
+    compile: true
+    compile_kwargs:
+      fullgraph: true
 
   # World model optimizer
   optimizer:
@@ -127,6 +151,8 @@ actor:
   clip_gradients: 100.0
   unimix: ${algo.unimix}
   action_clip: 1.0
+  compile_kwargs:
+    fullgraph: true
 
   # Disttributed percentile model (used to scale the values)
   moments:
@@ -152,6 +178,8 @@ critic:
   tau: 0.02
   bins: 255
   clip_gradients: 100.0
+  compile_kwargs:
+    fullgraph: true
 
   # Critic optimizer
   optimizer:

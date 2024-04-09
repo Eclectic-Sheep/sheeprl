@@ -8,7 +8,7 @@ import copy
 import os
 import warnings
 from functools import partial
-from typing import Any, Callable, Dict, Sequence
+from typing import Any, Callable, Dict, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -52,7 +52,7 @@ def dynamic_learning(
     batch_actions: Tensor,
     embedded_obs: Dict[str, Tensor],
     cfg: Dict[str, Any],
-):
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
@@ -101,6 +101,62 @@ def dynamic_learning(
     return latent_states, priors_logits, posteriors_logits, posteriors, recurrent_states
 
 
+def behaviour_learning(
+    posteriors: torch.Tensor,
+    recurrent_states: torch.Tensor,
+    data: Dict[str, torch.Tensor],
+    cfg: Dict[str, Any],
+    device: torch.device,
+    world_model: WorldModel,
+    actor: _FabricModule,
+    batch_size: int,
+    sequence_length: int,
+    stoch_state_size: int,
+    recurrent_state_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
+    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+    imagined_trajectories = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        stoch_state_size + recurrent_state_size,
+        device=device,
+    )
+    imagined_trajectories[0] = imagined_latent_state
+    imagined_actions = torch.empty(
+        cfg.algo.horizon + 1,
+        batch_size * sequence_length,
+        data["actions"].shape[-1],
+        device=device,
+    )
+    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+    imagined_actions[0] = actions
+
+    # The imagination goes like this, with H=3:
+    # Actions:           a'0      a'1      a'2     a'4
+    #                    ^ \      ^ \      ^ \     ^
+    #                   /   \    /   \    /   \   /
+    #                  /     \  /     \  /     \ /
+    # States:        z0 ---> z'1 ---> z'2 ---> z'3
+    # Rewards:       r'0     r'1      r'2      r'3
+    # Values:        v'0     v'1      v'2      v'3
+    # Lambda-values:         l'1      l'2      l'3
+    # Continues:     c0      c'1      c'2      c'3
+    # where z0 comes from the posterior, while z'i is the imagined states (prior)
+
+    # Imagine trajectories in the latent space
+    for i in range(1, cfg.algo.horizon + 1):
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories[i] = imagined_latent_state
+        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        imagined_actions[i] = actions
+
+    return imagined_trajectories, imagined_actions
+
+
 def train(
     fabric: Fabric,
     world_model: WorldModel,
@@ -117,6 +173,8 @@ def train(
     actions_dim: Sequence[int],
     moments: Moments,
     compiled_dynamic_learning: Callable | None = None,
+    compiled_behaviour_learning: Callable | None = None,
+    compiled_compute_lambda_values: Callable | None = None,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -162,7 +220,6 @@ def train(
 
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
-    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
 
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
@@ -242,45 +299,34 @@ def train(
     world_optimizer.step()
 
     # Behaviour Learning
-    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon + 1,
-        batch_size * sequence_length,
-        stoch_state_size + recurrent_state_size,
-        device=device,
-    )
-    imagined_trajectories[0] = imagined_latent_state
-    imagined_actions = torch.empty(
-        cfg.algo.horizon + 1,
-        batch_size * sequence_length,
-        data["actions"].shape[-1],
-        device=device,
-    )
-    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
-    imagined_actions[0] = actions
-
-    # The imagination goes like this, with H=3:
-    # Actions:           a'0      a'1      a'2     a'4
-    #                    ^ \      ^ \      ^ \     ^
-    #                   /   \    /   \    /   \   /
-    #                  /     \  /     \  /     \ /
-    # States:        z0 ---> z'1 ---> z'2 ---> z'3
-    # Rewards:       r'0     r'1      r'2      r'3
-    # Values:        v'0     v'1      v'2      v'3
-    # Lambda-values:         l'1      l'2      l'3
-    # Continues:     c0      c'1      c'2      c'3
-    # where z0 comes from the posterior, while z'i is the imagined states (prior)
-
-    # Imagine trajectories in the latent space
-    for i in range(1, cfg.algo.horizon + 1):
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
-        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_state
-        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
-        imagined_actions[i] = actions
+    if compiled_behaviour_learning:
+        imagined_trajectories, imagined_actions = compiled_behaviour_learning(
+            posteriors,
+            recurrent_states,
+            data,
+            cfg,
+            device,
+            world_model,
+            actor,
+            batch_size,
+            sequence_length,
+            stoch_state_size,
+            recurrent_state_size,
+        )
+    else:
+        imagined_trajectories, imagined_actions = behaviour_learning(
+            posteriors,
+            recurrent_states,
+            data,
+            cfg,
+            device,
+            world_model,
+            actor,
+            batch_size,
+            sequence_length,
+            stoch_state_size,
+            recurrent_state_size,
+        )
 
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
@@ -290,12 +336,20 @@ def train(
     continues = torch.cat((true_continue, continues[1:]))
 
     # Estimate lambda-values
-    lambda_values = compute_lambda_values(
-        predicted_rewards[1:],
-        predicted_values[1:],
-        continues[1:] * cfg.algo.gamma,
-        lmbda=cfg.algo.lmbda,
-    )
+    if compiled_compute_lambda_values:
+        lambda_values = compiled_compute_lambda_values(
+            predicted_rewards[1:],
+            predicted_values[1:],
+            continues[1:] * cfg.algo.gamma,
+            lmbda=cfg.algo.lmbda,
+        )
+    else:
+        lambda_values = compute_lambda_values(
+            predicted_rewards[1:],
+            predicted_values[1:],
+            continues[1:] * cfg.algo.gamma,
+            lmbda=cfg.algo.lmbda,
+        )
 
     # Compute the discounts to multiply the lambda values to
     with torch.no_grad():
@@ -471,8 +525,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    # Compile dynamic learning method
-    compiled_dynamic_learning = torch.compile(dynamic_learning)
+    # Compile dynamic_learning method
+    compiled_dynamic_learning = None
+    if cfg.algo.compile_dynamic_learning:
+        compiled_dynamic_learning = torch.compile(dynamic_learning)
+
+    # Compile behaviour_learning method
+    compiled_behaviour_learning = None
+    if cfg.algo.compile_behaviour_learning:
+        compiled_behaviour_learning = torch.compile(behaviour_learning)
+
+    # Compile compute_lambda_values method
+    compiled_compute_lambda_values = None
+    if cfg.algo.compile_compute_lambda_values:
+        compiled_compute_lambda_values = torch.compile(compute_lambda_values)
 
     world_model, actor, critic, target_critic, player = build_agent(
         fabric,
@@ -739,6 +805,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             actions_dim,
                             moments,
                             compiled_dynamic_learning,
+                            compiled_behaviour_learning,
+                            compiled_compute_lambda_values,
                         )
                         cumulative_per_rank_gradient_steps += 1
                     train_step += world_size
