@@ -188,6 +188,8 @@ def run_algorithm(cfg: Dict[str, Any]):
         return wrapper
 
     fabric.launch(reproducible(command), cfg, **kwargs)
+    if fabric.is_global_zero and fabric.device.type == "cuda":
+        fabric.print(f"Memory used: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
 
 def eval_algorithm(cfg: DictConfig):
@@ -257,6 +259,8 @@ def eval_algorithm(cfg: DictConfig):
 
         command = no_grad(command)
     fabric.launch(command, cfg, state)
+    if fabric.is_global_zero and fabric.device.type == "cuda":
+        fabric.print(f"Memory used: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
 
 def check_configs(cfg: Dict[str, Any]):
