@@ -48,6 +48,7 @@ jobs:
         run: |
           env\\Scripts\\Activate.ps1
           python -m pip install swig
+          $env:Path = '${GITHUB_WORKSPACE}/env/bin/swig;' + $env:Path  
           python -m pip install -e .[atari,box2d,test,dev]
 
       - name: Install packages Linux
@@ -55,6 +56,7 @@ jobs:
         run: |
           source env/bin/activate
           python -m pip install swig
+          PATH="${GITHUB_WORKSPACE}/env/bin/swig:$PATH"
           python -m pip install -e .[atari,box2d,test,dev]
 
       - name: Run tests Windows
