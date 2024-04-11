@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.8", "3.9", "3.10"]
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
 
     timeout-minutes: 20
 
@@ -46,16 +46,16 @@ jobs:
         if: ${{ matrix.os == 'windows-latest' }}
         shell: powershell
         run: |
+          choco upgrade swig -y
           env\\Scripts\\Activate.ps1
-          pip install swig
-          pip install -e .[atari,box2d,test,dev]
+          python -m pip install -e .[atari,box2d,test,dev]
 
       - name: Install packages Linux
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
+          sudo apt-get install --no-install-recommends -y --only-upgrade swig
           source env/bin/activate
-          pip install swig
-          pip install -e .[atari,box2d,test,dev]
+          python -m pip install -e .[atari,box2d,test,dev]
 
       - name: Run tests Windows
         if: ${{ matrix.os == 'windows-latest' }}
