@@ -35,8 +35,8 @@ mlp_layer_norm:
     eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
-dense_act: torch.nn.ReLU
-cnn_act: torch.nn.ReLU
+dense_act: torch.nn.SiLU
+cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
 
