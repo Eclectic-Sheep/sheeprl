@@ -45,5 +45,6 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
             )
     fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
-    agent = build_agent(fabric, cfg, observation_space, action_space, state["agent"])
-    test(agent.actor, fabric, cfg, log_dir)
+    _, agent = build_agent(fabric, cfg, observation_space, action_space, state["agent"])
+    del _
+    test(agent, fabric, cfg, log_dir)

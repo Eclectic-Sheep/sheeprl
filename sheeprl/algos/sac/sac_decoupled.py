@@ -16,29 +16,32 @@ from lightning.fabric.strategies import DDPStrategy
 from torch.utils.data.sampler import BatchSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.sac.agent import SACActor, SACAgent, SACCritic, build_agent
+from sheeprl.algos.sac.agent import SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import save_configs
+from sheeprl.utils.utils import Ratio, save_configs
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def player(
-    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
+    fabric: Fabric, world_collective: TorchCollective, player_trainer_collective: TorchCollective, cfg: Dict[str, Any]
 ):
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
+    # Initialize Fabric player-only
+    fabric_player = get_single_device_fabric(fabric)
+    log_dir = get_log_dir(fabric_player, cfg.root_dir, cfg.run_name, False)
+    device = fabric_player.device
     rank = fabric.global_rank
-    device = fabric.device
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fabric_player.load(cfg.checkpoint.resume_from)
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -88,14 +91,13 @@ def player(
     # Define the agent and the optimizer and setup them with Fabric
     act_dim = prod(action_space.shape)
     obs_dim = sum([prod(observation_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
-    ).to(device)
+    _, actor = build_agent(
+        fabric_player,
+        cfg,
+        observation_space,
+        action_space,
+        state["agent"] if cfg.checkpoint.resume_from else None,
+    )
     flattened_parameters = torch.empty_like(
         torch.nn.utils.convert_parameters.parameters_to_vector(actor.parameters()), device=device
     )
@@ -146,6 +148,11 @@ def player(
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
 
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
+
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -167,6 +174,8 @@ def player(
     obs = envs.reset(seed=cfg.seed)[0]
     obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
+    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs
 
@@ -177,13 +186,11 @@ def player(
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                with torch.no_grad():
-                    torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                    actions, _ = actor(torch_obs)
-                    actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions)
+                torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                actions = actor(torch_obs)
+                actions = actions.cpu().numpy()
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions)
             next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
-            dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
@@ -205,7 +212,8 @@ def player(
                         [v for k, v in final_obs.items() if k in cfg.algo.mlp_keys.encoder], axis=-1
                     )
 
-        step_data["dones"] = dones[np.newaxis]
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
         step_data["actions"] = actions[np.newaxis]
         step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
@@ -218,54 +226,60 @@ def player(
 
         # Send data to the training agents
         if update >= learning_starts:
-            # Send local info to the trainers
-            if not first_info_sent:
-                world_collective.broadcast_object_list(
-                    [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
+            per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
+            cumulative_per_rank_gradient_steps += per_rank_gradient_steps
+            if per_rank_gradient_steps > 0:
+                # Send local info to the trainers
+                if not first_info_sent:
+                    world_collective.broadcast_object_list(
+                        [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
+                    )
+                    first_info_sent = True
+
+                # Sample data to be sent to the trainers
+                sample = rb.sample_tensors(
+                    batch_size=per_rank_gradient_steps * cfg.algo.per_rank_batch_size * (fabric.world_size - 1),
+                    sample_next_obs=cfg.buffer.sample_next_obs,
+                    dtype=None,
+                    device=device,
+                    from_numpy=cfg.buffer.from_numpy,
                 )
-                first_info_sent = True
+                # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+                chunks = {
+                    k: v.float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
+                    for k, v in sample.items()
+                }
+                # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
+                chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
+                world_collective.scatter_object_list([None], [None] + chunks, src=0)
 
-            # Sample data to be sent to the trainers
-            training_steps = learning_starts if update == learning_starts else 1
-            sample = rb.sample_tensors(
-                batch_size=training_steps
-                * cfg.algo.per_rank_gradient_steps
-                * cfg.algo.per_rank_batch_size
-                * (fabric.world_size - 1),
-                sample_next_obs=cfg.buffer.sample_next_obs,
-                dtype=None,
-                device=device,
-                from_numpy=cfg.buffer.from_numpy,
-            )
-            # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
-            chunks = {
-                k: v.float().split(training_steps * cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
-                for k, v in sample.items()
-            }
-            # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
-            chunks = [{k: v[i] for k, v in chunks.items()} for i in range(len(chunks[next(iter(chunks.keys()))]))]
-            world_collective.scatter_object_list([None], [None] + chunks, src=0)
+                # Wait the trainers to finish
+                player_trainer_collective.broadcast(flattened_parameters, src=1)
 
-            # Wait the trainers to finish
-            player_trainer_collective.broadcast(flattened_parameters, src=1)
+                # Convert back the parameters
+                torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
 
-            # Convert back the parameters
-            torch.nn.utils.convert_parameters.vector_to_parameters(flattened_parameters, actor.parameters())
+                # Logs trainers-only metrics
+                if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
+                    # Gather metrics from the trainers
+                    metrics = [None]
+                    player_trainer_collective.broadcast_object_list(metrics, src=1)
 
-            # Logs trainers-only metrics
-            if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
-                # Gather metrics from the trainers
-                metrics = [None]
-                player_trainer_collective.broadcast_object_list(metrics, src=1)
-
-                # Log metrics
-                fabric.log_dict(metrics[0], policy_step)
+                    # Log metrics
+                    fabric.log_dict(metrics[0], policy_step)
 
         # Logs player-only metrics
         if cfg.metric.log_level > 0 and policy_step - last_log >= cfg.metric.log_every:
             if aggregator and not aggregator.disabled:
                 fabric.log_dict(aggregator.compute(), policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio",
+                cumulative_per_rank_gradient_steps * (fabric.world_size - 1) / policy_step,
+                policy_step,
+            )
 
             # Sync timers
             if not timer.disabled:
@@ -294,6 +308,7 @@ def player(
                 player_trainer_collective=player_trainer_collective,
                 ckpt_path=ckpt_path,
                 replay_buffer=rb if cfg.buffer.checkpoint else None,
+                ratio_state_dict=ratio.state_dict(),
             )
 
     world_collective.scatter_object_list([None], [None] + [-1] * (world_collective.world_size - 1), src=0)
@@ -307,6 +322,7 @@ def player(
             player_trainer_collective=player_trainer_collective,
             ckpt_path=ckpt_path,
             replay_buffer=rb if cfg.buffer.checkpoint else None,
+            ratio_state_dict=ratio.state_dict(),
         )
 
     envs.close()
@@ -366,7 +382,7 @@ def trainer(
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = build_agent(
+    agent, _ = build_agent(
         fabric,
         cfg,
         envs.single_observation_space,
@@ -399,7 +415,7 @@ def trainer(
     if not MetricAggregator.disabled:
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
-    # Receive data from player reagrding the:
+    # Receive data from player regarding the:
     # * update
     # * last_log
     # * last_checkpoint
@@ -562,6 +578,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(fabric, cfg, world_collective, player_trainer_collective)
+        player(fabric, world_collective, player_trainer_collective, cfg)
     else:
         trainer(world_collective, player_trainer_collective, optimization_pg, cfg)

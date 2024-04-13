@@ -11,9 +11,8 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-train_every: 5
+replay_ratio: 0.2
 learning_starts: 1000
-per_rank_gradient_steps: 1
 per_rank_pretrain_steps: 100
 per_rank_sequence_length: ???
 
@@ -111,10 +110,6 @@ actor:
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
-  expl_amount: 0.0
-  expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
 
   # Actor optimizer
   optimizer:
@@ -128,7 +123,7 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}
   dense_units: ${algo.dense_units}
-  target_network_update_freq: 100
+  per_rank_target_network_update_freq: 100
   clip_gradients: 100.0
 
   # Critic optimizer

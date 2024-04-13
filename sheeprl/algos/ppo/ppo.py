@@ -170,7 +170,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
     # Create the actor and critic models
-    agent = build_agent(
+    agent, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -263,92 +263,91 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data[k] = next_obs[k][np.newaxis]
 
     for update in range(start_step, num_updates + 1):
-        for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += cfg.env.num_envs * world_size
+        with torch.inference_mode():
+            for _ in range(0, cfg.algo.rollout_steps):
+                policy_step += cfg.env.num_envs * world_size
 
-            # Measure environment interaction time: this considers both the model forward
-            # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                with torch.no_grad():
+                # Measure environment interaction time: this considers both the model forward
+                # to get the action given the observation and the time taken into the environment
+                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                     # Sample an action given the observation received by the environment
                     normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     torch_obs = {
                         k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
                     }
-                    actions, logprobs, _, values = agent.module(torch_obs)
+                    actions, logprobs, values = player(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
                     else:
                         real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
-                # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-                truncated_envs = np.nonzero(truncated)[0]
-                if len(truncated_envs) > 0:
-                    real_next_obs = {
-                        k: torch.empty(
-                            len(truncated_envs),
-                            *observation_space[k].shape,
-                            dtype=torch.float32,
-                            device=device,
-                        )
-                        for k in obs_keys
-                    }
-                    for i, truncated_env in enumerate(truncated_envs):
-                        for k, v in info["final_observation"][truncated_env].items():
-                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(-1, *v.shape[-2:])
-                                torch_v = torch_v / 255.0 - 0.5
-                            real_next_obs[k][i] = torch_v
-                    with torch.no_grad():
-                        vals = agent.module.get_value(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
-                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
-                rewards = rewards.reshape(cfg.env.num_envs, -1)
+                    # Single environment step
+                    obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                    truncated_envs = np.nonzero(truncated)[0]
+                    if len(truncated_envs) > 0:
+                        real_next_obs = {
+                            k: torch.empty(
+                                len(truncated_envs),
+                                *observation_space[k].shape,
+                                dtype=torch.float32,
+                                device=device,
+                            )
+                            for k in obs_keys
+                        }
+                        for i, truncated_env in enumerate(truncated_envs):
+                            for k, v in info["final_observation"][truncated_env].items():
+                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                                if k in cfg.algo.cnn_keys.encoder:
+                                    torch_v = torch_v.view(-1, *v.shape[-2:])
+                                    torch_v = torch_v / 255.0 - 0.5
+                                real_next_obs[k][i] = torch_v
+                        vals = player.get_values(real_next_obs).cpu().numpy()
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+                    dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                    rewards = rewards.reshape(cfg.env.num_envs, -1)
 
-            # Update the step data
-            step_data["dones"] = dones[np.newaxis]
-            step_data["values"] = values.cpu().numpy()[np.newaxis]
-            step_data["actions"] = actions[np.newaxis]
-            step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
-            step_data["rewards"] = rewards[np.newaxis]
-            if cfg.buffer.memmap:
-                step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-                step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                # Update the step data
+                step_data["dones"] = dones[np.newaxis]
+                step_data["values"] = values.cpu().numpy()[np.newaxis]
+                step_data["actions"] = actions[np.newaxis]
+                step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
+                step_data["rewards"] = rewards[np.newaxis]
+                if cfg.buffer.memmap:
+                    step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+                    step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
 
-            # Append data to buffer
-            rb.add(step_data, validate_args=cfg.buffer.validate_args)
+                # Append data to buffer
+                rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            # Update the observation and dones
-            next_obs = {}
-            for k in obs_keys:
-                _obs = obs[k]
-                if k in cfg.algo.cnn_keys.encoder:
-                    _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
-                step_data[k] = _obs[np.newaxis]
-                next_obs[k] = _obs
+                # Update the observation and dones
+                next_obs = {}
+                for k in obs_keys:
+                    _obs = obs[k]
+                    if k in cfg.algo.cnn_keys.encoder:
+                        _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
+                    step_data[k] = _obs[np.newaxis]
+                    next_obs[k] = _obs
 
-            if cfg.metric.log_level > 0 and "final_info" in info:
-                for i, agent_ep_info in enumerate(info["final_info"]):
-                    if agent_ep_info is not None:
-                        ep_rew = agent_ep_info["episode"]["r"]
-                        ep_len = agent_ep_info["episode"]["l"]
-                        if aggregator and "Rewards/rew_avg" in aggregator:
-                            aggregator.update("Rewards/rew_avg", ep_rew)
-                        if aggregator and "Game/ep_len_avg" in aggregator:
-                            aggregator.update("Game/ep_len_avg", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+                if cfg.metric.log_level > 0 and "final_info" in info:
+                    for i, agent_ep_info in enumerate(info["final_info"]):
+                        if agent_ep_info is not None:
+                            ep_rew = agent_ep_info["episode"]["r"]
+                            ep_len = agent_ep_info["episode"]["l"]
+                            if aggregator and "Rewards/rew_avg" in aggregator:
+                                aggregator.update("Rewards/rew_avg", ep_rew)
+                            if aggregator and "Game/ep_len_avg" in aggregator:
+                                aggregator.update("Game/ep_len_avg", ep_len)
+                            fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Transform the data into PyTorch Tensors
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
+        with torch.inference_mode():
             normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-            next_values = agent.module.get_value(torch_obs)
+            next_values = player.get_values(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],
@@ -445,7 +444,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.module, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models

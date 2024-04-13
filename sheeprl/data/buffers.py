@@ -317,7 +317,10 @@ class ReplayBuffer:
             Dict[str, Tensor]: the sampled dictionary, containing the sampled array,
             one for every key, with a shape of [n_samples, batch_size, ...]
         """
-        samples = self.sample(batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, **kwargs)
+        n_samples = kwargs.pop("n_samples", 1)
+        samples = self.sample(
+            batch_size=batch_size, sample_next_obs=sample_next_obs, clone=clone, n_samples=n_samples, **kwargs
+        )
         return {
             k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
         }
@@ -920,8 +923,10 @@ class EpisodeBuffer:
                     last_key = current_key
                     last_batch_shape = current_batch_shape
 
-            if "dones" not in data:
-                raise RuntimeError(f"The episode must contain the `dones` key, got: {data.keys()}")
+            if "terminated" not in data and "truncated" not in data:
+                raise RuntimeError(
+                    f"The episode must contain the `terminated` and the `truncated` keys, got: {data.keys()}"
+                )
 
             if env_idxes is not None and (np.array(env_idxes) >= self._n_envs).any():
                 raise ValueError(
@@ -934,7 +939,7 @@ class EpisodeBuffer:
         for i, env in enumerate(env_idxes):
             # Take the data from a single environment
             env_data = {k: v[:, i] for k, v in data.items()}
-            done = env_data["dones"]
+            done = np.logical_or(env_data["terminated"], env_data["truncated"])
             # Take episode ends
             episode_ends = done.nonzero()[0].tolist()
             # If there is not any done, then add the data to the respective open episode
@@ -951,12 +956,15 @@ class EpisodeBuffer:
                     episode = {k: env_data[k][start : stop + 1] for k in env_data.keys()}
                     # If the episode length is greater than zero, then add it to the open episode
                     # of the corresponding environment.
-                    if len(episode["dones"]) > 0:
+                    if len(np.logical_or(episode["terminated"], episode["truncated"])) > 0:
                         self._open_episodes[env].append(episode)
                     start = stop + 1
                     # If the open episode is not empty and the last element is a done, then save the episode
                     # in the buffer and clear the open episode
-                    if len(self._open_episodes[env]) > 0 and self._open_episodes[env][-1]["dones"][-1] == 1:
+                    should_save = len(self._open_episodes[env]) > 0 and np.logical_or(
+                        self._open_episodes[env][-1]["terminated"][-1], self._open_episodes[env][-1]["truncated"][-1]
+                    )
+                    if should_save:
                         self._save_episode(self._open_episodes[env])
                         self._open_episodes[env] = []
 
@@ -971,9 +979,10 @@ class EpisodeBuffer:
         episode = {k: np.concatenate(v, axis=0) for k, v in episode.items()}
 
         # Control the validity of the episode
-        ep_len = episode["dones"].shape[0]
-        if len(episode["dones"].nonzero()[0]) != 1 or episode["dones"][-1] != 1:
-            raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(episode['dones']))}")
+        ends = np.logical_or(episode["terminated"], episode["truncated"])
+        ep_len = ends.shape[0]
+        if len(ends.nonzero()[0]) != 1 or ends[-1] != 1:
+            raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(ends))}")
         if ep_len < self._minimum_episode_length:
             raise RuntimeError(
                 f"Episode too short (at least {self._minimum_episode_length} steps), got: {ep_len} steps"
@@ -1073,7 +1082,7 @@ class EpisodeBuffer:
             samples_per_eps.update({f"next_{k}": [] for k in self._obs_keys})
         for i, n in enumerate(nsample_per_eps):
             if n > 0:
-                ep_len = valid_episodes[i]["dones"].shape[0]
+                ep_len = np.logical_or(valid_episodes[i]["terminated"], valid_episodes[i]["truncated"]).shape[0]
                 if sample_next_obs:
                     ep_len -= 1
                 # Define the maximum index that can be sampled in the episodes

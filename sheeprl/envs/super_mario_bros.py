@@ -55,7 +55,8 @@ class SuperMarioBrosWrapper(gym.Wrapper):
             action = action.squeeze().item()
         obs, reward, done, info = self.env.step(action)
         converted_obs = {"rgb": obs.copy()}
-        return converted_obs, reward, done, False, info
+        is_timelimit = info.get("time", False)
+        return converted_obs, reward, done and not is_timelimit, done and is_timelimit, info
 
     def render(self) -> RenderFrame | list[RenderFrame] | None:
         rendered_frame: np.ndarray | None = self.env.render(mode=self.render_mode)

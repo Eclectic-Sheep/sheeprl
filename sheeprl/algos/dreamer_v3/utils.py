@@ -30,7 +30,6 @@ AGGREGATOR_KEYS = {
     "State/kl",
     "State/post_entropy",
     "State/prior_entropy",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
@@ -55,7 +54,7 @@ class Moments(nn.Module):
         self.register_buffer("high", torch.zeros((), dtype=torch.float32))
 
     def forward(self, x: Tensor, fabric: Fabric) -> Any:
-        gathered_x = fabric.all_gather(x).detach()
+        gathered_x = fabric.all_gather(x).float().detach()
         low = torch.quantile(gathered_x, self._percentile_low)
         high = torch.quantile(gathered_x, self._percentile_high)
         self.low = self._decay * self.low + (1 - self._decay) * low
@@ -85,7 +84,7 @@ def test(
     cfg: Dict[str, Any],
     log_dir: str,
     test_name: str = "",
-    sample_actions: bool = False,
+    greedy: bool = True,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -96,8 +95,8 @@ def test(
         log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
-        sample_actions (bool): whether or not to sample the actions.
-            Default to False.
+        greedy (bool): whether or not to sample the actions.
+            Default to True.
     """
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
@@ -116,8 +115,8 @@ def test(
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
             elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
-        real_actions = player.get_greedy_action(
-            preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+        real_actions = player.get_actions(
+            preprocessed_obs, greedy, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
         )
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()

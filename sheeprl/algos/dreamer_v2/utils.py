@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
 import gymnasium as gym
 import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Independent
+from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
-from sheeprl.utils.distribution import OneHotCategoricalStraightThroughValidateArgs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -34,7 +33,6 @@ AGGREGATOR_KEYS = {
     "State/post_entropy",
     "State/prior_entropy",
     "State/kl",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
@@ -42,7 +40,7 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic"}
 
 
-def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True, validate_args=False) -> Tensor:
+def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) -> Tensor:
     """
     Compute the stochastic state from the logits computed by the transition or representaiton model.
 
@@ -52,14 +50,12 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True, va
             Defaults to 32.
         sample (bool): whether or not to sample the stochastic state.
             Default to True.
-        validate_args: whether or not to validate distribution arguments.
-            Default to False.
 
     Returns:
         The sampled stochastic state.
     """
     logits = logits.view(*logits.shape[:-1], -1, discrete)
-    dist = Independent(OneHotCategoricalStraightThroughValidateArgs(logits=logits, validate_args=validate_args), 1)
+    dist = Independent(OneHotCategoricalStraightThrough(logits=logits), 1)
     stochastic_state = dist.rsample() if sample else dist.mode
     return stochastic_state
 
@@ -107,12 +103,12 @@ def compute_lambda_values(
 
 @torch.no_grad()
 def test(
-    player: Union["PlayerDV2", "PlayerDV1"],
+    player: "PlayerDV2" | "PlayerDV1",
     fabric: Fabric,
     cfg: Dict[str, Any],
     log_dir: str,
     test_name: str = "",
-    sample_actions: bool = False,
+    greedy: bool = True,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -123,8 +119,8 @@ def test(
         log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
-        sample_actoins (bool): whether or not to sample actions.
-            Default to False.
+        greedy (bool): whether or not to sample actions.
+            Default to True.
     """
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
@@ -143,8 +139,8 @@ def test(
                 preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
             elif k in cfg.algo.mlp_keys.encoder:
                 preprocessed_obs[k] = v[None, ...].to(device)
-        real_actions = player.get_greedy_action(
-            preprocessed_obs, sample_actions, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+        real_actions = player.get_actions(
+            preprocessed_obs, greedy, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
         )
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()

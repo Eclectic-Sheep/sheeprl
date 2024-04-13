@@ -26,12 +26,12 @@ buffer:
 # Algorithm
 algo:
   gamma: 0.995
-  train_every: 16
+  replay_ratio: 0.0625
   total_steps: 200000000
   learning_starts: 200000
   per_rank_batch_size: 32
   per_rank_pretrain_steps: 1
-  per_rank_gradient_steps: 1
+  
   world_model:
     use_continues: True
     kl_free_nats: 0.0

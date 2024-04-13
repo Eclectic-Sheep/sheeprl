@@ -10,7 +10,7 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.ppo.agent import PPOAgent, build_agent
+from sheeprl.algos.ppo.agent import PPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -23,7 +23,7 @@ MODELS_TO_REGISTER = {"agent"}
 
 
 @torch.no_grad()
-def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -41,10 +41,11 @@ def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
 
     while not done:
         # Act greedly through the environment
-        if agent.is_continuous:
-            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        actions = agent.get_actions(obs, greedy=True)
+        if agent.actor.is_continuous:
+            actions = torch.cat(actions, dim=-1)
         else:
-            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+            actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))

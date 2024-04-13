@@ -22,11 +22,13 @@ The hyper-parameters that refer to the *policy steps* are:
 * `exploration_steps`: the number of policy steps in which the agent explores the environment in the P2E algorithms.
 * `max_episode_steps`: the maximum number of policy steps an episode can last (`max_steps`); when this number is reached a `terminated=True` is returned by the environment. This means that if you decide to have an action repeat greater than one (`action_repeat > 1`), then the environment performs a maximum number of steps equal to: `env_steps = max_steps * action_repeat`$.
 * `learning_starts`: how many policy steps the agent has to perform before starting the training.
-* `train_every`: how many policy steps the agent has to perform between one training and the next.
 
 ## Gradient steps
-A *gradient step* consists of an update of the parameters of the agent, i.e., a call of the *train* function. The gradient step is proportional to the number of parallel processes, indeed, if there are $n$ parallel processes, `n * gradient_steps` calls to the *train* method will be executed.
+A *gradient step* consists of an update of the parameters of the agent, i.e., a call of the *train* function. The gradient step is proportional to the number of parallel processes, indeed, if there are $n$ parallel processes, `n * per_rank_gradient_steps` calls to the *train* method will be executed.
 
 The hyper-parameters which refer to the *gradient steps* are:
-* `algo.per_rank_gradient_steps`: the number of gradient steps per rank to perform in a single iteration.
 * `algo.per_rank_pretrain_steps`: the number of gradient steps per rank to perform in the first iteration.
+
+> [!NOTE]
+>
+> The `replay_ratio` is the ratio between the gradient steps and the policy steps played by the agente.

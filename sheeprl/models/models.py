@@ -1,9 +1,10 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 import warnings
 from math import prod
-from typing import Dict, Optional, Sequence, Union, no_type_check
+from typing import Any, Callable, Dict, Optional, Sequence, Union, no_type_check
 
 import torch
 import torch.nn.functional as F
@@ -341,12 +342,20 @@ class LayerNormGRUCell(nn.Module):
             Defaults to True.
         batch_first (bool, optional): whether the first dimension represent the batch dimension or not.
             Defaults to False.
-        layer_norm (bool, optional): whether to apply a LayerNorm after the input projection.
-            Defaults to False.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to nn.Identiy.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {}.
     """
 
     def __init__(
-        self, input_size: int, hidden_size: int, bias: bool = True, batch_first: bool = False, layer_norm: bool = False
+        self,
+        input_size: int,
+        hidden_size: int,
+        bias: bool = True,
+        batch_first: bool = False,
+        layer_norm_cls: Callable[..., nn.Module] = nn.Identity,
+        layer_norm_kw: Dict[str, Any] = {},
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -354,10 +363,9 @@ class LayerNormGRUCell(nn.Module):
         self.bias = bias
         self.batch_first = batch_first
         self.linear = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=self.bias)
-        if layer_norm:
-            self.layer_norm = torch.nn.LayerNorm(3 * hidden_size)
-        else:
-            self.layer_norm = nn.Identity()
+        # Avoid multiple values for the `normalized_shape` argument
+        layer_norm_kw.pop("normalized_shape", None)
+        self.layer_norm = layer_norm_cls(3 * hidden_size, **layer_norm_kw)
 
     def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tensor:
         is_3d = input.dim() == 3
@@ -494,3 +502,24 @@ class MultiDecoder(nn.Module):
         if self.mlp_decoder is not None:
             reconstructed_obs.update(self.mlp_decoder(x))
         return reconstructed_obs
+
+
+class LayerNormChannelLast(nn.LayerNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        input_dtype = x.dtype
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x.to(input_dtype)
+
+
+class LayerNorm(nn.LayerNorm):
+    def forward(self, x: Tensor) -> Tensor:
+        input_dtype = x.dtype
+        out = super().forward(x)
+        return out.to(input_dtype)

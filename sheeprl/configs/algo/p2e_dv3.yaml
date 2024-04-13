@@ -22,7 +22,7 @@ ensembles:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   dense_units: ${algo.dense_units}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   clip_gradients: 100
   optimizer:
     lr: 1e-4

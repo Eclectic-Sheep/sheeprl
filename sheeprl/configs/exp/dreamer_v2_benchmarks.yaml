@@ -27,7 +27,7 @@ buffer:
 algo:
   learning_starts: 1024
   per_rank_pretrain_steps: 1
-  train_every: 16
+  
   dense_units: 8
   mlp_layers: 
   world_model:

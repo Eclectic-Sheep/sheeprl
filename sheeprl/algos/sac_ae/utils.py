@@ -18,14 +18,14 @@ from sheeprl.utils.utils import unwrap_fabric
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
-    from sheeprl.algos.sac_ae.agent import SACAEContinuousActor
+    from sheeprl.algos.sac_ae.agent import SACAEPlayer
 
 AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
 @torch.no_grad()
-def test(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     cnn_keys = actor.encoder.cnn_keys
     mlp_keys = actor.encoder.mlp_keys
@@ -45,7 +45,7 @@ def test(actor: "SACAEContinuousActor", fabric: Fabric, cfg: Dict[str, Any], log
 
     while not done:
         # Act greedly through the environment
-        action = actor.get_greedy_actions(next_obs)
+        action = actor.get_actions(next_obs, greedy=True)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(action.cpu().numpy().reshape(env.action_space.shape))

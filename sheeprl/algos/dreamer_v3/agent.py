@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -10,21 +10,32 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor, device, nn
-from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
+from torch import Tensor, nn
+from torch.distributions import (
+    Distribution,
+    Independent,
+    Normal,
+    OneHotCategoricalStraightThrough,
+    TanhTransform,
+    TransformedDistribution,
+)
 from torch.distributions.utils import probs_to_logits
-from torch.nn.modules import Module
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import (
-    OneHotCategoricalStraightThroughValidateArgs,
-    OneHotCategoricalValidateArgs,
-    TruncatedNormal,
+from sheeprl.models.models import (
+    CNN,
+    MLP,
+    DeCNN,
+    LayerNorm,
+    LayerNormChannelLast,
+    LayerNormGRUCell,
+    MultiDecoder,
+    MultiEncoder,
 )
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
 
@@ -41,8 +52,10 @@ class CNNEncoder(nn.Module):
         image_size (Tuple[int, int]): the image size as (Height,Width).
         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
             will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormChannelLast.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function.
             Defaults to nn.SiLU.
         stages (int, optional): how many stages for the CNN.
@@ -54,7 +67,8 @@ class CNNEncoder(nn.Module):
         input_channels: Sequence[int],
         image_size: Tuple[int, int],
         channels_multiplier: int,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         stages: int = 4,
     ) -> None:
@@ -66,14 +80,12 @@ class CNNEncoder(nn.Module):
                 input_channels=self.input_dim[0],
                 hidden_channels=(torch.tensor([2**i for i in range(stages)]) * channels_multiplier).tolist(),
                 cnn_layer=nn.Conv2d,
-                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm},
+                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
                 activation=activation,
-                norm_layer=[LayerNormChannelLast for _ in range(stages)] if layer_norm else None,
-                norm_args=(
-                    [{"normalized_shape": (2**i) * channels_multiplier, "eps": 1e-3} for i in range(stages)]
-                    if layer_norm
-                    else None
-                ),
+                norm_layer=[layer_norm_cls] * stages,
+                norm_args=[
+                    {**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)
+                ],
             ),
             nn.Flatten(-3, -1),
         )
@@ -98,8 +110,10 @@ class MLPEncoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNorm.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
         symlog_inputs (bool, optional): whether to squash the input with the symlog function.
@@ -112,7 +126,8 @@ class MLPEncoder(nn.Module):
         input_dims: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         activation: ModuleType = nn.SiLU,
         symlog_inputs: bool = True,
     ) -> None:
@@ -124,11 +139,9 @@ class MLPEncoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.output_dim = dense_units
         self.symlog_inputs = symlog_inputs
@@ -157,8 +170,10 @@ class CNNDecoder(nn.Module):
         image_size (Tuple[int, int]): the final image size.
         activation (nn.Module, optional): the activation function.
             Defaults to nn.SiLU.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNormChannelLast.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         stages (int): how many stages in the CNN decoder.
     """
 
@@ -171,7 +186,8 @@ class CNNDecoder(nn.Module):
         cnn_encoder_output_dim: int,
         image_size: Tuple[int, int],
         activation: nn.Module = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         stages: int = 4,
     ) -> None:
         super().__init__()
@@ -191,20 +207,17 @@ class CNNDecoder(nn.Module):
                 + [self.output_dim[0]],
                 cnn_layer=nn.ConvTranspose2d,
                 layer_args=[
-                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": not layer_norm} for _ in range(stages - 1)
+                    {"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity}
+                    for _ in range(stages - 1)
                 ]
                 + [{"kernel_size": 4, "stride": 2, "padding": 1}],
                 activation=[activation for _ in range(stages - 1)] + [None],
-                norm_layer=[LayerNormChannelLast for _ in range(stages - 1)] + [None] if layer_norm else None,
-                norm_args=(
-                    [
-                        {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier, "eps": 1e-3}
-                        for i in range(stages - 1)
-                    ]
-                    + [None]
-                    if layer_norm
-                    else None
-                ),
+                norm_layer=[layer_norm_cls for _ in range(stages - 1)] + [None],
+                norm_args=[
+                    {**layer_norm_kw, "normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
+                    for i in range(stages - 1)
+                ]
+                + [None],
             ),
         )
 
@@ -227,8 +240,10 @@ class MLPDecoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNorm.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
     """
@@ -241,7 +256,8 @@ class MLPDecoder(nn.Module):
         mlp_layers: int = 4,
         dense_units: int = 512,
         activation: ModuleType = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
         self.output_dims = output_dims
@@ -251,11 +267,9 @@ class MLPDecoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -276,8 +290,10 @@ class RecurrentModel(nn.Module):
         recurrent_state_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
-        layer_norm (bool): whether to use the LayerNorm inside the GRU.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNorm.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
     """
 
     def __init__(
@@ -286,7 +302,8 @@ class RecurrentModel(nn.Module):
         recurrent_state_size: int,
         dense_units: int,
         activation_fn: nn.Module = nn.SiLU,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
         self.mlp = MLP(
@@ -294,11 +311,19 @@ class RecurrentModel(nn.Module):
             output_dim=None,
             hidden_sizes=[dense_units],
             activation=activation_fn,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units, "eps": 1e-3}] if layer_norm else None,
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=[layer_norm_cls],
+            norm_args=[{**layer_norm_kw, "normalized_shape": dense_units}],
         )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=False, batch_first=False, layer_norm=True)
+        self.rnn = LayerNormGRUCell(
+            dense_units,
+            recurrent_state_size,
+            bias=False,
+            batch_first=False,
+            layer_norm_cls=layer_norm_cls,
+            layer_norm_kw=layer_norm_kw,
+        )
+        self.recurrent_state_size = recurrent_state_size
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
@@ -339,20 +364,34 @@ class RSSM(nn.Module):
 
     def __init__(
         self,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        transition_model: nn.Module,
+        recurrent_model: RecurrentModel | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
+        learnable_initial_recurrent_state: bool = True,
     ) -> None:
         super().__init__()
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.transition_model = transition_model
+        self.distribution_cfg = distribution_cfg
         self.discrete = discrete
         self.unimix = unimix
-        self.distribution_cfg = distribution_cfg
+        if learnable_initial_recurrent_state:
+            self.initial_recurrent_state = nn.Parameter(
+                torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+            )
+        else:
+            self.register_buffer(
+                "initial_recurrent_state", torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+            )
+
+    def get_initial_states(self, batch_shape: Sequence[int] | torch.Size) -> Tuple[Tensor, Tensor]:
+        initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
+        initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
+        return initial_recurrent_state, initial_posterior
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
@@ -384,11 +423,12 @@ class RSSM(nn.Module):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
@@ -422,9 +462,7 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
         """
@@ -439,9 +477,7 @@ class RSSM(nn.Module):
         """
         logits: Tensor = self.transition_model(recurrent_out)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, sample=sample_state, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -485,14 +521,23 @@ class DecoupledRSSM(RSSM):
 
     def __init__(
         self,
-        recurrent_model: Module,
-        representation_model: Module,
-        transition_model: Module,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        transition_model: nn.Module | _FabricModule,
         distribution_cfg: Dict[str, Any],
         discrete: int = 32,
         unimix: float = 0.01,
+        learnable_initial_recurrent_state: bool = True,
     ) -> None:
-        super().__init__(recurrent_model, representation_model, transition_model, distribution_cfg, discrete, unimix)
+        super().__init__(
+            recurrent_model,
+            representation_model,
+            transition_model,
+            distribution_cfg,
+            discrete,
+            unimix,
+            learnable_initial_recurrent_state,
+        )
 
     def dynamic(
         self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
@@ -524,11 +569,12 @@ class DecoupledRSSM(RSSM):
             from the recurrent state and the embbedded observation.
         """
         action = (1 - is_first) * action
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * torch.tanh(torch.zeros_like(recurrent_state))
+
+        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * self._transition(recurrent_state, sample_state=False)[
-            1
-        ].view_as(posterior)
+        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_logits, prior = self._transition(recurrent_state)
         return recurrent_state, prior, prior_logits
@@ -544,9 +590,7 @@ class DecoupledRSSM(RSSM):
         """
         logits: Tensor = self.representation_model(embedded_obs)
         logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
 class PlayerDV3(nn.Module):
@@ -554,61 +598,47 @@ class PlayerDV3(nn.Module):
     The model of the Dreamer_v3 player.
 
     Args:
-        encoder (_FabricModule): the encoder.
-        recurrent_model (_FabricModule): the recurrent model.
-        representation_model (_FabricModule): the representation model.
+        encoder (MultiEncoder): the encoder.
+        rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
         transition_model (_FabricModule): the transition model.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
+        decoupled_rssm (bool, optional): whether to use the DecoupledRSSM model.
     """
 
     def __init__(
         self,
-        encoder: _FabricModule,
+        encoder: MultiEncoder | _FabricModule,
         rssm: RSSM | DecoupledRSSM,
-        actor: _FabricModule,
+        actor: Actor | MinedojoActor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: device = "cpu",
+        device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
-        decoupled_rssm: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = encoder
-        if decoupled_rssm:
-            rssm_cls = DecoupledRSSM
-        else:
-            rssm_cls = RSSM
-        self.rssm = rssm_cls(
-            recurrent_model=rssm.recurrent_model.module,
-            representation_model=rssm.representation_model.module,
-            transition_model=rssm.transition_model.module,
-            distribution_cfg=actor.distribution_cfg,
-            discrete=rssm.discrete,
-            unimix=rssm.unimix,
-        )
+        self.rssm = rssm
         self.actor = actor
-        self.device = device
         self.actions_dim = actions_dim
-        self.stochastic_size = stochastic_size
-        self.discrete_size = discrete_size
-        self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
+        self.stochastic_size = stochastic_size
+        self.recurrent_state_size = recurrent_state_size
+        self.device = device
+        self.discrete_size = discrete_size
         self.actor_type = actor_type
-        self.decoupled_rssm = decoupled_rssm
+        self.decoupled_rssm = isinstance(rssm, DecoupledRSSM)
 
     @torch.no_grad()
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -621,42 +651,17 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.tanh(
-                torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            )
-            self.stochastic_state = self.rssm._transition(self.recurrent_state, sample_state=False)[1].reshape(
-                1, self.num_envs, -1
-            )
+            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.tanh(torch.zeros_like(self.recurrent_state[:, reset_envs]))
-            self.stochastic_state[:, reset_envs] = self.rssm._transition(
-                self.recurrent_state[:, reset_envs], sample_state=False
-            )[1].reshape(1, len(reset_envs), -1)
+            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
+            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
 
-    def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
-        """
-        Return the actions with a certain amount of noise for exploration.
-
-        Args:
-            obs (Dict[str, Tensor]): the current observations.
-            mask (Dict[str, Tensor], optional): the mask of the actions.
-                Default to None.
-
-        Returns:
-            The actions the agent has to perform.
-        """
-        actions = self.get_greedy_action(obs, mask=mask)
-        expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
-            self.actions = torch.cat(expl_actions, dim=-1)
-        return expl_actions or actions
-
-    def get_greedy_action(
+    def get_actions(
         self,
         obs: Dict[str, Tensor],
-        is_training: bool = True,
+        greedy: bool = False,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -664,8 +669,8 @@ class PlayerDV3(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            is_training (bool): whether it is training.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
 
         Returns:
             The actions the agent has to perform.
@@ -681,7 +686,7 @@ class PlayerDV3(nn.Module):
         self.stochastic_state = self.stochastic_state.view(
             *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -696,25 +701,29 @@ class Actor(nn.Module):
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
         distribution_cfg (Dict[str, Any]): The configs of the distributions.
-        init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
+        init_std (float): the amount to sum to the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
-            Default to 0.1.
+            Default to 1.0.
+        max_std (float): the maximum standard deviation for the actions.
+            Default to 1.0.
         dense_units (int): the dimension of the hidden dense layers.
             Default to 1024.
         activation (int): the activation function to apply after the dense layers.
             Default to nn.SiLU.
         mlp_layers (int): the number of dense layers.
             Default to 5.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
+        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to LayerNorm.
+        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+            Default to {"eps": 1e-3}.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
             distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
             then `p = (1 - self.unimix) * p + self.unimix * unif`,
             where `unif = `1 / self.discrete`.
             Defaults to 0.01.
-        expl_amount (float): the exploration amount to use during training.
-            Default to 0.0.
+        action_clip (float): the action clip parameter.
+            Default to 1.0.
     """
 
     def __init__(
@@ -724,27 +733,29 @@ class Actor(nn.Module):
         is_continuous: bool,
         distribution_cfg: Dict[str, Any],
         init_std: float = 0.0,
-        min_std: float = 0.1,
+        min_std: float = 1.0,
+        max_std: float = 1.0,
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
-        expl_amount: float = 0.0,
+        action_clip: float = 1.0,
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
         self.distribution = distribution_cfg.get("type", "auto").lower()
-        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "trunc_normal"):
+        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "scaled_normal"):
             raise ValueError(
-                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
+                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
                 f"Found: {self.distribution}"
             )
         if self.distribution == "discrete" and is_continuous:
             raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
         if self.distribution == "auto":
             if is_continuous:
-                self.distribution = "trunc_normal"
+                self.distribution = "scaled_normal"
             else:
                 self.distribution = "discrete"
         self.model = MLP(
@@ -753,11 +764,9 @@ class Actor(nn.Module):
             hidden_sizes=[dense_units] * mlp_layers,
             activation=activation,
             flatten_dim=None,
-            layer_args={"bias": not layer_norm},
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": dense_units, "eps": 1e-3} for _ in range(mlp_layers)] if layer_norm else None
-            ),
+            layer_args={"bias": layer_norm_cls == nn.Identity},
+            norm_layer=layer_norm_cls,
+            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
@@ -765,21 +774,14 @@ class Actor(nn.Module):
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
         self.actions_dim = actions_dim
         self.is_continuous = is_continuous
-        self.init_std = torch.tensor(init_std)
+        self.init_std = init_std
         self.min_std = min_std
+        self.max_std = max_std
         self._unimix = unimix
-        self._expl_amount = expl_amount
-
-    @property
-    def expl_amount(self) -> float:
-        return self._expl_amount
-
-    @expl_amount.setter
-    def expl_amount(self, amount: float):
-        self._expl_amount = amount
+        self._action_clip = action_clip
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -787,6 +789,10 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
+            mask (Dict[str, Tensor], optional): the mask to use on the actions.
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -800,38 +806,31 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(
-                    TransformedDistribution(
-                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
-                    ),
-                    1,
-                    validate_args=self.distribution_cfg.validate_args,
-                )
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
-            elif self.distribution == "trunc_normal":
-                std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
-            if is_training:
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
+            elif self.distribution == "scaled_normal":
+                std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
+                dist = Normal(torch.tanh(mean), std)
+                actions_dist = Independent(dist, 1)
+            if not greedy:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
                 log_prob = actions_dist.log_prob(sample)
                 actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+            if self._action_clip > 0.0:
+                action_clip = torch.full_like(actions, self._action_clip)
+                actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
             actions = [actions]
             actions_dist = [actions_dist]
         else:
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(
-                    OneHotCategoricalStraightThroughValidateArgs(
-                        logits=self._uniform_mix(logits), validate_args=self.distribution_cfg.validate_args
-                    )
-                )
-                if is_training:
+                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
+                if not greedy:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
@@ -844,27 +843,6 @@ class Actor(nn.Module):
             probs = (1 - self._unimix) * probs + self._unimix * uniform
             logits = probs_to_logits(probs)
         return logits
-
-    def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
-    ) -> Sequence[Tensor]:
-        if self.is_continuous:
-            actions = torch.cat(actions, -1)
-            if self._expl_amount > 0.0:
-                actions = torch.clip(Normal(actions, self._expl_amount).sample(), -1, 1)
-            expl_actions = [actions]
-        else:
-            expl_actions = []
-            for act in actions:
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
-                    .sample()
-                    .to(act.device)
-                )
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
-                )
-        return tuple(expl_actions)
 
 
 class MinedojoActor(Actor):
@@ -879,9 +857,10 @@ class MinedojoActor(Actor):
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
-        layer_norm: bool = True,
+        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
+        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         unimix: float = 0.01,
-        expl_amount: float = 0.0,
+        action_clip: float = 1.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -893,13 +872,14 @@ class MinedojoActor(Actor):
             dense_units=dense_units,
             activation=activation,
             mlp_layers=mlp_layers,
-            layer_norm=layer_norm,
+            layer_norm_cls=layer_norm_cls,
+            layer_norm_kw=layer_norm_kw,
             unimix=unimix,
-            expl_amount=expl_amount,
+            action_clip=action_clip,
         )
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = True, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -907,6 +887,10 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+            greedy (bool): whether or not to sample the actions.
+                Default to True.
+            mask (Dict[str, Tensor], optional): the mask to apply to the actions.
+                Default to None.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -938,63 +922,14 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(
-                OneHotCategoricalStraightThroughValidateArgs(
-                    logits=logits, validate_args=self.distribution_cfg.validate_args
-                )
-            )
-            if is_training:
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            if not greedy:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
             if functional_action is None:
                 functional_action = actions[0].argmax(dim=-1)  # [T, B]
         return tuple(actions), tuple(actions_dist)
-
-    def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
-    ) -> Sequence[Tensor]:
-        expl_actions = []
-        functional_action = actions[0].argmax(dim=-1)
-        for i, act in enumerate(actions):
-            logits = torch.zeros_like(act)
-            # Exploratory action must respect the constraints of the environment
-            if mask is not None:
-                if i == 0:
-                    logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
-                elif i == 1:
-                    mask["mask_craft_smelt"] = mask["mask_craft_smelt"].expand_as(logits)
-                    for t in range(functional_action.shape[0]):
-                        for b in range(functional_action.shape[1]):
-                            sampled_action = functional_action[t, b].item()
-                            if sampled_action == 15:  # Craft action
-                                logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
-                elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
-                    mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
-                    for t in range(functional_action.shape[0]):
-                        for b in range(functional_action.shape[1]):
-                            sampled_action = functional_action[t, b].item()
-                            if sampled_action in {16, 17}:  # Equip/Place action
-                                logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
-                            elif sampled_action == 18:  # Destroy action
-                                logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = (
-                OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
-            )
-            expl_amount = self.expl_amount
-            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-            # to satisfy the constraints of the environment
-            if (
-                i in {1, 2}
-                and actions[0].argmax() != expl_actions[0].argmax()
-                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-            ):
-                expl_amount = 2
-            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
-            if mask is not None and i == 0:
-                functional_action = expl_actions[0].argmax(dim=-1)
-        return tuple(expl_actions)
 
 
 def build_agent(
@@ -1007,7 +942,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, torch.nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -1049,7 +984,8 @@ def build_agent(
             input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
             image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
-            layer_norm=world_model_cfg.encoder.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.cnn_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.encoder.cnn_layer_norm.kw,
             activation=eval(world_model_cfg.encoder.cnn_act),
             stages=cnn_stages,
         )
@@ -1063,48 +999,58 @@ def build_agent(
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=eval(world_model_cfg.encoder.dense_act),
-            layer_norm=world_model_cfg.encoder.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.mlp_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.encoder.mlp_layer_norm.kw,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+
     recurrent_model = RecurrentModel(
-        **world_model_cfg.recurrent_model,
         input_size=int(sum(actions_dim) + stochastic_size),
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        dense_units=world_model_cfg.recurrent_model.dense_units,
+        layer_norm_cls=hydra.utils.get_class(world_model_cfg.recurrent_model.layer_norm.cls),
+        layer_norm_kw=world_model_cfg.recurrent_model.layer_norm.kw,
     )
     represention_model_input_size = encoder.output_dim
-    if not cfg.algo.decoupled_rssm:
+    if not cfg.algo.world_model.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
+    representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
     representation_model = MLP(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=eval(world_model_cfg.representation_model.dense_act),
-        layer_args={"bias": not world_model_cfg.representation_model.layer_norm},
+        layer_args={"bias": representation_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-            if world_model_cfg.representation_model.layer_norm
-            else None
-        ),
+        norm_layer=[representation_ln_cls],
+        norm_args=[
+            {
+                **world_model_cfg.representation_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.representation_model.hidden_size,
+            }
+        ],
     )
+    transition_ln_cls = hydra.utils.get_class(world_model_cfg.transition_model.layer_norm.cls)
     transition_model = MLP(
         input_dims=recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
         activation=eval(world_model_cfg.transition_model.dense_act),
-        layer_args={"bias": not world_model_cfg.transition_model.layer_norm},
+        layer_args={"bias": transition_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-            if world_model_cfg.transition_model.layer_norm
-            else None
-        ),
+        norm_layer=[transition_ln_cls],
+        norm_args=[
+            {
+                **world_model_cfg.transition_model.layer_norm.kw,
+                "normalized_shape": world_model_cfg.transition_model.hidden_size,
+            }
+        ],
     )
-    if cfg.algo.decoupled_rssm:
+
+    if cfg.algo.world_model.decoupled_rssm:
         rssm_cls = DecoupledRSSM
     else:
         rssm_cls = RSSM
@@ -1115,7 +1061,9 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
-    )
+        learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
+    ).to(fabric.device)
+
     cnn_decoder = (
         CNNDecoder(
             keys=cfg.algo.cnn_keys.decoder,
@@ -1125,7 +1073,8 @@ def build_agent(
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=eval(world_model_cfg.observation_model.cnn_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
             stages=cnn_stages,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -1139,53 +1088,42 @@ def build_agent(
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=eval(world_model_cfg.observation_model.dense_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
+            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.mlp_layer_norm.cls),
+            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+
+    reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
         activation=eval(world_model_cfg.reward_model.dense_act),
-        layer_args={"bias": not world_model_cfg.reward_model.layer_norm},
+        layer_args={"bias": reward_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-            if world_model_cfg.reward_model.layer_norm
-            else None
-        ),
-        norm_args=(
-            [
-                {"normalized_shape": world_model_cfg.reward_model.dense_units}
-                for _ in range(world_model_cfg.reward_model.mlp_layers)
-            ]
-            if world_model_cfg.reward_model.layer_norm
-            else None
-        ),
+        norm_layer=reward_ln_cls,
+        norm_args={
+            **world_model_cfg.reward_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.reward_model.dense_units,
+        },
     )
+
+    discount_ln_cls = hydra.utils.get_class(world_model_cfg.discount_model.layer_norm.cls)
     continue_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
         activation=eval(world_model_cfg.discount_model.dense_act),
-        layer_args={"bias": not world_model_cfg.discount_model.layer_norm},
+        layer_args={"bias": discount_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=(
-            [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-            if world_model_cfg.discount_model.layer_norm
-            else None
-        ),
-        norm_args=(
-            [
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
-                for _ in range(world_model_cfg.discount_model.mlp_layers)
-            ]
-            if world_model_cfg.discount_model.layer_norm
-            else None
-        ),
+        norm_layer=discount_ln_cls,
+        norm_args={
+            **world_model_cfg.discount_model.layer_norm.kw,
+            "normalized_shape": world_model_cfg.discount_model.dense_units,
+        },
     )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1194,8 +1132,9 @@ def build_agent(
         reward_model.apply(init_weights),
         continue_model.apply(init_weights),
     )
+
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
-    actor: nn.Module = actor_cls(
+    actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -1205,22 +1144,25 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
-        layer_norm=actor_cfg.layer_norm,
+        layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
+        layer_norm_kw=actor_cfg.layer_norm.kw,
         unimix=cfg.algo.unimix,
+        action_clip=actor_cfg.action_clip,
     )
+
+    critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
         activation=eval(critic_cfg.dense_act),
-        layer_args={"bias": not critic_cfg.layer_norm},
+        layer_args={"bias": critic_ln_cls == nn.Identity},
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=(
-            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-            if critic_cfg.layer_norm
-            else None
-        ),
+        norm_layer=critic_ln_cls,
+        norm_args={
+            **critic_cfg.layer_norm.kw,
+            "normalized_shape": critic_cfg.dense_units,
+        },
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
@@ -1245,6 +1187,20 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV3(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -1256,8 +1212,25 @@ def build_agent(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
+    target_critic = fabric_player.setup_module(target_critic)
 
-    return world_model, actor, critic, target_critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
+    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
+    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, target_critic, player

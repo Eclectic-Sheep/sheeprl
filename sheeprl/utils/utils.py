@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+import warnings
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import rich.syntax
@@ -152,6 +153,58 @@ def symexp(x: Tensor) -> Tensor:
     return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
 
 
+def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optional[int] = None) -> Tensor:
+    """Encode a tensor representing a floating point number `x` as a tensor with all zeros except for two entries in the
+    indexes of the two buckets closer to `x` in the support of the distribution.
+    Check https://arxiv.org/pdf/2301.04104v1.pdf equation 9 for more details.
+
+    Args:
+        tensor (Tensor): tensor to encode of shape (..., batch_size, 1)
+        support_range (int): range of the support of the distribution, going from -support_range to support_range
+        num_buckets (int): number of buckets in the support of the distribution
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, support_size)
+    """
+    if tensor.shape == torch.Size([]):
+        tensor = tensor.unsqueeze(0)
+    if num_buckets is None:
+        num_buckets = support_range * 2 + 1
+    if num_buckets % 2 == 0:
+        raise ValueError("support_size must be odd")
+    tensor = tensor.clip(-support_range, support_range)
+    buckets = torch.linspace(-support_range, support_range, num_buckets, device=tensor.device)
+    bucket_size = buckets[1] - buckets[0] if len(buckets) > 1 else 1.0
+
+    right_idxs = torch.bucketize(tensor, buckets)
+    left_idxs = (right_idxs - 1).clip(min=0)
+
+    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device)
+    left_value = torch.abs(buckets[right_idxs] - tensor) / bucket_size
+    right_value = 1 - left_value
+    two_hot.scatter_add_(-1, left_idxs, left_value)
+    two_hot.scatter_add_(-1, right_idxs, right_value)
+
+    return two_hot
+
+
+def two_hot_decoder(tensor: torch.Tensor, support_range: int) -> torch.Tensor:
+    """Decode a tensor representing a two-hot vector as a tensor of floating point numbers.
+
+    Args:
+        tensor (Tensor): tensor to decode of shape (..., batch_size, support_size)
+        support_range (int): range of the support of the values, going from -support_range to support_range
+
+    Returns:
+        Tensor: tensor of shape (..., batch_size, 1)
+    """
+    num_buckets = tensor.shape[-1]
+    if num_buckets % 2 == 0:
+        raise ValueError("support_size must be odd")
+    support = torch.linspace(-support_range, support_range, num_buckets).to(tensor.device)
+    return torch.sum(tensor * support, dim=-1, keepdim=True)
+
+
 @rank_zero_only
 def print_config(
     config: DictConfig,
@@ -185,6 +238,14 @@ def print_config(
 
 
 def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
+    """Recursively unwrap the model from _FabricModule. This method returns a deep copy of the model.
+
+    Args:
+        model (_FabricModule | nn.Module): the model to unwrap.
+
+    Returns:
+        nn.Module: the unwrapped model.
+    """
     model = copy.deepcopy(model)
     if isinstance(model, _FabricModule):
         model = model.module
@@ -195,3 +256,47 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
 
 def save_configs(cfg: dotdict, log_dir: str):
     OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)
+
+
+class Ratio:
+    """Directly taken from Hafner et al. (2023) implementation:
+    https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/embodied/core/when.py#L26
+    """
+
+    def __init__(self, ratio: float, pretrain_steps: int = 0):
+        if pretrain_steps < 0:
+            raise ValueError(f"'pretrain_steps' must be non-negative, got {pretrain_steps}")
+        if ratio < 0:
+            raise ValueError(f"'ratio' must be non-negative, got {ratio}")
+        self._pretrain_steps = pretrain_steps
+        self._ratio = ratio
+        self._prev = None
+
+    def __call__(self, step: int) -> int:
+        if self._ratio == 0:
+            return 0
+        if self._prev is None:
+            self._prev = step
+            repeats = 1
+            if self._pretrain_steps > 0:
+                if step < self._pretrain_steps:
+                    warnings.warn(
+                        "The number of pretrain steps is greater than the number of current steps. This could lead to "
+                        f"a higher ratio than the one specified ({self._ratio}). Setting the 'pretrain_steps' equal to "
+                        "the number of current steps."
+                    )
+                    self._pretrain_steps = step
+                repeats = round(self._pretrain_steps * self._ratio)
+            return repeats
+        repeats = round((step - self._prev) * self._ratio)
+        self._prev += repeats / self._ratio
+        return repeats
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {"_ratio": self._ratio, "_prev": self._prev, "_pretrain_steps": self._pretrain_steps}
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]):
+        self._ratio = state_dict["_ratio"]
+        self._prev = state_dict["_prev"]
+        self._pretrain_steps = state_dict["_pretrain_steps"]
+        return self

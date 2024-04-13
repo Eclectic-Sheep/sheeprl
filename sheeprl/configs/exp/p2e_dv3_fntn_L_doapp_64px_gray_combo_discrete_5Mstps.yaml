@@ -37,7 +37,7 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 65536
-  train_every: 1
+  
   dense_units: 768
   mlp_layers: 4
   world_model:

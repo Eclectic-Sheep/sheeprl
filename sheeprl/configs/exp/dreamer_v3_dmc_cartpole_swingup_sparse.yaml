@@ -19,7 +19,6 @@ env:
     task_name: swingup_sparse
     from_vectors: False
     from_pixels: True
-    seed: ${seed}
 
 # Checkpoint
 checkpoint:
@@ -27,20 +26,20 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 100000
+  size: 500_000
   checkpoint: True
   memmap: True
 
 # Algorithm
 algo:
-  total_steps: 1000000
+  total_steps: 500_000
   cnn_keys:
     encoder:
       - rgb
   mlp_keys:
     encoder: []
-  learning_starts: 1024
-  train_every: 2
+  learning_starts: 1300
+  
 
 # Metric
 metric:

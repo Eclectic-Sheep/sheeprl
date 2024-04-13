@@ -125,12 +125,13 @@ def test_resume_from_checkpoint():
         sys.executable + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
         "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
         "algo.cnn_keys.encoder=[rgb] algo.cnn_keys.decoder=[rgb] "
-        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
+        "algo.mlp_keys.encoder=[state] algo.mlp_keys.decoder=[state] "
+        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.replay_ratio=1 "
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
-        f"algo.train_every=1 root_dir={root_dir} run_name={run_name} "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
         check=True,
@@ -144,7 +145,9 @@ def test_resume_from_checkpoint():
     subprocess.run(
         sys.executable
         + f" sheeprl.py exp=dreamer_v3 env=dummy checkpoint.resume_from={ckpt_path} "
-        + "root_dir=pytest_resume_ckpt run_name=test_resume metric.log_level=0",
+        + "root_dir=pytest_resume_ckpt run_name=test_resume metric.log_level=0 "
+        + "algo.cnn_keys.encoder=[rgb] algo.cnn_keys.decoder=[rgb] "
+        + "algo.mlp_keys.encoder=[state] algo.mlp_keys.decoder=[state]",
         shell=True,
         check=True,
     )
@@ -168,12 +171,13 @@ def test_resume_from_checkpoint_env_error():
         sys.executable + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
         "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
         "algo.cnn_keys.encoder=[rgb] algo.cnn_keys.decoder=[rgb] "
-        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
+        "algo.mlp_keys.encoder=[state] algo.mlp_keys.decoder=[state] "
+        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.replay_ratio=1 "
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
-        f"algo.train_every=1 root_dir={root_dir} run_name={run_name} "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
         check=True,
@@ -221,12 +225,13 @@ def test_resume_from_checkpoint_algo_error():
         sys.executable + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
         "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
         "algo.cnn_keys.encoder=[rgb] algo.cnn_keys.decoder=[rgb] "
-        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
+        "algo.mlp_keys.encoder=[state] algo.mlp_keys.decoder=[state] "
+        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.replay_ratio=1 "
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
-        f"algo.train_every=1 root_dir={root_dir} run_name={run_name} "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
         check=True,
@@ -276,12 +281,13 @@ def test_evaluate():
         sys.executable + " sheeprl.py exp=dreamer_v3 env=dummy dry_run=True "
         "env.capture_video=False algo.dense_units=8 algo.horizon=8 "
         "algo.cnn_keys.encoder=[rgb] algo.cnn_keys.decoder=[rgb] "
-        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.per_rank_gradient_steps=1 "
+        "algo.mlp_keys.encoder=[state] algo.mlp_keys.decoder=[state] "
+        "algo.world_model.encoder.cnn_channels_multiplier=2 algo.replay_ratio=1 "
         "algo.world_model.recurrent_model.recurrent_state_size=8 "
         "algo.world_model.representation_model.hidden_size=8 algo.learning_starts=0 "
         "algo.world_model.transition_model.hidden_size=8 buffer.size=10 "
-        "algo.layer_norm=True algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
-        f"algo.train_every=1 root_dir={root_dir} run_name={run_name} "
+        "algo.per_rank_batch_size=1 algo.per_rank_sequence_length=1 "
+        f"root_dir={root_dir} run_name={run_name} "
         "checkpoint.save_last=True metric.log_level=0 metric.disable_timer=True",
         shell=True,
         check=True,

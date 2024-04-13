@@ -43,7 +43,18 @@ def train(
         batch_size = batch_size if batch_size > 0 else num_sequences
     else:
         batch_size = 1
-    with Join([agent._forward_module]) if fabric.world_size > 1 else nullcontext():
+    with (
+        Join(
+            [
+                agent.feature_extractor._forward_module,
+                agent.rnn._forward_module,
+                agent.actor._forward_module,
+                agent.critic._forward_module,
+            ]
+        )
+        if fabric.world_size > 1
+        else nullcontext()
+    ):
         for _ in range(cfg.algo.update_epochs):
             sampler = BatchSampler(
                 RandomSampler(range(num_sequences)),
@@ -179,7 +190,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Define the agent and the optimizer
-    agent = build_agent(
+    agent, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -275,18 +286,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     torch_prev_actions = torch.zeros(1, cfg.env.num_envs, sum(actions_dim), device=device, dtype=torch.float32)
 
     for update in range(start_step, num_updates + 1):
-        for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += cfg.env.num_envs * world_size
+        with torch.inference_mode():
+            for _ in range(0, cfg.algo.rollout_steps):
+                policy_step += cfg.env.num_envs * world_size
 
-            # Measure environment interaction time: this considers both the model forward
-            # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                with torch.no_grad():
+                # Measure environment interaction time: this considers both the model forward
+                # to get the action given the observation and the time taken into the environment
+                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                     # Sample an action given the observation received by the environment
                     # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
                     torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
-                    actions, logprobs, _, values, states = agent.module(
+                    actions, logprobs, values, states = player(
                         torch_obs, prev_actions=torch_prev_actions, prev_states=prev_states
                     )
                     if is_continuous:
@@ -296,90 +307,89 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_actions = torch.cat(actions, dim=-1)
                     actions = torch_actions.cpu().numpy()
 
-                # Single environment step
-                next_obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-                truncated_envs = np.nonzero(truncated)[0]
-                if len(truncated_envs) > 0:
-                    real_next_obs = {
-                        k: torch.empty(
-                            1,
-                            len(truncated_envs),
-                            *observation_space[k].shape,
-                            dtype=torch.float32,
-                            device=device,
-                        )
-                        for k in obs_keys
-                    }  # [Seq_len, Batch_size, D] --> [1, num_truncated_envs, D]
-                    for i, truncated_env in enumerate(truncated_envs):
-                        for k, v in info["final_observation"][truncated_env].items():
-                            torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                            if k in cfg.algo.cnn_keys.encoder:
-                                torch_v = torch_v.view(1, 1, -1, *torch_v.shape[-2:]) / 255.0 - 0.5
-                            real_next_obs[k][0, i] = torch_v
-                    with torch.no_grad():
-                        feat = agent.module.feature_extractor(real_next_obs)
-                        rnn_out, _ = agent.module.rnn(
-                            torch.cat((feat, torch_actions[:, truncated_envs, :]), dim=-1),
+                    # Single environment step
+                    next_obs, rewards, terminated, truncated, info = envs.step(
+                        real_actions.reshape(envs.action_space.shape)
+                    )
+                    truncated_envs = np.nonzero(truncated)[0]
+                    if len(truncated_envs) > 0:
+                        real_next_obs = {
+                            k: torch.empty(
+                                1,
+                                len(truncated_envs),
+                                *observation_space[k].shape,
+                                dtype=torch.float32,
+                                device=device,
+                            )
+                            for k in obs_keys
+                        }  # [Seq_len, Batch_size, D] --> [1, num_truncated_envs, D]
+                        for i, truncated_env in enumerate(truncated_envs):
+                            for k, v in info["final_observation"][truncated_env].items():
+                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
+                                if k in cfg.algo.cnn_keys.encoder:
+                                    torch_v = torch_v.view(1, 1, -1, *torch_v.shape[-2:]) / 255.0 - 0.5
+                                real_next_obs[k][0, i] = torch_v
+                        vals, _ = player.get_values(
+                            real_next_obs,
+                            torch_actions[:, truncated_envs, :],
                             tuple(s[:, truncated_envs, ...] for s in states),
                         )
-                        vals = agent.module.get_values(rnn_out).view(rewards[truncated_envs].shape).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
-                dones = np.logical_or(dones, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-                rewards = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+                        vals = vals.view(rewards[truncated_envs].shape).cpu().numpy()
+                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+                    dones = np.logical_or(terminated, truncated).reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+                    rewards = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
 
-            step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1)
-            step_data["values"] = values.cpu().numpy().reshape(1, cfg.env.num_envs, -1)
-            step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
-            step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1)
-            step_data["logprobs"] = logprobs.cpu().numpy()
-            step_data["prev_hx"] = prev_states[0].cpu().numpy().reshape(1, cfg.env.num_envs, -1)
-            step_data["prev_cx"] = prev_states[1].cpu().numpy().reshape(1, cfg.env.num_envs, -1)
-            step_data["prev_actions"] = prev_actions.reshape(1, cfg.env.num_envs, -1)
-            if cfg.buffer.memmap:
-                step_data["returns"] = np.zeros_like(rewards)
-                step_data["advantages"] = np.zeros_like(rewards)
+                step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1)
+                step_data["values"] = values.cpu().numpy().reshape(1, cfg.env.num_envs, -1)
+                step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
+                step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1)
+                step_data["logprobs"] = logprobs.cpu().numpy()
+                step_data["prev_hx"] = prev_states[0].cpu().numpy().reshape(1, cfg.env.num_envs, -1)
+                step_data["prev_cx"] = prev_states[1].cpu().numpy().reshape(1, cfg.env.num_envs, -1)
+                step_data["prev_actions"] = prev_actions.reshape(1, cfg.env.num_envs, -1)
+                if cfg.buffer.memmap:
+                    step_data["returns"] = np.zeros_like(rewards)
+                    step_data["advantages"] = np.zeros_like(rewards)
 
-            # Append data to buffer
-            rb.add(step_data, validate_args=cfg.buffer.validate_args)
+                # Append data to buffer
+                rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            # Update actions
-            prev_actions = (1 - dones) * actions
-            torch_prev_actions = torch.from_numpy(prev_actions).to(device).float()
+                # Update actions
+                prev_actions = (1 - dones) * actions
+                torch_prev_actions = torch.from_numpy(prev_actions).to(device).float()
 
-            # Update the observation
-            obs = next_obs
-            for k in obs_keys:
-                obs[k] = obs[k][np.newaxis]
-                if k in cfg.algo.cnn_keys.encoder:
-                    obs[k] = obs[k].reshape(1, cfg.env.num_envs, -1, *obs[k].shape[-2:])
-                step_data[k] = obs[k]
+                # Update the observation
+                obs = next_obs
+                for k in obs_keys:
+                    obs[k] = obs[k][np.newaxis]
+                    if k in cfg.algo.cnn_keys.encoder:
+                        obs[k] = obs[k].reshape(1, cfg.env.num_envs, -1, *obs[k].shape[-2:])
+                    step_data[k] = obs[k]
 
-            # Reset the states if the episode is done
-            if cfg.algo.reset_recurrent_state_on_done:
-                prev_states = tuple([(1 - torch.as_tensor(dones, device=device)) * s for s in states])
-            else:
-                prev_states = states
+                # Reset the states if the episode is done
+                if cfg.algo.reset_recurrent_state_on_done:
+                    prev_states = tuple([(1 - torch.as_tensor(dones, device=device)) * s for s in states])
+                else:
+                    prev_states = states
 
-            if cfg.metric.log_level > 0 and "final_info" in info:
-                for i, agent_ep_info in enumerate(info["final_info"]):
-                    if agent_ep_info is not None:
-                        ep_rew = agent_ep_info["episode"]["r"]
-                        ep_len = agent_ep_info["episode"]["l"]
-                        if aggregator and not aggregator.disabled:
-                            aggregator.update("Rewards/rew_avg", ep_rew)
-                            aggregator.update("Game/ep_len_avg", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+                if cfg.metric.log_level > 0 and "final_info" in info:
+                    for i, agent_ep_info in enumerate(info["final_info"]):
+                        if agent_ep_info is not None:
+                            ep_rew = agent_ep_info["episode"]["r"]
+                            ep_len = agent_ep_info["episode"]["l"]
+                            if aggregator and not aggregator.disabled:
+                                aggregator.update("Rewards/rew_avg", ep_rew)
+                                aggregator.update("Game/ep_len_avg", ep_len)
+                            fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Transform the data into PyTorch Tensors
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.no_grad():
+        with torch.inference_mode():
             normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
             torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
-            feat = agent.module.feature_extractor(torch_obs)
-            rnn_out, _ = agent.module.rnn(torch.cat((feat, torch_actions), dim=-1), states)
-            next_values = agent.module.get_values(rnn_out)
+            next_values, _ = player.get_values(torch_obs, torch_actions, states)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],
@@ -425,7 +435,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     sequences[k].extend(seq)
                 # Regardless of the key, the shapes are the same
                 lengths.extend([s.shape[0] for s in seq])
-
         else:
             sequences = episodes
 
@@ -509,7 +518,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.module, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models

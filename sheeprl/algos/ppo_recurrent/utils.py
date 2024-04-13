@@ -8,7 +8,7 @@ from lightning import Fabric
 
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -22,7 +22,7 @@ MODELS_TO_REGISTER = ppo_models_to_register
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -47,8 +47,8 @@ def test(agent: "RecurrentPPOAgent", fabric: Fabric, cfg: Dict[str, Any], log_di
         actions = torch.zeros(1, 1, sum(agent.actions_dim), device=fabric.device)
     while not done:
         # Act greedly through the environment
-        actions, state = agent.get_greedy_actions(next_obs, state, actions)
-        if agent.is_continuous:
+        actions, state = agent.get_actions(next_obs, actions, state, greedy=True)
+        if agent.actor.is_continuous:
             real_actions = torch.cat(actions, -1)
             actions = torch.cat(actions, dim=-1).view(1, 1, -1)
         else:

@@ -25,7 +25,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import save_configs
+from sheeprl.utils.utils import Ratio, save_configs
 
 
 def train(
@@ -37,17 +37,22 @@ def train(
     rb: ReplayBuffer,
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
+    per_rank_gradient_steps: int,
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
     # We sample one time to reduce the communications between processes
     sample = rb.sample_tensors(
-        cfg.algo.per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
+        per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
         sample_next_obs=cfg.buffer.sample_next_obs,
         from_numpy=cfg.buffer.from_numpy,
     )
-    critic_data = fabric.all_gather(sample)
-    flatten_dim = 3 if fabric.world_size > 1 else 2
-    critic_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in critic_data.items()}
+    critic_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
+    for k, v in critic_data.items():
+        critic_data[k] = v.float()  # [G*B*World]
+        if fabric.world_size > 1:
+            critic_data[k] = critic_data[k].flatten(start_dim=0, end_dim=2)
+        else:
+            critic_data[k] = critic_data[k].flatten(start_dim=0, end_dim=1)
     critic_idxes = range(len(critic_data[next(iter(critic_data.keys()))]))
     if fabric.world_size > 1:
         dist_sampler: DistributedSampler = DistributedSampler(
@@ -67,7 +72,12 @@ def train(
     # Sample a different minibatch in a distributed way to update actor and alpha parameter
     sample = rb.sample_tensors(cfg.algo.per_rank_batch_size, from_numpy=cfg.buffer.from_numpy)
     actor_data = fabric.all_gather(sample)
-    actor_data = {k: v.view(-1, *v.shape[flatten_dim:]) for k, v in actor_data.items()}
+    for k, v in actor_data.items():
+        actor_data[k] = v.float()  # [G*B*World]
+        if fabric.world_size > 1:
+            actor_data[k] = actor_data[k].flatten(start_dim=0, end_dim=2)
+        else:
+            actor_data[k] = actor_data[k].flatten(start_dim=0, end_dim=1)
     if fabric.world_size > 1:
         actor_sampler: DistributedSampler = DistributedSampler(
             range(len(actor_data[next(iter(actor_data.keys()))])),
@@ -86,7 +96,7 @@ def train(
             next_target_qf_value = agent.get_next_target_q_values(
                 critic_batch_data["next_observations"],
                 critic_batch_data["rewards"],
-                critic_batch_data["dones"],
+                critic_batch_data["terminated"],
                 cfg.algo.gamma,
             )
             for qf_value_idx in range(agent.num_critics):
@@ -191,7 +201,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
 
     # Define the agent and the optimizer and setup them with Fabric
-    agent = build_agent(
+    agent, player = build_agent(
         fabric, cfg, observation_space, action_space, state["agent"] if cfg.checkpoint.resume_from else None
     )
 
@@ -256,6 +266,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if not cfg.buffer.checkpoint:
             learning_starts += start_step
 
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
+
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
         warnings.warn(
@@ -277,18 +292,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     o = envs.reset(seed=cfg.seed)[0]
     obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
 
+    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * fabric.world_size
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            with torch.no_grad():
-                # Sample an action given the observation received by the environment
-                actions, _ = agent.actor.module(torch.from_numpy(obs).to(device))
-                actions = actions.cpu().numpy()
-            next_obs, rewards, dones, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated)
+            if update <= learning_starts:
+                actions = envs.action_space.sample()
+            else:
+                with torch.inference_mode():
+                    # Sample an action given the observation received by the environment
+                    actions = player(torch.from_numpy(obs).to(device))
+                    actions = actions.cpu().numpy()
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -317,7 +336,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
-        step_data["dones"] = dones.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
+        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
@@ -325,9 +345,22 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        if update > learning_starts:
-            train(fabric, agent, actor_optimizer, qf_optimizer, alpha_optimizer, rb, aggregator, cfg)
-            train_step += world_size
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / world_size)
+            if per_rank_gradient_steps > 0:
+                train(
+                    fabric,
+                    agent,
+                    actor_optimizer,
+                    qf_optimizer,
+                    alpha_optimizer,
+                    rb,
+                    aggregator,
+                    cfg,
+                    per_rank_gradient_steps,
+                )
+                train_step += world_size
+                cumulative_per_rank_gradient_steps += per_rank_gradient_steps
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
@@ -336,6 +369,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:
@@ -369,6 +407,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
+                "ratio": ratio.state_dict(),
                 "update": update * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
@@ -385,7 +424,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.actor.module, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac.utils import log_models

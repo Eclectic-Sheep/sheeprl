@@ -16,11 +16,12 @@ from torch.distributed.algorithms.join import Join
 from torch.utils.data import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -28,17 +29,21 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def player(
-    fabric: Fabric, cfg: Dict[str, Any], world_collective: TorchCollective, player_trainer_collective: TorchCollective
+    fabric: Fabric,
+    world_collective: TorchCollective,
+    player_trainer_collective: TorchCollective,
+    cfg: Dict[str, Any],
 ):
-    # Initialize the fabric object
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, False)
-    device = fabric.device
+    # Initialize Fabric player-only
+    fabric_player = get_single_device_fabric(fabric)
+    log_dir = get_log_dir(fabric_player, cfg.root_dir, cfg.run_name, False)
+    device = fabric_player.device
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fabric_player.load(cfg.checkpoint.resume_from)
 
     # Environment setup
     vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
@@ -90,7 +95,15 @@ def player(
         "distribution_cfg": cfg.distribution,
         "is_continuous": is_continuous,
     }
-    agent = PPOAgent(**agent_args).to(device)
+    _, agent = build_agent(
+        fabric_player,
+        actions_dim=actions_dim,
+        is_continuous=is_continuous,
+        cfg=cfg,
+        obs_space=observation_space,
+        agent_state=state["agent"] if cfg.checkpoint.resume_from else None,
+    )
+    del _
 
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
@@ -190,21 +203,20 @@ def player(
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                with torch.no_grad():
-                    # Sample an action given the observation received by the environment
-                    normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                    torch_obs = {
-                        k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
-                    }
-                    actions, logprobs, _, values = agent(torch_obs)
-                    if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
-                    else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
-                    actions = torch.cat(actions, -1).cpu().numpy()
+                # Sample an action given the observation received by the environment
+                normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
+                torch_obs = {
+                    k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
+                }
+                actions, logprobs, values = agent(torch_obs)
+                if is_continuous:
+                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                else:
+                    real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
-                obs, rewards, dones, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
+                obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
                 truncated_envs = np.nonzero(truncated)[0]
                 if len(truncated_envs) > 0:
                     real_next_obs = {
@@ -223,10 +235,9 @@ def player(
                                 torch_v = torch_v.view(-1, *v.shape[-2:])
                                 torch_v = torch_v / 255.0 - 0.5
                             real_next_obs[k][i] = torch_v
-                    with torch.no_grad():
-                        vals = agent.get_value(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += vals.reshape(rewards[truncated_envs].shape)
-                dones = np.logical_or(dones, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
+                    vals = agent.get_values(real_next_obs).cpu().numpy()
+                    rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+                dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                 rewards = rewards.reshape(cfg.env.num_envs, -1)
 
             # Update the step data
@@ -267,7 +278,7 @@ def player(
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
         torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
-        next_values = agent.get_value(torch_obs)
+        next_values = agent.get_values(torch_obs)
         returns, advantages = gae(
             local_data["rewards"].to(torch.float64),
             local_data["values"],
@@ -390,7 +401,15 @@ def trainer(
     world_collective.broadcast_object_list(agent_args, src=0)
 
     # Define the agent and the optimizer
-    agent = PPOAgent(**agent_args[0])
+    agent, _ = build_agent(
+        fabric,
+        actions_dim=agent_args[0]["actions_dim"],
+        is_continuous=agent_args[0]["is_continuous"],
+        cfg=cfg,
+        obs_space=agent_args[0]["obs_space"],
+        agent_state=state["agent"] if cfg.checkpoint.resume_from else None,
+    )
+    del _
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
 
     # Load the state from the checkpoint
@@ -399,7 +418,6 @@ def trainer(
         optimizer.load_state_dict(state["optimizer"])
 
     # Setup agent and optimizer with Fabric
-    agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
 
     # Send weights to rank-0, a.k.a. the player
@@ -480,7 +498,9 @@ def trainer(
         ):
             # The Join context is needed because there can be the possibility
             # that some ranks receive less data
-            with Join([agent._forward_module]):
+            with Join(
+                [agent.feature_extractor._forward_module, agent.actor._forward_module, agent.critic._forward_module]
+            ):
                 for _ in range(cfg.algo.update_epochs):
                     for batch_idxes in sampler:
                         batch = {k: data[k][batch_idxes] for k in data.keys()}
@@ -648,6 +668,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ranks=list(range(1, world_collective.world_size)), timeout=timedelta(days=1)
     )
     if global_rank == 0:
-        player(fabric, cfg, world_collective, player_trainer_collective)
+        player(fabric, world_collective, player_trainer_collective, cfg)
     else:
         trainer(world_collective, player_trainer_collective, optimization_pg, cfg)

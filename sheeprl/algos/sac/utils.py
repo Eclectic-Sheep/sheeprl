@@ -8,7 +8,7 @@ import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 
-from sheeprl.algos.sac.agent import SACActor, build_agent
+from sheeprl.algos.sac.agent import SACPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -27,7 +27,7 @@ MODELS_TO_REGISTER = {"agent"}
 
 
 @torch.no_grad()
-def test(actor: SACActor, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
@@ -41,7 +41,7 @@ def test(actor: SACActor, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         )  # [N_envs, N_obs]
     while not done:
         # Act greedly through the environment
-        action = actor.get_greedy_actions(next_obs)
+        action = actor.get_actions(next_obs, greedy=True)
 
         # Single environment step
         next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))

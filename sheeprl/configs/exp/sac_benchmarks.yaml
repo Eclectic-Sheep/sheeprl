@@ -15,7 +15,7 @@ env:
 algo:
   name: sac
   learning_starts: 100
-  per_rank_gradient_steps: 1
+  
   per_rank_batch_size: 512
   # # If you want to run this benchmark with older versions,
   # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.

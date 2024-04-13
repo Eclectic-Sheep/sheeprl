@@ -11,10 +11,11 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.models.models import MLP
-from sheeprl.utils.utils import init_weights
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.utils import init_weights, unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -37,7 +38,17 @@ def build_agent(
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     target_critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, nn.Module, _FabricModule, _FabricModule, nn.Module]:
+) -> Tuple[
+    WorldModel,
+    nn.ModuleList,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    _FabricModule,
+    PlayerDV2,
+]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -83,7 +94,7 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration = dv2_build_agent(
+    world_model, actor_exploration, critic_exploration, target_critic_exploration, player = dv2_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -116,9 +127,11 @@ def build_agent(
         activation=eval(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor_task.apply(init_weights)
     critic_task.apply(init_weights)
@@ -135,6 +148,8 @@ def build_agent(
     target_critic_task = copy.deepcopy(critic_task.module)
     if target_critic_task_state:
         target_critic_task.load_state_dict(target_critic_task_state)
+    single_device_fabric = get_single_device_fabric(fabric)
+    target_critic_task = single_device_fabric.setup_module(target_critic_task)
 
     # initialize the ensembles with different seeds to be sure they have different weights
     ens_list = []
@@ -173,6 +188,14 @@ def build_agent(
     for i in range(len(ensembles)):
         ensembles[i] = fabric.setup_module(ensembles[i])
 
+    # Setup player agent
+    if cfg.algo.player.actor_type != "exploration":
+        fabric_player = get_single_device_fabric(fabric)
+        player_actor = unwrap_fabric(actor_task)
+        player.actor = fabric_player.setup_module(player_actor)
+        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+            p.data = agent_p.data
+
     return (
         world_model,
         ensembles,
@@ -182,4 +205,5 @@ def build_agent(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
+        player,
     )

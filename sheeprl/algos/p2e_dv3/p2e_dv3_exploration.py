@@ -12,10 +12,10 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from omegaconf import DictConfig
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent
+from torch.distributions import Distribution, Independent, OneHotCategorical
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
+from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -23,16 +23,16 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuf
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
     MSEDistribution,
-    OneHotCategoricalValidateArgs,
     SymlogDistribution,
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import polynomial_decay, save_configs
+from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -107,7 +107,6 @@ def train(
     """
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
-    validate_args = cfg.distribution.validate_args
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
     stochastic_size = cfg.algo.world_model.stochastic_size
     discrete_size = cfg.algo.world_model.discrete_size
@@ -161,12 +160,8 @@ def train(
     pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states.detach()), dims=1)
 
     # Compute the distribution over the terminal steps, if required
-    pc = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(latent_states.detach()), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    )
-    continue_targets = 1 - data["dones"]
+    pc = Independent(BernoulliSafeMode(logits=world_model.continue_model(latent_states.detach())), 1)
+    continues_targets = 1 - data["terminated"]
 
     # Reshape posterior and prior logits to shape [B, T, 32, 32]
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
@@ -186,7 +181,7 @@ def train(
         cfg.algo.world_model.kl_free_nats,
         cfg.algo.world_model.kl_regularizer,
         pc,
-        continue_targets,
+        continues_targets,
         cfg.algo.world_model.continue_scale_factor,
     )
     fabric.backward(rec_loss)
@@ -268,13 +263,9 @@ def train(
     for k, critic in critics_exploration.items():
         # Predict values and continues
         predicted_values = TwoHotEncodingDistribution(critic["module"](imagined_trajectories), dims=1).mean
-        continues = Independent(
-            BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-            1,
-            validate_args=validate_args,
-        ).mode
-        true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
-        continues = torch.cat((true_done, continues[1:]))
+        continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
+        true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
+        continues = torch.cat((true_continue, continues[1:]))
 
         if critic["reward_type"] == "intrinsic":
             # Predict intrinsic reward
@@ -412,13 +403,9 @@ def train(
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic_task(imagined_trajectories), dims=1).mean
     predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(
-        BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories), validate_args=validate_args),
-        1,
-        validate_args=validate_args,
-    ).mode
-    true_done = (1 - data["dones"]).flatten().reshape(1, -1, 1)
-    continues = torch.cat((true_done, continues[1:]))
+    continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
+    true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
+    continues = torch.cat((true_continue, continues[1:]))
 
     lambda_values = compute_lambda_values(
         predicted_rewards[1:],
@@ -500,25 +487,11 @@ def train(
         aggregator.update("State/kl", kl.mean().detach())
         aggregator.update(
             "State/post_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=posteriors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update(
             "State/prior_entropy",
-            Independent(
-                OneHotCategoricalValidateArgs(logits=priors_logits.detach(), validate_args=validate_args),
-                1,
-                validate_args=validate_args,
-            )
-            .entropy()
-            .mean()
-            .detach(),
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
         )
         aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
         aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
@@ -624,6 +597,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         target_critic_task,
         actor_exploration,
         critics_exploration,
+        player,
     ) = build_agent(
         fabric,
         actions_dim,
@@ -637,19 +611,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         state["target_critic_task"] if cfg.checkpoint.resume_from else None,
         state["actor_exploration"] if cfg.checkpoint.resume_from else None,
         state["critics_exploration"] if cfg.checkpoint.resume_from else None,
-    )
-
-    player = PlayerDV3(
-        world_model.encoder.module,
-        world_model.rssm,
-        actor_exploration.module,
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-        actor_type=cfg.algo.player.actor_type,
     )
 
     # Optimizers
@@ -767,7 +728,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
-    expl_decay_steps = state["expl_decay_steps"] if cfg.checkpoint.resume_from else 0
 
     # Global variables
     train_step = 0
@@ -784,26 +744,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    updates_before_training = cfg.algo.train_every // policy_steps_per_update
     num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    max_step_expl_decay = cfg.algo.actor.max_step_expl_decay // (cfg.algo.per_rank_gradient_steps * fabric.world_size)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        actor_task.expl_amount = polynomial_decay(
-            expl_decay_steps,
-            initial=cfg.algo.actor.expl_amount,
-            final=cfg.algo.actor.expl_min,
-            max_decay_steps=max_step_expl_decay,
-        )
-        actor_exploration.expl_amount = polynomial_decay(
-            expl_decay_steps,
-            initial=cfg.algo.actor.expl_amount,
-            final=cfg.algo.actor.expl_min,
-            max_decay_steps=max_step_expl_decay,
-        )
         if not cfg.buffer.checkpoint:
             learning_starts += start_step
+
+    # Create Ratio class
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+    if cfg.checkpoint.resume_from:
+        ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
@@ -826,35 +777,36 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     obs = envs.reset(seed=cfg.seed)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
-    step_data["dones"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["is_first"] = np.ones_like(step_data["dones"])
+    step_data["is_first"] = np.ones_like(step_data["terminated"])
     player.init_states()
 
-    per_rank_gradient_steps = 0
+    cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
         policy_step += cfg.env.num_envs * world_size
 
-        # Measure environment interaction time: this considers both the model forward
-        # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            # Sample an action given the observation received by the environment
-            if (
-                update <= learning_starts
-                and cfg.checkpoint.resume_from is None
-                and "minedojo" not in cfg.algo.actor.cls.lower()
-            ):
-                real_actions = actions = np.array(envs.action_space.sample())
-                if not is_continuous:
-                    actions = np.concatenate(
-                        [
-                            F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                            for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                        ],
-                        axis=-1,
-                    )
-            else:
-                with torch.no_grad():
+        with torch.inference_mode():
+            # Measure environment interaction time: this considers both the model forward
+            # to get the action given the observation and the time taken into the environment
+            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                # Sample an action given the observation received by the environment
+                if (
+                    update <= learning_starts
+                    and cfg.checkpoint.resume_from is None
+                    and "minedojo" not in cfg.algo.actor.cls.lower()
+                ):
+                    real_actions = actions = np.array(envs.action_space.sample())
+                    if not is_continuous:
+                        actions = np.concatenate(
+                            [
+                                F.one_hot(torch.as_tensor(act), act_dim).numpy()
+                                for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
+                            ],
+                            axis=-1,
+                        )
+                else:
                     preprocessed_obs = {}
                     for k, v in obs.items():
                         preprocessed_obs[k] = torch.as_tensor(v[np.newaxis], dtype=torch.float32, device=device)
@@ -863,7 +815,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     mask = {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_exploration_action(preprocessed_obs, mask)
+                    real_actions = actions = player.get_actions(preprocessed_obs, mask=mask)
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
@@ -872,138 +824,132 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
-            step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
-            rb.add(step_data, validate_args=cfg.buffer.validate_args)
+                step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
+                rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            next_obs, rewards, dones, truncated, infos = envs.step(real_actions.reshape(envs.action_space.shape))
-            dones = np.logical_or(dones, truncated).astype(np.uint8)
+                next_obs, rewards, terminated, truncated, infos = envs.step(
+                    real_actions.reshape(envs.action_space.shape)
+                )
+                dones = np.logical_or(terminated, truncated).astype(np.uint8)
 
-        step_data["is_first"] = np.zeros_like(step_data["dones"])
-        if "restart_on_exception" in infos:
-            for i, agent_roe in enumerate(infos["restart_on_exception"]):
-                if agent_roe and not dones[i]:
-                    last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
-                    rb.buffer[i]["dones"][last_inserted_idx] = np.ones_like(rb.buffer[i]["dones"][last_inserted_idx])
-                    rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
-                        rb.buffer[i]["is_first"][last_inserted_idx]
-                    )
-                    step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
+            step_data["is_first"] = np.zeros_like(step_data["terminated"])
+            if "restart_on_exception" in infos:
+                for i, agent_roe in enumerate(infos["restart_on_exception"]):
+                    if agent_roe and not dones[i]:
+                        last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
+                        rb.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
+                            rb.buffer[i]["terminated"][last_inserted_idx]
+                        )
+                        rb.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
+                            rb.buffer[i]["truncated"][last_inserted_idx]
+                        )
+                        rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
+                            rb.buffer[i]["is_first"][last_inserted_idx]
+                        )
+                        step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
 
-        if cfg.metric.log_level > 0 and "final_info" in infos:
-            for i, agent_ep_info in enumerate(infos["final_info"]):
-                if agent_ep_info is not None:
-                    ep_rew = agent_ep_info["episode"]["r"]
-                    ep_len = agent_ep_info["episode"]["l"]
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+            if cfg.metric.log_level > 0 and "final_info" in infos:
+                for i, agent_ep_info in enumerate(infos["final_info"]):
+                    if agent_ep_info is not None:
+                        ep_rew = agent_ep_info["episode"]["r"]
+                        ep_len = agent_ep_info["episode"]["l"]
+                        if aggregator and not aggregator.disabled:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
-        # Save the real next observation
-        real_next_obs = copy.deepcopy(next_obs)
-        if "final_observation" in infos:
-            for idx, final_obs in enumerate(infos["final_observation"]):
-                if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+            # Save the real next observation
+            real_next_obs = copy.deepcopy(next_obs)
+            if "final_observation" in infos:
+                for idx, final_obs in enumerate(infos["final_observation"]):
+                    if final_obs is not None:
+                        for k, v in final_obs.items():
+                            real_next_obs[k][idx] = v
 
-        for k in obs_keys:
-            step_data[k] = next_obs[k][np.newaxis]
-
-        # next_obs becomes the new obs
-        obs = next_obs
-
-        rewards = rewards.reshape((1, cfg.env.num_envs, -1))
-        step_data["dones"] = dones.reshape((1, cfg.env.num_envs, -1))
-        step_data["rewards"] = clip_rewards_fn(rewards)
-
-        dones_idxes = dones.nonzero()[0].tolist()
-        reset_envs = len(dones_idxes)
-        if reset_envs > 0:
-            reset_data = {}
             for k in obs_keys:
-                reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
-            reset_data["dones"] = np.ones((1, reset_envs, 1))
-            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
-            reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
-            reset_data["is_first"] = np.zeros_like(reset_data["dones"])
-            rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
+                step_data[k] = next_obs[k][np.newaxis]
 
-            # Reset already inserted step data
-            step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
-            step_data["dones"][:, dones_idxes] = np.zeros_like(step_data["dones"][:, dones_idxes])
-            step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
-            player.init_states(dones_idxes)
+            # next_obs becomes the new obs
+            obs = next_obs
 
-        updates_before_training -= 1
+            rewards = rewards.reshape((1, cfg.env.num_envs, -1))
+            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
+            step_data["rewards"] = clip_rewards_fn(rewards)
+
+            dones_idxes = dones.nonzero()[0].tolist()
+            reset_envs = len(dones_idxes)
+            if reset_envs > 0:
+                reset_data = {}
+                for k in obs_keys:
+                    reset_data[k] = (real_next_obs[k][dones_idxes])[np.newaxis]
+                reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
+                reset_data["truncated"] = step_data["truncated"][:, dones_idxes]
+                reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
+                reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
+                reset_data["is_first"] = np.zeros_like(reset_data["terminated"])
+                rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
+
+                # Reset already inserted step data
+                step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
+                step_data["terminated"][:, dones_idxes] = np.zeros_like(step_data["terminated"][:, dones_idxes])
+                step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
+                step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
+                player.init_states(dones_idxes)
 
         # Train the agent
-        if update >= learning_starts and updates_before_training <= 0:
-            local_data = rb.sample_tensors(
-                cfg.algo.per_rank_batch_size,
-                sequence_length=cfg.algo.per_rank_sequence_length,
-                n_samples=(
-                    cfg.algo.per_rank_pretrain_steps if update == learning_starts else cfg.algo.per_rank_gradient_steps
-                ),
-                dtype=None,
-                device=fabric.device,
-                from_numpy=cfg.buffer.from_numpy,
-            )
-            # Start training
-            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                for i in range(next(iter(local_data.values())).shape[0]):
-                    if per_rank_gradient_steps % cfg.algo.critic.target_network_update_freq == 0:
-                        tau = 1 if per_rank_gradient_steps == 0 else cfg.algo.critic.tau
-                        for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
-                            tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-                        for k in critics_exploration.keys():
-                            for cp, tcp in zip(
-                                critics_exploration[k]["module"].module.parameters(),
-                                critics_exploration[k]["target_module"].parameters(),
-                            ):
+        if update >= learning_starts:
+            per_rank_gradient_steps = ratio(policy_step / world_size)
+            if per_rank_gradient_steps > 0:
+                local_data = rb.sample_tensors(
+                    cfg.algo.per_rank_batch_size,
+                    sequence_length=cfg.algo.per_rank_sequence_length,
+                    n_samples=per_rank_gradient_steps,
+                    dtype=None,
+                    device=fabric.device,
+                    from_numpy=cfg.buffer.from_numpy,
+                )
+                # Start training
+                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                    for i in range(per_rank_gradient_steps):
+                        if (
+                            cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
+                            == 0
+                        ):
+                            tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
+                            for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-                    batch = {k: v[i].float() for k, v in local_data.items()}
-                    train(
-                        fabric,
-                        world_model,
-                        actor_task,
-                        critic_task,
-                        target_critic_task,
-                        world_optimizer,
-                        actor_task_optimizer,
-                        critic_task_optimizer,
-                        batch,
-                        aggregator,
-                        cfg,
-                        ensembles=ensembles,
-                        ensemble_optimizer=ensemble_optimizer,
-                        actor_exploration=actor_exploration,
-                        critics_exploration=critics_exploration,
-                        actor_exploration_optimizer=actor_exploration_optimizer,
-                        is_continuous=is_continuous,
-                        actions_dim=actions_dim,
-                        moments_exploration=moments_exploration,
-                        moments_task=moments_task,
-                    )
-                train_step += world_size
-            updates_before_training = cfg.algo.train_every // policy_steps_per_update
-            if cfg.algo.actor.expl_decay:
-                expl_decay_steps += 1
-                actor_task.expl_amount = polynomial_decay(
-                    expl_decay_steps,
-                    initial=cfg.algo.actor.expl_amount,
-                    final=cfg.algo.actor.expl_min,
-                    max_decay_steps=max_step_expl_decay,
-                )
-                actor_exploration.expl_amount = polynomial_decay(
-                    expl_decay_steps,
-                    initial=cfg.algo.actor.expl_amount,
-                    final=cfg.algo.actor.expl_min,
-                    max_decay_steps=max_step_expl_decay,
-                )
-            if aggregator and not aggregator.disabled:
-                aggregator.update("Params/exploration_amount_task", actor_task.expl_amount)
-                aggregator.update("Params/exploration_amount_exploration", actor_exploration.expl_amount)
+                            for k in critics_exploration.keys():
+                                for cp, tcp in zip(
+                                    critics_exploration[k]["module"].module.parameters(),
+                                    critics_exploration[k]["target_module"].parameters(),
+                                ):
+                                    tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
+                        batch = {k: v[i].float() for k, v in local_data.items()}
+                        train(
+                            fabric,
+                            world_model,
+                            actor_task,
+                            critic_task,
+                            target_critic_task,
+                            world_optimizer,
+                            actor_task_optimizer,
+                            critic_task_optimizer,
+                            batch,
+                            aggregator,
+                            cfg,
+                            ensembles=ensembles,
+                            ensemble_optimizer=ensemble_optimizer,
+                            actor_exploration=actor_exploration,
+                            critics_exploration=critics_exploration,
+                            actor_exploration_optimizer=actor_exploration_optimizer,
+                            is_continuous=is_continuous,
+                            actions_dim=actions_dim,
+                            moments_exploration=moments_exploration,
+                            moments_task=moments_task,
+                        )
+                        cumulative_per_rank_gradient_steps += 1
+                    train_step += world_size
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
@@ -1012,6 +958,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 metrics_dict = aggregator.compute()
                 fabric.log_dict(metrics_dict, policy_step)
                 aggregator.reset()
+
+            # Log replay ratio
+            fabric.log(
+                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
+            )
 
             # Sync distributed timers
             if not timer.disabled:
@@ -1058,7 +1009,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_task_optimizer": actor_task_optimizer.state_dict(),
                 "critic_task_optimizer": critic_task_optimizer.state_dict(),
                 "ensemble_optimizer": ensemble_optimizer.state_dict(),
-                "expl_decay_steps": expl_decay_steps,
+                "ratio": ratio.state_dict(),
                 "update": update * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * world_size,
                 "actor_exploration": actor_exploration.state_dict(),
@@ -1080,9 +1031,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     envs.close()
     # task test zero-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        player.actor = actor_task.module
         player.actor_type = "task"
-        test(player, fabric, cfg, log_dir, "zero-shot")
+        fabric_player = get_single_device_fabric(fabric)
+        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
+        test(player, fabric, cfg, log_dir, "zero-shot", greedy=False)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

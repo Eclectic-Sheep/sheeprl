@@ -8,12 +8,13 @@ from lightning.fabric.wrappers import _FabricModule
 from lightning.pytorch.utilities.seed import isolate_rng
 from torch import nn
 
-from sheeprl.algos.dreamer_v1.agent import WorldModel
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
 from sheeprl.algos.dreamer_v1.agent import build_agent as dv1_build_agent
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.models.models import MLP
-from sheeprl.utils.utils import init_weights
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.utils import init_weights, unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -34,7 +35,7 @@ def build_agent(
     critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, nn.ModuleList, _FabricModule, _FabricModule, _FabricModule, _FabricModule, PlayerDV1]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -64,6 +65,7 @@ def build_agent(
         The critic_task (_FabricModule): for predicting the values of the task.
         The actor_exploration (_FabricModule): for exploring the environment.
         The critic_exploration (_FabricModule): for predicting the values of the exploration.
+        The player (PlayerDV1): the player object.
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -73,7 +75,7 @@ def build_agent(
     latent_state_size = world_model_cfg.stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration = dv1_build_agent(
+    world_model, actor_exploration, critic_exploration, player = dv1_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -83,6 +85,7 @@ def build_agent(
         actor_state=actor_exploration_state,
         critic_state=critic_exploration_state,
     )
+    player.actor_type = cfg.algo.player.actor_type
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)
     actor_task: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
@@ -95,6 +98,9 @@ def build_agent(
         activation=eval(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
+        expl_amount=actor_cfg.expl_amount,
+        expl_decay=actor_cfg.expl_decay,
+        expl_min=actor_cfg.expl_min,
     )
     critic_task = MLP(
         input_dims=latent_state_size,
@@ -138,4 +144,12 @@ def build_agent(
     for i in range(len(ensembles)):
         ensembles[i] = fabric.setup_module(ensembles[i])
 
-    return world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration
+    # Setup player agent
+    if cfg.algo.player.actor_type != "exploration":
+        fabric_player = get_single_device_fabric(fabric)
+        player_actor = unwrap_fabric(actor_task)
+        player.actor = fabric_player.setup_module(player_actor)
+        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+            p.data = agent_p.data
+
+    return world_model, ensembles, actor_task, critic_task, actor_exploration, critic_exploration, player
