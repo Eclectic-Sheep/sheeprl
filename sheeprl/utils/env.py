@@ -85,7 +85,7 @@ def make_env(
         if not (
             isinstance(cfg.algo.mlp_keys.encoder, list)
             and isinstance(cfg.algo.cnn_keys.encoder, list)
-            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder) > 0
+            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder + cfg.algo.other_keys.encoder) > 0
         ):
             raise ValueError(
                 "`algo.cnn_keys.encoder` and `algo.mlp_keys.encoder` must be lists of strings, got: "
@@ -97,6 +97,8 @@ def make_env(
         # Create observation dict
         encoder_cnn_keys_length = len(cfg.algo.cnn_keys.encoder)
         encoder_mlp_keys_length = len(cfg.algo.mlp_keys.encoder)
+        len(cfg.algo.other_keys.encoder)
+
         if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
             # Vector only observation
             if encoder_cnn_keys_length > 0:
@@ -141,19 +143,25 @@ def make_env(
         if (
             len(
                 set(k for k in env.observation_space.keys()).intersection(
-                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder)
+                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys.encoder)
                 )
             )
             == 0
         ):
             raise ValueError(
-                f"The user specified keys `{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder}` "
+                "The user specified keys"
+                f"`{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys.encoder}` "
                 "are not a subset of the "
                 f"environment `{env.observation_space.keys()}` observation keys. Please check your config file."
             )
 
+        # TODO why not manually specify them?
         env_cnn_keys = set(
-            [k for k in env.observation_space.spaces.keys() if len(env.observation_space[k].shape) in {2, 3}]
+            [
+                k
+                for k in env.observation_space.spaces.keys()
+                if env.observation_space[k].shape and len(env.observation_space[k].shape) in {2, 3}
+            ]
         )
         cnn_keys = env_cnn_keys.intersection(set(cfg.algo.cnn_keys.encoder))
 
