@@ -1,0 +1,8 @@
+defaults:
+  - default
+  - _self_
+
+strategy:
+  _target_: sheeprl.utils.fabric.SingleDeviceDDPStrategy
+  parallel_devices: 2
+accelerator: "cuda"
