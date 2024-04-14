@@ -36,14 +36,28 @@ algo:
       - frame
   mlp_keys:
     encoder:
-      - P1_actions_attack
-      - P1_actions_move
-      - P1_oppChar
-      - P1_oppHealth
-      - P1_oppSide
-      - P1_oppWins
-      - P1_ownChar
-      - P1_ownHealth
-      - P1_ownSide
-      - P1_ownWins
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
       - stage
+      - timer
+      - action
+      - reward
+    decoder:
+      - own_character
+      - own_health
+      - own_side
+      - own_wins
+      - opp_character
+      - opp_health
+      - opp_side
+      - opp_wins
+      - stage
+      - timer
+      - action
+
