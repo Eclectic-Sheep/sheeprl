@@ -15,6 +15,7 @@ env:
   id: doapp
   num_envs: 8
   frame_stack: 1
+  reward_as_observation: True
   wrapper:
     diambra_settings:
       characters: Kasumi
