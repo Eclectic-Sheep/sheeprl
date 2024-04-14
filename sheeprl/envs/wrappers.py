@@ -256,6 +256,13 @@ class GrayscaleRenderWrapper(gym.Wrapper):
 class ActionsAsObservationWrapper(gym.Wrapper):
     def __init__(self, env: Env, num_stack: int, dilation: int = 1):
         super().__init__(env)
+        if num_stack < 1:
+            raise ValueError(
+                "The number of actions to the `action_stack` observation "
+                f"must be greater or equal than 1, got: {num_stack}"
+            )
+        if dilation < 1:
+            raise ValueError(f"The actions stack dilation argument must be greater than zero, got: {dilation}")
         self._num_stack = num_stack
         self._dilation = dilation
         self._actions = deque(maxlen=num_stack * dilation)
