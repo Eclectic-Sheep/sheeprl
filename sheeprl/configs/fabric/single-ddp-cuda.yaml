@@ -1,8 +1,11 @@
-defaults:
-  - default
-  - _self_
-
+_target_: lightning.fabric.Fabric
+precision: "32-true"
+callbacks:
+  - _target_: sheeprl.utils.callback.CheckpointCallback
+    keep_last: "${checkpoint.keep_last}"
 strategy:
   _target_: sheeprl.utils.fabric.SingleDeviceDDPStrategy
   parallel_devices: 2
-accelerator: "cuda"
+  accelerator:
+    _target_: lightning.fabric.accelerators.cuda.CUDAAccelerator
+

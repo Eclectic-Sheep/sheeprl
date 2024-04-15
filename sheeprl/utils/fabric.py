@@ -1,3 +1,4 @@
+import warnings
 from datetime import timedelta
 from typing import Any, Literal, Optional
 from unittest import mock
@@ -5,7 +6,7 @@ from unittest import mock
 import torch
 import torch.distributed
 from lightning.fabric import Fabric
-from lightning.fabric.accelerators import XLAAccelerator
+from lightning.fabric.accelerators import CPUAccelerator, CUDAAccelerator, MPSAccelerator, XLAAccelerator
 from lightning.fabric.accelerators.accelerator import Accelerator
 from lightning.fabric.plugins.collectives.torch_collective import default_pg_timeout
 from lightning.fabric.plugins.environments.cluster_environment import ClusterEnvironment
@@ -51,7 +52,7 @@ class SingleDeviceDDPStrategy(DDPStrategy):
 
     def __init__(
         self,
-        accelerator: Optional[Accelerator] = None,
+        accelerator: Accelerator,
         parallel_devices: Optional[int] = None,
         cluster_environment: Optional[ClusterEnvironment] = None,
         checkpoint_io: Optional[CheckpointIO] = None,
@@ -62,13 +63,23 @@ class SingleDeviceDDPStrategy(DDPStrategy):
         **kwargs: Any,
     ) -> None:
         if parallel_devices is None:
+            warnings.warn("The `parallel_devices` argument is not set. Defaulting to 1 device.")
             parallel_devices = 1
         elif not isinstance(parallel_devices, int):
-            raise ValueError("parallel_devices must be an integer.")
+            raise ValueError("`parallel_devices` must be an integer.")
         process_group_backend = "gloo"
-        parallel_devices = [torch.device("cuda:0") for _ in range(parallel_devices)]
+        if isinstance(accelerator, CUDAAccelerator):
+            parallel_devices = [torch.device("cuda", 0) for _ in range(parallel_devices)]
+        elif isinstance(accelerator, XLAAccelerator):
+            parallel_devices = [torch.device("xla", 0) for _ in range(parallel_devices)]
+        elif isinstance(accelerator, CPUAccelerator):
+            parallel_devices = [torch.device("cpu") for _ in range(parallel_devices)]
+        elif isinstance(accelerator, MPSAccelerator):
+            parallel_devices = [torch.device("mps", 0) for _ in range(parallel_devices)]
+        else:
+            raise ValueError("Unsupported accelerator: {}.".format(accelerator))
         super().__init__(
-            accelerator=accelerator,
+            accelerator=None,
             parallel_devices=parallel_devices,
             cluster_environment=cluster_environment,
             checkpoint_io=checkpoint_io,
