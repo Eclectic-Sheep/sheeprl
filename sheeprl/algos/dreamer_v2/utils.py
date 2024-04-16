@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -101,6 +102,18 @@ def compute_lambda_values(
     return torch.cat(list(reversed(lv)), dim=0)
 
 
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], cnn_keys: Sequence[str] = []) -> Dict[str, Tensor]:
+    torch_obs = {}
+    for k, v in obs.items():
+        torch_obs[k] = torch.from_numpy(v.copy()).to(fabric.device).view(1, *v.shape).float()
+        if k in cnn_keys:
+            torch_obs[k] = torch_obs[k][None, ...] / 255 - 0.5
+        else:
+            torch_obs[k] = torch_obs[k][None, ...]
+
+    return torch_obs
+
+
 @torch.no_grad()
 def test(
     player: "PlayerDV2" | "PlayerDV1",
@@ -125,22 +138,14 @@ def test(
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
-    device = fabric.device
-    next_obs = env.reset(seed=cfg.seed)[0]
-    for k in next_obs.keys():
-        next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
+    o = env.reset(seed=cfg.seed)[0]
     player.num_envs = 1
     player.init_states()
     while not done:
         # Act greedly through the environment
-        preprocessed_obs = {}
-        for k, v in next_obs.items():
-            if k in cfg.algo.cnn_keys.encoder:
-                preprocessed_obs[k] = v[None, ...].to(device) / 255 - 0.5
-            elif k in cfg.algo.mlp_keys.encoder:
-                preprocessed_obs[k] = v[None, ...].to(device)
+        torch_obs = prepare_obs(fabric, o, cfg.algo.cnn_keys.encoder)
         real_actions = player.get_actions(
-            preprocessed_obs, greedy, {k: v for k, v in preprocessed_obs.items() if k.startswith("mask")}
+            torch_obs, greedy, {k: v for k, v in torch_obs.items() if k.startswith("mask")}
         )
         if player.actor.is_continuous:
             real_actions = torch.cat(real_actions, -1).cpu().numpy()
@@ -148,9 +153,7 @@ def test(
             real_actions = torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         # Single environment step
-        next_obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
-        for k in next_obs.keys():
-            next_obs[k] = torch.from_numpy(next_obs[k]).view(1, *next_obs[k].shape).float()
+        o, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
         done = done or truncated or cfg.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)

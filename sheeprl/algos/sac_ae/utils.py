@@ -4,6 +4,7 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -24,43 +25,33 @@ AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], cnn_keys: Sequence[str]) -> Dict[str, Tensor]:
+    torch_obs = {}
+    for k in obs.keys():
+        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).unsqueeze(0).float()
+        if k in cnn_keys:
+            torch_obs[k] = torch_obs[k].reshape(1, -1, *torch_obs[k].shape[-2:]) / 255
+
+    return torch_obs
+
+
 @torch.no_grad()
 def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
-    cnn_keys = actor.encoder.cnn_keys
-    mlp_keys = actor.encoder.mlp_keys
     actor.eval()
     done = False
     cumulative_rew = 0
-    next_obs = {}
     o = env.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
-    for k in o.keys():
-        if k in mlp_keys + cnn_keys:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cnn_keys:
-                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
-            if k in mlp_keys:
-                torch_obs = torch_obs.float()
-            next_obs[k] = torch_obs
 
     while not done:
+        torch_obs = prepare_obs(fabric, o, cfg.algo.cnn_keys.encoder)
         # Act greedly through the environment
-        action = actor.get_actions(next_obs, greedy=True)
+        action = actor.get_actions(torch_obs, greedy=True)
 
         # Single environment step
         o, reward, done, truncated, _ = env.step(action.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-
-        next_obs = {}
-        for k in o.keys():
-            if k in mlp_keys + cnn_keys:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cnn_keys:
-                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255
-                if k in mlp_keys:
-                    torch_obs = torch_obs.float()
-                next_obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True

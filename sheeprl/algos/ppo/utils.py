@@ -22,6 +22,15 @@ AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Los
 MODELS_TO_REGISTER = {"agent"}
 
 
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], cnn_keys: Sequence[str]) -> Dict[str, Tensor]:
+    torch_obs = {}
+    for k in obs.keys():
+        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).unsqueeze(0).float()
+        if k in cnn_keys:
+            torch_obs[k] = torch_obs[k].reshape(1, -1, *torch_obs[k].shape[-2:]) / 255 - 0.5
+    return torch_obs
+
+
 @torch.no_grad()
 def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
@@ -29,19 +38,12 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     done = False
     cumulative_rew = 0
     o = env.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cfg.algo.cnn_keys.encoder:
-                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch_obs.float()
-            obs[k] = torch_obs
 
     while not done:
+        torch_obs = prepare_obs(fabric, o, cfg.algo.cnn_keys.encoder)
+
         # Act greedly through the environment
-        actions = agent.get_actions(obs, greedy=True)
+        actions = agent.get_actions(torch_obs, greedy=True)
         if agent.actor.is_continuous:
             actions = torch.cat(actions, dim=-1)
         else:
@@ -51,15 +53,6 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        obs = {}
-        for k in o.keys():
-            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cfg.algo.cnn_keys.encoder:
-                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-                if k in cfg.algo.mlp_keys.encoder:
-                    torch_obs = torch_obs.float()
-                obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True

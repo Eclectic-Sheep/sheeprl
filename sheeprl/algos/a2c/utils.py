@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+import numpy as np
 import torch
 from lightning import Fabric
+from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOPlayer
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
+
+
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *args, **kwargs) -> Dict[str, Tensor]:
+    torch_obs = {k: torch.from_numpy(v[np.newaxis]).to(fabric.device).float() for k, v in obs.items()}
+    return torch_obs
 
 
 @torch.no_grad()
@@ -18,14 +25,11 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     done = False
     cumulative_rew = 0
     o = env.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in cfg.algo.mlp_keys.encoder:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            torch_obs = torch_obs.float()
-            obs[k] = torch_obs
 
     while not done:
+        # Convert observations to tensors
+        obs = prepare_obs(fabric, o)
+
         # Act greedly through the environment
         actions = agent.get_actions(obs, greedy=True)
         if agent.actor.is_continuous:
@@ -37,12 +41,6 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
         o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        obs = {}
-        for k in o.keys():
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                torch_obs = torch_obs.float()
-                obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True
