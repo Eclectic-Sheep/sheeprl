@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 # Experiment
-seed: 5
+run_benchmarks: True
 
 # Environment
 env:
@@ -26,6 +26,7 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 1024
+  replay_ratio: 0.0625
   
   dense_units: 8
   mlp_layers: 1

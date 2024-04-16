@@ -358,7 +358,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if (
             (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or update == num_updates
+            or (update == num_updates and cfg.checkpoint.save_last)
         ):
             last_checkpoint = policy_step
             state = {
@@ -370,7 +370,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

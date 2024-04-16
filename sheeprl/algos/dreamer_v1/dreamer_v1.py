@@ -651,6 +651,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if update >= learning_starts:
             per_rank_gradient_steps = ratio(policy_step / world_size)
             if per_rank_gradient_steps > 0:
+                if cfg.run_benchhmarks:
+                    per_rank_gradient_steps = 100
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                     sample = rb.sample_tensors(
                         batch_size=cfg.algo.per_rank_batch_size,

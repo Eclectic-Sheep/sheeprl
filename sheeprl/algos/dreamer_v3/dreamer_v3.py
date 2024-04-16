@@ -660,6 +660,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if update >= learning_starts:
             per_rank_gradient_steps = ratio(policy_step / world_size)
             if per_rank_gradient_steps > 0:
+                if cfg.run_benchmarks:
+                    per_rank_gradient_steps = 1
                 local_data = rb.sample_tensors(
                     cfg.algo.per_rank_batch_size,
                     sequence_length=cfg.algo.per_rank_sequence_length,
