@@ -153,7 +153,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>4201.23s</td>
         <td>N.D.</td>
         <td>2921.38s</td>
-        <td></td>
+        <td>2207.13s</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -162,7 +162,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>1874.62s</td>
         <td>N.D.</td>
         <td>1148.1s</td>
-        <td></td>
+        <td>906.42s</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -171,7 +171,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>2022.99s</td>
         <td>N.D.</td>
         <td>1378.01s</td>
-        <td></td>
+        <td>1589.30s</td>
         <td>N.D.</td>
       </tr>
     </tbody>

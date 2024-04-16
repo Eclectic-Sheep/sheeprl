@@ -1,7 +1,6 @@
 # @package _global_
 
 defaults:
-  - default
   - override /algo: dreamer_v1
   - override /env: atari
   - override /model_manager: dreamer_v1

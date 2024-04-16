@@ -5,9 +5,6 @@ defaults:
   - override /env: atari
   - _self_
 
-# Experiment
-run_benchmarks: True
-
 # Environment
 env:
   num_envs: 1
