@@ -286,9 +286,9 @@ class Ratio:
                         "the number of current steps."
                     )
                     self._pretrain_steps = step
-                repeats = round(self._pretrain_steps * self._ratio)
+                repeats = int(self._pretrain_steps * self._ratio)
             return repeats
-        repeats = round((step - self._prev) * self._ratio)
+        repeats = int((step - self._prev) * self._ratio)
         self._prev += repeats / self._ratio
         return repeats
 
