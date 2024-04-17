@@ -14,7 +14,7 @@ from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.dreamer_v2 import train
-from sheeprl.algos.dreamer_v2.utils import test
+from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
@@ -273,16 +273,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                normalized_obs = {}
-                for k in obs_keys:
-                    torch_obs = torch.as_tensor(obs[k][np.newaxis], dtype=torch.float32, device=device)
-                    if k in cfg.algo.cnn_keys.encoder:
-                        torch_obs = torch_obs / 255 - 0.5
-                    normalized_obs[k] = torch_obs
-                mask = {k: v for k, v in normalized_obs.items() if k.startswith("mask")}
+                torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+                mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
                 if len(mask) == 0:
                     mask = None
-                real_actions = actions = player.get_actions(normalized_obs, mask=mask)
+                real_actions = actions = player.get_actions(torch_obs, mask=mask)
                 actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                 if is_continuous:
                     real_actions = torch.cat(real_actions, -1).cpu().numpy()

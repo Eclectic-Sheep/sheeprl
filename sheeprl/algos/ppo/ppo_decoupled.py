@@ -18,7 +18,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs, test
+from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -204,10 +204,7 @@ def player(
             # to get the action given the observation and the time taken into the environment
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 # Sample an action given the observation received by the environment
-                normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                torch_obs = {
-                    k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
-                }
+                torch_obs = prepare_obs(fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                 actions, logprobs, values = agent(torch_obs)
                 if is_continuous:
                     real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -243,7 +240,7 @@ def player(
             # Update the step data
             step_data["dones"] = dones[np.newaxis]
             step_data["values"] = values.cpu().numpy()[np.newaxis]
-            step_data["actions"] = actions[np.newaxis]
+            step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
             step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
             step_data["rewards"] = rewards[np.newaxis]
             if cfg.buffer.memmap:
@@ -276,8 +273,7 @@ def player(
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-        torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
         next_values = agent.get_values(torch_obs)
         returns, advantages = gae(
             local_data["rewards"].to(torch.float64),

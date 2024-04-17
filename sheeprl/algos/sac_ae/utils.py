@@ -25,12 +25,16 @@ AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
-def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], cnn_keys: Sequence[str]) -> Dict[str, Tensor]:
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Dict[str, Tensor]:
     torch_obs = {}
     for k in obs.keys():
-        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).unsqueeze(0).float()
+        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).float()
         if k in cnn_keys:
-            torch_obs[k] = torch_obs[k].reshape(1, -1, *torch_obs[k].shape[-2:]) / 255
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1, *torch_obs[k].shape[-2:]) / 255
+        else:
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
 
     return torch_obs
 
@@ -44,7 +48,7 @@ def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str
     o = env.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
 
     while not done:
-        torch_obs = prepare_obs(fabric, o, cfg.algo.cnn_keys.encoder)
+        torch_obs = prepare_obs(fabric, o, cnn_keys=cfg.algo.cnn_keys.encoder)
         # Act greedly through the environment
         action = actor.get_actions(torch_obs, greedy=True)
 

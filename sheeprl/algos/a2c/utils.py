@@ -13,8 +13,8 @@ from sheeprl.utils.env import make_env
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
 
 
-def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *args, **kwargs) -> Dict[str, Tensor]:
-    torch_obs = {k: torch.from_numpy(v[np.newaxis]).to(fabric.device).float() for k, v in obs.items()}
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *, num_envs: int = 1, **kwargs) -> Dict[str, Tensor]:
+    torch_obs = {k: torch.from_numpy(v.copy()).to(fabric.device).float().reshape(num_envs, -1) for k, v in obs.items()}
     return torch_obs
 
 

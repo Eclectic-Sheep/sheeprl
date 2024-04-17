@@ -18,7 +18,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
-from sheeprl.algos.sac.sac import test
+from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -305,9 +305,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             else:
                 with torch.inference_mode():
                     # Sample an action given the observation received by the environment
-                    actions = player(torch.from_numpy(obs).to(device))
+                    torch_obs = prepare_obs(fabric, o, num_envs=cfg.env.num_envs)
+                    actions = player(torch_obs)
                     actions = actions.cpu().numpy()
-            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
+            o, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -320,14 +321,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
-        real_next_obs = copy.deepcopy(next_obs)
+        real_next_obs = copy.deepcopy(o)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
 
-        next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
+        next_obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
         real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
             np.float32
         )

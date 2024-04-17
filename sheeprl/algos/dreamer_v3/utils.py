@@ -77,14 +77,16 @@ def compute_lambda_values(
     return ret
 
 
-def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], cnn_keys: Sequence[str] = []) -> Dict[str, Tensor]:
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Dict[str, Tensor]:
     torch_obs = {}
     for k, v in obs.items():
-        torch_obs[k] = torch.from_numpy(v.copy()).to(fabric.device).view(1, *v.shape).float()
+        torch_obs[k] = torch.from_numpy(v.copy()).to(fabric.device).float()
         if k in cnn_keys:
-            torch_obs[k] = torch_obs[k][None, ...] / 255 - 0.5
+            torch_obs[k] = torch_obs[k].view(1, num_envs, -1, *v.shape[-2:]) / 255 - 0.5
         else:
-            torch_obs[k] = torch_obs[k][None, ...]
+            torch_obs[k] = torch_obs[k].view(1, num_envs, -1)
 
     return torch_obs
 
@@ -118,7 +120,7 @@ def test(
     player.init_states()
     while not done:
         # Act greedly through the environment
-        torch_obs = prepare_obs(fabric, o, cfg.algo.cnn_keys.encoder)
+        torch_obs = prepare_obs(fabric, o, cnn_keys=cfg.algo.cnn_keys.encoder)
         real_actions = player.get_actions(
             torch_obs, greedy, {k: v for k, v in torch_obs.items() if k.startswith("mask")}
         )

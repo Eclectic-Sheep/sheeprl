@@ -18,7 +18,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.agent import SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
-from sheeprl.algos.sac.utils import test
+from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -171,8 +171,8 @@ def player(
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    obs = envs.reset(seed=cfg.seed)[0]
-    obs = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+    o = envs.reset(seed=cfg.seed)[0]
+    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
@@ -186,11 +186,11 @@ def player(
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                torch_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                torch_obs = prepare_obs(fabric, o, num_envs=cfg.env.num_envs)
                 actions = actor(torch_obs)
                 actions = actions.cpu().numpy()
-            next_obs, rewards, terminated, truncated, infos = envs.step(actions)
-            next_obs = np.concatenate([next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+            o, rewards, terminated, truncated, infos = envs.step(actions)
+            next_obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
@@ -214,7 +214,7 @@ def player(
 
         step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
         step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
-        step_data["actions"] = actions[np.newaxis]
+        step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
         step_data["observations"] = obs[np.newaxis]
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]

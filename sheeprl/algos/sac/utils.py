@@ -28,10 +28,10 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"agent"}
 
 
-def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *args, **kwargs) -> Tensor:
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *, num_envs: int = 1, **kwargs) -> Tensor:
     with fabric.device:
         torch_obs = torch.cat([torch.as_tensor(obs[k].copy(), dtype=torch.float32) for k in obs.keys()], dim=-1)
-    return torch_obs.unsqueeze(0)
+    return torch_obs.reshape(num_envs, -1)
 
 
 @torch.no_grad()
