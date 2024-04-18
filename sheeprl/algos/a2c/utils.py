@@ -24,21 +24,21 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
+    obs = env.reset(seed=cfg.seed)[0]
 
     while not done:
         # Convert observations to tensors
-        obs = prepare_obs(fabric, o)
+        torch_obs = prepare_obs(fabric, obs)
 
         # Act greedly through the environment
-        actions = agent.get_actions(obs, greedy=True)
+        actions = agent.get_actions(torch_obs, greedy=True)
         if agent.actor.is_continuous:
             actions = torch.cat(actions, dim=-1)
         else:
             actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
 

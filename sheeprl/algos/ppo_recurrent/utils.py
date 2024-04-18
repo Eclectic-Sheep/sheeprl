@@ -45,7 +45,7 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
     done = False
     cumulative_rew = 0
     agent.num_envs = 1
-    o = env.reset(seed=cfg.seed)[0]
+    obs = env.reset(seed=cfg.seed)[0]
     with fabric.device:
         state = (
             torch.zeros(1, 1, agent.rnn_hidden_size, device=fabric.device),
@@ -53,7 +53,7 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
         )
         actions = torch.zeros(1, 1, sum(agent.actions_dim), device=fabric.device)
     while not done:
-        torch_obs = prepare_obs(fabric, o, cnn_keys=cfg.algo.cnn_keys.encoder)
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
         # Act greedly through the environment
         actions, state = agent.get_actions(torch_obs, actions, state, greedy=True)
         if agent.actor.is_continuous:
@@ -64,7 +64,7 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
             actions = torch.cat([act for act in actions], dim=-1).view(1, 1, -1)
 
         # Single environment step
-        o, reward, done, truncated, info = env.step(real_actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, info = env.step(real_actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
 

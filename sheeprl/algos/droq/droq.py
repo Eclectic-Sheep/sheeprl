@@ -289,8 +289,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]
-    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
+    obs = envs.reset(seed=cfg.seed)[0]
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
@@ -305,10 +304,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             else:
                 with torch.inference_mode():
                     # Sample an action given the observation received by the environment
-                    torch_obs = prepare_obs(fabric, o, num_envs=cfg.env.num_envs)
+                    torch_obs = prepare_obs(fabric, obs, num_envs=cfg.env.num_envs)
                     actions = player(torch_obs)
                     actions = actions.cpu().numpy()
-            o, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
             for i, agent_ep_info in enumerate(infos["final_info"]):
@@ -321,19 +320,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
 
         # Save the real next observation
-        real_next_obs = copy.deepcopy(o)
+        real_next_obs = copy.deepcopy(next_obs)
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
-
-        next_obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(np.float32)
         real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
             np.float32
         )
 
-        step_data["observations"] = obs[np.newaxis]
+        step_data["observations"] = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
+            np.float32
+        )[np.newaxis]
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)

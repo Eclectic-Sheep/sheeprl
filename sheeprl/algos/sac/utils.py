@@ -40,14 +40,14 @@ def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     actor.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
+    obs = env.reset(seed=cfg.seed)[0]
     while not done:
         # Act greedly through the environment
-        torch_obs = prepare_obs(fabric, o)
+        torch_obs = prepare_obs(fabric, obs)
         action = actor.get_actions(torch_obs, greedy=True)
 
         # Single environment step
-        o, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
 

@@ -241,8 +241,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    o = envs.reset(seed=cfg.seed)[0]
-    obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+    obs = envs.reset(seed=cfg.seed)[0]
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
@@ -257,11 +256,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             else:
                 # Sample an action given the observation received by the environment
                 with torch.inference_mode():
-                    torch_obs = prepare_obs(fabric, o, num_envs=cfg.env.num_envs)
+                    torch_obs = prepare_obs(fabric, obs, num_envs=cfg.env.num_envs)
                     actions = player(torch_obs)
                     actions = actions.cpu().numpy()
-            o, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
-            next_obs = np.concatenate([o[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:
@@ -279,14 +277,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if "final_observation" in infos:
             for idx, final_obs in enumerate(infos["final_observation"]):
                 if final_obs is not None:
-                    real_next_obs[idx] = np.concatenate(
-                        [v for k, v in final_obs.items() if k in cfg.algo.mlp_keys.encoder], axis=-1
-                    )
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
+        real_next_obs = np.concatenate([real_next_obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1).astype(
+            np.float32
+        )
 
         step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
         step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.uint8)
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
-        step_data["observations"] = obs[np.newaxis]
+        step_data["observations"] = np.concatenate([obs[k] for k in cfg.algo.mlp_keys.encoder], axis=-1)[np.newaxis]
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
         step_data["rewards"] = rewards[np.newaxis]

@@ -41,10 +41,10 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
+    obs = env.reset(seed=cfg.seed)[0]
 
     while not done:
-        torch_obs = prepare_obs(fabric, o, cnn_keys=cfg.algo.cnn_keys.encoder)
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
 
         # Act greedly through the environment
         actions = agent.get_actions(torch_obs, greedy=True)
@@ -54,7 +54,7 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
             actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
 

@@ -140,12 +140,12 @@ def test(
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
+    obs = env.reset(seed=cfg.seed)[0]
     player.num_envs = 1
     player.init_states()
     while not done:
         # Act greedly through the environment
-        torch_obs = prepare_obs(fabric, o, cnn_keys=cfg.algo.cnn_keys.encoder)
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
         real_actions = player.get_actions(
             torch_obs, greedy, {k: v for k, v in torch_obs.items() if k.startswith("mask")}
         )
@@ -155,7 +155,7 @@ def test(
             real_actions = torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(real_actions.reshape(env.action_space.shape))
         done = done or truncated or cfg.dry_run
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
