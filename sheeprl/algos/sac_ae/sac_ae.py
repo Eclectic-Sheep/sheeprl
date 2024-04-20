@@ -21,7 +21,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
-from sheeprl.algos.sac_ae.utils import preprocess_obs, test
+from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import make_env
@@ -329,8 +329,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 actions = envs.action_space.sample()
             else:
                 with torch.inference_mode():
-                    normalized_obs = {k: v / 255 if k in cfg.algo.cnn_keys.encoder else v for k, v in obs.items()}
-                    torch_obs = {k: torch.from_numpy(v).to(device).float() for k, v in normalized_obs.items()}
+                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                     actions = player(torch_obs).cpu().numpy()
             next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 

@@ -3,11 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning import Fabric
+from torch import Tensor
 
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
+from sheeprl.algos.ppo.utils import normalize_obs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
@@ -21,6 +24,20 @@ AGGREGATOR_KEYS = ppo_aggregator_keys
 MODELS_TO_REGISTER = ppo_models_to_register
 
 
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Dict[str, Tensor]:
+    torch_obs = {}
+    with fabric.device:
+        for k, v in obs.items():
+            torch_obs[k] = torch.as_tensor(v.copy(), dtype=torch.float32, device=fabric.device)
+            if k in cnn_keys:
+                torch_obs[k] = torch_obs[k].view(1, num_envs, -1, *v.shape[-2:])
+            else:
+                torch_obs[k] = torch_obs[k].view(1, num_envs, -1)
+    return normalize_obs(torch_obs, cnn_keys, torch_obs.keys())
+
+
 @torch.no_grad()
 def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
@@ -28,26 +45,17 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
     done = False
     cumulative_rew = 0
     agent.num_envs = 1
+    obs = env.reset(seed=cfg.seed)[0]
     with fabric.device:
-        o = env.reset(seed=cfg.seed)[0]
-        next_obs = {
-            k: torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1, *o[k].shape[-2:]) / 255
-            for k in cfg.algo.cnn_keys.encoder
-        }
-        next_obs.update(
-            {
-                k: torch.as_tensor(o[k], dtype=torch.float32, device=fabric.device).view(1, 1, -1)
-                for k in cfg.algo.mlp_keys.encoder
-            }
-        )
         state = (
             torch.zeros(1, 1, agent.rnn_hidden_size, device=fabric.device),
             torch.zeros(1, 1, agent.rnn_hidden_size, device=fabric.device),
         )
         actions = torch.zeros(1, 1, sum(agent.actions_dim), device=fabric.device)
     while not done:
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
         # Act greedly through the environment
-        actions, state = agent.get_actions(next_obs, actions, state, greedy=True)
+        actions, state = agent.get_actions(torch_obs, actions, state, greedy=True)
         if agent.actor.is_continuous:
             real_actions = torch.cat(actions, -1)
             actions = torch.cat(actions, dim=-1).view(1, 1, -1)
@@ -56,17 +64,9 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
             actions = torch.cat([act for act in actions], dim=-1).view(1, 1, -1)
 
         # Single environment step
-        o, reward, done, truncated, info = env.step(real_actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, info = env.step(real_actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        with fabric.device:
-            next_obs = {
-                k: torch.as_tensor(o[k], dtype=torch.float32).view(1, 1, -1, *o[k].shape[-2:]) / 255
-                for k in cfg.algo.cnn_keys.encoder
-            }
-            next_obs.update(
-                {k: torch.as_tensor(o[k], dtype=torch.float32).view(1, 1, -1) for k in cfg.algo.mlp_keys.encoder}
-            )
 
         if cfg.dry_run:
             done = True

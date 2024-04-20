@@ -12,7 +12,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.a2c.agent import A2CAgent, build_agent
 from sheeprl.algos.a2c.loss import policy_loss, value_loss
-from sheeprl.algos.a2c.utils import test
+from sheeprl.algos.a2c.utils import prepare_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -236,7 +236,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     # Sample an action given the observation received by the environment
                     # This calls the `forward` method of the PyTorch module, escaping from Fabric
                     # because we don't want this to be a synchronization point
-                    torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+                    torch_obs = prepare_obs(fabric, next_obs, num_envs=cfg.env.num_envs)
                     actions, _, values = player(torch_obs)
                     if is_continuous:
                         real_actions = torch.cat(actions, -1).cpu().numpy()
@@ -272,7 +272,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 # Update the step data
                 step_data["dones"] = dones[np.newaxis]
                 step_data["values"] = values.cpu().numpy()[np.newaxis]
-                step_data["actions"] = actions[np.newaxis]
+                step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
                 step_data["rewards"] = rewards[np.newaxis]
                 if cfg.buffer.memmap:
                     step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
@@ -304,7 +304,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+            torch_obs = prepare_obs(fabric, next_obs, num_envs=cfg.env.num_envs)
             next_values = player.get_values(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),

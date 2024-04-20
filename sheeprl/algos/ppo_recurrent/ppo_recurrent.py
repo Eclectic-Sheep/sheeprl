@@ -17,9 +17,8 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
-from sheeprl.algos.ppo_recurrent.utils import test
+from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -295,8 +294,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                     # Sample an action given the observation received by the environment
                     # [Seq_len, Batch_size, D] --> [1, num_envs, D]
-                    normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                    torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
+                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                     actions, logprobs, values, states = player(
                         torch_obs, prev_actions=torch_prev_actions, prev_states=prev_states
                     )
@@ -387,8 +385,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            normalized_obs = normalize_obs(obs, cfg.algo.cnn_keys.encoder, obs_keys)
-            torch_obs = {k: torch.as_tensor(v, device=device).float() for k, v in normalized_obs.items()}
+            torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values, _ = player.get_values(torch_obs, torch_actions, states)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),

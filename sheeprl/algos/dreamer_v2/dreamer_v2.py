@@ -24,7 +24,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -599,16 +599,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             axis=-1,
                         )
                 else:
-                    normalized_obs = {}
-                    for k in obs_keys:
-                        torch_obs = torch.as_tensor(obs[k][np.newaxis], dtype=torch.float32, device=device)
-                        if k in cfg.algo.cnn_keys.encoder:
-                            torch_obs = torch_obs / 255 - 0.5
-                        normalized_obs[k] = torch_obs
-                    mask = {k: v for k, v in normalized_obs.items() if k.startswith("mask")}
+                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+                    mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_actions(normalized_obs, mask=mask)
+                    real_actions = actions = player.get_actions(torch_obs, mask=mask)
                     actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.cat(real_actions, -1).cpu().numpy()
