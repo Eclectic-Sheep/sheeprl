@@ -507,8 +507,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        if not cfg.buffer.checkpoint:
-            learning_starts += start_step
+        learning_starts += start_step
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
