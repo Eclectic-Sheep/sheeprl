@@ -266,6 +266,10 @@ def check_configs(cfg: Dict[str, Any]):
     Args:
         cfg (Dict[str, Any]): the loaded configuration to check.
     """
+    if cfg.algo.total_steps <= 0:
+        raise ValueError("The `algo.total_steps` parameter must be a non-negative integer.")
+    if cfg.algo.get("learning_starts", 0) < 0:
+        raise ValueError("The `algo.learning_starts` parameter must be a non-negative integer.")
     if cfg.float32_matmul_precision not in {"medium", "high", "highest"}:
         raise ValueError(
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
