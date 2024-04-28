@@ -22,7 +22,7 @@ checkpoint:
 # Buffer
 buffer:
   size: 5000000
-  checkpoint: False
+  checkpoint: True
 
 # Distribution
 distribution:
