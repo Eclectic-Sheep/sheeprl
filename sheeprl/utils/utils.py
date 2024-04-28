@@ -296,6 +296,12 @@ class Ratio:
         return {"_ratio": self._ratio, "_prev": self._prev, "_pretrain_steps": self._pretrain_steps}
 
     def load_state_dict(self, state_dict: Mapping[str, Any]):
+        warnings.warn(
+            "You are loading the state dict of the Ratio object. If you are resuming a training from a checkpoint "
+            "and set a high `algo.learning_starts` value, the first training iteration after "
+            "`algo.learning_starts` steps will be much slower than the following ones.",
+            UserWarning,
+        )
         self._ratio = state_dict["_ratio"]
         self._prev = state_dict["_prev"]
         self._pretrain_steps = state_dict["_pretrain_steps"]
