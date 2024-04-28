@@ -655,14 +655,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if update >= learning_starts:
             per_rank_gradient_steps = ratio(policy_step / world_size)
             if per_rank_gradient_steps > 0:
-                local_data = rb.sample_tensors(
-                    cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                     for i in range(per_rank_gradient_steps):
                         if (
@@ -672,7 +664,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
                             for cp, tcp in zip(critic.module.parameters(), target_critic.parameters()):
                                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
+                        batch = rb.sample_tensors(
+                            cfg.algo.per_rank_batch_size,
+                            sequence_length=cfg.algo.per_rank_sequence_length,
+                            n_samples=1,
+                            dtype=None,
+                            device=fabric.device,
+                            from_numpy=cfg.buffer.from_numpy,
+                        )
+                        batch = {k: v[0].float() for k, v in batch.items()}
                         train(
                             fabric,
                             world_model,
