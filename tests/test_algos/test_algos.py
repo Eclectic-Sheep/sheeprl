@@ -476,8 +476,6 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.mlp_keys.decoder=[state]",
         "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
-        "env.action_stack=5",
-        "env.action_stack_dilation=2",
     ]
 
     with mock.patch.object(sys, "argv", args):
