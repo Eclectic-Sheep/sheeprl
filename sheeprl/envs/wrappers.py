@@ -270,17 +270,17 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         self._is_multidiscrete = isinstance(self.env.action_space, gym.spaces.MultiDiscrete)
         self.observation_space = copy.deepcopy(self.env.observation_space)
         if self._is_continuous:
-            self._action_shape = self.action_space.shape[0]
-            low = np.resize(self.action_space.low, self._action_shape * num_stack)
-            high = np.resize(self.action_space.high, self._action_shape * num_stack)
+            self._action_shape = self.env.action_space.shape[0]
+            low = np.resize(self.env.action_space.low, self._action_shape * num_stack)
+            high = np.resize(self.env.action_space.high, self._action_shape * num_stack)
         elif self._is_multidiscrete:
             low = 0
-            high = max(self.action_space.nvec)
-            self._action_shape = len(self.env.nvec.shape)
+            high = max(self.env.action_space.nvec) - 1
+            self._action_shape = self.env.action_space.nvec.shape[0]
         else:
             low = 0
-            high = 1
-            self._action_shape = self.action_space.n
+            high = 1  # one-hot encoding
+            self._action_shape = self.env.action_space.n
         self.observation_space["action_stack"] = gym.spaces.Box(
             low=low, high=high, shape=(self._action_shape * num_stack,), dtype=np.float32
         )
@@ -303,14 +303,12 @@ class ActionsAsObservationWrapper(gym.Wrapper):
 
     def _get_actions_stack(self) -> np.ndarray:
         actions_stack = list(self._actions)[self._dilation - 1 :: self._dilation]
-        if self._is_continuous:
-            actions = np.concatenate(actions_stack, axis=0)
-        elif self._is_multidiscrete:
+        if self._is_continuous or self._is_multidiscrete:
             actions = np.concatenate(actions_stack, axis=0)
         else:
             action_list = []
             for action in actions_stack:
-                one_hot_action = np.zeros(self.action_space.n)
+                one_hot_action = np.zeros(self.env.action_space.n)
                 one_hot_action[action] = 1
                 action_list.append(one_hot_action)
             actions = np.concatenate(action_list, axis=0)
