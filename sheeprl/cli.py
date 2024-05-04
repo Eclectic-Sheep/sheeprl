@@ -330,6 +330,9 @@ def check_configs(cfg: Dict[str, Any]):
         )
         cfg.model_manager.disabled = True
 
+    if cfg.env.action_repeat < 1:
+        cfg.env.action_repeat = 1
+
 
 def check_configs_evaluation(cfg: DictConfig):
     if cfg.float32_matmul_precision not in {"medium", "high", "highest"}:
