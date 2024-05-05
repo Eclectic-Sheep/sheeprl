@@ -510,7 +510,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
     num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
-    prefill_steps = learning_starts
+    prefill_steps = learning_starts + start_step
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
         learning_starts += start_step
