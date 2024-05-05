@@ -337,7 +337,7 @@ def check_configs(cfg: Dict[str, Any]):
             UserWarning,
         )
         cfg.model_manager.disabled = True
-    if cfg.algo.learning_starts < 0:
+    if cfg.algo.learning_starts is not None and cfg.algo.learning_starts < 0:
         raise ValueError("The `algo.learning_starts` parameter must be greater or equal to zero.")
 
 
