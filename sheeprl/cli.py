@@ -36,11 +36,19 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
             f"Got '{cfg.algo.name}', but the algorithm of the experiment of the checkpoint was {old_cfg.algo.name}. "
             "Set properly the algorithm name for restarting the experiment."
         )
+    if old_cfg.algo.learning_starts > 0:
+        warnings.warn(
+            "The `algo.learning_starts` parameter is greater than zero. "
+            "This means that the resuming experiment will pre-fill the buffer for `algo.learning_starts` steps. "
+            "If this is not intended please set the `algo.learning_starts=0` parameter in the experiment configuration "
+            "or through the CLI."
+        )
 
     # Remove keys from the `old_cfg` that must not be overridden
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
     old_cfg.checkpoint.pop("resume_from", None)
+    old_cfg.algo.pop("learning_starts", None)
     # Substitute the config with the old one (except for the parameters removed before)
     # because the experiment must continue with the same parameters
     with open_dict(cfg):

@@ -277,7 +277,7 @@ class Ratio:
             return 0
         if self._prev is None:
             self._prev = step
-            repeats = 1
+            repeats = int(step * self._ratio)
             if self._pretrain_steps > 0:
                 if step < self._pretrain_steps:
                     warnings.warn(
