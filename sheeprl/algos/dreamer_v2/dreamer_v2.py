@@ -672,7 +672,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if update >= learning_starts:
-            per_rank_gradient_steps = ratio((policy_step - prefill_steps + policy_steps_per_update) / world_size)
+            ratio_steps = policy_step - prefill_steps
+            if update == learning_starts:
+                ratio_steps += policy_steps_per_update
+            per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 local_data = rb.sample_tensors(
                     batch_size=cfg.algo.per_rank_batch_size,
