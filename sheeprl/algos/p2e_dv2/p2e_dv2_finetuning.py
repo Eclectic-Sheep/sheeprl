@@ -267,7 +267,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
-        policy_step += cfg.env.num_envs * world_size
+        policy_step += policy_steps_per_update
 
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
