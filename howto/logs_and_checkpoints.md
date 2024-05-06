@@ -195,7 +195,7 @@ size: ???
 memmap: True
 validate_args: False
 from_numpy: False
-checkopint: False  # Used only for off-policy algorithms
+checkpoint: False  # Used only for off-policy algorithms
 ```
 
 There can be few scenarios to pay attention to:
