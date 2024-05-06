@@ -979,6 +979,8 @@ metric:
 
 With `override /algo: ext_sota` in `defaults` you are specifying you want to use the new `ext_sota` algorithm, whereas, with `override /env: atari` you are specifying that you want to train your agent on an *Atari* environment.
 
+## Register the algorithm and the configs
+
 To let the `register_algorithm` decorator add our new `ext_sota` algorithm to the available algorithms registry we need first to create a new file called for example `my_awesome_main.py` in the root of the project:
 
 ```tree
