@@ -14,6 +14,19 @@ The main properties/methods that the environment has to provide are the followin
 >
 > All the observations returned by the `step` and `reset` functions must be python dictionary of numpy arrays.
 
+## About observations and actions spaces
+
+> [!NOTE]
+>
+> Please remember that any environment is considered independent of any other and it is supposed to interact with a single agent as Multi-Agent Reinforcement Learning (MARL) is not actually supported.
+
+The current observations shapes supported are:
+
+* 1D vector: everything that is a 1D vector will be processed by an MLP by the agent.
+* 2D/3D images: everything that is not a 1D vector will be processed by a CNN by the agent. A 2D image or a 3D image of shape `[H,W,1]` or `[1,H,W]` will be considered as a grayscale image, a multi-channel image otherwise.
+
+An action of type `gymnasium.spaces.Box` must be of shape `(n,)`, where `n` is the number of (possibly continuous) actions the environment supports. 
+
 # Add a new Environment
 There are two ways to add a new environment:
 1. Create from scratch a custom environment by inheriting from the [`gymnasium.Env`](https://gymnasium.farama.org/api/env/#gymnasium-env) class.

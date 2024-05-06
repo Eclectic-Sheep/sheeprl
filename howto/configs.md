@@ -14,19 +14,26 @@ This document explains how the configuration files and folders are structured. I
 ```tree
 sheeprl/configs
 ├── algo
+│   ├── a2c.yaml
 │   ├── default.yaml
 │   ├── dreamer_v1.yaml
 │   ├── dreamer_v2.yaml
+│   ├── dreamer_v3_L.yaml
+│   ├── dreamer_v3_M.yaml
+│   ├── dreamer_v3_S.yaml
+│   ├── dreamer_v3_XL.yaml
+│   ├── dreamer_v3_XS.yaml
 │   ├── dreamer_v3.yaml
 │   ├── droq.yaml
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
-│   ├── ppo.yaml
+│   ├── p2e_dv3.yaml
 │   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── sac.yaml
+│   ├── ppo.yaml
 │   ├── sac_ae.yaml
-│   └── sac_decoupled.yaml
+│   ├── sac_decoupled.yaml
+│   └── sac.yaml
 ├── buffer
 │   └── default.yaml
 ├── checkpoint
@@ -44,40 +51,86 @@ sheeprl/configs
 │   ├── gym.yaml
 │   ├── minecraft.yaml
 │   ├── minedojo.yaml
-│   └── minerl.yaml
+│   ├── minerl_obtain_diamond.yaml
+│   ├── minerl_obtain_iron_pickaxe.yaml
+│   ├── minerl.yaml
+│   ├── mujoco.yaml
+│   └── super_mario_bros.yaml
 ├── env_config.yaml
+├── eval_config.yaml
 ├── exp
+│   ├── a2c_benchmarks.yaml
+│   ├── a2c.yaml
 │   ├── default.yaml
+│   ├── dreamer_v1_benchmarks.yaml
 │   ├── dreamer_v1.yaml
-│   ├── dreamer_v2.yaml
+│   ├── dreamer_v2_benchmarks.yaml
+│   ├── dreamer_v2_crafter.yaml
 │   ├── dreamer_v2_ms_pacman.yaml
-│   ├── dreamer_v3.yaml
+│   ├── dreamer_v2.yaml
 │   ├── dreamer_v3_100k_boxing.yaml
 │   ├── dreamer_v3_100k_ms_pacman.yaml
-│   ├── dreamer_v3_L_doapp.yaml
-│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
-│   ├── dreamer_v3_L_navigate.yaml
-│   ├── dreamer_v3_XL_crafter.yaml
+│   ├── dreamer_v3_benchmarks.yaml
+│   ├── dreamer_v3_dmc_cartpole_swingup_sparse.yaml
 │   ├── dreamer_v3_dmc_walker_walk.yaml
+│   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
+│   ├── dreamer_v3_L_doapp.yaml
+│   ├── dreamer_v3_L_navigate.yaml
+│   ├── dreamer_v3_super_mario_bros.yaml
+│   ├── dreamer_v3_XL_crafter.yaml
+│   ├── dreamer_v3.yaml
 │   ├── droq.yaml
-│   ├── p2e_dv1.yaml
-│   ├── p2e_dv2.yaml
-│   ├── ppo.yaml
+│   ├── p2e_dv1_exploration.yaml
+│   ├── p2e_dv1_finetuning.yaml
+│   ├── p2e_dv2_exploration.yaml
+│   ├── p2e_dv2_finetuning.yaml
+│   ├── p2e_dv3_expl_L_doapp_128px_gray_combo_discrete_15Mexpl_20Mstps.yaml
+│   ├── p2e_dv3_exploration.yaml
+│   ├── p2e_dv3_finetuning.yaml
+│   ├── p2e_dv3_fntn_L_doapp_64px_gray_combo_discrete_5Mstps.yaml
+│   ├── ppo_benchmarks.yaml
 │   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
-│   ├── sac.yaml
+│   ├── ppo_super_mario_bros.yaml
+│   ├── ppo.yaml
 │   ├── sac_ae.yaml
-│   └── sac_decoupled.yaml
+│   ├── sac_benchmarks.yaml
+│   ├── sac_decoupled.yaml
+│   └── sac.yaml
 ├── fabric
 │   ├── ddp-cpu.yaml
 │   ├── ddp-cuda.yaml
 │   └── default.yaml
 ├── hydra
 │   └── default.yaml
+├── __init__.py
+├── logger
+│   ├── mlflow.yaml
+│   └── tensorboard.yaml
 ├── metric
 │   └── default.yaml
+├── model_manager
+│   ├── a2c.yaml
+│   ├── default.yaml
+│   ├── dreamer_v1.yaml
+│   ├── dreamer_v2.yaml
+│   ├── dreamer_v3.yaml
+│   ├── droq.yaml
+│   ├── p2e_dv1_exploration.yaml
+│   ├── p2e_dv1_finetuning.yaml
+│   ├── p2e_dv2_exploration.yaml
+│   ├── p2e_dv2_finetuning.yaml
+│   ├── p2e_dv3_exploration.yaml
+│   ├── p2e_dv3_finetuning.yaml
+│   ├── ppo_recurrent.yaml
+│   ├── ppo.yaml
+│   ├── sac_ae.yaml
+│   └── sac.yaml
+├── model_manager_config.yaml
 └── optim
     ├── adam.yaml
+    ├── rmsprop_tf.yaml
+    ├── rmsprop.yaml
     └── sgd.yaml
 ```
 
@@ -102,23 +155,55 @@ defaults:
   - env: default.yaml
   - fabric: default.yaml
   - metric: default.yaml
+  - model_manager: default.yaml
   - hydra: default.yaml
   - exp: ???
 
 num_threads: 1
+float32_matmul_precision: "high"
 
 # Set it to True to run a single optimization step
 dry_run: False
 
 # Reproducibility
 seed: 42
-torch_deterministic: False
+
+# For more information about reproducibility in PyTorch, see https://pytorch.org/docs/stable/notes/randomness.html
+
+# torch.use_deterministic_algorithms() lets you configure PyTorch to use deterministic algorithms
+# instead of nondeterministic ones where available,
+# and to throw an error if an operation is known to be nondeterministic (and without a deterministic alternative).
+torch_use_deterministic_algorithms: False
+
+# Disabling the benchmarking feature with torch.backends.cudnn.benchmark = False 
+# causes cuDNN to deterministically select an algorithm, possibly at the cost of reduced performance.
+# However, if you do not need reproducibility across multiple executions of your application, 
+# then performance might improve if the benchmarking feature is enabled with torch.backends.cudnn.benchmark = True.
+torch_backends_cudnn_benchmark: True
+
+# While disabling CUDA convolution benchmarking (discussed above) ensures that CUDA selects the same algorithm each time an application is run,
+# that algorithm itself may be nondeterministic, unless either torch.use_deterministic_algorithms(True)
+# or torch.backends.cudnn.deterministic = True is set. 
+# The latter setting controls only this behavior, 
+# unlike torch.use_deterministic_algorithms() which will make other PyTorch operations behave deterministically, too.
+torch_backends_cudnn_deterministic: False
+
+# From: https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+# By design, all cuBLAS API routines from a given toolkit version, generate the same bit-wise results at every run
+# when executed on GPUs with the same architecture and the same number of SMs.
+# However, bit-wise reproducibility is not guaranteed across toolkit versions
+# because the implementation might differ due to some implementation changes.
+# This guarantee holds when a single CUDA stream is active only. 
+# If multiple concurrent streams are active, the library may optimize total performance by picking different internal implementations.
+cublas_workspace_config: null  # Possible values are: ":4096:8" or ":16:8"
 
 # Output folders
-exp_name: "default"
+exp_name: ${algo.name}_${env.id}
 run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
 root_dir: ${algo.name}/${env.id}
 ```
+
+By default we want the user to specify the experiment config, represented by `- exp: ???` in the above example. The three-question-marks symbol tells hydra to expect that an `exp` config is specified at runtime by the user (e.g. `sheeprl.py exp=dreamer_v3`: one can look at every exp configs in `sheeprl/config/exp/` folder).
 
 ### Algorithms
 
@@ -427,9 +512,13 @@ Given this config, one can easily run an experiment to test the Dreamer-V3 algor
 python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 ```
 
+> [!WARNING]
+>
+> The default hyperparameters specified in the configs gathered by the experiment config (in this example the hyperparameters specified by the `sheeprl/configs/exp/dreamer_v3.yaml`, `sheeprl/configs/env/atari.yaml` and all the configs coming with them) will be overwritten by the values in the current config whenever a naming collision happens, for example when the same field is defined in both configurations. Those naming collisions will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list.
+
 ### Fabric
 
-These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with thich precision. For more information please have a look at the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
+These configurations control the parameters to be passed to the [Fabric object](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.fabric.Fabric.html#lightning.fabric.fabric.Fabric). With those one can control whether to run the experiments on multiple devices, on which accelerator and with which precision. For more information please have a look at the [Lightning documentation page](https://lightning.ai/docs/fabric/stable/api/fabric_args.html#).
 
 ### Hydra
 
