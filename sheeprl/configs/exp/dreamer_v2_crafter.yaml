@@ -40,7 +40,6 @@ mlp_keys:
 # Algorithm
 algo:
   gamma: 0.999
-  train_every: 5
   layer_norm: True
   learning_starts: 10000
   per_rank_pretrain_steps: 1

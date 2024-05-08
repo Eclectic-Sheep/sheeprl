@@ -26,12 +26,14 @@ def standard_args():
         "hydra/hydra_logging=disabled",
         "dry_run=True",
         "checkpoint.save_last=False",
-        "metric.log_level=0",
-        "metric.disable_timer=True",
         "env.num_envs=1",
-        "fabric.devices=auto",
         f"env.sync_env={_IS_WINDOWS}",
         "env.capture_video=False",
+        "fabric.devices=auto",
+        "fabric.accelerator=cpu",
+        "fabric.precision=bf16-true",
+        "metric.log_level=0",
+        "metric.disable_timer=True",
     ]
     if os.environ.get("MLFLOW_TRACKING_URI", None) is not None:
         args.extend(["logger@metric.logger=mlflow", "model_manager.disabled=False", "metric.log_level=1"])
@@ -45,7 +47,6 @@ def start_time():
 
 @pytest.fixture(autouse=True)
 def mock_env_and_destroy(devices):
-    os.environ["LT_ACCELERATOR"] = "cpu"
     os.environ["LT_DEVICES"] = str(devices)
     if _IS_WINDOWS and devices != "1":
         pytest.skip()
@@ -68,7 +69,7 @@ def test_droq(standard_args, start_time):
         "algo.per_rank_batch_size=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
@@ -86,7 +87,7 @@ def test_sac(standard_args, start_time):
         "algo.per_rank_batch_size=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
@@ -104,7 +105,7 @@ def test_sac_ae(standard_args, start_time):
         "algo.per_rank_batch_size=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         "algo.mlp_keys.encoder=[state]",
@@ -113,8 +114,8 @@ def test_sac_ae(standard_args, start_time):
         "algo.hidden_size=4",
         "algo.dense_units=4",
         "algo.cnn_channels_multiplier=2",
-        "algo.actor.network_frequency=1",
-        "algo.decoder.update_freq=1",
+        "algo.actor.per_rank_update_freq=1",
+        "algo.decoder.per_rank_update_freq=1",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -129,7 +130,7 @@ def test_sac_decoupled(standard_args, start_time):
         "exp=sac_decoupled",
         "algo.per_rank_batch_size=1",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         f"fabric.devices={os.environ['LT_DEVICES']}",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
@@ -174,7 +175,7 @@ def test_ppo(standard_args, start_time, env_id):
         f"run_name={run_name}",
         f"env.id={env_id}",
         "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -197,7 +198,7 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         f"run_name={run_name}",
         f"env.id={env_id}",
         "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -217,6 +218,7 @@ def test_ppo_recurrent(standard_args, start_time):
         "algo.per_rank_batch_size=1",
         "algo.per_rank_sequence_length=2",
         "algo.update_epochs=2",
+        "fabric.precision=32",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
@@ -237,7 +239,7 @@ def test_dreamer_v1(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=2",
         f"env.id={env_id}",
         f"root_dir={root_dir}",
@@ -247,6 +249,8 @@ def test_dreamer_v1(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -268,7 +272,7 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=2",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=4",
         "env.id=" + env_id,
         f"root_dir={root_dir}",
@@ -281,6 +285,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -309,7 +315,7 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=2",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=4",
         "env=dummy",
         "env.id=" + env_id,
@@ -322,6 +328,8 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=2",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -339,7 +347,7 @@ def test_dreamer_v2(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=8",
         "env.id=" + env_id,
         f"root_dir={root_dir}",
@@ -354,6 +362,8 @@ def test_dreamer_v2(standard_args, env_id, start_time):
         "algo.layer_norm=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -375,7 +385,7 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=2",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=4",
         "env.id=" + env_id,
         f"root_dir={root_dir}",
@@ -388,6 +398,8 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -416,7 +428,7 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=2",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=4",
         "env=dummy",
         "env.id=" + env_id,
@@ -429,6 +441,8 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.world_model.transition_model.hidden_size=2",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -446,7 +460,7 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=8",
         "env.id=" + env_id,
         f"root_dir={root_dir}",
@@ -456,10 +470,12 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.layer_norm=True",
-        "algo.train_every=1",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -481,7 +497,7 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=8",
         "env.id=" + env_id,
         f"root_dir={root_dir}",
@@ -491,12 +507,14 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.layer_norm=True",
-        "algo.train_every=1",
         "buffer.checkpoint=True",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
         "checkpoint.save_last=True",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -524,7 +542,7 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.per_rank_sequence_length=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.learning_starts=0",
-        "algo.per_rank_gradient_steps=1",
+        "algo.replay_ratio=1",
         "algo.horizon=8",
         "env=dummy",
         "env.id=" + env_id,
@@ -535,10 +553,12 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.layer_norm=True",
-        "algo.train_every=1",
         "algo.cnn_keys.encoder=[rgb]",
         "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
+        "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
+        "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
     with mock.patch.object(sys, "argv", args):
         run()

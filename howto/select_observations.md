@@ -8,6 +8,7 @@ In the first case, the observations are returned in the form of python dictionar
 
 ### Both observations
 The algorithms that can work with both image and vector observations are specified in [Table 1](../README.md) in the README, and are reported here:
+* A2C
 * PPO
 * PPO Recurrent
 * SAC-AE

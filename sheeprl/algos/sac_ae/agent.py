@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import copy
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
+import hydra
 import numpy as np
 import torch
 import torch.nn as nn
@@ -13,6 +16,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
@@ -71,6 +75,9 @@ class CNNEncoder(CNN):
         return self._conv_output_shape
 
     def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
         x = torch.cat([obs[k] for k in self.keys], dim=-3)
         x = cnn_forward(self.model, x, x.shape[-3:], (-1,))
         if detach_encoder_features:
@@ -102,7 +109,10 @@ class MLPEncoder(nn.Module):
         self.input_dim = input_dim
 
     def forward(self, obs: Dict[str, Tensor], *args, detach_encoder_features: bool = False, **kwargs) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-1).type(torch.float32)
+        dtypes = [obs[k].dtype for k in self.keys]
+        if dtypes.count(dtypes[0]) != len(dtypes):
+            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
+        x = torch.cat([obs[k] for k in self.keys], dim=-1)
         x = self.model(x)
         if detach_encoder_features:
             x = x.detach()
@@ -273,7 +283,7 @@ class SACAEContinuousActor(nn.Module):
         log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
         return self.get_actions_and_log_probs(mean, log_std.exp())
 
-    def get_actions_and_log_probs(self, mean: Tensor, std: Tensor):
+    def get_actions_and_log_probs(self, mean: Tensor, std: Tensor) -> Tuple[Tensor, Tensor]:
         """Given the mean and the std of a Normal distribution, it returns a tanh-squashed
         sampled action (correctly rescaled to the environment action bounds) and its
         log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
@@ -286,7 +296,7 @@ class SACAEContinuousActor(nn.Module):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        normal = torch.distributions.Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
+        normal = torch.distributions.Normal(mean, std)
 
         # Reparameterization trick (mean + std * N(0,1))
         x_t = normal.rsample()
@@ -306,21 +316,6 @@ class SACAEContinuousActor(nn.Module):
         log_prob = log_prob.sum(-1, keepdim=True)
 
         return action, log_prob
-
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        """Get the action given the input observation greedily
-
-        Args:
-            obs (Tensor): input observation
-
-        Returns:
-            action
-        """
-        features = self.encoder(obs)
-        x = self.model(features)
-        mean = self.fc_mean(x)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return mean
 
 
 class SACAEAgent(nn.Module):
@@ -406,6 +401,11 @@ class SACAEAgent(nn.Module):
     def critic_target(self) -> SACAECritic:
         return self._critic_target
 
+    @critic_target.setter
+    def critic_target(self, critic_target: SACAECritic | _FabricModule) -> None:
+        self._critic_target = critic_target
+        return
+
     @property
     def alpha(self) -> float:
         return self._log_alpha.exp().item()
@@ -420,9 +420,6 @@ class SACAEAgent(nn.Module):
 
     def get_actions_and_log_probs(self, obs: Tensor, detach_encoder_features: bool = False) -> Tuple[Tensor, Tensor]:
         return self.actor(obs, detach_encoder_features)
-
-    def get_greedy_actions(self, obs: Tensor) -> Tensor:
-        return self.actor.get_greedy_actions(obs)
 
     def get_q_values(self, obs: Tensor, action: Tensor, detach_encoder_features: bool = False) -> Tensor:
         return self.critic(obs, action, detach_encoder_features)
@@ -453,6 +450,58 @@ class SACAEAgent(nn.Module):
             target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)
 
 
+class SACAEPlayer(nn.Module):
+    def __init__(
+        self,
+        feature_extractor: MultiEncoder,
+        fc: nn.Module,
+        fc_mean: nn.Module,
+        fc_logstd: nn.Module,
+        action_low: Union[SupportsFloat, NDArray] = -1.0,
+        action_high: Union[SupportsFloat, NDArray] = 1.0,
+    ):
+        super().__init__()
+        self.encoder = feature_extractor
+        self.model = fc
+        self.fc_mean = fc_mean
+        self.fc_logstd = fc_logstd
+
+        # Action rescaling buffers
+        self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
+
+    def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
+        """Given an observation, it returns a tanh-squashed
+        sampled action (correctly rescaled to the environment action bounds) and its
+        log-prob (as defined in Eq. 26 of https://arxiv.org/abs/1812.05905)
+
+        Args:
+            obs (Tensor): the observation tensor
+
+        Returns:
+            tanh-squashed action, rescaled to the environment action bounds
+            action log-prob
+        """
+        features = self.encoder(obs, detach_encoder_features=False)
+        x = self.model(features)
+        mean = self.fc_mean(x)
+        if greedy:
+            return torch.tanh(mean) * self.action_scale + self.action_bias
+        else:
+            log_std = self.fc_logstd(x)
+            # log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+            log_std = torch.tanh(log_std)
+            log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+            normal = torch.distributions.Normal(mean, log_std.exp())
+            x_t = normal.rsample()
+            y_t = torch.tanh(x_t)
+            actions = y_t * self.action_scale + self.action_bias
+            return actions
+
+    def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
+        return self(obs, greedy)
+
+
 def build_agent(
     fabric: Fabric,
     cfg: Dict[str, Any],
@@ -461,7 +510,7 @@ def build_agent(
     agent_state: Optional[Dict[str, Tensor]] = None,
     encoder_state: Optional[Dict[str, Tensor]] = None,
     decoder_sate: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAEAgent, _FabricModule, _FabricModule]:
+) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPlayer]:
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
@@ -487,7 +536,7 @@ def build_agent(
             cfg.algo.mlp_keys.encoder,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
-            eval(cfg.algo.encoder.dense_act),
+            hydra.utils.get_class(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
@@ -513,7 +562,7 @@ def build_agent(
             cfg.algo.mlp_keys.decoder,
             cfg.algo.decoder.dense_units,
             cfg.algo.decoder.mlp_layers,
-            eval(cfg.algo.decoder.dense_act),
+            hydra.utils.get_class(cfg.algo.decoder.dense_act),
             cfg.algo.decoder.layer_norm,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
@@ -557,9 +606,35 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(agent_state)
 
+    # Setup player agent
+    player = SACAEPlayer(
+        copy.deepcopy(agent.actor.encoder),
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
     agent.actor = fabric.setup_module(agent.actor)
     agent.critic = fabric.setup_module(agent.critic)
 
-    return agent, encoder, decoder
+    # Wrap the target critic with a single-device fabric. This lets the target critic
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.critic_target = fabric_player.setup_module(agent.critic_target)
+
+    # Setup player agent
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, encoder, decoder, player

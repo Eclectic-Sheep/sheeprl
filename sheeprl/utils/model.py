@@ -1,6 +1,7 @@
 """
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
+
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
@@ -220,16 +221,3 @@ def cnn_forward(
     flatten_input = input.reshape(-1, *input_dim)
     model_out = model(flatten_input)
     return model_out.reshape(*batch_shapes, *output_dim)
-
-
-class LayerNormChannelLast(nn.LayerNorm):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-
-    def forward(self, x: Tensor) -> Tensor:
-        if x.dim() != 4:
-            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
-        x = x.permute(0, 2, 3, 1)
-        x = super().forward(x)
-        x = x.permute(0, 3, 1, 2)
-        return x

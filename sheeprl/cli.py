@@ -10,6 +10,7 @@ import torch
 from lightning import Fabric
 from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDeviceStrategy, Strategy
 from omegaconf import DictConfig, OmegaConf, open_dict
+from torch.distributions import Distribution
 
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger
@@ -57,6 +58,9 @@ def run_algorithm(cfg: Dict[str, Any]):
     # Torch settings
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
+
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -166,7 +170,24 @@ def run_algorithm(cfg: Dict[str, Any]):
         for k in keys_to_remove:
             cfg.model_manager.models.pop(k, None)
         cfg.model_manager.disabled == cfg.model_manager.disabled or len(cfg.model_manager.models) == 0
-    fabric.launch(command, cfg, **kwargs)
+
+    # This function is used to make the algorithm reproducible.
+    # It can be an overkill since Fabric already captures everything we're setting here
+    # when multiprocessing is used with a `spawn` method (default with DDP strategy).
+    # https://github.com/Lightning-AI/pytorch-lightning/blob/f23b3b1e7fdab1d325f79f69a28706d33144f27e/src/lightning/fabric/strategies/launchers/multiprocessing.py#L112
+    def reproducible(func):
+        def wrapper(fabric: Fabric, cfg: Dict[str, Any], *args, **kwargs):
+            if cfg.cublas_workspace_config is not None:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = cfg.cublas_workspace_config
+            fabric.seed_everything(cfg.seed)
+            torch.backends.cudnn.benchmark = cfg.torch_backends_cudnn_benchmark
+            torch.backends.cudnn.deterministic = cfg.torch_backends_cudnn_deterministic
+            torch.use_deterministic_algorithms(cfg.torch_use_deterministic_algorithms)
+            return func(fabric, cfg, *args, **kwargs)
+
+        return wrapper
+
+    fabric.launch(reproducible(command), cfg, **kwargs)
 
 
 def eval_algorithm(cfg: DictConfig):
@@ -180,6 +201,9 @@ def eval_algorithm(cfg: DictConfig):
     # Torch settings
     os.environ["OMP_NUM_THREADS"] = str(cfg.num_threads)
     torch.set_float32_matmul_precision(cfg.float32_matmul_precision)
+
+    # Set the distribution validate_args once here
+    Distribution.set_default_validate_args(cfg.distribution.validate_args)
 
     # TODO: change the number of devices when FSDP will be supported
     accelerator = cfg.fabric.get("accelerator", "auto")
@@ -246,7 +270,6 @@ def check_configs(cfg: Dict[str, Any]):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     decoupled = False
     algo_name = cfg.algo.name
     for _, _algos in algorithm_registry.items():
@@ -314,7 +337,6 @@ def check_configs_evaluation(cfg: DictConfig):
             f"Invalid value '{cfg.float32_matmul_precision}' for the 'float32_matmul_precision' parameter. "
             "It must be one of 'medium', 'high' or 'highest'."
         )
-
     if cfg.checkpoint_path is None:
         raise ValueError("You must specify the evaluation checkpoint path")
 

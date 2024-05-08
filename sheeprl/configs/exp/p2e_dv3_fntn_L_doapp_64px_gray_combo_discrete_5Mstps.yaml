@@ -18,7 +18,7 @@ env:
   reward_as_observation: True
   wrapper:
     diambra_settings:
-      role: diambra.arena.Roles.P1
+      role: P1
       characters: Lei-Fang
       difficulty: 4
       outfits: 1
@@ -37,7 +37,7 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 65536
-  train_every: 1
+  
   dense_units: 768
   mlp_layers: 4
   world_model:

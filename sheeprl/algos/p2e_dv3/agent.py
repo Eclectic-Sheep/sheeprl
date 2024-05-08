@@ -10,10 +10,12 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
-from sheeprl.algos.dreamer_v3.agent import WorldModel
+from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.utils import unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -35,7 +37,9 @@ def build_agent(
     target_critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critics_exploration_state: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, nn.Module, _FabricModule, Dict[str, Any]]:
+) -> Tuple[
+    WorldModel, nn.ModuleList, _FabricModule, _FabricModule, _FabricModule, _FabricModule, Dict[str, Any], PlayerDV3
+]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -81,7 +85,7 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create task models
-    world_model, actor_task, critic_task, target_critic_task = dv3_build_agent(
+    world_model, actor_task, critic_task, target_critic_task, player = dv3_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -102,15 +106,18 @@ def build_agent(
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
-        layer_norm=actor_cfg.layer_norm,
+        layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
+        layer_norm_kw=actor_cfg.layer_norm.kw,
         unimix=cfg.algo.unimix,
     )
 
+    single_device_fabric = get_single_device_fabric(fabric)
     critics_exploration = {}
     intrinsic_critics = 0
+    critic_ln_cls = hydra.utils.get_class(critic_cfg.layer_norm.cls)
     for k, v in cfg.algo.critics_exploration.items():
         if v.weight > 0:
             if v.reward_type == "intrinsic":
@@ -122,13 +129,14 @@ def build_agent(
                     input_dims=latent_state_size,
                     output_dim=critic_cfg.bins,
                     hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-                    activation=eval(critic_cfg.dense_act),
+                    activation=hydra.utils.get_class(critic_cfg.dense_act),
                     flatten_dim=None,
-                    layer_args={"bias": not critic_cfg.layer_norm},
-                    norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-                    norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-                    if critic_cfg.layer_norm
-                    else None,
+                    layer_args={"bias": critic_ln_cls == nn.Identity},
+                    norm_layer=critic_ln_cls,
+                    norm_args={
+                        **critic_cfg.layer_norm.kw,
+                        "normalized_shape": critic_cfg.dense_units,
+                    },
                 ),
             }
             critics_exploration[k]["module"].apply(init_weights)
@@ -140,6 +148,9 @@ def build_agent(
             critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
             if critics_exploration_state:
                 critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
+            critics_exploration[k]["target_module"] = single_device_fabric.setup_module(
+                critics_exploration[k]["target_module"]
+            )
 
     if intrinsic_critics == 0:
         raise RuntimeError("You must specify at least one intrinsic critic (`reward_type='intrinsic'`)")
@@ -163,6 +174,7 @@ def build_agent(
     # initialize the ensembles with different seeds to be sure they have different weights
     ens_list = []
     cfg_ensembles = cfg.algo.ensembles
+    ensembles_ln_cls = hydra.utils.get_class(cfg_ensembles.layer_norm.cls)
     with isolate_rng():
         for i in range(cfg_ensembles.n):
             fabric.seed_everything(cfg.seed + i)
@@ -175,17 +187,14 @@ def build_agent(
                     ),
                     output_dim=cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size,
                     hidden_sizes=[cfg_ensembles.dense_units] * cfg_ensembles.mlp_layers,
-                    activation=eval(cfg_ensembles.dense_act),
+                    activation=hydra.utils.get_class(cfg_ensembles.dense_act),
                     flatten_dim=None,
-                    layer_args={"bias": not cfg.algo.ensembles.layer_norm},
-                    norm_layer=(
-                        [nn.LayerNorm for _ in range(cfg_ensembles.mlp_layers)] if cfg_ensembles.layer_norm else None
-                    ),
-                    norm_args=(
-                        [{"normalized_shape": cfg_ensembles.dense_units} for _ in range(cfg_ensembles.mlp_layers)]
-                        if cfg_ensembles.layer_norm
-                        else None
-                    ),
+                    layer_args={"bias": ensembles_ln_cls == nn.Identity},
+                    norm_layer=ensembles_ln_cls,
+                    norm_args={
+                        **cfg_ensembles.layer_norm.kw,
+                        "normalized_shape": cfg_ensembles.dense_units,
+                    },
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
@@ -193,6 +202,14 @@ def build_agent(
         ensembles.load_state_dict(ensembles_state)
     for i in range(len(ensembles)):
         ensembles[i] = fabric.setup_module(ensembles[i])
+
+    # Setup player agent
+    if cfg.algo.player.actor_type == "exploration":
+        fabric_player = get_single_device_fabric(fabric)
+        player_actor = unwrap_fabric(actor_exploration)
+        player.actor = fabric_player.setup_module(player_actor)
+        for agent_p, p in zip(actor_exploration.parameters(), player.actor.parameters()):
+            p.data = agent_p.data
 
     return (
         world_model,
@@ -202,4 +219,5 @@ def build_agent(
         target_critic_task,
         actor_exploration,
         critics_exploration,
+        player,
     )

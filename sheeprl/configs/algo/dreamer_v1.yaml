@@ -11,9 +11,9 @@ horizon: 15
 name: dreamer_v1
 
 # Training recipe
-train_every: 1000
+replay_ratio: 0.1
 learning_starts: 5000
-per_rank_gradient_steps: 100
+per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -100,8 +100,7 @@ actor:
   clip_gradients: 100.0
   expl_amount: 0.3
   expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 200000
+  expl_decay: 0.0
 
   # Actor optimizer
   optimizer:

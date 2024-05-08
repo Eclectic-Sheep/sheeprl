@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium
@@ -17,6 +18,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -149,7 +151,6 @@ class RSSM(nn.Module):
             self.representation_model(torch.cat((recurrent_state, embedded_obs), -1)),
             event_shape=1,
             min_std=self.min_std,
-            validate_args=self.distribution_cfg.validate_args,
         )
         return posterior_mean_std, posterior
 
@@ -164,9 +165,7 @@ class RSSM(nn.Module):
             The prior state (Tensor): the sampled prior state predicted by the transition model.
         """
         prior_mean_std = self.transition_model(recurrent_out)
-        return compute_stochastic_state(
-            prior_mean_std, event_shape=1, min_std=self.min_std, validate_args=self.distribution_cfg.validate_args
-        )
+        return compute_stochastic_state(prior_mean_std, event_shape=1, min_std=self.min_std)
 
     def imagination(self, stochastic_state: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """One-step imagination of the next latent state.
@@ -221,30 +220,30 @@ class PlayerDV1(nn.Module):
     """The model of the DreamerV1 player.
 
     Args:
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        encoder (nn.Module| _FabricModule): the encoder.
+        recurrent_model (nn.Module| _FabricModule): the recurrent model.
+        representation_model (nn.Module| _FabricModule): the representation model.
+        actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
+        device (str | torch.device): the device where the model is stored.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
     """
 
     def __init__(
         self,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        encoder: MultiEncoder | _FabricModule,
+        recurrent_model: RecurrentModel | _FabricModule,
+        representation_model: MLP | _FabricModule,
+        actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
+        device: str | torch.device,
         actor_type: str | None = None,
     ) -> None:
         super().__init__()
@@ -252,13 +251,11 @@ class PlayerDV1(nn.Module):
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.device = device
         self.actions_dim = actions_dim
+        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
-        self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
-        self.init_states()
+        self.device = device
         self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -278,33 +275,39 @@ class PlayerDV1(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Tensor, mask: Optional[Dict[str, Tensor]] = None) -> Sequence[Tensor]:
+    def get_exploration_actions(
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+    ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
             obs (Tensor): the current observations.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
+            step (int): the step of the training, used for the exploration amount.
+                Default to 0.
 
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        actions = self.get_greedy_action(obs, mask=mask)
+        actions = self.get_actions(obs, greedy=greedy, mask=mask)
         expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
+        if self.actor._expl_amount > 0:
+            expl_actions = self.actor.add_exploration_noise(actions, step=step, mask=mask)
             self.actions = torch.cat(expl_actions, dim=-1)
         return expl_actions or actions
 
-    def get_greedy_action(
-        self, obs: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+    def get_actions(
+        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
             obs (Tensor): the current observations.
-            is_training (bool): whether it is training.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
                 Defaults to None.
 
@@ -317,9 +320,8 @@ class PlayerDV1(nn.Module):
         )
         _, self.stochastic_state = compute_stochastic_state(
             self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
-            validate_args=self.validate_args,
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -333,7 +335,7 @@ def build_agent(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, PlayerDV1]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -354,6 +356,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
+        The player (PlayerDV1).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -370,7 +373,7 @@ def build_agent(
             image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=False,
-            activation=eval(world_model_cfg.encoder.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
         )
         if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
@@ -381,7 +384,7 @@ def build_agent(
             input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
-            activation=eval(world_model_cfg.encoder.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
             layer_norm=False,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
@@ -391,7 +394,7 @@ def build_agent(
     recurrent_model = RecurrentModel(
         input_size=sum(actions_dim) + world_model_cfg.stochastic_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
-        activation=eval(world_model_cfg.recurrent_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.recurrent_model.dense_act),
     )
     representation_model = MLP(
         input_dims=(
@@ -399,14 +402,14 @@ def build_agent(
         ),
         output_dim=world_model_cfg.stochastic_size * 2,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
-        activation=eval(world_model_cfg.representation_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
     )
     transition_model = MLP(
         input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
         output_dim=world_model_cfg.stochastic_size * 2,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
-        activation=eval(world_model_cfg.transition_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
     )
     rssm = RSSM(
@@ -424,7 +427,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=eval(world_model_cfg.observation_model.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm=False,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -437,7 +440,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
-            activation=eval(world_model_cfg.observation_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
             layer_norm=False,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
@@ -448,7 +451,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
-        activation=eval(world_model_cfg.reward_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
     )
     if world_model_cfg.use_continues:
@@ -456,7 +459,7 @@ def build_agent(
             input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
-            activation=eval(world_model_cfg.discount_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
         )
     world_model = WorldModel(
@@ -475,15 +478,18 @@ def build_agent(
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
+        expl_amount=actor_cfg.expl_amount,
+        expl_decay=actor_cfg.expl_decay,
+        expl_min=actor_cfg.expl_min,
     )
     critic = MLP(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         flatten_dim=None,
     )
     actor.apply(init_weights)
@@ -497,6 +503,20 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV1(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm.recurrent_model),
+        copy.deepcopy(world_model.rssm.representation_model),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -509,4 +529,19 @@ def build_agent(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    return world_model, actor, critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
+    player.representation_model = fabric_player.setup_module(player.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, player

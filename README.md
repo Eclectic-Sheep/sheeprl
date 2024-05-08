@@ -1,5 +1,10 @@
 # ⚡ SheepRL 🐑
 
+[![Python 3.8](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/downloads/release/python-380/)
+[![Python 3.9](https://img.shields.io/badge/python-3.9-blue.svg)](https://www.python.org/downloads/release/python-390/)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+
 <p align="center">
   <img src="./assets/images/logo.svg" style="width:40%">
 </p>
@@ -86,6 +91,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <th>SheepRL v0.4.0</th>
         <th>SheepRL v0.4.9</th>
         <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
+        <th>SheepRL v0.5.5<br />(Numpy Buffers)</th>
         <th>StableBaselines3<sup>1</sup></th>
       </tr>
     </thead>
@@ -96,6 +102,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>192.31s &plusmn; 1.11</td>
         <td>138.3s &plusmn; 0.16</td>
         <td>80.81s &plusmn; 0.68</td>
+        <td>81.27s &plusmn; 0.47</td>
         <td>77.21s &plusmn; 0.36</td>
       </tr>
       <tr>
@@ -103,6 +110,24 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>85.42s &plusmn; 2.27</td>
         <td>59.53s &plusmn; 0.78</td>
         <td>46.09s &plusmn; 0.59</td>
+        <td>36.88s &plusmn; 0.30</td>
+        <td>N.D.</td>
+      </tr>
+      <tr>
+        <td rowspan="2"><b>A2C</b></td>
+        <td><i>1 device</i></td>
+        <td>N.D.</td>
+        <td>N.D.</td>
+        <td>N.D.</td>
+        <td>84.76s &plusmn; 0.37</td>
+        <td>84.22s &plusmn; 0.99</td>
+      </tr>
+      <tr>
+        <td><i>2 devices</i></td>
+        <td>N.D.</td>
+        <td>N.D.</td>
+        <td>N.D.</td>
+        <td>28.95s &plusmn; 0.75</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -111,6 +136,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>421.37s &plusmn; 5.27</td>
         <td>363.74s &plusmn; 3.44</td>
         <td>318.06s &plusmn; 4.46</td>
+        <td>320.21 &plusmn; 6.29</td>
         <td>336.06s &plusmn; 12.26</td>
       </tr>
       <tr>
@@ -118,6 +144,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>264.29s &plusmn; 1.81</td>
         <td>238.88s &plusmn; 4.97</td>
         <td>210.07s &plusmn; 27</td>
+        <td>225.95 &plusmn; 3.65</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -126,6 +153,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>4201.23s</td>
         <td>N.D.</td>
         <td>2921.38s</td>
+        <td>2207.13s</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -134,6 +162,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>1874.62s</td>
         <td>N.D.</td>
         <td>1148.1s</td>
+        <td>906.42s</td>
         <td>N.D.</td>
       </tr>
       <tr>
@@ -142,6 +171,7 @@ The training times of our implementations compared to the ones of Stable Baselin
         <td>2022.99s</td>
         <td>N.D.</td>
         <td>1378.01s</td>
+        <td>1589.30s</td>
         <td>N.D.</td>
       </tr>
     </tbody>

@@ -61,6 +61,7 @@ class CheckpointCallback:
         player_trainer_collective: TorchCollective,
         ckpt_path: str,
         replay_buffer: Optional["ReplayBuffer"] = None,
+        ratio_state_dict: Dict[str, Any] | None = None,
     ):
         state = [None]
         player_trainer_collective.broadcast_object_list(state, src=1)
@@ -68,6 +69,8 @@ class CheckpointCallback:
         if replay_buffer is not None:
             rb_state = self._ckpt_rb(replay_buffer)
             state["rb"] = replay_buffer
+        if ratio_state_dict is not None:
+            state["ratio"] = ratio_state_dict
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
@@ -102,14 +105,14 @@ class CheckpointCallback:
         """
         if isinstance(rb, ReplayBuffer):
             # clone the true done
-            state = rb["dones"][(rb._pos - 1) % rb.buffer_size, :].copy()
+            state = rb["truncated"][(rb._pos - 1) % rb.buffer_size, :].copy()
             # substitute the last done with all True values (all the environment are truncated)
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = True
+            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = 1
         elif isinstance(rb, EnvIndependentReplayBuffer):
             state = []
             for b in rb.buffer:
-                state.append(b["dones"][(b._pos - 1) % b.buffer_size, :].copy())
-                b["dones"][(b._pos - 1) % b.buffer_size, :] = True
+                state.append(b["truncated"][(b._pos - 1) % b.buffer_size, :].copy())
+                b["truncated"][(b._pos - 1) % b.buffer_size, :] = 1
         elif isinstance(rb, EpisodeBuffer):
             # remove open episodes from the buffer because the state of the environment is not saved
             state = rb._open_episodes
@@ -130,10 +133,10 @@ class CheckpointCallback:
         """
         if isinstance(rb, ReplayBuffer):
             # reinsert the true dones in the buffer
-            rb["dones"][(rb._pos - 1) % rb.buffer_size, :] = state
+            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = state
         elif isinstance(rb, EnvIndependentReplayBuffer):
             for i, b in enumerate(rb.buffer):
-                b["dones"][(b._pos - 1) % b.buffer_size, :] = state[i]
+                b["truncated"][(b._pos - 1) % b.buffer_size, :] = state[i]
         elif isinstance(rb, EpisodeBuffer):
             # reinsert the open episodes to continue the training
             rb._open_episodes = state

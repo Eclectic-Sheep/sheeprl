@@ -1,15 +1,19 @@
+from __future__ import annotations
+
+import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
+import hydra
 import torch
 import torch.nn as nn
 from lightning import Fabric
-from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal
+from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
+from sheeprl.algos.ppo.agent import PPOActor, PPOPlayer
 from sheeprl.models.models import MLP
-from sheeprl.utils.distribution import OneHotCategoricalValidateArgs
+from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class MLPEncoder(nn.Module):
@@ -26,7 +30,7 @@ class MLPEncoder(nn.Module):
         super().__init__()
         self.keys = keys
         self.input_dim = input_dim
-        self.output_dim = features_dim
+        self.output_dim = features_dim if features_dim else dense_units
         self.model = MLP(
             input_dim,
             features_dim,
@@ -69,7 +73,7 @@ class A2CAgent(nn.Module):
                 mlp_keys,
                 encoder_cfg.dense_units,
                 encoder_cfg.mlp_layers,
-                eval(encoder_cfg.dense_act),
+                hydra.utils.get_class(encoder_cfg.dense_act),
                 encoder_cfg.layer_norm,
             )
             if mlp_keys is not None and len(mlp_keys) > 0
@@ -82,7 +86,7 @@ class A2CAgent(nn.Module):
             input_dims=features_dim,
             output_dim=1,
             hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-            activation=eval(critic_cfg.dense_act),
+            activation=hydra.utils.get_class(critic_cfg.dense_act),
             norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
             norm_args=(
                 [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
@@ -92,45 +96,43 @@ class A2CAgent(nn.Module):
         )
 
         # Actor
-        self.actor_backbone = MLP(
-            input_dims=features_dim,
-            output_dim=None,
-            hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
-            activation=eval(actor_cfg.dense_act),
-            flatten_dim=None,
-            norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
-                if actor_cfg.layer_norm
-                else None
-            ),
+        actor_backbone = (
+            MLP(
+                input_dims=features_dim,
+                output_dim=None,
+                hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
+                activation=hydra.utils.get_class(actor_cfg.dense_act),
+                flatten_dim=None,
+                norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
+                norm_args=(
+                    [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
+                    if actor_cfg.layer_norm
+                    else None
+                ),
+            )
+            if actor_cfg.mlp_layers > 0
+            else nn.Identity()
         )
         if is_continuous:
             # Output is a tuple of two elements: mean and log_std, one for every action
-            self.actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
         else:
             # Output is a tuple of one element: logits, one for every action
-            self.actor_heads = nn.ModuleList(
-                [nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim]
-            )
+            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous=is_continuous)
 
     def forward(
-        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
+        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None, greedy: bool = False
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
         feat = self.feature_extractor(obs)
-        out: Tensor = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
+        pre_dist: List[Tensor] = self.actor(feat)
         values = self.critic(feat)
         if self.is_continuous:
             mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
             std = log_std.exp()
-            normal = Independent(
-                Normal(mean, std, validate_args=self.distribution_cfg.validate_args),
-                1,
-                validate_args=self.distribution_cfg.validate_args,
-            )
+            normal = Independent(Normal(mean, std), 1)
             if actions is None:
-                actions = normal.sample()
+                actions = normal.mode if greedy else normal.sample()
             else:
                 # always composed by a tuple of one element containing all the
                 # continuous actions
@@ -145,33 +147,15 @@ class A2CAgent(nn.Module):
                 should_append = True
                 actions: List[Tensor] = []
             for i, logits in enumerate(pre_dist):
-                actions_dist.append(
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args)
-                )
+                actions_dist.append(OneHotCategorical(logits=logits))
                 if should_append:
-                    actions.append(actions_dist[-1].sample())
+                    actions.append(actions_dist[-1].mode if greedy else actions_dist[-1].sample())
                 actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
             return tuple(actions), torch.stack(actions_logprobs, dim=-1).sum(dim=-1, keepdim=True), values
 
     def get_value(self, obs: Dict[str, Tensor]) -> Tensor:
         feat = self.feature_extractor(obs)
         return self.critic(feat)
-
-    def get_greedy_actions(self, obs: Dict[str, Tensor]) -> Sequence[Tensor]:
-        feat = self.feature_extractor(obs)
-        out = self.actor_backbone(feat)
-        pre_dist: List[Tensor] = [head(out) for head in self.actor_heads]
-        if self.is_continuous:
-            # Just take the mean of the distribution
-            return [torch.chunk(pre_dist[0], 2, -1)[0]]
-        else:
-            # Take the mode of the distribution
-            return tuple(
-                [
-                    OneHotCategoricalValidateArgs(logits=logits, validate_args=self.distribution_cfg.validate_args).mode
-                    for logits in pre_dist
-                ]
-            )
 
 
 def build_agent(
@@ -181,7 +165,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> _FabricModule:
+) -> Tuple[A2CAgent, PPOPlayer]:
     agent = A2CAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -194,6 +178,26 @@ def build_agent(
     )
     if agent_state:
         agent.load_state_dict(agent_state)
-    agent = fabric.setup_module(agent)
 
-    return agent
+    # Setup player agent
+    player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
+
+    # Setup training agent
+    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
+    agent.critic = fabric.setup_module(agent.critic)
+    agent.actor = fabric.setup_module(agent.actor)
+
+    # Setup player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
+    player.critic = fabric_player.setup_module(player.critic)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
+        player_p.data = agent_p.data
+    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
+        player_p.data = agent_p.data
+    return agent, player

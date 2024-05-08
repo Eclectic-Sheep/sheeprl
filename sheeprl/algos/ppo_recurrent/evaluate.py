@@ -49,5 +49,6 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
     # Create the actor and critic models
-    agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
+    _, agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
+    del _
     test(agent, fabric, cfg, log_dir)

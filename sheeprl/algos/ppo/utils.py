@@ -10,7 +10,7 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.ppo.agent import PPOAgent, build_agent
+from sheeprl.algos.ppo.agent import PPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -22,43 +22,41 @@ AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Los
 MODELS_TO_REGISTER = {"agent"}
 
 
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Dict[str, Tensor]:
+    torch_obs = {}
+    for k in obs.keys():
+        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).float()
+        if k in cnn_keys:
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1, *torch_obs[k].shape[-2:])
+        else:
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
+    return normalize_obs(torch_obs, cnn_keys, obs.keys())
+
+
 @torch.no_grad()
-def test(agent: PPOAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cfg.algo.cnn_keys.encoder:
-                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch_obs.float()
-            obs[k] = torch_obs
+    obs = env.reset(seed=cfg.seed)[0]
 
     while not done:
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
+
         # Act greedly through the environment
-        if agent.is_continuous:
-            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        actions = agent.get_actions(torch_obs, greedy=True)
+        if agent.actor.is_continuous:
+            actions = torch.cat(actions, dim=-1)
         else:
-            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+            actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        obs = {}
-        for k in o.keys():
-            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cfg.algo.cnn_keys.encoder:
-                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-                if k in cfg.algo.mlp_keys.encoder:
-                    torch_obs = torch_obs.float()
-                obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True

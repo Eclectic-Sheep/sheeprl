@@ -12,6 +12,7 @@ seed: 5
 # Environment
 env:
   num_envs: 4
+  action_repeat: 2
   max_episode_steps: -1
   wrapper:
     domain_name: walker
@@ -25,21 +26,34 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 100000
+  size: 500_000
   checkpoint: True
   memmap: True
 
 # Algorithm
 algo:
-  total_steps: 1000000
+  total_steps: 500_000
   cnn_keys:
     encoder:
       - rgb
   mlp_keys:
     encoder: []
-  learning_starts: 1024
-  train_every: 2
+  learning_starts: 1300
+  replay_ratio: 0.5
 
 # Metric
 metric:
   log_every: 5000
+
+fabric:
+  accelerator: cuda
+  precision: bf16-mixed
+  # precision: None
+  # plugins:
+  #   - _target_: lightning.fabric.plugins.precision.MixedPrecision
+  #     precision: 16-mixed
+  #     device: cuda
+  #     scaler:
+  #       _target_: torch.cuda.amp.GradScaler
+  #       init_scale: 1e4
+  #       growth_interval: 1000

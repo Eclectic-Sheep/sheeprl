@@ -5,9 +5,6 @@ defaults:
   - override /env: atari
   - _self_
 
-# Experiment
-seed: 5
-
 # Environment
 env:
   num_envs: 1
@@ -26,10 +23,11 @@ buffer:
 # Algorithm
 algo:
   learning_starts: 1024
-  train_every: 16
+  replay_ratio: 0.0625
+  
   dense_units: 8
   mlp_layers: 1
-  per_rank_gradient_steps: 1
+  
   world_model:
     stochastic_size: 4
     encoder:

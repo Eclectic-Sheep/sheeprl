@@ -1,45 +1,46 @@
+from __future__ import annotations
+
 from typing import Any, Dict
 
+import numpy as np
 import torch
 from lightning import Fabric
+from torch import Tensor
 
-from sheeprl.algos.a2c.agent import A2CAgent
+from sheeprl.algos.ppo.agent import PPOPlayer
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
 
 
+def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *, num_envs: int = 1, **kwargs) -> Dict[str, Tensor]:
+    torch_obs = {k: torch.from_numpy(v.copy()).to(fabric.device).float().reshape(num_envs, -1) for k, v in obs.items()}
+    return torch_obs
+
+
 @torch.no_grad()
-def test(agent: A2CAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in cfg.algo.mlp_keys.encoder:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            torch_obs = torch_obs.float()
-            obs[k] = torch_obs
+    obs = env.reset(seed=cfg.seed)[0]
 
     while not done:
+        # Convert observations to tensors
+        torch_obs = prepare_obs(fabric, obs)
+
         # Act greedly through the environment
-        if agent.is_continuous:
-            actions = torch.cat(agent.get_greedy_actions(obs), dim=-1)
+        actions = agent.get_actions(torch_obs, greedy=True)
+        if agent.actor.is_continuous:
+            actions = torch.cat(actions, dim=-1)
         else:
-            actions = torch.cat([act.argmax(dim=-1) for act in agent.get_greedy_actions(obs)], dim=-1)
+            actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        obs = {}
-        for k in o.keys():
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                torch_obs = torch_obs.float()
-                obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True

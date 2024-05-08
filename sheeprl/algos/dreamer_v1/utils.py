@@ -31,10 +31,10 @@ AGGREGATOR_KEYS = {
     "State/post_entropy",
     "State/prior_entropy",
     "State/kl",
-    "Params/exploration_amount",
     "Grads/world_model",
     "Grads/actor",
     "Grads/critic",
+    "Params/exploration_amount",
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
@@ -78,7 +78,7 @@ def compute_lambda_values(
 
 
 def compute_stochastic_state(
-    state_information: Tensor, event_shape: int = 1, min_std: float = 0.1, validate_args: bool = False
+    state_information: Tensor, event_shape: int = 1, min_std: float = 0.1
 ) -> Tuple[Tuple[Tensor, Tensor], Tensor]:
     """
     Compute the stochastic state from the information of the distribution of the stochastic state.
@@ -97,12 +97,12 @@ def compute_stochastic_state(
     """
     mean, std = torch.chunk(state_information, 2, -1)
     std = F.softplus(std) + min_std
-    state_distribution: Distribution = Normal(mean, std, validate_args=validate_args)
+    state_distribution: Distribution = Normal(mean, std)
     if event_shape:
         # it is necessary an Independent distribution because
         # it is necessary to create (batch_size * sequence_length) independent distributions,
         # each producing a sample of size equal to the stochastic size
-        state_distribution = Independent(state_distribution, event_shape, validate_args=validate_args)
+        state_distribution = Independent(state_distribution, event_shape)
     stochastic_state = state_distribution.rsample()
     return (mean, std), stochastic_state
 

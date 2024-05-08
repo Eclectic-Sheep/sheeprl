@@ -13,10 +13,9 @@ lmbda: 0.95
 horizon: 15
 
 # Training recipe
-train_every: 16
-learning_starts: 65536
-per_rank_pretrain_steps: 1
-per_rank_gradient_steps: 1
+replay_ratio: 1
+learning_starts: 1024
+per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -26,14 +25,20 @@ mlp_keys:
   decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
-layer_norm: True
+cnn_layer_norm:
+  cls: sheeprl.models.models.LayerNormChannelLast
+  kw: 
+    eps: 1e-3
+mlp_layer_norm:
+  cls: sheeprl.models.models.LayerNorm
+  kw: 
+    eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
 dense_act: torch.nn.SiLU
 cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
-decoupled_rssm: False
 
 # World model
 world_model:
@@ -45,6 +50,8 @@ world_model:
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
   clip_gradients: 1000.0
+  decoupled_rssm: False
+  learnable_initial_recurrent_state: True
 
   # Encoder
   encoder:
@@ -52,26 +59,27 @@ world_model:
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    cnn_layer_norm: ${algo.cnn_layer_norm}
+    mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
-    layer_norm: True
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Prior
   transition_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Posterior
   representation_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Decoder
   observation_model:
@@ -79,14 +87,15 @@ world_model:
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    cnn_layer_norm: ${algo.cnn_layer_norm}
+    mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Reward model
   reward_model:
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
     bins: 255
 
@@ -95,7 +104,7 @@ world_model:
     learnable: True
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # World model optimizer
@@ -109,17 +118,15 @@ actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
-  init_std: 0.0
-  objective_mix: 1.0
+  max_std: 1.0
+  init_std: 2.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
-  expl_amount: 0.0
-  expl_min: 0.0
-  expl_decay: False
-  max_step_expl_decay: 0
+  unimix: ${algo.unimix}
+  action_clip: 1.0
 
   # Disttributed percentile model (used to scale the values)
   moments:
@@ -139,9 +146,9 @@ actor:
 critic:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
-  target_network_update_freq: 1
+  per_rank_target_network_update_freq: 1
   tau: 0.02
   bins: 255
   clip_gradients: 100.0

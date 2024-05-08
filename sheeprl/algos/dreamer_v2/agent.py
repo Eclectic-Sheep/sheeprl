@@ -11,16 +11,21 @@ import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
-from torch.distributions import Distribution, Independent, Normal, TanhTransform, TransformedDistribution
+from torch.distributions import (
+    Distribution,
+    Independent,
+    Normal,
+    OneHotCategorical,
+    OneHotCategoricalStraightThrough,
+    TanhTransform,
+    TransformedDistribution,
+)
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import (
-    OneHotCategoricalStraightThroughValidateArgs,
-    OneHotCategoricalValidateArgs,
-    TruncatedNormal,
-)
-from sheeprl.utils.model import LayerNormChannelLast, ModuleType, cnn_forward
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
+from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.model import ModuleType, cnn_forward
 
 
 class CNNEncoder(nn.Module):
@@ -61,9 +66,9 @@ class CNNEncoder(nn.Module):
                 layer_args={"kernel_size": 4, "stride": 2},
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
-                norm_args=[{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)] if layer_norm else None
+                ),
             ),
             nn.Flatten(-3, -1),
         )
@@ -117,7 +122,7 @@ class MLPEncoder(nn.Module):
         self.output_dim = dense_units
 
     def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -1).type(torch.float32)
+        x = torch.cat([obs[k] for k in self.keys], -1)
         return self.model(x)
 
 
@@ -172,12 +177,12 @@ class CNNDecoder(nn.Module):
                 ],
                 activation=[activation, activation, activation, None],
                 norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                norm_args=[
-                    {"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])
-                ]
-                + [None]
-                if layer_norm
-                else None,
+                norm_args=(
+                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
+                    + [None]
+                    if layer_norm
+                    else None
+                ),
             ),
         )
 
@@ -273,7 +278,9 @@ class RecurrentModel(nn.Module):
             norm_layer=[nn.LayerNorm] if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
         )
-        self.rnn = LayerNormGRUCell(dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm=True)
+        self.rnn = LayerNormGRUCell(
+            dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm_cls=nn.LayerNorm
+        )
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
@@ -373,9 +380,7 @@ class RSSM(nn.Module):
             posterior (Tensor): the sampled posterior stochastic state.
         """
         logits = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def _transition(self, recurrent_out: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -387,9 +392,7 @@ class RSSM(nn.Module):
             prior (Tensor): the sampled prior stochastic state.
         """
         logits = self.transition_model(recurrent_out)
-        return logits, compute_stochastic_state(
-            logits, discrete=self.discrete, validate_args=self.distribution_cfg.validate_args
-        )
+        return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -434,6 +437,10 @@ class Actor(nn.Module):
             Default to False.
         expl_amount (float): the exploration amount to use during training.
             Default to 0.0.
+        expl_decay (float): the exploration decay to use during training.
+            Default to 0.0.
+        expl_min (float): the exploration amount minimum to use during training.
+            Default to 0.0.
     """
 
     def __init__(
@@ -449,6 +456,8 @@ class Actor(nn.Module):
         mlp_layers: int = 4,
         layer_norm: bool = False,
         expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
     ) -> None:
         super().__init__()
         self.distribution_cfg = distribution_cfg
@@ -484,17 +493,17 @@ class Actor(nn.Module):
         self.min_std = min_std
         self.distribution_cfg = distribution_cfg
         self._expl_amount = expl_amount
+        self._expl_decay = expl_decay
+        self._expl_min = expl_min
 
-    @property
-    def expl_amount(self) -> float:
-        return self._expl_amount
-
-    @expl_amount.setter
-    def expl_amount(self, amount: float):
-        self._expl_amount = amount
+    def _get_expl_amount(self, step: int) -> Tensor:
+        amount = self._expl_amount
+        if self._expl_decay:
+            amount *= 0.5 ** float(step) / self._expl_decay
+        return max(amount, self._expl_min)
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -502,8 +511,8 @@ class Actor(nn.Module):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            is_training (bool): whether it is in the training phase.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -518,22 +527,16 @@ class Actor(nn.Module):
             if self.distribution == "tanh_normal":
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(
-                    TransformedDistribution(
-                        actions_dist, TanhTransform(), validate_args=self.distribution_cfg.validate_args
-                    ),
-                    1,
-                    validate_args=self.distribution_cfg.validate_args,
-                )
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
-                actions_dist = Normal(mean, std, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(actions_dist, 1, validate_args=self.distribution_cfg.validate_args)
+                actions_dist = Normal(mean, std)
+                actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
                 std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1, validate_args=self.distribution_cfg.validate_args)
-                actions_dist = Independent(dist, 1, validate_args=self.distribution_cfg.validate_args)
-            if is_training:
+                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
+                actions_dist = Independent(dist, 1)
+            if not greedy:
                 actions = actions_dist.rsample()
             else:
                 sample = actions_dist.sample((100,))
@@ -545,35 +548,28 @@ class Actor(nn.Module):
             actions_dist: List[Distribution] = []
             actions: List[Tensor] = []
             for logits in pre_dist:
-                actions_dist.append(
-                    OneHotCategoricalStraightThroughValidateArgs(
-                        logits=logits, validate_args=self.distribution_cfg.validate_args
-                    )
-                )
-                if is_training:
+                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+                if not greedy:
                     actions.append(actions_dist[-1].rsample())
                 else:
                     actions.append(actions_dist[-1].mode)
         return tuple(actions), tuple(actions_dist)
 
     def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+        self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         if self.is_continuous:
             actions = torch.cat(actions, -1)
-            if self._expl_amount > 0.0:
-                actions = torch.clip(Normal(actions, self._expl_amount).sample(), -1, 1)
+            if expl_amount > 0.0:
+                actions = torch.clip(Normal(actions, expl_amount).sample(), -1, 1)
             expl_actions = [actions]
         else:
             expl_actions = []
             for act in actions:
-                sample = (
-                    OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False)
-                    .sample()
-                    .to(act.device)
-                )
+                sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
                 expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < self._expl_amount, sample, act)
+                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
                 )
         return tuple(expl_actions)
 
@@ -592,6 +588,8 @@ class MinedojoActor(Actor):
         mlp_layers: int = 4,
         layer_norm: bool = False,
         expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
     ) -> None:
         super().__init__(
             latent_state_size=latent_state_size,
@@ -605,10 +603,12 @@ class MinedojoActor(Actor):
             mlp_layers=mlp_layers,
             layer_norm=layer_norm,
             expl_amount=expl_amount,
+            expl_decay=expl_decay,
+            expl_min=expl_min,
         )
 
     def forward(
-        self, state: Tensor, is_training: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -616,8 +616,8 @@ class MinedojoActor(Actor):
 
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            is_training (bool): whether it is in the training phase.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -651,12 +651,8 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            actions_dist.append(
-                OneHotCategoricalStraightThroughValidateArgs(
-                    logits=logits, validate_args=self.distribution_cfg.validate_args
-                )
-            )
-            if is_training:
+            actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+            if not greedy:
                 actions.append(actions_dist[-1].rsample())
             else:
                 actions.append(actions_dist[-1].mode)
@@ -665,7 +661,7 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
     def add_exploration_noise(
-        self, actions: Sequence[Tensor], mask: Optional[Dict[str, Tensor]] = None
+        self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         expl_actions = []
         functional_action = actions[0].argmax(dim=-1)
@@ -692,10 +688,8 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = (
-                OneHotCategoricalValidateArgs(logits=torch.zeros_like(act), validate_args=False).sample().to(act.device)
-            )
-            expl_amount = self.expl_amount
+            sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
+            expl_amount = self._get_expl_amount(step)
             # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
             # to satisfy the constraints of the environment
             if (
@@ -743,15 +737,15 @@ class PlayerDV2(nn.Module):
     The model of the Dreamer_v2 player.
 
     Args:
-        encoder (nn.Module): the encoder.
-        recurrent_model (nn.Module): the recurrent model.
-        representation_model (nn.Module): the representation model.
-        actor (nn.Module): the actor.
+        encoder (nn.Module | _FabricModule): the encoder.
+        recurrent_model (nn.Module | _FabricModule): the recurrent model.
+        representation_model (nn.Module | _FabricModule): the representation model.
+        actor (nn.Module | _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        device (torch.device): the device to work on.
+        device (str | torch.device): the device where the model is stored.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
@@ -761,15 +755,15 @@ class PlayerDV2(nn.Module):
 
     def __init__(
         self,
-        encoder: nn.Module,
-        recurrent_model: nn.Module,
-        representation_model: nn.Module,
-        actor: nn.Module,
+        encoder: nn.Module | _FabricModule,
+        recurrent_model: nn.Module | _FabricModule,
+        representation_model: nn.Module | _FabricModule,
+        actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
         num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
-        device: torch.device,
+        device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
     ) -> None:
@@ -778,13 +772,12 @@ class PlayerDV2(nn.Module):
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.device = device
         self.actions_dim = actions_dim
-        self.stochastic_size = stochastic_size
-        self.discrete_size = discrete_size
-        self.recurrent_state_size = recurrent_state_size
         self.num_envs = num_envs
-        self.validate_args = self.actor.distribution_cfg.validate_args
+        self.stochastic_size = stochastic_size
+        self.recurrent_state_size = recurrent_state_size
+        self.device = device
+        self.discrete_size = discrete_size
         self.actor_type = actor_type
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
@@ -806,30 +799,10 @@ class PlayerDV2(nn.Module):
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
 
-    def get_exploration_action(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]] = None) -> Tensor:
-        """
-        Return the actions with a certain amount of noise for exploration.
-
-        Args:
-            obs (Dict[str, Tensor]): the current observations.
-            is_continuous (bool): whether or not the actions are continuous.
-            mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
-                Default to None.
-
-        Returns:
-            The actions the agent has to perform.
-        """
-        actions = self.get_greedy_action(obs, mask=mask)
-        expl_actions = None
-        if self.actor.expl_amount > 0:
-            expl_actions = self.actor.add_exploration_noise(actions, mask=mask)
-            self.actions = torch.cat(expl_actions, dim=-1)
-        return expl_actions or actions
-
-    def get_greedy_action(
+    def get_actions(
         self,
         obs: Dict[str, Tensor],
-        is_training: bool = True,
+        greedy: bool = False,
         mask: Optional[Dict[str, Tensor]] = None,
     ) -> Sequence[Tensor]:
         """
@@ -837,8 +810,8 @@ class PlayerDV2(nn.Module):
 
         Args:
             obs (Dict[str, Tensor]): the current observations.
-            is_training (bool): whether it is training.
-                Default to True.
+            greedy (bool): whether or not to sample the actions.
+                Default to False.
             mask (Dict[str, Tensor], optional): the action mask (which actions can be selected).
                 Default to None.
 
@@ -850,13 +823,11 @@ class PlayerDV2(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         posterior_logits = self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1))
-        stochastic_state = compute_stochastic_state(
-            posterior_logits, discrete=self.discrete_size, validate_args=self.validate_args
-        )
+        stochastic_state = compute_stochastic_state(posterior_logits, discrete=self.discrete_size)
         self.stochastic_state = stochastic_state.view(
             *stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
         )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), is_training, mask)
+        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -871,7 +842,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, nn.Module]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV2]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -894,7 +865,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
-        The target critic (nn.Module).
+        The target critic (_FabricModule).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -912,7 +883,7 @@ def build_agent(
             image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=world_model_cfg.encoder.layer_norm,
-            activation=eval(world_model_cfg.encoder.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
         )
         if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
@@ -923,7 +894,7 @@ def build_agent(
             input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
-            activation=eval(world_model_cfg.encoder.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
             layer_norm=world_model_cfg.encoder.layer_norm,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
@@ -940,23 +911,27 @@ def build_agent(
         ),
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
-        activation=eval(world_model_cfg.representation_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
-        if world_model_cfg.representation_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            if world_model_cfg.representation_model.layer_norm
+            else None
+        ),
     )
     transition_model = MLP(
         input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
-        activation=eval(world_model_cfg.transition_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
-        norm_args=[{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
-        if world_model_cfg.transition_model.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            if world_model_cfg.transition_model.layer_norm
+            else None
+        ),
     )
     rssm = RSSM(
         recurrent_model=recurrent_model.apply(init_weights),
@@ -973,7 +948,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=eval(world_model_cfg.observation_model.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -986,7 +961,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
-            activation=eval(world_model_cfg.observation_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
@@ -997,34 +972,42 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
-        activation=eval(world_model_cfg.reward_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
-        norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
-        norm_args=[
-            {"normalized_shape": world_model_cfg.reward_model.dense_units}
-            for _ in range(world_model_cfg.reward_model.mlp_layers)
-        ]
-        if world_model_cfg.reward_model.layer_norm
-        else None,
+        norm_layer=(
+            [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
+        norm_args=(
+            [
+                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                for _ in range(world_model_cfg.reward_model.mlp_layers)
+            ]
+            if world_model_cfg.reward_model.layer_norm
+            else None
+        ),
     )
     if world_model_cfg.use_continues:
         continue_model = MLP(
             input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
-            activation=eval(world_model_cfg.discount_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
-            norm_layer=[nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
-            norm_args=[
-                {"normalized_shape": world_model_cfg.discount_model.dense_units}
-                for _ in range(world_model_cfg.discount_model.mlp_layers)
-            ]
-            if world_model_cfg.discount_model.layer_norm
-            else None,
+            norm_layer=(
+                [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
+            norm_args=(
+                [
+                    {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                    for _ in range(world_model_cfg.discount_model.mlp_layers)
+                ]
+                if world_model_cfg.discount_model.layer_norm
+                else None
+            ),
         )
     world_model = WorldModel(
         encoder.apply(init_weights),
@@ -1042,7 +1025,7 @@ def build_agent(
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
     )
@@ -1050,12 +1033,14 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
-        norm_args=[{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
-        if critic_cfg.layer_norm
-        else None,
+        norm_args=(
+            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            if critic_cfg.layer_norm
+            else None
+        ),
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
@@ -1068,6 +1053,21 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV2(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm.recurrent_model),
+        copy.deepcopy(world_model.rssm.representation_model),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
+    )
+
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -1079,8 +1079,26 @@ def build_agent(
         world_model.continue_model = fabric.setup_module(world_model.continue_model)
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
+
+    # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
+    target_critic = fabric_player.setup_module(target_critic)
 
-    return world_model, actor, critic, target_critic
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
+    player.representation_model = fabric_player.setup_module(player.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, target_critic, player

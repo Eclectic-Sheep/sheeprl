@@ -1,0 +1,59 @@
+# @package _global_
+
+defaults:
+  - override /algo: a2c
+  - override /env: gym
+  - _self_
+
+# Environment
+env:
+  capture_video: False
+  num_envs: 1
+  sync_env: True
+
+# Algorithm
+algo:
+  name: a2c
+  rollout_steps: 5
+  loss_reduction: mean
+  normalize_advantages: False
+  max_grad_norm: 0.5
+  encoder:
+    mlp_layers: 2
+    mlp_features_dim: null
+  actor:
+    mlp_layers: 0
+  critic:
+    mlp_layers: 0
+  optimizer:
+    lr: 7e-4
+    eps: 1e-5
+    alpha: 0.99
+  per_rank_batch_size: 5
+  # # If you want to run this benchmark with older versions,
+  # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.
+  run_test: False
+  # If you want to run this benchmark with older versions,
+  # you need to move the `total_steps` and the `mlp_keys` config from `algo` to the root.
+  total_steps: 65536
+  mlp_keys:
+    encoder: [state]
+
+# Buffer
+buffer:
+  share_data: False
+  size: ${algo.rollout_steps}
+  memmap: False
+
+fabric:
+  devices: 1
+  accelerator: cpu
+
+checkpoint:
+  every: 70000
+  save_last: False
+
+metric:
+  log_every: 70000
+  log_level: 0
+  disable_timer: True

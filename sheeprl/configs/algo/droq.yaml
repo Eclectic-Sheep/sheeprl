@@ -5,7 +5,7 @@ defaults:
 name: droq
 
 # Training recipe
-per_rank_gradient_steps: 20
+replay_ratio: 20.0
 
 # Override from `sac` config
 critic:

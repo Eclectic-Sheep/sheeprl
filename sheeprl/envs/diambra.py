@@ -23,7 +23,7 @@ class DiambraWrapper(gym.Wrapper):
     def __init__(
         self,
         id: str,
-        action_space: str = "diambra.arena.SpaceTypes.DISCRETE",
+        action_space: str = "DISCRETE",
         screen_size: Union[int, Tuple[int, int]] = 64,
         grayscale: bool = False,
         repeat_action: int = 1,
@@ -43,16 +43,23 @@ class DiambraWrapper(gym.Wrapper):
             warnings.warn("The DIAMBRA n_players setting is disabled")
 
         role = diambra_settings.pop("role", None)
-        self._action_type = "discrete" if "diambra.arena.SpaceTypes.DISCRETE" == action_space else "multi-discrete"
+        if action_space not in {"DISCRETE", "MULTI_DISCRETE"}:
+            raise ValueError(
+                "The valid values for the `action_space` attribute are "
+                f"'DISCRETE' or 'MULTI_DISCRETE', got {action_space}"
+            )
+        if role is not None and role not in {"P1", "P2"}:
+            raise ValueError(f"The valid values for the `role` attribute are 'P1' or 'P2' or None, got {role}")
+        self._action_type = action_space.lower()
         settings = EnvironmentSettings(
-            **diambra_settings,
             **{
+                **diambra_settings,
                 "game_id": id,
-                "action_space": eval(action_space),
+                "action_space": getattr(diambra.arena.SpaceTypes, action_space, diambra.arena.SpaceTypes.DISCRETE),
                 "n_players": 1,
-                "role": eval(role) if role is not None else None,
+                "role": getattr(diambra.arena.Roles, role, diambra.arena.Roles.P1) if role is not None else None,
                 "render_mode": render_mode,
-            },
+            }
         )
         if repeat_action > 1:
             if "step_ratio" not in settings or settings["step_ratio"] > 1:
@@ -69,11 +76,11 @@ class DiambraWrapper(gym.Wrapper):
         if diambra_wrappers.pop("flatten", None) is not None:
             warnings.warn("The DIAMBRA flatten wrapper is disabled")
         wrappers = WrappersSettings(
-            **diambra_wrappers,
             **{
+                **diambra_wrappers,
                 "flatten": True,
                 "repeat_action": repeat_action,
-            },
+            }
         )
         if increase_performance:
             settings.frame_shape = screen_size + (int(grayscale),)
@@ -123,9 +130,9 @@ class DiambraWrapper(gym.Wrapper):
         if self._action_type == "discrete" and isinstance(action, np.ndarray):
             action = action.squeeze()
             action = action.item()
-        obs, reward, done, truncated, infos = self.env.step(action)
+        obs, reward, terminated, truncated, infos = self.env.step(action)
         infos["env_domain"] = "DIAMBRA"
-        return self._convert_obs(obs), reward, done or infos.get("env_done", False), truncated, infos
+        return self._convert_obs(obs), reward, terminated or infos.get("env_done", False), truncated, infos
 
     def render(self, mode: str = "rgb_array", **kwargs) -> Optional[Union[RenderFrame, List[RenderFrame]]]:
         return self.env.render()
