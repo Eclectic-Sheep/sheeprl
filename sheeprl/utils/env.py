@@ -85,7 +85,7 @@ def make_env(
         if not (
             isinstance(cfg.algo.mlp_keys.encoder, list)
             and isinstance(cfg.algo.cnn_keys.encoder, list)
-            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder + cfg.algo.other_keys.encoder) > 0
+            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder + cfg.algo.other_keys) > 0
         ):
             raise ValueError(
                 "`algo.cnn_keys.encoder` and `algo.mlp_keys.encoder` must be lists of strings, got: "
@@ -97,7 +97,7 @@ def make_env(
         # Create observation dict
         encoder_cnn_keys_length = len(cfg.algo.cnn_keys.encoder)
         encoder_mlp_keys_length = len(cfg.algo.mlp_keys.encoder)
-        len(cfg.algo.other_keys.encoder)
+        len(cfg.algo.other_keys)
 
         if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
             # Vector only observation
@@ -143,14 +143,14 @@ def make_env(
         if (
             len(
                 set(k for k in env.observation_space.keys()).intersection(
-                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys.encoder)
+                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys)
                 )
             )
             == 0
         ):
             raise ValueError(
                 "The user specified keys"
-                f"`{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys.encoder}` "
+                f"`{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys}` "
                 "are not a subset of the "
                 f"environment `{env.observation_space.keys()}` observation keys. Please check your config file."
             )

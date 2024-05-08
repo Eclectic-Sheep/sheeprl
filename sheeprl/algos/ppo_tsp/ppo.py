@@ -54,9 +54,10 @@ def train(
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
             batch = {k: v[batch_idxes] for k, v in data.items()}
-            # TODO add graph_keys encoder
             normalized_obs = normalize_obs(
-                batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                batch,
+                cfg.algo.cnn_keys.encoder,
+                cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder + cfg.algo.other_keys,
             )
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
@@ -76,7 +77,7 @@ def train(
 
             # Value loss
             v_loss = value_loss(
-                new_values,
+                new_values.squeeze(0),
                 batch["values"],
                 batch["returns"],
                 cfg.algo.clip_coef,
@@ -155,28 +156,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:  # TODO add graph_keys encoder
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder + cfg.algo.other_keys == []:  # TODO add other_keys encoder
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
             "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
         )
-    if cfg.metric.log_level > 0:  # TODO add graph_keys encoder
+    if cfg.metric.log_level > 0:  # TODO add other_keys encoder
         fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        fabric.print("Encoder Graph keys:", cfg.algo.other_keys)
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder + cfg.algo.other_keys
 
     is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        envs.single_action_space.shape
-        if is_continuous
-        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
-    )
+    isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
+
     # Create the actor and critic models
     agent = build_agent(
         fabric,
-        actions_dim,
-        is_continuous,
         cfg,
         observation_space,
         state["agent"] if cfg.checkpoint.resume_from else None,
@@ -261,7 +257,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data = {}
     next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
     for k in obs_keys:
-        if k in cfg.algo.cnn_keys.encoder:  # TODO add graph_keys encoder??
+        if k in cfg.algo.cnn_keys.encoder:  # TODO add other_keys encoder??
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
@@ -275,7 +271,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 with torch.no_grad():
                     # Sample an action given the observation received by the environment
                     normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)
-                    # TODO as_tensor does not work with graph obs...
                     torch_obs = {
                         k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys
                     }
@@ -350,7 +345,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.no_grad():
-            normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)  # TODO add graph_keys encoder
+            normalized_obs = normalize_obs(next_obs, cfg.algo.cnn_keys.encoder, obs_keys)  # TODO add other_keys encoder
             torch_obs = {k: torch.as_tensor(normalized_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
             next_values = agent.module.get_value(torch_obs)
             returns, advantages = gae(

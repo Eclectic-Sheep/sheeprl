@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - override /algo: ppo
+  - override /env: gym
+  - override /model_manager: ppo
+  - _self_
+
+# Algorithm
+algo:
+  total_steps: 524288
+  per_rank_batch_size: 64
+  rollout_steps: 160
+  mlp_keys:
+    encoder: [nodes]
+  other_keys:
+    [edges, edge_links, mask, first_node, current_node]
+  encoder:
+    num_layers: 2
+  actor:
+    num_heads: 4
+  critic:
+    num_heads: 4
+
+# Buffer
+buffer:
+  share_data: False
+  size: ${algo.rollout_steps}
+
+metric:
+  aggregator:
+    metrics:
+      Loss/value_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/entropy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
