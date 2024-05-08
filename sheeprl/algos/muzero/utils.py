@@ -199,7 +199,7 @@ class Node:
                 )
 
                 ucb_scores = ucb_scores + 1e-7 * torch.rand(
-                    ucb_scores.shape
+                    ucb_scores.shape, dtype=ucb_scores.dtype, device=ucb_scores.device
                 )  # Add tiny bit of randomness for tie break
                 imagined_action = torch.argmax(ucb_scores)
                 child = node.children[imagined_action.item()]

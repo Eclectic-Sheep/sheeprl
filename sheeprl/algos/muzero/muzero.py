@@ -140,7 +140,7 @@ def main(cfg: DictConfig):
                 )
 
                 # Select action based on the visit count distribution and the temperature
-                visits_count = torch.tensor([child.visit_count for child in node.children.values()])
+                visits_count = torch.tensor([child.visit_count for child in node.children.values()], dtype=torch.float32, device=device)
                 temperature = visit_softmax_temperature(training_steps=agent.training_steps)
                 visit_probs = visits_count / cfg.algo.num_simulations
                 visit_probs = torch.where(visit_probs > 0, visit_probs, 1 / visit_probs.shape[-1])
