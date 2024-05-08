@@ -8,8 +8,14 @@ from gymnasium.wrappers import AtariPreprocessing
 from lightning import Fabric
 from omegaconf import DictConfig
 
+import sheeprl.algos.muzero.ctree.cytree as tree
 from sheeprl.algos.muzero.agent import MuzeroAgent
-from sheeprl.utils.utils import inverse_symsqrt, two_hot_decoder
+from sheeprl.utils.utils import inverse_symsqrt, symsqrt, two_hot_decoder, two_hot_encoder
+
+
+def scalar_to_support(scalar: torch.Tensor, support_size: int):
+    """Convert a scalar representation to a support."""
+    return two_hot_encoder(symsqrt(scalar), support_size)
 
 
 def support_to_scalar(support: torch.Tensor, support_range: int) -> torch.Tensor:
@@ -149,43 +155,47 @@ class Node:
             return self.value_sum
         return self.value_sum / self.visit_count
 
-    def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
-        """Add exploration noise to the prior probabilities."""
-        actions = list(self.children.keys())
-        noise = torch.distributions.dirichlet.Dirichlet(torch.tensor([dirichlet_alpha] * len(actions))).rsample()
-        frac = exploration_fraction
-        for a, n in zip(actions, noise):
-            self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
 
-    def mcts(
-        self,
-        agent: torch.nn.Module,
-        num_simulations: int,
-        gamma: float = 0.997,
-        dirichlet_alpha: float = 0.25,
-        exploration_fraction: float = 0.25,
-        support_size: int = 300,
-    ):
-        """Runs MCTS for num_simulations"""
-        # Initialize the hidden state and compute the actor's policy logits
-        hidden_state, policy_logits, _ = agent.initial_inference(self.image)
-        self.hidden_state = hidden_state
+def add_exploration_noise(
+    node: Node, noise_distribution: torch.distributions.dirichlet.Dirichlet, exploration_fraction: float
+):
+    """Add exploration noise to the prior probabilities."""
+    actions = list(node.children.keys())
+    noise = noise_distribution.rsample()
+    for a, n in zip(actions, noise):
+        node.children[a].prior = node.children[a].prior * (1 - exploration_fraction) + n * exploration_fraction
+
+
+def mcts(
+    root: Node,
+    agent: torch.nn.Module,
+    num_simulations: int,
+    noise_distribution: torch.distributions.dirichlet.Dirichlet,
+    gamma: float = 0.997,
+    exploration_fraction: float = 0.25,
+    support_size: int = 300,
+):
+    """Runs MCTS for num_simulations"""
+    # Initialize the hidden state and compute the actor's policy logits
+    with torch.no_grad():
+        hidden_state, policy_logits, _ = agent.initial_inference(root.image)
+        root.hidden_state = hidden_state
 
         device = hidden_state.device
         dtype = hidden_state.dtype
+        root.image.shape[0]
 
         # Use the actor's policy to initialize the children of the node.
         # The policy results are used as prior probabilities.
         normalized_policy = torch.nn.functional.softmax(policy_logits, dim=-1)
-        for action in range(normalized_policy.numel()):
-            self.children[action] = Node(normalized_policy[:, action])
-        self.add_exploration_noise(dirichlet_alpha, exploration_fraction)
+        root.children = {action: Node(normalized_policy[:, action]) for action in range(normalized_policy.shape[-1])}
+        add_exploration_noise(root, noise_distribution, exploration_fraction)
 
         # Expand until an unvisited node (i.e. not yet expanded) is reached
         min_max_stats = MinMaxStats()
 
         for _ in range(num_simulations):
-            node = self
+            node = root
             search_path = [node]
 
             while node.expanded():
@@ -208,8 +218,9 @@ class Node:
 
             # When a path from the starting node to an unvisited node is found, expand the unvisited node
             parent = search_path[-2]
+            imagined_action = imagined_action.view(1, 1, -1).to(device=device, dtype=dtype)
             hidden_state, reward, policy_logits, value = agent.recurrent_inference(
-                imagined_action.view(1, 1, -1).to(device=device, dtype=dtype),
+                imagined_action,
                 parent.hidden_state,
             )
             value = support_to_scalar(torch.nn.functional.softmax(value, dim=-1), support_size)
@@ -234,20 +245,13 @@ def ucb_score(
     normalize the node value."""
     device = parent.device
     dtype = parent.dtype
-    num_children = len(parent.children)
-    children_visit_counts = torch.empty(num_children, dtype=dtype, device=device)
-    children_values = torch.empty(num_children, dtype=dtype, device=device)
-    children_priors = torch.empty(num_children, dtype=dtype, device=device)
-    children_rewards = torch.empty(num_children, dtype=dtype, device=device)
+    children = parent.children.values()
+    children_visit_counts = torch.tensor([child.visit_count for child in children], dtype=dtype, device=device)
+    children_values = torch.tensor([child.value() for child in children], dtype=dtype, device=device)
+    children_priors = torch.tensor([child.prior for child in children], dtype=dtype, device=device)
+    children_rewards = torch.tensor([child.reward for child in children], dtype=dtype, device=device)
 
     pb_c = torch.log((parent.visit_count + pb_c_base + 1) / pb_c_base) + pb_c_init
-
-    for i, child in enumerate(parent.children.values()):
-        children_visit_counts[i] = child.visit_count
-        children_values[i] = child.value()
-        children_priors[i] = child.prior
-        children_rewards[i] = child.reward
-
     pb_c = pb_c * torch.div(torch.sqrt(parent.visit_count), (children_visit_counts + 1))
 
     prior_score = pb_c * children_priors
@@ -256,18 +260,14 @@ def ucb_score(
     min_value = torch.min(children_rewards + gamma * min_max_normalized)
     max_value = torch.max(children_rewards + gamma * min_max_normalized) + 1e-7
     value_score = (children_rewards + gamma * min_max_normalized - min_value) / (max_value - min_value)
-
     return prior_score + value_score
 
 
 @torch.no_grad()
 def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     agent.eval()
-    done = False
-    cumulative_rew = 0
-    next_obs = torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(
-        0
-    )
+    torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(0)
+    """
     while not done:
         # Act greedly through the environment
         node = Node(prior=0, image=next_obs)
@@ -289,3 +289,98 @@ def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
     fabric.print("Test - Reward:", cumulative_rew)
     fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
+    """
+
+
+class MCTS:
+    def __init__(self, num_simulations, value_delta_max, device, pb_c_base, pb_c_init, discount, support_range):
+        self.num_simulations = num_simulations
+        self.value_delta_max = value_delta_max
+        self.device = device
+        self.pb_c_base = pb_c_base
+        self.pb_c_init = pb_c_init
+        self.discount = discount
+        self.support_range = support_range
+
+    def search(self, roots, model, hidden_state_roots):
+        """Do MCTS for the roots (a batch of root nodes in parallel). Parallel in model inference
+        Parameters
+        ----------
+        roots: Any
+            a batch of expanded root nodes
+        hidden_state_roots: list
+            the hidden states of the roots
+        """
+        with torch.no_grad():
+            model.eval()
+
+            # preparation
+            num = roots.num
+            device = self.device
+            # the data storage of hidden states: storing the states of all the tree nodes
+            hidden_state_pool = [hidden_state_roots]
+            # 1 x batch x embedding_size
+
+            # the index of each layer in the tree
+            hidden_state_index_x = 0
+            # minimax value storage
+            min_max_stats_lst = tree.MinMaxStatsList(num)
+            min_max_stats_lst.set_delta(self.value_delta_max)
+
+            for index_simulation in range(self.num_simulations):
+                hidden_states = []
+
+                # prepare a result wrapper to transport results between python and c++ parts
+                results = tree.ResultsWrapper(num)
+                # traverse to select actions for each root
+                # hidden_state_index_x_lst: the first index of leaf node states in hidden_state_pool
+                # hidden_state_index_y_lst: the second index of leaf node states in hidden_state_pool
+                # the hidden state of the leaf node is hidden_state_pool[x, y]; value prefix states are the same
+                hidden_state_index_x_lst, hidden_state_index_y_lst, last_actions = tree.batch_traverse(
+                    roots, self.pb_c_base, self.pb_c_init, self.discount, min_max_stats_lst, results
+                )
+
+                # obtain the states for leaf nodes
+                for ix, iy in zip(hidden_state_index_x_lst, hidden_state_index_y_lst):
+                    hidden_states.append(hidden_state_pool[ix][iy])
+
+                hidden_states = torch.from_numpy(np.asarray(hidden_states)).to(device).float()
+
+                last_actions = torch.from_numpy(np.asarray(last_actions)).to(device).long()
+
+                # evaluation for leaf nodes
+                # if self.config.amp_type == 'torch_amp':
+                #     with autocast():
+                #         hidden_state_nodes, reward, policy_logits, value =
+                #         model.recurrent_inference(last_actions, hidden_states)
+                # else:
+                hidden_states = (hidden_states - hidden_states.min()) / (hidden_states.max() - hidden_states.min())
+                hidden_state_nodes, reward, policy_logits, value = model.recurrent_inference(
+                    last_actions.view(num, 1), hidden_states
+                )
+
+                value_pool = (
+                    support_to_scalar(torch.nn.functional.softmax(value, dim=-1), self.support_range)
+                    .reshape(-1)
+                    .tolist()
+                )
+                policy_logits_pool = policy_logits.tolist()
+                reward_pool = (
+                    support_to_scalar(torch.nn.functional.softmax(reward, dim=-1), self.support_range)
+                    .reshape(-1)
+                    .tolist()
+                )
+
+                hidden_state_pool.append(hidden_state_nodes.tolist())
+                hidden_state_index_x += 1
+
+                # backpropagation along the search path to update the attributes
+                tree.batch_back_propagate(
+                    hidden_state_index_x,
+                    self.discount,
+                    value_pool,
+                    reward_pool,
+                    policy_logits_pool,
+                    min_max_stats_lst,
+                    results,
+                )

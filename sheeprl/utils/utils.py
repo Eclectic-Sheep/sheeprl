@@ -224,10 +224,10 @@ def two_hot_decoder(tensor: torch.Tensor, support_range: int) -> torch.Tensor:
 
 
 def symsqrt(x, eps=0.001):
-    """Scales the tensor using the formula sign(x) * sqrt(abs(x) + 1) - 1 + eps * x."""
-    return torch.sign(x) * torch.sqrt(torch.abs(x) + 1) - 1 + eps * x
+    """Scales the tensor using the formula sign(x) * (sqrt(abs(x) + 1) - 1) + eps * x."""
+    return torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + eps * x
 
 
 def inverse_symsqrt(x, eps=0.001):
     """Inverts symsqrt."""
-    return torch.sign(x) * (((torch.sqrt(1 + 4 * eps * (torch.abs(x) + 1 + eps * x)) - 1) / (2 * eps)) ** 2 - 1)
+    return torch.sign(x) * (((torch.sqrt(1 + 4 * eps * (torch.abs(x) + 1 + eps)) - 1) / (2 * eps)) ** 2 - 1)

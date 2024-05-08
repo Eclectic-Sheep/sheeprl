@@ -7,14 +7,15 @@ defaults:
 name: muzero
 gamma: 0.99
 
-support_size: 10
+support_size: ???
 
 num_simulations: 50
 nstep_horizon: 50
 dirichlet_alpha: 0.25
 exploration_fraction: 0.25
 priority_alpha: 0.5
-
+pb_c_base: 19652
+pb_c_init: 1.25
 
 # Single optimizer for muzero agent
 optimizer:

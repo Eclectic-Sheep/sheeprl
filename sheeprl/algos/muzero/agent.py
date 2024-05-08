@@ -16,7 +16,6 @@ class MuzeroAgent(torch.nn.Module):
         self.representation: torch.nn.Module = representation
         self.prediction: torch.nn.Module = prediction
         self.dynamics: torch.nn.Module = dynamics
-        self.training_steps = 0
 
     def initial_inference(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden_state = self.representation(observation)
