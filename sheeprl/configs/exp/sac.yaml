@@ -21,7 +21,7 @@ checkpoint:
 # Buffer
 buffer:
   size: 1000000
-  checkpoint: False
+  checkpoint: True
   sample_next_obs: False
 
 # Environment

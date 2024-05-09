@@ -387,6 +387,7 @@ def build_agent(
     for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
         player_p.data = agent_p.data
     return agent, player
+```
 
 ## Loss functions
 
@@ -591,7 +592,7 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     for update in range(start_step, num_updates + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += cfg.env.num_envs * world_size
+            policy_step += policy_steps_per_update
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment

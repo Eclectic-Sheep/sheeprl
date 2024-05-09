@@ -165,6 +165,8 @@ Then, the metrics that will be logged are the `key0` and the `key2`. The `key5` 
 By default the checkpointing is enabled with the following settings:
 
 ```yaml
+# sheeprl/configs/checkpoint/default.yaml
+
 every: 100
 resume_from: null
 save_last: True
@@ -181,3 +183,23 @@ meaning that:
 > [!NOTE]
 >
 > When restarting an experiment from a specific checkpoint (`resume_from=/path/to/checkpoint.ckpt`), it is **mandatory** to pass as arguments the same configurations of the experiment you want to restart. This is due to the way Hydra creates the folder in which it saves configs: if you do not pass the same configurations, you may have an unexpected log directory (i.e., the folder is created in the wrong folder).
+
+### Buffer checkpoint
+
+For off-policy algorithms like SAC or Dreamer there is the possibility to save the replay buffer in the checkpoint by setting `buffer.checkpoint=True` from the CLI or by setting the corresponding parameter in the buffer yaml config:
+
+```yaml
+# sheeprl/configs/buffer/default.yaml
+
+size: ???
+memmap: True
+validate_args: False
+from_numpy: False
+checkpoint: True  # Used only for off-policy algorithms
+```
+
+There can be few scenarios to pay attention to:
+
+* If the buffer is memory-mapped (i.e. `buffer.memmap=True`) and one saves the buffer in the checkpoint then one **mustn't delete the buffer folder** of the stopped experiment: if the buffer is memory-mapped a file for every key saved in the replay buffer is created on disk (`observations.memmap`, `rewards.memmap` for example) and when the experiment is resumed those files are read back from the exact same location
+* If the buffer is memory-mapped (i.e. `buffer.memmap=True`), one saves the buffer in the checkpoint and the buffer has been filled completely during the previous experiment (meaning that the olders trajectories have been overwritten by newer ones) then it could happen that the agent will be trained from "future" trajectories coming from a "future" policy. To be more precise the buffer is simply a pre-allocated numpy-array with an attribute `pos` that points to the first free slot to be written; if we are using a `sheeprl.data.buffers.SequentialReplayBuffer` we sample sequential sequences in `[0, pos - sequence_length) ∪ [pos, buffer_size)` or simply `[0, pos - sequence_length)` depending on whether the buffer has been filled or not respectively. When we save the buffer into the checkpoint we save all the relevant information regarding it (the `pos` attribute and the path to the memory-mapped files, which represents the buffer content to be retrieved upon resuming). Suppose that we have saved a checkpoint at step `N` and the experiment have gone further for `K < N` steps before it stops, with the buffer that had already been filled at least one time. When we resume the buffer is laoded from the checkpoint, meaning that the `pos` attribute points at the same position it was pointing at step `N` and because we have memory-mapped our buffer we find in `[pos, pos + K]` a bunch of trajectories that comes from a "future" policy: the one that we were training in the previous experiment and stopped! Currently we don't know if this can cause problems to the agent and neither we have found a nice solution to mitigate this problem. We have thought at a bunch of ways to solve this problem: one is to memmap the buffer metadata like the current `pos`: in this way when we load the buffer from the checkpoint we can remove all the unwanted trajectories in `[old_pos, current_pos]`; this could potentially erase a lot of the buffer content if for example one has a checkpoint at step `N` and the experiment stopped at step `2N - 1`. Another solution could be to employ an online queue to save the trajectories momentarily into and flush the queue to the replay buffer only upon checkpointing; the problem with this solution is that one has to maintain in memory a lot of info and the RAM could explode easily if one is working with images (this can be avoided by also memory-mapping the online queue). Practically, another possible solution is to set the `algo.learning_starts=K` from the CLI or in the algorithm section in the experiment config: in this way all the future trajectories will be erased by trajectories conditioned by the resumed agent. 
+* In any case, when the checkpoint is resumed the buffer **could be potentially pre-filled for `algo.learning_starts` steps** with trajectories conditioned by the resumed agent. If you don't want to pre-fill the buffer set `algo.learning_starts=0`
