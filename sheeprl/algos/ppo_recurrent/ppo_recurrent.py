@@ -234,39 +234,39 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        (state["update"] // fabric.world_size) + 1
+        (state["iter_num"] // fabric.world_size) + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Linear learning rate scheduler
     if cfg.algo.anneal_lr:
         from torch.optim.lr_scheduler import PolynomialLR
 
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=total_iters, power=1.0)
         if cfg.checkpoint.resume_from:
             scheduler.load_state_dict(state["scheduler"])
 
@@ -284,7 +284,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     prev_actions = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     torch_prev_actions = torch.zeros(1, cfg.env.num_envs, sum(actions_dim), device=device, dtype=torch.float32)
 
-    for update in range(start_step, num_updates + 1):
+    for iter_num in range(start_step, total_iters + 1):
         with torch.inference_mode():
             for _ in range(0, cfg.algo.rollout_steps):
                 policy_step += cfg.env.num_envs * world_size
@@ -455,7 +455,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
 
         # Log metrics
-        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
+        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -489,23 +489,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             scheduler.step()
         if cfg.algo.anneal_clip_coef:
             cfg.algo.clip_coef = polynomial_decay(
-                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+                iter_num, initial=initial_clip_coef, final=0.0, max_decay_steps=total_iters, power=1.0
             )
         if cfg.algo.anneal_ent_coef:
             cfg.algo.ent_coef = polynomial_decay(
-                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+                iter_num, initial=initial_ent_coef, final=0.0, max_decay_steps=total_iters, power=1.0
             )
 
         # Checkpoint model
         if (
             cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every
-        ) or update == num_updates:
+        ) or iter_num == total_iters:
             last_checkpoint = policy_step
             ckpt_state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                "update": update * world_size,
+                "iter_num": iter_num * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,

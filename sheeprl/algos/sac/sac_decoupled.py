@@ -135,16 +135,16 @@ def player(
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        state["update"] + 1
+        state["iter_num"] + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs)
-    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    policy_steps_per_iter = int(cfg.env.num_envs)
+    total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
 
@@ -154,19 +154,19 @@ def player(
         ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     step_data = {}
@@ -175,13 +175,13 @@ def player(
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
-    for update in range(start_step, num_updates + 1):
+    for iter_num in range(start_step, total_iters + 1):
         policy_step += cfg.env.num_envs
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            if update <= learning_starts:
+            if iter_num <= learning_starts:
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
@@ -225,14 +225,14 @@ def player(
         obs = next_obs
 
         # Send data to the training agents
-        if update >= learning_starts:
+        if iter_num >= learning_starts:
             per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
             cumulative_per_rank_gradient_steps += per_rank_gradient_steps
             if per_rank_gradient_steps > 0:
                 # Send local info to the trainers
                 if not first_info_sent:
                     world_collective.broadcast_object_list(
-                        [{"update": update, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
+                        [{"iter_num": iter_num, "last_log": last_log, "last_checkpoint": last_checkpoint}], src=0
                     )
                     first_info_sent = True
 
@@ -296,7 +296,7 @@ def player(
 
         # Checkpoint model
         if (
-            update >= learning_starts  # otherwise the processes end up deadlocked
+            iter_num >= learning_starts  # otherwise the processes end up deadlocked
             and cfg.checkpoint.every > 0
             and policy_step - last_checkpoint >= cfg.checkpoint.every
         ):
@@ -416,20 +416,20 @@ def trainer(
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Receive data from player regarding the:
-    # * update
+    # * iter_num
     # * last_log
     # * last_checkpoint
     data = [None]
     world_collective.broadcast_object_list(data, src=0)
-    update = data[0]["update"]
+    iter_num = data[0]["iter_num"]
     last_log = data[0]["last_log"]
     last_checkpoint = data[0]["last_checkpoint"]
 
     # Start training
     train_step = 0
     last_train = 0
-    policy_steps_per_update = cfg.env.num_envs
-    policy_step = update * policy_steps_per_update
+    policy_steps_per_iter = cfg.env.num_envs
+    policy_step = iter_num * policy_steps_per_iter
     while True:
         # Wait for data
         data = [None]
@@ -443,7 +443,7 @@ def trainer(
                     "qf_optimizer": qf_optimizer.state_dict(),
                     "actor_optimizer": actor_optimizer.state_dict(),
                     "alpha_optimizer": alpha_optimizer.state_dict(),
-                    "update": update,
+                    "iter_num": iter_num,
                     "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
@@ -478,9 +478,9 @@ def trainer(
                     alpha_optimizer,
                     {k: data[k][batch_idxes] for k in data.keys()},
                     aggregator,
-                    update,
+                    iter_num,
                     cfg,
-                    policy_steps_per_update,
+                    policy_steps_per_iter,
                     group=optimization_pg,
                 )
             train_step += group_world_size
@@ -520,7 +520,7 @@ def trainer(
                 "qf_optimizer": qf_optimizer.state_dict(),
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
-                "update": update,
+                "iter_num": iter_num,
                 "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
@@ -535,8 +535,8 @@ def trainer(
             )
 
         # Update counters
-        update += 1
-        policy_step += policy_steps_per_update
+        iter_num += 1
+        policy_step += policy_steps_per_iter
 
 
 @register_algorithm(decoupled=True)
