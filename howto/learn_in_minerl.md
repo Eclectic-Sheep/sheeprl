@@ -17,6 +17,10 @@ Now, you can install the MineRL environment:
 pip install -e .[minerl]
 ```
 
+> [!WARNING]
+>
+> If you run into any problems during the installation due to some missing files that are not downloaded, please have a look at [this issue](https://github.com/MineDojo/MineDojo/issues/113).
+
 ## MineRL environments
 We have modified the MineRL environments to have a custom action and observation space. We provide three different tasks:
 1. Navigate: you need to set the `env.id` argument to `custom_navigate`.

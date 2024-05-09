@@ -387,6 +387,7 @@ def build_agent(
     for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
         player_p.data = agent_p.data
     return agent, player
+```
 
 ## Loss functions
 
