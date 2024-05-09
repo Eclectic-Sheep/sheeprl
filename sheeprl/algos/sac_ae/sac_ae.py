@@ -284,10 +284,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     policy_steps_per_iter = int(cfg.env.num_envs * fabric.world_size)
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    prefill_steps = learning_starts + start_step
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        if not cfg.buffer.checkpoint:
-            learning_starts += start_step
+        learning_starts += start_step
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
@@ -320,7 +320,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
     for iter_num in range(start_step, total_iters + 1):
-        policy_step += cfg.env.num_envs * fabric.world_size
+        policy_step += policy_steps_per_iter
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
@@ -374,7 +374,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if iter_num >= learning_starts:
-            per_rank_gradient_steps = ratio(policy_step / world_size)
+            ratio_steps = policy_step - prefill_steps + policy_steps_per_iter
+            per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample_tensors(

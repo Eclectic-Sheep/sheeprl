@@ -205,10 +205,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     policy_steps_per_iter = int(cfg.env.num_envs * world_size)
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_iter) if not cfg.dry_run else 0
+    prefill_steps = learning_starts + start_step
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        if resume_from_checkpoint and not cfg.buffer.checkpoint:
-            learning_starts += start_step
+        learning_starts += start_step
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
@@ -247,7 +247,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     cumulative_per_rank_gradient_steps = 0
     for iter_num in range(start_step, total_iters + 1):
-        policy_step += cfg.env.num_envs * world_size
+        policy_step += policy_steps_per_iter
 
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
@@ -323,7 +323,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
         # Train the agent
         if iter_num >= learning_starts:
-            per_rank_gradient_steps = ratio(policy_step / world_size)
+            ratio_steps = policy_step - prefill_steps + policy_steps_per_iter
+            per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"

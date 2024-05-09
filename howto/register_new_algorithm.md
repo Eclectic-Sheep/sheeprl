@@ -590,7 +590,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     for iter_num in range(start_step, total_iters + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += cfg.env.num_envs * world_size
+            policy_step += policy_steps_per_iter
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment

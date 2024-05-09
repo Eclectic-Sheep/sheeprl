@@ -145,6 +145,7 @@ def player(
     policy_steps_per_iter = int(cfg.env.num_envs)
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    prefill_steps = learning_starts + start_step
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
 
@@ -226,7 +227,8 @@ def player(
 
         # Send data to the training agents
         if iter_num >= learning_starts:
-            per_rank_gradient_steps = ratio(policy_step / (fabric.world_size - 1))
+            ratio_steps = policy_step - prefill_steps + policy_steps_per_iter
+            per_rank_gradient_steps = ratio(ratio_steps / (fabric.world_size - 1))
             cumulative_per_rank_gradient_steps += per_rank_gradient_steps
             if per_rank_gradient_steps > 0:
                 # Send local info to the trainers
