@@ -193,7 +193,7 @@ def player(
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
-    params = {"update": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
+    params = {"iter_num": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
     world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
     for _ in range(start_step, total_iters + 1):
         for _ in range(0, cfg.algo.rollout_steps):
