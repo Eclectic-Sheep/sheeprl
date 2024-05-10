@@ -400,7 +400,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
-    print(envs.action_space)
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
@@ -575,7 +574,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     if len(mask) == 0:
                         mask = None
                     real_actions = actions = player.get_actions(torch_obs, mask=mask)
-                    print(f"{actions = }")
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
                         real_actions = torch.stack(real_actions, dim=-1).cpu().numpy()
@@ -587,7 +585,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
                 rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-                print(envs.action_space.shape)
                 next_obs, rewards, terminated, truncated, infos = envs.step(
                     real_actions.reshape(envs.action_space.shape)
                 )
