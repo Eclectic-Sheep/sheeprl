@@ -340,6 +340,9 @@ def check_configs(cfg: Dict[str, Any]):
     if cfg.algo.learning_starts is not None and cfg.algo.learning_starts < 0:
         raise ValueError("The `algo.learning_starts` parameter must be greater or equal to zero.")
 
+    if cfg.env.action_repeat < 1:
+        cfg.env.action_repeat = 1
+
 
 def check_configs_evaluation(cfg: DictConfig):
     if cfg.float32_matmul_precision not in {"medium", "high", "highest"}:

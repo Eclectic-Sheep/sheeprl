@@ -319,11 +319,12 @@ def player(
             # Sync timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                fabric.log(
-                    "Time/sps_env_interaction",
-                    ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
-                    policy_step,
-                )
+                if "Time/sps_env_interaction" in timer_metrics and timer_metrics["Time/sps_env_interaction"] > 0:
+                    fabric.log(
+                        "Time/sps_env_interaction",
+                        ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
+                        policy_step,
+                    )
                 timer.reset()
 
             # Reset counters
@@ -562,7 +563,8 @@ def trainer(
             # Sync distributed timers
             if not timer.disabled:
                 timers = timer.compute()
-                metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
+                if "Time/train_time" in timers and timers["Time/train_time"] > 0:
+                    metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
                 timer.reset()
 
             # Send metrics to the player
