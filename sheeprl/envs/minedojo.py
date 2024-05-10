@@ -245,7 +245,6 @@ class MineDojoWrapper(gym.Wrapper):
         self.action_space.seed(seed)
 
     def step(self, action: np.ndarray) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        print(f"{action = }")
         a = action
         action = self._convert_action(action)
         next_pitch = self._pos["pitch"] + (action[3] - 12) * 15

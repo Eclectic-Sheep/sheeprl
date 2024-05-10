@@ -902,7 +902,6 @@ class MinedojoActor(Actor):
         actions: List[Tensor] = []
         functional_action = None
         for i, logits in enumerate(actions_logits):
-            print(f"{logits.shape = }")
             if mask is not None:
                 if i == 0:
                     logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
