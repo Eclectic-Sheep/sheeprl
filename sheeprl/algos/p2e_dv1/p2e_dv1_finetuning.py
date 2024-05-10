@@ -260,10 +260,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 real_actions = actions = player.get_exploration_actions(torch_obs, mask=mask, step=policy_step)
                 actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = torch.cat(real_actions, -1).cpu().numpy()
+                    real_actions = torch.stack(real_actions, -1).cpu().numpy()
                 else:
                     real_actions = (
-                        torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                        torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                     )
                 next_obs, rewards, terminated, truncated, infos = envs.step(
                     real_actions.reshape(envs.action_space.shape)

@@ -28,6 +28,8 @@ buffer:
 algo:
   replay_ratio: 0.015625
   learning_starts: 65536
+  actor:
+    cls: sheeprl.algos.dreamer_v3.agent.MinedojoActor
   cnn_keys:
     encoder:
       - rgb

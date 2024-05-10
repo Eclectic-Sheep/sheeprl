@@ -319,7 +319,10 @@ def train(
     critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+            module=critic,
+            optimizer=critic_optimizer,
+            max_norm=cfg.algo.critic.clip_gradients,
+            error_if_nonfinite=False,
         )
     critic_optimizer.step()
 
@@ -397,6 +400,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
+    print(envs.action_space)
 
     is_continuous = isinstance(action_space, gym.spaces.Box)
     is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
@@ -571,17 +575,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     if len(mask) == 0:
                         mask = None
                     real_actions = actions = player.get_actions(torch_obs, mask=mask)
+                    print(f"{actions = }")
                     actions = torch.cat(actions, -1).cpu().numpy()
                     if is_continuous:
-                        real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
+                        real_actions = torch.stack(real_actions, dim=-1).cpu().numpy()
                     else:
                         real_actions = (
-                            torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                            torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
                 step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
                 rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
+                print(envs.action_space.shape)
                 next_obs, rewards, terminated, truncated, infos = envs.step(
                     real_actions.reshape(envs.action_space.shape)
                 )

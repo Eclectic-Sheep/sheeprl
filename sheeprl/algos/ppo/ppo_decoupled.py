@@ -207,9 +207,9 @@ def player(
                 torch_obs = prepare_obs(fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                 actions, logprobs, values = agent(torch_obs)
                 if is_continuous:
-                    real_actions = torch.cat(actions, -1).cpu().numpy()
+                    real_actions = torch.stack(actions, -1).cpu().numpy()
                 else:
-                    real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                    real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
                 actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step

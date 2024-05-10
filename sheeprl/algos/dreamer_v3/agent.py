@@ -902,6 +902,7 @@ class MinedojoActor(Actor):
         actions: List[Tensor] = []
         functional_action = None
         for i, logits in enumerate(actions_logits):
+            print(f"{logits.shape = }")
             if mask is not None:
                 if i == 0:
                     logits[torch.logical_not(mask["mask_action_type"].expand_as(logits))] = -torch.inf
@@ -913,7 +914,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
