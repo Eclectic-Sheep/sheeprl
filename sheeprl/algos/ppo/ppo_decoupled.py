@@ -141,49 +141,48 @@ def player(
     )
 
     # Global variables
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        state["update"] + 1
+        state["iter_num"] + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if policy_steps_per_update < world_collective.world_size - 1:
+    if policy_steps_per_iter < world_collective.world_size - 1:
         raise RuntimeError(
             "The number of trainers ({}) is greater than the available collected data ({}). ".format(
-                world_collective.world_size - 1, policy_steps_per_update
+                world_collective.world_size - 1, policy_steps_per_iter
             )
             + "Consider to lower the number of trainers at least to the size of available collected data"
         )
     chunks_sizes = [
-        len(chunk)
-        for chunk in torch.tensor_split(torch.arange(policy_steps_per_update), world_collective.world_size - 1)
+        len(chunk) for chunk in torch.tensor_split(torch.arange(policy_steps_per_iter), world_collective.world_size - 1)
     ]
 
-    # Broadcast num_updates to all the world
-    update_t = torch.as_tensor([num_updates], device=device, dtype=torch.float32)
+    # Broadcast total_iters to all the world
+    update_t = torch.as_tensor([total_iters], device=device, dtype=torch.float32)
     world_collective.broadcast(update_t, src=0)
 
     # Get the first environment observation and start the optimization
@@ -194,9 +193,9 @@ def player(
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
-    params = {"update": start_step, "last_log": last_log, "last_checkpoint": last_checkpoint}
+    params = {"iter_num": start_iter, "last_log": last_log, "last_checkpoint": last_checkpoint}
     world_collective.scatter_object_list([None], [params] * world_collective.world_size, src=0)
-    for _ in range(start_step, num_updates + 1):
+    for _ in range(start_iter, total_iters + 1):
         for _ in range(0, cfg.algo.rollout_steps):
             policy_step += cfg.env.num_envs
 
@@ -425,15 +424,15 @@ def trainer(
         )
 
     # Receive maximum number of updates from the player
-    num_updates = torch.zeros(1, device=device)
-    world_collective.broadcast(num_updates, src=0)
-    num_updates = num_updates.item()
+    total_iters = torch.zeros(1, device=device)
+    world_collective.broadcast(total_iters, src=0)
+    total_iters = total_iters.item()
 
     # Linear learning rate scheduler
     if cfg.algo.anneal_lr:
         from torch.optim.lr_scheduler import PolynomialLR
 
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=num_updates, power=1.0)
+        scheduler = PolynomialLR(optimizer=optimizer, total_iters=total_iters, power=1.0)
         if cfg.checkpoint.resume_from:
             scheduler.load_state_dict(state["scheduler"])
 
@@ -446,12 +445,12 @@ def trainer(
     last_train = 0
     train_step = 0
 
-    policy_steps_per_update = cfg.env.num_envs * cfg.algo.rollout_steps
+    policy_steps_per_iter = cfg.env.num_envs * cfg.algo.rollout_steps
     params = [None]
     world_collective.scatter_object_list(params, [None for _ in range(world_collective.world_size)], src=0)
     params = params[0]
-    update = params["update"]
-    policy_step = update * policy_steps_per_update
+    iter_num = params["iter_num"]
+    policy_step = iter_num * policy_steps_per_iter
     last_log = params["last_log"]
     last_checkpoint = params["last_checkpoint"]
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
@@ -468,7 +467,7 @@ def trainer(
                     "agent": agent.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                    "update": update,
+                    "iter_num": iter_num,
                     "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                     "last_log": last_log,
                     "last_checkpoint": last_checkpoint,
@@ -589,12 +588,12 @@ def trainer(
 
         if cfg.algo.anneal_clip_coef:
             cfg.algo.clip_coef = polynomial_decay(
-                update, initial=initial_clip_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+                iter_num, initial=initial_clip_coef, final=0.0, max_decay_steps=total_iters, power=1.0
             )
 
         if cfg.algo.anneal_ent_coef:
             cfg.algo.ent_coef = polynomial_decay(
-                update, initial=initial_ent_coef, final=0.0, max_decay_steps=num_updates, power=1.0
+                iter_num, initial=initial_ent_coef, final=0.0, max_decay_steps=total_iters, power=1.0
             )
 
         # Checkpoint model on rank-0: send it everything
@@ -604,7 +603,7 @@ def trainer(
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                "update": update,
+                "iter_num": iter_num,
                 "batch_size": cfg.algo.per_rank_batch_size * (world_collective.world_size - 1),
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
@@ -617,7 +616,7 @@ def trainer(
                 ckpt_path=ckpt_path,
                 state=state,
             )
-        update += 1
+        iter_num += 1
         policy_step += cfg.env.num_envs * cfg.algo.rollout_steps
 
 

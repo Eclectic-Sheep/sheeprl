@@ -550,36 +550,36 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        (state["update"] // fabric.world_size) + 1
+        (state["iter_num"] // fabric.world_size) + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Get the first environment observation and start the optimization
@@ -590,9 +590,9 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
-    for update in range(start_step, num_updates + 1):
+    for iter_num in range(start_iter, total_iters + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += policy_steps_per_update
+            policy_step += policy_steps_per_iter
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
@@ -653,7 +653,7 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         train(fabric, agent, optimizer, local_data, aggregator, cfg)
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters or cfg.dry_run:
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -686,13 +686,13 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         if (
             (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or update == num_updates
+            or iter_num == total_iters
         ):
             last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "update_step": update,
+                "iter_num": iter_num * world_size,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
