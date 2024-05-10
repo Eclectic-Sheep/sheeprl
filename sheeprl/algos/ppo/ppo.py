@@ -214,7 +214,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
@@ -262,7 +262,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
-    for iter_num in range(start_step, total_iters + 1):
+    for iter_num in range(start_iter, total_iters + 1):
         with torch.inference_mode():
             for _ in range(0, cfg.algo.rollout_steps):
                 policy_step += policy_steps_per_iter
