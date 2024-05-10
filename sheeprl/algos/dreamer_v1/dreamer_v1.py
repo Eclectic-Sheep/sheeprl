@@ -508,12 +508,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs * world_size)
-    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     learning_starts = (cfg.algo.learning_starts // policy_steps_per_update) if not cfg.dry_run else 0
+    prefill_steps = learning_starts + start_step
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        if not cfg.buffer.checkpoint:
-            learning_starts += start_step
+        learning_starts += start_step
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
@@ -552,7 +552,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     cumulative_per_rank_gradient_steps = 0
     for update in range(start_step, num_updates + 1):
-        policy_step += cfg.env.num_envs * world_size
+        policy_step += policy_steps_per_update
 
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
@@ -644,7 +644,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if update >= learning_starts:
-            per_rank_gradient_steps = ratio(policy_step / world_size)
+            ratio_steps = policy_step - prefill_steps + policy_steps_per_update
+            per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
                     sample = rb.sample_tensors(
@@ -690,13 +691,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Sync distributed timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics:
+                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
                     fabric.log(
                         "Time/sps_train",
                         (train_step - last_train) / timer_metrics["Time/train_time"],
                         policy_step,
                     )
-                if "Time/env_interaction_time" in timer_metrics:
+                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
                         ((policy_step - last_log) / world_size * cfg.env.action_repeat)

@@ -23,7 +23,7 @@ checkpoint:
 buffer:
   size: 5000000
   type: sequential
-  checkpoint: False
+  checkpoint: True
   prioritize_ends: False
 
 # Distribution

@@ -143,7 +143,7 @@ def player(
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_update = int(cfg.env.num_envs)
-    num_updates = int(cfg.algo.total_steps // policy_steps_per_update) if not cfg.dry_run else 1
+    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
     learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
     if cfg.checkpoint.resume_from and not cfg.buffer.checkpoint:
         learning_starts += start_step
@@ -284,11 +284,12 @@ def player(
             # Sync timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                fabric.log(
-                    "Time/sps_env_interaction",
-                    ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
-                    policy_step,
-                )
+                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
+                    fabric.log(
+                        "Time/sps_env_interaction",
+                        ((policy_step - last_log) * cfg.env.action_repeat) / timer_metrics["Time/env_interaction_time"],
+                        policy_step,
+                    )
                 timer.reset()
 
             # Reset counters
@@ -500,7 +501,8 @@ def trainer(
             # Sync distributed timers
             if not timer.disabled:
                 timers = timer.compute()
-                metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
+                if "Time/train_time" in timers and timers["Time/train_time"] > 0:
+                    metrics.update({"Time/sps_train": (train_step - last_train) / timers["Time/train_time"]})
                 timer.reset()
 
             if global_rank == 1:
