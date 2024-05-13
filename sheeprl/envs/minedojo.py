@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import os
-
-os.environ["MINEDOJO_HEADLESS"] = "1"
-
 from sheeprl.utils.imports import _IS_MINEDOJO_AVAILABLE
 
 if not _IS_MINEDOJO_AVAILABLE:
