@@ -270,24 +270,24 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        (state["update"] // fabric.world_size) + 1
+        (state["iter_num"] // fabric.world_size) + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * fabric.world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
-    prefill_steps = learning_starts + start_step
+    policy_steps_per_iter = int(cfg.env.num_envs * fabric.world_size)
+    total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    prefill_steps = learning_starts + start_iter
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        learning_starts += start_step
+        learning_starts += start_iter
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
@@ -295,19 +295,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Get the first environment observation and start the optimization
@@ -319,13 +319,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
-    for update in range(start_step, num_updates + 1):
-        policy_step += cfg.env.num_envs * fabric.world_size
+    for iter_num in range(start_iter, total_iters + 1):
+        policy_step += policy_steps_per_iter
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
         with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            if update <= learning_starts:
+            if iter_num <= learning_starts:
                 actions = envs.action_space.sample()
             else:
                 with torch.inference_mode():
@@ -373,8 +373,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        if update >= learning_starts:
-            ratio_steps = policy_step - prefill_steps + policy_steps_per_update
+        if iter_num >= learning_starts:
+            ratio_steps = policy_step - prefill_steps + policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 # We sample one time to reduce the communications between processes
@@ -426,7 +426,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     train_step += world_size
 
         # Log metrics
-        if cfg.metric.log_level and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
+        if cfg.metric.log_level and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -462,7 +462,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            update == num_updates and cfg.checkpoint.save_last
+            iter_num == total_iters and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {
@@ -475,7 +475,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "encoder_optimizer": encoder_optimizer.state_dict(),
                 "decoder_optimizer": decoder_optimizer.state_dict(),
                 "ratio": ratio.state_dict(),
-                "update": update * fabric.world_size,
+                "iter_num": iter_num * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
