@@ -299,9 +299,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         torch_obs, prev_actions=torch_prev_actions, prev_states=prev_states
                     )
                     if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                        real_actions = torch.stack(actions, -1).cpu().numpy()
                     else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
                     torch_actions = torch.cat(actions, dim=-1)
                     actions = torch_actions.cpu().numpy()
 

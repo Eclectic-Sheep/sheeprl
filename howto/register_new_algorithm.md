@@ -603,9 +603,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                     }
                     actions = player.get_actions(torch_obs)
                     if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                        real_actions = torch.stack(actions, -1).cpu().numpy()
                     else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step

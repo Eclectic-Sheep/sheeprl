@@ -239,9 +239,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     torch_obs = prepare_obs(fabric, next_obs, num_envs=cfg.env.num_envs)
                     actions, _, values = player(torch_obs)
                     if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                        real_actions = torch.stack(actions, -1).cpu().numpy()
                     else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], axis=-1).cpu().numpy()
+                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], axis=-1).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                     # Single environment step

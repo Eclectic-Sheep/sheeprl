@@ -57,10 +57,10 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
         # Act greedly through the environment
         actions, state = agent.get_actions(torch_obs, actions, state, greedy=True)
         if agent.actor.is_continuous:
-            real_actions = torch.cat(actions, -1)
+            real_actions = torch.stack(actions, -1)
             actions = torch.cat(actions, dim=-1).view(1, 1, -1)
         else:
-            real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
+            real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
             actions = torch.cat([act for act in actions], dim=-1).view(1, 1, -1)
 
         # Single environment step
