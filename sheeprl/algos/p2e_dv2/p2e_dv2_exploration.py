@@ -128,7 +128,11 @@ def train(
 
     for i in range(0, sequence_length):
         recurrent_state, posterior, prior, posterior_logits, prior_logits = world_model.rssm.dynamic(
-            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
+            posterior,
+            recurrent_state,
+            data["actions"][i : i + 1],
+            embedded_obs[i : i + 1],
+            data["is_first"][i : i + 1],
         )
         recurrent_states[i] = recurrent_state
         priors[i] = prior
@@ -743,10 +747,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     real_actions = actions = player.get_actions(torch_obs, mask=mask)
                     actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                     if is_continuous:
-                        real_actions = torch.cat(real_actions, -1).cpu().numpy()
+                        real_actions = torch.stack(real_actions, -1).cpu().numpy()
                     else:
                         real_actions = (
-                            torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                            torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
                 step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))

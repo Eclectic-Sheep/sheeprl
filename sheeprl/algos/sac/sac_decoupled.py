@@ -190,7 +190,7 @@ def player(
                 torch_obs = prepare_obs(fabric, obs, num_envs=cfg.env.num_envs)
                 actions = actor(torch_obs)
                 actions = actions.cpu().numpy()
-            next_obs, rewards, terminated, truncated, infos = envs.step(actions)
+            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
         if cfg.metric.log_level > 0 and "final_info" in infos:

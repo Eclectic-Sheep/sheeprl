@@ -263,10 +263,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 real_actions = actions = player.get_actions(torch_obs, mask=mask)
                 actions = torch.cat(actions, -1).cpu().numpy()
                 if is_continuous:
-                    real_actions = torch.cat(real_actions, dim=-1).cpu().numpy()
+                    real_actions = torch.stack(real_actions, dim=-1).cpu().numpy()
                 else:
                     real_actions = (
-                        torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                        torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                     )
 
                 step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
