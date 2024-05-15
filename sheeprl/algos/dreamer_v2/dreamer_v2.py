@@ -24,7 +24,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, test
+from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -145,7 +145,11 @@ def train(
         # One step of dynamic learning, which take the posterior state, the recurrent state, the action
         # and the observation and compute the next recurrent, prior and posterior states
         recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
-            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1], data["is_first"][i : i + 1]
+            posterior,
+            recurrent_state,
+            data["actions"][i : i + 1],
+            embedded_obs[i : i + 1],
+            data["is_first"][i : i + 1],
         )
         recurrent_states[i] = recurrent_state
         priors_logits[i] = prior_logits
@@ -344,7 +348,10 @@ def train(
     critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
         critic_grads = fabric.clip_gradients(
-            module=critic, optimizer=critic_optimizer, max_norm=cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+            module=critic,
+            optimizer=critic_optimizer,
+            max_norm=cfg.algo.critic.clip_gradients,
+            error_if_nonfinite=False,
         )
     critic_optimizer.step()
 
@@ -519,24 +526,25 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     train_step = 0
     last_train = 0
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        (state["update"] // world_size) + 1
+        (state["iter_num"] // world_size) + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_update if not cfg.dry_run else 0
+    policy_steps_per_iter = int(cfg.env.num_envs * world_size)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    prefill_steps = learning_starts - int(learning_starts > 0)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        if not cfg.buffer.checkpoint:
-            learning_starts += start_step
+        learning_starts += start_iter
+        prefill_steps += start_iter
 
     # Create Ratio class
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
@@ -544,19 +552,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         ratio.load_state_dict(state["ratio"])
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Get the first environment observation and start the optimization
@@ -576,8 +584,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     player.init_states()
 
     cumulative_per_rank_gradient_steps = 0
-    for update in range(start_step, num_updates + 1):
-        policy_step += cfg.env.num_envs * world_size
+    for iter_num in range(start_iter, total_iters + 1):
+        policy_step += policy_steps_per_iter
 
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
@@ -585,7 +593,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 # Sample an action given the observation received by the environment
                 if (
-                    update <= learning_starts
+                    iter_num <= learning_starts
                     and cfg.checkpoint.resume_from is None
                     and "minedojo" not in cfg.env.wrapper._target_.lower()
                 ):
@@ -599,22 +607,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             axis=-1,
                         )
                 else:
-                    normalized_obs = {}
-                    for k in obs_keys:
-                        torch_obs = torch.as_tensor(obs[k][np.newaxis], dtype=torch.float32, device=device)
-                        if k in cfg.algo.cnn_keys.encoder:
-                            torch_obs = torch_obs / 255 - 0.5
-                        normalized_obs[k] = torch_obs
-                    mask = {k: v for k, v in normalized_obs.items() if k.startswith("mask")}
+                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+                    mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
                     if len(mask) == 0:
                         mask = None
-                    real_actions = actions = player.get_actions(normalized_obs, mask=mask)
+                    real_actions = actions = player.get_actions(torch_obs, mask=mask)
                     actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
                     if is_continuous:
-                        real_actions = torch.cat(real_actions, -1).cpu().numpy()
+                        real_actions = torch.stack(real_actions, -1).cpu().numpy()
                     else:
                         real_actions = (
-                            torch.cat([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                            torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
                         )
 
                 step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
@@ -676,8 +679,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 player.init_states(dones_idxes)
 
         # Train the agent
-        if update >= learning_starts:
-            per_rank_gradient_steps = ratio(policy_step / world_size)
+        if iter_num >= learning_starts:
+            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+            per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 local_data = rb.sample_tensors(
                     batch_size=cfg.algo.per_rank_batch_size,
@@ -714,7 +718,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     train_step += world_size
 
         # Log metrics
-        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or update == num_updates):
+        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -729,13 +733,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Sync distributed timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics:
+                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
                     fabric.log(
                         "Time/sps_train",
                         (train_step - last_train) / timer_metrics["Time/train_time"],
                         policy_step,
                     )
-                if "Time/env_interaction_time" in timer_metrics:
+                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
                         ((policy_step - last_log) / world_size * cfg.env.action_repeat)
@@ -750,7 +754,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Checkpoint Model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            update == num_updates and cfg.checkpoint.save_last
+            iter_num == total_iters and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {
@@ -762,7 +766,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "critic_optimizer": critic_optimizer.state_dict(),
                 "ratio": ratio.state_dict(),
-                "update": update * world_size,
+                "iter_num": iter_num * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,

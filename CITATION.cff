@@ -13,8 +13,9 @@ authors:
     given-names: "Refik"
   - family-names: "Milesi"
     given-names: "Michele"
-version: 0.5.4
+version: 0.5.5
 license: "Apache-2.0"
+DOI: 10.5281/zenodo.11030899
 url: "https://eclecticsheep.ai"
 repository-code: "https://github.com/Eclectic-Sheep/sheeprl/"
 keywords:

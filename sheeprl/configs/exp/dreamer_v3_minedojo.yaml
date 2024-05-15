@@ -1,0 +1,57 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /algo: dreamer_v3_XS
+  - override /env: minedojo
+  - _self_
+
+# Experiment
+seed: 5
+total_steps: 50000000
+
+# Environment
+env:
+  num_envs: 2
+  id: harvest_milk
+  reward_as_observation: True
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Buffer
+buffer:
+  checkpoint: True
+
+# Algorithm
+algo:
+  replay_ratio: 0.015625
+  learning_starts: 65536
+  actor:
+    cls: sheeprl.algos.dreamer_v3.agent.MinedojoActor
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder:
+      - equipment
+      - inventory
+      - inventory_delta
+      - inventory_max
+      - life_stats
+      - mask_action_type
+      - mask_craft_smelt
+      - mask_destroy
+      - mask_equip_place
+      - reward
+    decoder:
+      - equipment
+      - inventory
+      - inventory_delta
+      - inventory_max
+      - life_stats
+      - mask_action_type
+      - mask_craft_smelt
+      - mask_destroy
+      - mask_equip_place

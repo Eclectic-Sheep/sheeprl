@@ -12,7 +12,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.a2c.agent import A2CAgent, build_agent
 from sheeprl.algos.a2c.loss import policy_loss, value_loss
-from sheeprl.algos.a2c.utils import test
+from sheeprl.algos.a2c.utils import prepare_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -200,23 +200,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     train_step = 0
     policy_step = 0
     last_checkpoint = 0
-    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Get the first environment observation and start the optimization
@@ -225,10 +225,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for k in obs_keys:
         step_data[k] = next_obs[k][np.newaxis]
 
-    for update in range(1, num_updates + 1):
+    for iter_num in range(1, total_iters + 1):
         with torch.inference_mode():
             for _ in range(0, cfg.algo.rollout_steps):
-                policy_step += cfg.env.num_envs * world_size
+                policy_step += policy_steps_per_iter
 
                 # Measure environment interaction time: this considers both the model forward
                 # to get the action given the observation and the time taken into the environment
@@ -236,12 +236,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     # Sample an action given the observation received by the environment
                     # This calls the `forward` method of the PyTorch module, escaping from Fabric
                     # because we don't want this to be a synchronization point
-                    torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+                    torch_obs = prepare_obs(fabric, next_obs, num_envs=cfg.env.num_envs)
                     actions, _, values = player(torch_obs)
                     if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                        real_actions = torch.stack(actions, -1).cpu().numpy()
                     else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], axis=-1).cpu().numpy()
+                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], axis=-1).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                     # Single environment step
@@ -272,7 +272,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 # Update the step data
                 step_data["dones"] = dones[np.newaxis]
                 step_data["values"] = values.cpu().numpy()[np.newaxis]
-                step_data["actions"] = actions[np.newaxis]
+                step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1)
                 step_data["rewards"] = rewards[np.newaxis]
                 if cfg.buffer.memmap:
                     step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
@@ -304,7 +304,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            torch_obs = {k: torch.as_tensor(next_obs[k], dtype=torch.float32, device=device) for k in obs_keys}
+            torch_obs = prepare_obs(fabric, next_obs, num_envs=cfg.env.num_envs)
             next_values = player.get_values(torch_obs)
             returns, advantages = gae(
                 local_data["rewards"].to(torch.float64),
@@ -325,7 +325,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             train(fabric, agent, optimizer, local_data, aggregator, cfg)
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters or cfg.dry_run:
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -335,13 +335,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Sync distributed timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics:
+                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
                     fabric.log(
                         "Time/sps_train",
                         (train_step - last_train) / timer_metrics["Time/train_time"],
                         policy_step,
                     )
-                if "Time/env_interaction_time" in timer_metrics:
+                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
                         ((policy_step - last_log) / world_size * cfg.env.action_repeat)
@@ -358,19 +358,19 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if (
             (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or update == num_updates
+            or (iter_num == total_iters and cfg.checkpoint.save_last)
         ):
             last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "update_step": update,
+                "iter_num": iter_num * world_size,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
-    if fabric.is_global_zero:
+    if fabric.is_global_zero and cfg.algo.run_test:
         test(player, fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:

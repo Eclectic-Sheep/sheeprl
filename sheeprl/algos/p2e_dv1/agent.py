@@ -95,7 +95,7 @@ def build_agent(
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=False,
         expl_amount=actor_cfg.expl_amount,
@@ -106,7 +106,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         flatten_dim=None,
     )
     actor_task.apply(init_weights)
@@ -135,7 +135,7 @@ def build_agent(
                     ),
                     output_dim=world_model.encoder.cnn_output_dim + world_model.encoder.mlp_output_dim,
                     hidden_sizes=[cfg.algo.ensembles.dense_units] * cfg.algo.ensembles.mlp_layers,
-                    activation=eval(cfg.algo.ensembles.dense_act),
+                    activation=hydra.utils.get_class(cfg.algo.ensembles.dense_act),
                 ).apply(init_weights)
             )
     ensembles = nn.ModuleList(ens_list)
