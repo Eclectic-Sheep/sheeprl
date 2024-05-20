@@ -14,9 +14,11 @@ env:
 # Algorithm
 algo:
   name: ppo
+  vf_coef: 0.5
+  clip_vloss: False
+  max_grad_norm: 0.5
   rollout_steps: 128
   normalize_advantages: True
-  max_grad_norm: 0.5
   encoder:
     mlp_features_dim: null
   actor:
@@ -24,7 +26,8 @@ algo:
   critic:
     mlp_layers: 0
   optimizer:
-    lr: 1e-3
+    lr: 3e-4
+    eps: 1e-5
   per_rank_batch_size: 64
   # # If you want to run this benchmark with older versions,
   # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.

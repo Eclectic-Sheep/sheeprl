@@ -116,7 +116,7 @@ def build_agent(
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
     )
@@ -124,7 +124,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=(
@@ -165,7 +165,7 @@ def build_agent(
                     ),
                     output_dim=cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size,
                     hidden_sizes=[cfg.algo.ensembles.dense_units] * cfg.algo.ensembles.mlp_layers,
-                    activation=eval(cfg.algo.ensembles.dense_act),
+                    activation=hydra.utils.get_class(cfg.algo.ensembles.dense_act),
                     flatten_dim=None,
                     norm_layer=(
                         [nn.LayerNorm for _ in range(cfg.algo.ensembles.mlp_layers)]

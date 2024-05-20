@@ -4,6 +4,7 @@ import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
+import hydra
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -29,7 +30,7 @@ class MLPEncoder(nn.Module):
         super().__init__()
         self.keys = keys
         self.input_dim = input_dim
-        self.output_dim = features_dim
+        self.output_dim = features_dim if features_dim else dense_units
         self.model = MLP(
             input_dim,
             features_dim,
@@ -72,7 +73,7 @@ class A2CAgent(nn.Module):
                 mlp_keys,
                 encoder_cfg.dense_units,
                 encoder_cfg.mlp_layers,
-                eval(encoder_cfg.dense_act),
+                hydra.utils.get_class(encoder_cfg.dense_act),
                 encoder_cfg.layer_norm,
             )
             if mlp_keys is not None and len(mlp_keys) > 0
@@ -85,7 +86,7 @@ class A2CAgent(nn.Module):
             input_dims=features_dim,
             output_dim=1,
             hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-            activation=eval(critic_cfg.dense_act),
+            activation=hydra.utils.get_class(critic_cfg.dense_act),
             norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
             norm_args=(
                 [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
@@ -95,18 +96,22 @@ class A2CAgent(nn.Module):
         )
 
         # Actor
-        actor_backbone = MLP(
-            input_dims=features_dim,
-            output_dim=None,
-            hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
-            activation=eval(actor_cfg.dense_act),
-            flatten_dim=None,
-            norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
-            norm_args=(
-                [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
-                if actor_cfg.layer_norm
-                else None
-            ),
+        actor_backbone = (
+            MLP(
+                input_dims=features_dim,
+                output_dim=None,
+                hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
+                activation=hydra.utils.get_class(actor_cfg.dense_act),
+                flatten_dim=None,
+                norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
+                norm_args=(
+                    [{"normalized_shape": actor_cfg.dense_units} for _ in range(actor_cfg.mlp_layers)]
+                    if actor_cfg.layer_norm
+                    else None
+                ),
+            )
+            if actor_cfg.mlp_layers > 0
+            else nn.Identity()
         )
         if is_continuous:
             # Output is a tuple of two elements: mean and log_std, one for every action

@@ -5,6 +5,7 @@ from math import prod
 from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
+import hydra
 import numpy as np
 import torch
 import torch.nn as nn
@@ -535,7 +536,7 @@ def build_agent(
             cfg.algo.mlp_keys.encoder,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
-            eval(cfg.algo.encoder.dense_act),
+            hydra.utils.get_class(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
@@ -561,7 +562,7 @@ def build_agent(
             cfg.algo.mlp_keys.decoder,
             cfg.algo.decoder.dense_units,
             cfg.algo.decoder.mlp_layers,
-            eval(cfg.algo.decoder.dense_act),
+            hydra.utils.get_class(cfg.algo.decoder.dense_act),
             cfg.algo.decoder.layer_norm,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0

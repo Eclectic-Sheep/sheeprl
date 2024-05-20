@@ -883,7 +883,7 @@ def build_agent(
             image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=world_model_cfg.encoder.layer_norm,
-            activation=eval(world_model_cfg.encoder.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
         )
         if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
         else None
@@ -894,7 +894,7 @@ def build_agent(
             input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
-            activation=eval(world_model_cfg.encoder.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
             layer_norm=world_model_cfg.encoder.layer_norm,
         )
         if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
@@ -911,7 +911,7 @@ def build_agent(
         ),
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
-        activation=eval(world_model_cfg.representation_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=(
@@ -924,7 +924,7 @@ def build_agent(
         input_dims=world_model_cfg.recurrent_model.recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
-        activation=eval(world_model_cfg.transition_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.transition_model.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=(
@@ -948,7 +948,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=eval(world_model_cfg.observation_model.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -961,7 +961,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
-            activation=eval(world_model_cfg.observation_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
         if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
@@ -972,7 +972,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
-        activation=eval(world_model_cfg.reward_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.reward_model.dense_act),
         flatten_dim=None,
         norm_layer=(
             [nn.LayerNorm for _ in range(world_model_cfg.reward_model.mlp_layers)]
@@ -993,7 +993,7 @@ def build_agent(
             input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
-            activation=eval(world_model_cfg.discount_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.discount_model.dense_act),
             flatten_dim=None,
             norm_layer=(
                 [nn.LayerNorm for _ in range(world_model_cfg.discount_model.mlp_layers)]
@@ -1025,7 +1025,7 @@ def build_agent(
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         distribution_cfg=cfg.distribution,
         layer_norm=actor_cfg.layer_norm,
     )
@@ -1033,7 +1033,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=(

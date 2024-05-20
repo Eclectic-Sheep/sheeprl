@@ -277,7 +277,7 @@ class Ratio:
             return 0
         if self._prev is None:
             self._prev = step
-            repeats = 1
+            repeats = int(step * self._ratio)
             if self._pretrain_steps > 0:
                 if step < self._pretrain_steps:
                     warnings.warn(
@@ -286,9 +286,9 @@ class Ratio:
                         "the number of current steps."
                     )
                     self._pretrain_steps = step
-                repeats = round(self._pretrain_steps * self._ratio)
+                repeats = int(self._pretrain_steps * self._ratio)
             return repeats
-        repeats = round((step - self._prev) * self._ratio)
+        repeats = int((step - self._prev) * self._ratio)
         self._prev += repeats / self._ratio
         return repeats
 

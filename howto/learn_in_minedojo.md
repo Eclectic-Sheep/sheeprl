@@ -25,6 +25,10 @@ Now, you can install the MineDojo environment:
 pip install -e .[minedojo]
 ```
 
+> [!WARNING]
+>
+> If you run into any problems during the installation due to some missing files that are not downloaded, please have a look at [this issue](https://github.com/MineDojo/MineDojo/issues/113).
+
 ## MineDojo environments
 > [!NOTE]
 >

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, SupportsFloat, Tuple
 
 import gymnasium as gym
 import minedojo
+import minedojo.tasks
 import numpy as np
 from gymnasium.core import RenderFrame
 from minedojo.sim import ALL_CRAFT_SMELT_ITEMS, ALL_ITEMS
@@ -39,6 +40,7 @@ ACTION_MAP = {
 }
 ITEM_ID_TO_NAME = dict(enumerate(ALL_ITEMS))
 ITEM_NAME_TO_ID = dict(zip(ALL_ITEMS, range(N_ALL_ITEMS)))
+ALL_TASKS_SPECS = copy.deepcopy(minedojo.tasks.ALL_TASKS_SPECS)
 
 # Minedojo functional actions:
 # 0: noop
@@ -67,7 +69,7 @@ class MineDojoWrapper(gym.Wrapper):
         self._width = width
         self._pitch_limits = pitch_limits
         self._pos = kwargs.get("start_position", None)
-        self._break_speed_multiplier = kwargs.get("break_speed_multiplier", 100)
+        self._break_speed_multiplier = kwargs.pop("break_speed_multiplier", 100)
         self._start_pos = copy.deepcopy(self._pos)
         self._sticky_attack = 0 if self._break_speed_multiplier > 1 else sticky_attack
         self._sticky_jump = sticky_jump
@@ -84,6 +86,7 @@ class MineDojoWrapper(gym.Wrapper):
             image_size=(height, width),
             world_seed=seed,
             fast_reset=True,
+            break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
         super().__init__(env)
@@ -109,6 +112,7 @@ class MineDojoWrapper(gym.Wrapper):
         )
         self._render_mode: str = "rgb_array"
         self.seed(seed=seed)
+        minedojo.tasks.ALL_TASKS_SPECS = copy.deepcopy(ALL_TASKS_SPECS)
 
     @property
     def render_mode(self) -> str | None:

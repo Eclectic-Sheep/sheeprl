@@ -95,6 +95,7 @@ from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
+import hydra
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -197,7 +198,7 @@ class PPOAgent(nn.Module):
                 mlp_keys,
                 encoder_cfg.dense_units,
                 encoder_cfg.mlp_layers,
-                eval(encoder_cfg.dense_act),
+                hydra.utils.get_class(encoder_cfg.dense_act),
                 encoder_cfg.layer_norm,
             )
             if mlp_keys is not None and len(mlp_keys) > 0
@@ -209,7 +210,7 @@ class PPOAgent(nn.Module):
             input_dims=features_dim,
             output_dim=1,
             hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-            activation=eval(critic_cfg.dense_act),
+            activation=hydra.utils.get_class(critic_cfg.dense_act),
             norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
             norm_args=(
                 [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
@@ -222,7 +223,7 @@ class PPOAgent(nn.Module):
                 input_dims=features_dim,
                 output_dim=None,
                 hidden_sizes=[actor_cfg.dense_units] * actor_cfg.mlp_layers,
-                activation=eval(actor_cfg.dense_act),
+                activation=hydra.utils.get_class(actor_cfg.dense_act),
                 flatten_dim=None,
                 norm_layer=[nn.LayerNorm] * actor_cfg.mlp_layers if actor_cfg.layer_norm else None,
                 norm_args=(
@@ -547,36 +548,36 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     # Global variables
     last_train = 0
     train_step = 0
-    start_step = (
+    start_iter = (
         # + 1 because the checkpoint is at the end of the update step
         # (when resuming from a checkpoint, the update at the checkpoint
         # is ended and you have to start with the next one)
-        (state["update"] // fabric.world_size) + 1
+        (state["iter_num"] // fabric.world_size) + 1
         if cfg.checkpoint.resume_from
         else 1
     )
-    policy_step = state["update"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
+    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_update = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    num_updates = cfg.algo.total_steps // policy_steps_per_update if not cfg.dry_run else 1
+    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
+    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
 
     # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_update != 0:
+    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
-    if cfg.checkpoint.every % policy_steps_per_update != 0:
+    if cfg.checkpoint.every % policy_steps_per_iter != 0:
         warnings.warn(
             f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_update value ({policy_steps_per_update}), so "
+            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
             "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_update value."
+            "policy_steps_per_iter value."
         )
 
     # Get the first environment observation and start the optimization
@@ -587,9 +588,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
         step_data[k] = next_obs[k][np.newaxis]
 
-    for update in range(start_step, num_updates + 1):
+    for iter_num in range(start_iter, total_iters + 1):
         for _ in range(0, cfg.algo.rollout_steps):
-            policy_step += cfg.env.num_envs * world_size
+            policy_step += policy_steps_per_iter
 
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
@@ -602,9 +603,9 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                     }
                     actions = player.get_actions(torch_obs)
                     if is_continuous:
-                        real_actions = torch.cat(actions, -1).cpu().numpy()
+                        real_actions = torch.stack(actions, -1).cpu().numpy()
                     else:
-                        real_actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                 # Single environment step
@@ -650,7 +651,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         train(fabric, agent, optimizer, local_data, aggregator, cfg)
 
         # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or update == num_updates or cfg.dry_run:
+        if policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters or cfg.dry_run:
             # Sync distributed metrics
             if aggregator and not aggregator.disabled:
                 metrics_dict = aggregator.compute()
@@ -660,13 +661,13 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
             # Sync distributed timers
             if not timer.disabled:
                 timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics:
+                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
                     fabric.log(
                         "Time/sps_train",
                         (train_step - last_train) / timer_metrics["Time/train_time"],
                         policy_step,
                     )
-                if "Time/env_interaction_time" in timer_metrics:
+                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
                         ((policy_step - last_log) / world_size * cfg.env.action_repeat)
@@ -683,13 +684,13 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
         if (
             (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
             or cfg.dry_run
-            or update == num_updates
+            or iter_num == total_iters
         ):
             last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "update_step": update,
+                "iter_num": iter_num * world_size,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
@@ -712,19 +713,34 @@ where `log_models`, `test` and `normalize_obs` have to be defined in the `sheepr
 ```python
 from __future__ import annotations
 
-import warnings
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
+import gymnasium as gym
+import numpy as np
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from torch import Tensor
 
-from sheeprl.algos.sota.agent import SOTAAgentPlayer
+from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Dict[str, Tensor]:
+    torch_obs = {}
+    for k in obs.keys():
+        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).float()
+        if k in cnn_keys:
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1, *torch_obs[k].shape[-2:])
+        else:
+            torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
+    return normalize_obs(torch_obs, cnn_keys, obs.keys())
 
 
 @torch.no_grad()
@@ -733,38 +749,22 @@ def test(agent: SOTAAgentPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: s
     agent.eval()
     done = False
     cumulative_rew = 0
-    o = env.reset(seed=cfg.seed)[0]
-    obs = {}
-    for k in o.keys():
-        if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-            torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-            if k in cfg.algo.cnn_keys.encoder:
-                torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-            if k in cfg.algo.mlp_keys.encoder:
-                torch_obs = torch_obs.float()
-            obs[k] = torch_obs
+    obs = env.reset(seed=cfg.seed)[0]
 
     while not done:
+        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
+
         # Act greedly through the environment
-        actions = agent.get_actions(obs, greedy=True)
-        if agent.is_continuous:
+        actions = agent.get_actions(torch_obs, greedy=True)
+        if agent.actor.is_continuous:
             actions = torch.cat(actions, dim=-1)
         else:
             actions = torch.cat([act.argmax(dim=-1) for act in actions], dim=-1)
 
         # Single environment step
-        o, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, _ = env.step(actions.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        obs = {}
-        for k in o.keys():
-            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-                torch_obs = torch.from_numpy(o[k]).to(fabric.device).unsqueeze(0)
-                if k in cfg.algo.cnn_keys.encoder:
-                    torch_obs = torch_obs.reshape(1, -1, *torch_obs.shape[-2:]) / 255 - 0.5
-                if k in cfg.algo.mlp_keys.encoder:
-                    torch_obs = torch_obs.float()
-                obs[k] = torch_obs
 
         if cfg.dry_run:
             done = True
