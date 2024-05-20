@@ -187,7 +187,7 @@ def player(
                 actions = envs.action_space.sample()
             else:
                 # Sample an action given the observation received by the environment
-                torch_obs = prepare_obs(fabric, obs, num_envs=cfg.env.num_envs)
+                torch_obs = prepare_obs(fabric, obs, mlp_keys=cfg.algo.mlp_keys.encoder, num_envs=cfg.env.num_envs)
                 actions = actor(torch_obs)
                 actions = actions.cpu().numpy()
             next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))

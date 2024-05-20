@@ -28,9 +28,11 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"agent"}
 
 
-def prepare_obs(fabric: Fabric, obs: Dict[str, np.ndarray], *, num_envs: int = 1, **kwargs) -> Tensor:
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, mlp_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Tensor:
     with fabric.device:
-        torch_obs = torch.cat([torch.as_tensor(obs[k].copy(), dtype=torch.float32) for k in obs.keys()], dim=-1)
+        torch_obs = torch.cat([torch.as_tensor(obs[k].copy(), dtype=torch.float32) for k in mlp_keys], dim=-1)
     return torch_obs.reshape(num_envs, -1)
 
 
@@ -43,7 +45,7 @@ def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     obs = env.reset(seed=cfg.seed)[0]
     while not done:
         # Act greedly through the environment
-        torch_obs = prepare_obs(fabric, obs)
+        torch_obs = prepare_obs(fabric, obs, mlp_keys=cfg.algo.mlp_keys.encoder)
         action = actor.get_actions(torch_obs, greedy=True)
 
         # Single environment step
