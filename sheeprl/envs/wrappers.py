@@ -256,7 +256,7 @@ class GrayscaleRenderWrapper(gym.Wrapper):
 
 
 class ActionsAsObservationWrapper(gym.Wrapper):
-    def __init__(self, env: Env, num_stack: int, dilation: int = 1):
+    def __init__(self, env: Env, num_stack: int, noop: float | int | List[int], dilation: int = 1):
         super().__init__(env)
         if num_stack < 1:
             raise ValueError(
@@ -277,8 +277,9 @@ class ActionsAsObservationWrapper(gym.Wrapper):
             high = np.resize(self.env.action_space.high, self._action_shape * num_stack)
         elif self._is_multidiscrete:
             low = 0
-            high = max(self.env.action_space.nvec) - 1
-            self._action_shape = self.env.action_space.nvec.shape[0]
+            high = 1  # one-hot encoding
+            # one one-hot for each action
+            self._action_shape = sum(self.env.action_space.nvec)
         else:
             low = 0
             high = 1  # one-hot encoding
@@ -286,9 +287,37 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         self.observation_space["action_stack"] = gym.spaces.Box(
             low=low, high=high, shape=(self._action_shape * num_stack,), dtype=np.float32
         )
+        if self._is_continuous:
+            if isinstance(noop, list):
+                raise ValueError(f"The noop actions must be a float for continuous action spaces, got: {noop}")
+            self.noop = np.full((self._action_shape,), noop, dtype=np.float32)
+        elif self._is_multidiscrete:
+            if not isinstance(noop, list):
+                raise ValueError(f"The noop actions must be a list for multi-discrete action spaces, got: {noop}")
+            noops = []
+            for act, n in zip(noop, self.env.action_space.nvec):
+                noops.append(np.zeros((n,), dtype=np.float32))
+                noops[-1][noop[act]] = 1.0
+            self.noop = np.concatenate(noops, axis=-1)
+        else:
+            if isinstance(noop, (list, float)):
+                raise ValueError(f"The noop actions must be an integer for discrete action spaces, got: {noop}")
+            self.noop = np.zeros((self._action_shape,), dtype=np.float32)
+            self.noop[noop] = 1.0
 
     def step(self, action: Any) -> Tuple[Any | SupportsFloat | bool | Dict[str, Any]]:
-        self._actions.append(action)
+        if self._is_continuous:
+            self._actions.append(action)
+        elif self._is_multidiscrete:
+            one_hot_actions = []
+            for act, n in zip(action, self.env.action_space.nvec):
+                one_hot_actions.append(np.zeros((n,), dtype=np.float32))
+                one_hot_actions[-1][act] = 1.0
+            self._actions.append(np.concatenate(one_hot_actions, axis=-1))
+        else:
+            one_hot_action = np.zeros((self._action_shape,), dtype=np.float32)
+            one_hot_action[action] = 1.0
+            self._actions.append(one_hot_action)
         obs, reward, done, truncated, info = super().step(action)
         obs["action_stack"] = self._get_actions_stack()
         return obs, reward, done, truncated, info
@@ -296,22 +325,11 @@ class ActionsAsObservationWrapper(gym.Wrapper):
     def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any | Dict[str, Any]]:
         obs, info = super().reset(seed=seed, options=options)
         self._actions.clear()
-        if self._is_multidiscrete or self._is_continuous:
-            [self._actions.append(np.zeros((self._action_shape,))) for _ in range(self._num_stack * self._dilation)]
-        else:
-            [self._actions.append(0) for _ in range(self._num_stack * self._dilation)]
+        [self._actions.append(self.noop) for _ in range(self._num_stack * self._dilation)]
         obs["action_stack"] = self._get_actions_stack()
         return obs, info
 
     def _get_actions_stack(self) -> np.ndarray:
         actions_stack = list(self._actions)[self._dilation - 1 :: self._dilation]
-        if self._is_continuous or self._is_multidiscrete:
-            actions = np.concatenate(actions_stack, axis=0)
-        else:
-            action_list = []
-            for action in actions_stack:
-                one_hot_action = np.zeros(self.env.action_space.n)
-                one_hot_action[action] = 1
-                action_list.append(one_hot_action)
-            actions = np.concatenate(action_list, axis=0)
+        actions = np.concatenate(actions_stack, axis=-1)
         return actions.astype(np.float32)
