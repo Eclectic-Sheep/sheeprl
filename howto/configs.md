@@ -433,7 +433,7 @@ wrapper: ???
 
 > [!NOTE]
 > 
-> The actions as observations wrapper is used for adding the last `n` actions to the observations. For more information, check the corresponding [howto file](./actions_as_observations.md).
+> The actions as observations wrapper is used for adding the last `n` actions to the observations. For more information, check the corresponding [howto file](./actions_as_observation.md).
 
 Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
 

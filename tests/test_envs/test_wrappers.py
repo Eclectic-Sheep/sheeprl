@@ -21,7 +21,7 @@ def test_mask_velocities_fail():
 @pytest.mark.parametrize("num_stack", [1, 4, 8])
 @pytest.mark.parametrize("dilation", [1, 2, 4])
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_actions_as_observations_wrapper(env_id: str, num_stack, dilation):
+def test_actions_as_observation_wrapper(env_id: str, num_stack, dilation):
     env = ENVIRONMENTS[env_id]()
     if isinstance(env.action_space, gym.spaces.MultiDiscrete):
         noop = [0, 0]
@@ -43,7 +43,7 @@ def test_actions_as_observations_wrapper(env_id: str, num_stack, dilation):
 
 @pytest.mark.parametrize("num_stack", [-1, 0])
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_actions_as_observations_wrapper_invalid_num_stack(env_id, num_stack):
+def test_actions_as_observation_wrapper_invalid_num_stack(env_id, num_stack):
     env = ENVIRONMENTS[env_id]()
     if isinstance(env.action_space, gym.spaces.MultiDiscrete):
         noop = [0, 0]
@@ -55,7 +55,7 @@ def test_actions_as_observations_wrapper_invalid_num_stack(env_id, num_stack):
 
 @pytest.mark.parametrize("dilation", [-1, 0])
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_actions_as_observations_wrapper_invalid_dilation(env_id, dilation):
+def test_actions_as_observation_wrapper_invalid_dilation(env_id, dilation):
     env = ENVIRONMENTS[env_id]()
     if isinstance(env.action_space, gym.spaces.MultiDiscrete):
         noop = [0, 0]
@@ -67,34 +67,34 @@ def test_actions_as_observations_wrapper_invalid_dilation(env_id, dilation):
 
 @pytest.mark.parametrize("noop", [set([0, 0, 0]), "this is an invalid type", np.array([0, 0, 0])])
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_actions_as_observations_wrapper_invalid_noop_type(env_id, noop):
+def test_actions_as_observation_wrapper_invalid_noop_type(env_id, noop):
     env = ENVIRONMENTS[env_id]()
     with pytest.raises(ValueError, match="The noop action must be an integer or float or list"):
         env = ActionsAsObservationWrapper(env, num_stack=3, noop=noop, dilation=2)
 
 
-def test_actions_as_observations_wrapper_invalid_noop_continuous_type():
+def test_actions_as_observation_wrapper_invalid_noop_continuous_type():
     env = ContinuousDummyEnv()
     with pytest.raises(ValueError, match="The noop actions must be a float for continuous action spaces"):
         env = ActionsAsObservationWrapper(env, num_stack=3, noop=[0, 0, 0], dilation=2)
 
 
 @pytest.mark.parametrize("noop", [[0, 0, 0], 0.0])
-def test_actions_as_observations_wrapper_invalid_noop_discrete_type(noop):
+def test_actions_as_observation_wrapper_invalid_noop_discrete_type(noop):
     env = DiscreteDummyEnv()
     with pytest.raises(ValueError, match="The noop actions must be an integer for discrete action spaces"):
         env = ActionsAsObservationWrapper(env, num_stack=3, noop=noop, dilation=2)
 
 
 @pytest.mark.parametrize("noop", [0, 0.0])
-def test_actions_as_observations_wrapper_invalid_noop_multidiscrete_type(noop):
+def test_actions_as_observation_wrapper_invalid_noop_multidiscrete_type(noop):
     env = MultiDiscreteDummyEnv()
     with pytest.raises(ValueError, match="The noop actions must be a list for multi-discrete action spaces"):
         env = ActionsAsObservationWrapper(env, num_stack=3, noop=noop, dilation=2)
 
 
 @pytest.mark.parametrize("noop", [[0], [0, 0, 0]])
-def test_actions_as_observations_wrapper_invalid_noop_multidiscrete_n_actions(noop):
+def test_actions_as_observation_wrapper_invalid_noop_multidiscrete_n_actions(noop):
     env = MultiDiscreteDummyEnv()
     with pytest.raises(
         RuntimeError, match="The number of noop actions must be equal to the number of actions of the environment"
