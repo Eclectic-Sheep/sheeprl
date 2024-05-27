@@ -8,8 +8,10 @@ grayscale: False
 clip_rewards: False
 capture_video: True
 frame_stack_dilation: 1
-action_stack: -1
-action_stack_dilation: 1
+actions_as_observation:
+  num_stack: -1
+  noop: "You MUST define the NOOP"
+  dilation: 1
 max_episode_steps: null
 reward_as_observation: False
 wrapper: ???

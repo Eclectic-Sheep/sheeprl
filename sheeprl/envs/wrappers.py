@@ -265,6 +265,8 @@ class ActionsAsObservationWrapper(gym.Wrapper):
             )
         if dilation < 1:
             raise ValueError(f"The actions stack dilation argument must be greater than zero, got: {dilation}")
+        if not isinstance(noop, (int, float, list)):
+            raise ValueError(f"The noop action must be an integer or float or list, got: {noop} ({type(noop)})")
         self._num_stack = num_stack
         self._dilation = dilation
         self._actions = deque(maxlen=num_stack * dilation)
@@ -294,6 +296,11 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         elif self._is_multidiscrete:
             if not isinstance(noop, list):
                 raise ValueError(f"The noop actions must be a list for multi-discrete action spaces, got: {noop}")
+            if len(self.env.action_space.nvec) != len(noop):
+                raise RuntimeError(
+                    "The number of noop actions must be equal to the number of actions of the environment. "
+                    f"Got env_action_space = {self.env.action_space.nvec} and {noop =}"
+                )
             noops = []
             for act, n in zip(noop, self.env.action_space.nvec):
                 noops.append(np.zeros((n,), dtype=np.float32))

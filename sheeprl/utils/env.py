@@ -208,8 +208,8 @@ def make_env(
                 )
             env = FrameStack(env, cfg.env.frame_stack, cnn_keys, cfg.env.frame_stack_dilation)
 
-        if cfg.env.action_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
-            env = ActionsAsObservationWrapper(env, cfg.env.action_stack, cfg.env.action_stack_dilation)
+        if cfg.env.actions_as_observations.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
+            env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observations)
 
         if cfg.env.reward_as_observation:
             env = RewardAsObservationWrapper(env)
