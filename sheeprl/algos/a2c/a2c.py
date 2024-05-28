@@ -228,7 +228,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     for iter_num in range(1, total_iters + 1):
         with torch.inference_mode():
             for _ in range(0, cfg.algo.rollout_steps):
-                policy_step += policy_steps_per_iter
+                policy_step += cfg.env.num_envs * world_size
 
                 # Measure environment interaction time: this considers both the model forward
                 # to get the action given the observation and the time taken into the environment
