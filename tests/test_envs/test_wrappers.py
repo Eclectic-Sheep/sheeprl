@@ -86,7 +86,7 @@ def test_action_repeat(env_id: str, amount):
 
     assert env.action_repeat == amount
     for i in range(amount * 10):
-        o, r, done, t, info = env.step(env.action_space.sample())
+        _, _, done, _, _ = env.step(env.action_space.sample())
         step = env.__getattr__("_current_step")
         if not done:
             assert amount * (i + 1) == step
@@ -100,5 +100,5 @@ def test_reset_method(env_id):
     env = ENVIRONMENTS[env_id]()
     env = ActionRepeat(env, amount=3)
 
-    obs = env.reset()
+    obs = env.reset()[0]
     assert obs is not None

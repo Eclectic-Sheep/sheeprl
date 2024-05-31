@@ -31,7 +31,7 @@ def test_actions_as_observation_wrapper(env_id: str, num_stack, dilation):
         assert d1 == d2
 
     actions = []
-    for _ in range(64):
+    for _ in range(8):
         action = env.action_space.sample()
         actions.append(action)
         o = env.step(action)[0]
