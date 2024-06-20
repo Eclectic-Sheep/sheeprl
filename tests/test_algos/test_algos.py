@@ -26,7 +26,7 @@ def standard_args():
         "hydra/hydra_logging=disabled",
         "dry_run=True",
         "checkpoint.save_last=False",
-        "env.num_envs=1",
+        "env.num_envs=2",
         f"env.sync_env={_IS_WINDOWS}",
         "env.capture_video=False",
         "fabric.devices=auto",

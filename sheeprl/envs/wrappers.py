@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import time
 from collections import deque
@@ -251,3 +253,90 @@ class GrayscaleRenderWrapper(gym.Wrapper):
             if len(frame.shape) == 3 and frame.shape[-1] == 1:
                 frame = frame.repeat(3, axis=-1)
         return frame
+
+
+class ActionsAsObservationWrapper(gym.Wrapper):
+    def __init__(self, env: Env, num_stack: int, noop: float | int | List[int], dilation: int = 1):
+        super().__init__(env)
+        if num_stack < 1:
+            raise ValueError(
+                "The number of actions to the `action_stack` observation "
+                f"must be greater or equal than 1, got: {num_stack}"
+            )
+        if dilation < 1:
+            raise ValueError(f"The actions stack dilation argument must be greater than zero, got: {dilation}")
+        if not isinstance(noop, (int, float, list)):
+            raise ValueError(f"The noop action must be an integer or float or list, got: {noop} ({type(noop)})")
+        self._num_stack = num_stack
+        self._dilation = dilation
+        self._actions = deque(maxlen=num_stack * dilation)
+        self._is_continuous = isinstance(self.env.action_space, gym.spaces.Box)
+        self._is_multidiscrete = isinstance(self.env.action_space, gym.spaces.MultiDiscrete)
+        self.observation_space = copy.deepcopy(self.env.observation_space)
+        if self._is_continuous:
+            self._action_shape = self.env.action_space.shape[0]
+            low = np.resize(self.env.action_space.low, self._action_shape * num_stack)
+            high = np.resize(self.env.action_space.high, self._action_shape * num_stack)
+        elif self._is_multidiscrete:
+            low = 0
+            high = 1  # one-hot encoding
+            # one one-hot for each action
+            self._action_shape = sum(self.env.action_space.nvec)
+        else:
+            low = 0
+            high = 1  # one-hot encoding
+            self._action_shape = self.env.action_space.n
+        self.observation_space["action_stack"] = gym.spaces.Box(
+            low=low, high=high, shape=(self._action_shape * num_stack,), dtype=np.float32
+        )
+        if self._is_continuous:
+            if isinstance(noop, list):
+                raise ValueError(f"The noop actions must be a float for continuous action spaces, got: {noop}")
+            self.noop = np.full((self._action_shape,), noop, dtype=np.float32)
+        elif self._is_multidiscrete:
+            if not isinstance(noop, list):
+                raise ValueError(f"The noop actions must be a list for multi-discrete action spaces, got: {noop}")
+            if len(self.env.action_space.nvec) != len(noop):
+                raise RuntimeError(
+                    "The number of noop actions must be equal to the number of actions of the environment. "
+                    f"Got env_action_space = {self.env.action_space.nvec} and {noop =}"
+                )
+            noops = []
+            for act, n in zip(noop, self.env.action_space.nvec):
+                noops.append(np.zeros((n,), dtype=np.float32))
+                noops[-1][noop[act]] = 1.0
+            self.noop = np.concatenate(noops, axis=-1)
+        else:
+            if isinstance(noop, (list, float)):
+                raise ValueError(f"The noop actions must be an integer for discrete action spaces, got: {noop}")
+            self.noop = np.zeros((self._action_shape,), dtype=np.float32)
+            self.noop[noop] = 1.0
+
+    def step(self, action: Any) -> Tuple[Any | SupportsFloat | bool | Dict[str, Any]]:
+        if self._is_continuous:
+            self._actions.append(action)
+        elif self._is_multidiscrete:
+            one_hot_actions = []
+            for act, n in zip(action, self.env.action_space.nvec):
+                one_hot_actions.append(np.zeros((n,), dtype=np.float32))
+                one_hot_actions[-1][act] = 1.0
+            self._actions.append(np.concatenate(one_hot_actions, axis=-1))
+        else:
+            one_hot_action = np.zeros((self._action_shape,), dtype=np.float32)
+            one_hot_action[action] = 1.0
+            self._actions.append(one_hot_action)
+        obs, reward, done, truncated, info = super().step(action)
+        obs["action_stack"] = self._get_actions_stack()
+        return obs, reward, done, truncated, info
+
+    def reset(self, *, seed: int | None = None, options: Dict[str, Any] | None = None) -> Tuple[Any | Dict[str, Any]]:
+        obs, info = super().reset(seed=seed, options=options)
+        self._actions.clear()
+        [self._actions.append(self.noop) for _ in range(self._num_stack * self._dilation)]
+        obs["action_stack"] = self._get_actions_stack()
+        return obs, info
+
+    def _get_actions_stack(self) -> np.ndarray:
+        actions_stack = list(self._actions)[self._dilation - 1 :: self._dilation]
+        actions = np.concatenate(actions_stack, axis=-1)
+        return actions.astype(np.float32)

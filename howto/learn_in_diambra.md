@@ -86,7 +86,7 @@ env:
     diambra_settings:
         characters: Kasumi
         step_ratio: 5
-        role: diambra.arena.Roles.P1
+        role: P1
     diambra_wrappers:
         normalize_reward: True
         normalization_factor: 0.3

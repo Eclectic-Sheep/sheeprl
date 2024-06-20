@@ -4,9 +4,11 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
+import numpy as np
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
+from torch import Tensor
 
 from sheeprl.algos.sac.agent import SACPlayer, build_agent
 from sheeprl.utils.env import make_env
@@ -26,31 +28,30 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"agent"}
 
 
+def prepare_obs(
+    fabric: Fabric, obs: Dict[str, np.ndarray], *, mlp_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
+) -> Tensor:
+    with fabric.device:
+        torch_obs = torch.cat([torch.as_tensor(obs[k].copy(), dtype=torch.float32) for k in mlp_keys], dim=-1)
+    return torch_obs.reshape(num_envs, -1)
+
+
 @torch.no_grad()
 def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
     cumulative_rew = 0
-    with fabric.device:
-        o = env.reset(seed=cfg.seed)[0]
-        next_obs = torch.cat(
-            [torch.as_tensor(o[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-        ).unsqueeze(
-            0
-        )  # [N_envs, N_obs]
+    obs = env.reset(seed=cfg.seed)[0]
     while not done:
         # Act greedly through the environment
-        action = actor.get_actions(next_obs, greedy=True)
+        torch_obs = prepare_obs(fabric, obs, mlp_keys=cfg.algo.mlp_keys.encoder)
+        action = actor.get_actions(torch_obs, greedy=True)
 
         # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
         done = done or truncated
         cumulative_rew += reward
-        with fabric.device:
-            next_obs = torch.cat(
-                [torch.as_tensor(next_obs[k], dtype=torch.float32) for k in cfg.algo.mlp_keys.encoder], dim=-1
-            )
 
         if cfg.dry_run:
             done = True

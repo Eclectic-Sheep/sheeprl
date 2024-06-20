@@ -915,7 +915,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -988,7 +988,7 @@ def build_agent(
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.cnn_layer_norm.cls),
             layer_norm_kw=world_model_cfg.encoder.cnn_layer_norm.kw,
-            activation=eval(world_model_cfg.encoder.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
             stages=cnn_stages,
         )
         if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
@@ -1000,7 +1000,7 @@ def build_agent(
             input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
-            activation=eval(world_model_cfg.encoder.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.mlp_layer_norm.cls),
             layer_norm_kw=world_model_cfg.encoder.mlp_layer_norm.kw,
         )
@@ -1024,7 +1024,7 @@ def build_agent(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
-        activation=eval(world_model_cfg.representation_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
         layer_args={"bias": representation_ln_cls == nn.Identity},
         flatten_dim=None,
         norm_layer=[representation_ln_cls],
@@ -1040,7 +1040,7 @@ def build_agent(
         input_dims=recurrent_state_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.transition_model.hidden_size],
-        activation=eval(world_model_cfg.transition_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.transition_model.dense_act),
         layer_args={"bias": transition_ln_cls == nn.Identity},
         flatten_dim=None,
         norm_layer=[transition_ln_cls],
@@ -1074,7 +1074,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=eval(world_model_cfg.observation_model.cnn_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
             layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
             stages=cnn_stages,
@@ -1089,7 +1089,7 @@ def build_agent(
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
-            activation=eval(world_model_cfg.observation_model.dense_act),
+            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.mlp_layer_norm.cls),
             layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
         )
@@ -1103,7 +1103,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=world_model_cfg.reward_model.bins,
         hidden_sizes=[world_model_cfg.reward_model.dense_units] * world_model_cfg.reward_model.mlp_layers,
-        activation=eval(world_model_cfg.reward_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.reward_model.dense_act),
         layer_args={"bias": reward_ln_cls == nn.Identity},
         flatten_dim=None,
         norm_layer=reward_ln_cls,
@@ -1118,7 +1118,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=1,
         hidden_sizes=[world_model_cfg.discount_model.dense_units] * world_model_cfg.discount_model.mlp_layers,
-        activation=eval(world_model_cfg.discount_model.dense_act),
+        activation=hydra.utils.get_class(world_model_cfg.discount_model.dense_act),
         layer_args={"bias": discount_ln_cls == nn.Identity},
         flatten_dim=None,
         norm_layer=discount_ln_cls,
@@ -1143,7 +1143,7 @@ def build_agent(
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         dense_units=actor_cfg.dense_units,
-        activation=eval(actor_cfg.dense_act),
+        activation=hydra.utils.get_class(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
         layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
@@ -1157,7 +1157,7 @@ def build_agent(
         input_dims=latent_state_size,
         output_dim=critic_cfg.bins,
         hidden_sizes=[critic_cfg.dense_units] * critic_cfg.mlp_layers,
-        activation=eval(critic_cfg.dense_act),
+        activation=hydra.utils.get_class(critic_cfg.dense_act),
         layer_args={"bias": critic_ln_cls == nn.Identity},
         flatten_dim=None,
         norm_layer=critic_ln_cls,

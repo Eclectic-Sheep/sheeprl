@@ -9,6 +9,7 @@ import numpy as np
 
 from sheeprl.envs.wrappers import (
     ActionRepeat,
+    ActionsAsObservationWrapper,
     FrameStack,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
@@ -206,6 +207,9 @@ def make_env(
                     f"The frame stack dilation argument must be greater than zero, got: {cfg.env.frame_stack_dilation}"
                 )
             env = FrameStack(env, cfg.env.frame_stack, cnn_keys, cfg.env.frame_stack_dilation)
+
+        if cfg.env.actions_as_observation.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
+            env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observation)
 
         if cfg.env.reward_as_observation:
             env = RewardAsObservationWrapper(env)
