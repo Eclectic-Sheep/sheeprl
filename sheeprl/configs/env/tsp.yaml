@@ -5,6 +5,7 @@ defaults:
 # Override from `default` config
 id: TSP-v0
 sync_env: True
+num_envs: 16
 
 # Wrapper to be instantiated
 wrapper:

@@ -30,8 +30,8 @@ def prepare_obs(
         torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).float()
         if k in cnn_keys:
             torch_obs[k] = torch_obs[k].reshape(num_envs, -1, *torch_obs[k].shape[-2:])
-        else:
-            torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
+        # else:
+        #     torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
     return normalize_obs(torch_obs, cnn_keys, obs.keys())
 
 
