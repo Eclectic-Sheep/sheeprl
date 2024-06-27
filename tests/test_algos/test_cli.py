@@ -51,16 +51,8 @@ def test_dp_strategy_instance_warning():
         "metric.log_level=0",
     ]
     with mock.patch.object(sys, "argv", args):
-        with pytest.warns(UserWarning) as record:
+        with pytest.raises(ValueError, match="Expected a non cpu device, but got"):
             run()
-        assert len(record) >= 1
-        assert (
-            record[0].message.args[0] == "Running an algorithm with a strategy (DataParallelStrategy) "
-            "different than 'SingleDeviceStrategy' or 'DDPStrategy' can cause unexpected problems. "
-            "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
-            "or with a single device with 'python sheeprl.py fabric.strategy=auto fabric.devices=1' "
-            "if you run into any problems."
-        )
 
 
 def test_decoupled_strategy_instance_fail():
