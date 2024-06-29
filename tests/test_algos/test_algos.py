@@ -27,7 +27,7 @@ def standard_args():
         "dry_run=True",
         "checkpoint.save_last=False",
         "env.num_envs=2",
-        f"env.sync_env={_IS_WINDOWS}",
+        "env.sync_env=True",
         "env.capture_video=False",
         "fabric.devices=auto",
         "fabric.accelerator=cpu",

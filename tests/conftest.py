@@ -21,7 +21,6 @@ def preserve_global_rank_variable():
 def restore_env_variables():
     """Ensures that environment variables set during the test do not leak out."""
     env_backup = os.environ.copy()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     os.environ["SHEEPRL_SEARCH_PATH"] = "file://tests/configs;pkg://sheeprl.configs"
     yield
     leaked_vars = os.environ.keys() - env_backup.keys()

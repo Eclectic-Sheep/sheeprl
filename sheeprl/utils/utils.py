@@ -246,9 +246,7 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
     Returns:
         nn.Module: the unwrapped model.
     """
-    model = copy.deepcopy(model)
-    if isinstance(model, _FabricModule):
-        model = model.module
+    model = copy.deepcopy(getattr(model, "module", model))
     for name, child in model.named_children():
         setattr(model, name, unwrap_fabric(child))
     return model
