@@ -112,9 +112,7 @@ class D4RLWrapper(gymnasium.Wrapper):
         obs, reward, done, info = self.env.step(action)  # type: ignore [misc]
         if not isinstance(obs, np.ndarray):
             raise RuntimeError(f"Observation type not valid, got {type(obs)}")
-        is_timelimit = False
-        if isinstance(self.env, gym.wrappers.TimeLimit):
-            is_timelimit = self.env._past_limit()
+        is_timelimit = info.get("TimeLimit.truncated", False)
         return {"observations": obs}, reward, done and not is_timelimit, done and is_timelimit, info
 
     def render(self):
