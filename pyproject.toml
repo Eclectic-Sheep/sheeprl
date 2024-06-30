@@ -93,6 +93,7 @@ mopo = [
   "mujoco-py==2.1.2.14",
   "gym<0.24.0",
   "Cython<3.0",
+  "mjrl @ git+https://github.com/aravindr93/mjrl.git"
 ]
 
 [tool.ruff]
