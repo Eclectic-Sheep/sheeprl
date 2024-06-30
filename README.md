@@ -366,6 +366,22 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 >
 > **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install sheeprl[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install sheeprl[minerl]` or `pip install sheeprl[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively. 
 
+#### Additional: MOPO
+To correctly install the dependencies to run experiments with the [MOPO](https://arxiv.org/abs/2005.13239) algorithm, you must follow these steps:
+1. Download MuJoCo according your OS: [Linux](https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz) or [OSX](https://mujoco.org/download/mujoco210-macos-x86_64.tar.gz).
+2. Extract it in the `~/.mujoco` folder (for more information, see [here](https://github.com/openai/mujoco-py?tab=readme-ov-file#install-mujoco)).
+3. Add the MuJoCo path and NVIDIA path to the `LD_LIBRARY_PATH` environment variable, for example, add the export statements in the `~/.bashrc` file, if you are using Linux.
+
+```bash
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/michele.milesi/.mujoco/mujoco210/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
+```
+
+4. Install the `libosmesa6-dev` and `patchelf` libraries, for Linux users, run `sudo apt-get install libosmesa6-dev patchelf`.
+5. Run `pip install -e .[mopo]` to install MOPO dependencies.
+
+
+
 ### Run an experiment with SheepRL
 
 Now you can use one of the already available algorithms, or create your own.

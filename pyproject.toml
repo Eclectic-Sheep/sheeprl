@@ -88,6 +88,12 @@ diambra = ["diambra==0.0.17", "diambra-arena==2.2.6"]
 crafter = ["crafter==1.8.3"]
 mlflow = ["mlflow==2.11.1"]
 supermario = ["gym-super-mario-bros==7.4.0", "gym<0.26"]
+mopo = [
+  "d4rl[all]==1.1",
+  "mujoco-py==2.1.2.14",
+  "gym<0.24.0",
+  "Cython<3.0",
+]
 
 [tool.ruff]
 line-length = 120
