@@ -47,8 +47,9 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
     # Remove keys from the `old_cfg` that must not be overridden
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
-    old_cfg.checkpoint.pop("resume_from", None)
+    old_cfg.algo.pop("total_steps", None)
     old_cfg.algo.pop("learning_starts", None)
+    old_cfg.checkpoint.pop("resume_from", None)
     # Substitute the config with the old one (except for the parameters removed before)
     # because the experiment must continue with the same parameters
     with open_dict(cfg):
