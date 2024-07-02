@@ -56,7 +56,7 @@ def value_loss(
     else:
         values_pred = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
         # return torch.max((new_values - returns) ** 2, (values_pred - returns) ** 2).mean()
-    return F.mse_loss(values_pred, returns, reduction=reduction)
+    return F.huber_loss(values_pred, returns, reduction=reduction)
 
 
 def entropy_loss(entropy: Tensor, reduction: str = "mean") -> Tensor:

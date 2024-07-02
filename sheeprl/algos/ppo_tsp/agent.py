@@ -38,7 +38,7 @@ class MLPEncoder(nn.Module):
             features_dim,
             [dense_units] * mlp_layers,
             activation=dense_act,
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+            norm_layer=[nn.BatchNorm1d for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
         )
 
@@ -52,18 +52,18 @@ class Critic(nn.Module):
         self,
         input_dim: int,
         num_heads: int,
+        dense_units: int = 256,
     ):
         super().__init__()
         self.linear = Linear(3 * input_dim, input_dim)
         self.attention = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
-        self.value_head = Linear(input_dim, 1)
+        self.value_head = nn.Sequential(Linear(input_dim, dense_units), nn.ReLU(), Linear(dense_units, 1))
 
-    def forward(self, x, first_node, current_node, mask) -> Tensor:
+    def forward(self, x, first_node, mask) -> Tensor:
         y = x.detach()
         graph_embeddig = torch.mean(y, dim=-2)
         first_node_features = y[torch.arange(y.shape[0]), first_node.long().flatten()]
-        current_node_features = y[torch.arange(y.shape[0]), current_node.long().flatten()]
-        context = torch.concat([graph_embeddig, first_node_features, current_node_features], dim=-1)
+        context = torch.concat([graph_embeddig, first_node_features, first_node_features], dim=-1)
         context = self.linear(context).unsqueeze(1)
         attn = self.attention(
             context.permute(1, 0, 2),
@@ -138,7 +138,7 @@ class PPOAgent(nn.Module):
         )
         # self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
         features_dim = encoder_cfg.mlp_features_dim
-        self.critic = Critic(features_dim, critic_cfg.num_heads)
+        self.critic = Critic(features_dim, critic_cfg.num_heads, dense_units=critic_cfg.dense_units)
         self.actor = Actor(features_dim, actor_cfg.num_heads)
 
     def forward(
@@ -160,7 +160,7 @@ class PPOAgent(nn.Module):
         feat = self.feature_extractor(batch.x, batch.edge_index.to(dtype=torch.long))
         feat = feat.view(batch_size, num_nodes, -1)
         pre_dist: List[Tensor] = [self.actor(feat, obs["first_node"], obs["current_node"], obs["mask"])]
-        values = self.critic(feat, obs["first_node"], obs["current_node"], obs["mask"])
+        values = self.critic(feat, obs["first_node"], obs["mask"])
 
         should_append = False
         actions_logprobs: List[Tensor] = []
@@ -200,7 +200,7 @@ class PPOAgent(nn.Module):
 
         feat = self.feature_extractor(batch.x, batch.edge_index.to(dtype=torch.long))
         feat = feat.view(batch_size, num_nodes, -1)
-        return self.critic(feat, obs["first_node"], obs["current_node"], obs["mask"])
+        return self.critic(feat, obs["first_node"], obs["mask"])
 
     def get_greedy_actions(self, obs: Dict[str, Tensor]) -> Sequence[Tensor]:
         nodes_embeddings = self.mlp_encoder(obs)

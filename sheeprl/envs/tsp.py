@@ -26,7 +26,7 @@ class TSP(gym.Env):
         self.window = None
         self.clock = None
 
-        nodes_space = gym.spaces.Box(low=0, high=1, shape=(n_nodes, 3))  # x, y, visited
+        nodes_space = gym.spaces.Box(low=0, high=1, shape=(n_nodes, 2))  # x, y
         edge_space = gym.spaces.MultiBinary(n_nodes * (n_nodes - 1))  # visited or not
         edge_links_space = gym.spaces.MultiDiscrete([[n_nodes, n_nodes]] * (n_nodes * (n_nodes - 1)))
 
@@ -46,14 +46,13 @@ class TSP(gym.Env):
         )
 
         self.action_space = gym.spaces.Discrete(n_nodes)
+        self.nodes = np.random.rand(self.n_nodes, 2)
+        self.nodes = self.nodes.astype(np.float32)
 
     def reset(self, seed: int = None, options: Dict[str, Any] = None, add_starting_node=True):
         """Create a graph with self.n_nodes nodes and return the initial observation."""
-        self.nodes = np.random.rand(self.n_nodes, 2)
-        # add a column for the visited flag
-        self.nodes = np.concatenate([self.nodes, np.zeros((self.n_nodes, 1))], axis=1)
-        # change self.nodes to float32
-        self.nodes = self.nodes.astype(np.float32)
+        # self.nodes = np.random.rand(self.n_nodes, 2)
+        # self.nodes = self.nodes.astype(np.float32)
         self.edge_links = np.array(
             [x for x in itertools.product(range(self.n_nodes), repeat=2) if x[0] != x[1]],
             dtype=np.int64,
@@ -67,7 +66,7 @@ class TSP(gym.Env):
         if add_starting_node:
             self.first_node = np.array([np.random.randint(self.n_nodes)], dtype=np.int64)
             self.current_node = self.first_node
-            self.nodes[self.current_node, 2] = 1
+            # self.nodes[self.current_node, 2] = 1
             self.partial_solution.append(self.current_node)
             mask[self.current_node] = 1
         return {
@@ -81,7 +80,7 @@ class TSP(gym.Env):
 
     def step(self, action: int):
         """Mark the edge as visited and return the new observation and the reward."""
-        self.nodes[action, 2] = 1
+        # self.nodes[action, 2] = 1
         self.partial_solution.append(action)
         if self.current_node is not None:
             # find the index of the edge_link equal to [current_node, action]
@@ -91,7 +90,7 @@ class TSP(gym.Env):
             self.first_node = action
         self.current_node = np.array([action])
 
-        if np.all(self.nodes[:, 2]):
+        if len(self.partial_solution) == self.n_nodes:
             # close the tour
             edge_index = np.nonzero(
                 np.all(self.edge_links == [self.current_node.item(), self.first_node.item()], axis=1)
@@ -152,7 +151,7 @@ class TSP(gym.Env):
 
             for i in range(self.n_nodes):
                 # use red for the first node and green for the current node
-                x, y, visited = self.nodes[i]
+                x, y = self.nodes[i]
                 match i:
                     case self.first_node:
                         color = (255, 0, 0)
@@ -172,9 +171,9 @@ class TSP(gym.Env):
 
             for i in range(len(self.partial_solution) - 1):
                 node_idx = self.partial_solution[i]
-                x, y, _ = self.nodes[node_idx.item()]
+                x, y = self.nodes[node_idx.item()]
                 next_node_idx = self.partial_solution[(i + 1)].item()
-                x_next, y_next, _ = self.nodes[next_node_idx]
+                x_next, y_next = self.nodes[next_node_idx]
                 pygame.draw.line(
                     canvas,
                     (0, 0, 0),
@@ -223,6 +222,6 @@ class TSP(gym.Env):
                     length += self._compute_edge_length(i, j)
         return length
 
-    def _compute_edge_length(self, node1, node2):
+    def _compute_edge_length(self, node1_idx, node2_idx):
         """Compute the length of the node1-node2 edge."""
-        return np.linalg.norm(self.nodes[node1, :2] - self.nodes[node2, :2])
+        return np.linalg.norm(self.nodes[node1_idx] - self.nodes[node2_idx])
