@@ -27,7 +27,7 @@ class D4RLWrapper(gymnasium.Wrapper):
         env: The D4RL environment.
     """
 
-    def __init__(self, id: str):
+    def __init__(self, id: str, render_mode: str = "rgb_array"):
         env = gym.make(id)
         super().__init__(env)  # type: ignore [arg-type]
         self.env = env  # type: ignore [assignment]
@@ -82,7 +82,7 @@ class D4RLWrapper(gymnasium.Wrapper):
                 "Only discrete, multi-discrete and continuous actions spaces are supported."
             )
 
-        self._render_mode = "rgb_array"
+        self._render_mode = render_mode
 
     @property
     def render_mode(self) -> str | None:  # type: ignore [override]
@@ -117,7 +117,7 @@ class D4RLWrapper(gymnasium.Wrapper):
 
     def render(self):
         """Render function."""
-        return self.env.render()
+        return self.env.render(mode=self.render_mode)  # type: ignore [call-arg]
 
     def get_dataset(
         self, validation_split: float = 0.2, seed: int | None = None

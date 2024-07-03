@@ -28,17 +28,6 @@ def walker_termination_fn(obs: Tensor, actions: Tensor, next_obs: Tensor):
     return done
 
 
-# def humanoid_termination_fn(obs: Tensor, actions: Tensor, next_obs: Tensor):
-# """Termination function of the humanoid environment."""
-#     assert len(obs.shape) == len(next_obs.shape) == len(actions.shape) == 2
-
-#     z = next_obs[:, 0]
-#     done = (z < 1.0) + (z > 2.0)
-
-#     done = done[:, None]
-#     return done
-
-
 def halfcheetah_termination_fn(obs: Tensor, actions: Tensor, next_obs: Tensor):
     """Termination function of the halfcheetah environment."""
     assert len(obs.shape) == len(next_obs.shape) == len(actions.shape) == 2

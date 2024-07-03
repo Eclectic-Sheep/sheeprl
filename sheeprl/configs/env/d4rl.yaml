@@ -1,0 +1,13 @@
+defaults:
+  - default
+  - _self_
+
+# Override from `default` config
+id: walker2d-medium-expert-v0
+validation_split: 0.2
+
+# Wrapper to be instantiated
+wrapper:
+  _target_: torch_mopo.envs.d4rl.D4RLWrapper
+  id: ${env.id}
+  render_mode: rgb_array

@@ -142,12 +142,16 @@ class Ensembles(nn.Module):
 def build_agent(
     fabric: Fabric,
     cfg: dotdict[str, Any],
-    obs_space: gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Discrete | gym.spaces.MultiDiscrete,
-    ensembles_state: dict[str, Tensor] | None = None,
-    agent_state: dict[str, Tensor] | None = None,
+    obs_space: gym.spaces.Space,
+    action_space: gym.spaces.Space,
+    state: dict[str, Any] | None = None,
 ) -> tuple[_FabricModule, SACAgent, SACPlayer]:
     """Instantiate the ensemble's models and the SAC agent used for training and evaluation."""
+    if not isinstance(obs_space, gym.spaces.Dict):
+        raise RuntimeError(f"The observation space must be a Dict, got {type(obs_space)}")
+    if not isinstance(action_space, gym.spaces.Box | gym.spaces.Discrete | gym.spaces.MultiDiscrete):
+        raise RuntimeError(f"The observation space must be a Box or Discrete or MultiDiscrete, got {type(obs_space)}")
+
     action_shape = tuple(
         action_space.shape
         if isinstance(action_space, gym.spaces.Box)
@@ -166,13 +170,12 @@ def build_agent(
         num_elites=cfg.algo.ensembles.num_elites,
     ).apply(init_weights)
 
-    # TODO: Load State
-    # if ensembles_state is not None:
-    #     ensembles.load_state_dict(ensembles_state)
+    if state is not None:
+        ensembles.load_state_dict(state["ensembles"])
 
     ensembles = fabric.setup_module(ensembles)
 
-    sac_agent, sac_player = build_agent_sac(fabric, cfg, obs_space, action_space, agent_state)
+    sac_agent, sac_player = build_agent_sac(fabric, cfg, obs_space, action_space, (state or {}).get("agent", None))
     return ensembles, sac_agent, sac_player
 
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
 from collections.abc import Sequence
 from operator import itemgetter
 from typing import Any
 
+import gymnasium
 import hydra
 import numpy as np
 import torch
@@ -19,13 +21,12 @@ from sheeprl.algos.mopo.loss import world_model_loss
 from sheeprl.algos.mopo.utils import test
 from sheeprl.algos.sac.sac import train as train_sac
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.envs.d4rl import D4RLWrapper
 from sheeprl.utils.d4rl import TERMINATION_FUNCTIONS
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import dotdict
+from sheeprl.utils.utils import dotdict, save_configs
 
 
 def train_ensembles(
@@ -40,11 +41,12 @@ def train_ensembles(
     validation_offline_rb: ReplayBuffer | None = None,
     aggregator: MetricAggregator | None = None,
     log_dir: str = "./",
+    state: dict[str, Any] | None = None,
 ):
     """World Model training."""
     # Setup training
-    epoch = 0
-    epochs_since_update = 0
+    epoch = (state or {}).get("wm_epoch", 0)
+    epochs_since_update = (state or {}).get("epochs_since_update", 0)
     train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
     train_obs, train_next_obs, train_actions, train_rewards = itemgetter(
         "observations", "next_observations", "actions", "rewards"
@@ -56,8 +58,10 @@ def train_ensembles(
     ensembles.scaler.fit(torch.cat((train_obs, train_actions), dim=-1))
 
     # Setpu validation
-    best_val_losses = torch.ones(ensembles.num_ensembles) * torch.inf
-    best_ensembles_states = []
+    best_val_losses = (state or {}).get("best_val_losses", torch.ones(ensembles.num_ensembles) * torch.inf)
+    best_ensembles_states = (state or {}).get(
+        "best_ensembles_states", [copy.deepcopy(model.state_dict()) for model in ensembles._models]
+    )
     if validation_offline_rb is not None:
         validation_dataset = {
             k: v.squeeze(1)
@@ -142,12 +146,12 @@ def train_ensembles(
         state = {
             "ensembles": ensembles.state_dict(),
             "ensembles_optimizer": ensembles_optimizer.state_dict(),
-            "epoch": epoch,
+            "wm_epoch": epoch,
             "epochs_since_update": epochs_since_update,
             "best_val_losses": best_val_losses.cpu(),
             "best_ensembles_states": best_ensembles_states,
         }
-        ckpt_path = os.path.join(log_dir, "checkpoint", "wm", f"ckpt_{epoch}_{fabric.global_rank}.ckpt")
+        ckpt_path = os.path.join(log_dir, "checkpoint", f"wm_ckpt_{epoch}_{fabric.global_rank}.ckpt")
         fabric.call(
             "on_checkpoint_coupled",
             fabric=fabric,
@@ -172,6 +176,10 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     """MOPO main function."""
     device = fabric.device
 
+    state = None
+    if cfg.checkpoint.resume_from:
+        state = fabric.load(cfg.checkpoint.resume_from)
+
     # Create Logger
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
@@ -180,11 +188,21 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
     fabric.print(f"Log dir: {log_dir}")
 
-    env = D4RLWrapper(cfg.env.id)
+    env: gymnasium.Wrapper = hydra.utils.instantiate(cfg.env.wrapper)
+    if cfg.env.capture_video and fabric.global_rank == 0 and log_dir is not None:
+        env = gymnasium.experimental.wrappers.RecordVideoV0(
+            env, os.path.join(log_dir, "train_videos"), disable_logger=True
+        )
+        env.metadata["render_fps"] = getattr(env, "frames_per_sec", 30)
+
     obs_space = env.observation_space
+    if not (isinstance(obs_space, gymnasium.spaces.Dict)):
+        raise RuntimeError(f"Invalid observation space, only Dict are allowed. Got {type(obs_space)}")
     action_space = env.action_space
 
-    training_offline_rb, validation_offline_rb = env.get_dataset()
+    training_offline_rb, validation_offline_rb = env.get_dataset(
+        validation_split=cfg.env.validation_split, seed=cfg.seed
+    )
     rb = ReplayBuffer(
         buffer_size=cfg.buffer.size,
         n_envs=1,
@@ -192,6 +210,13 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
+    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint and state is not None and "rb" in state:
+        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
+            rb = state["rb"][fabric.global_rank]
+        elif isinstance(state["rb"], ReplayBuffer):
+            rb = state["rb"]
+        else:
+            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
 
     ensembles, sac_agent, sac_player = build_agent(fabric, cfg, obs_space, action_space)
 
@@ -199,24 +224,34 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     ensembles_optimizer = torch.optim.Adam(
         ensembles.parameters(), lr=cfg.algo.ensembles.optimizer.lr, eps=cfg.algo.ensembles.optimizer.eps
     )
-    qf_optimizer = hydra.utils.instantiate(
+    qf_optimizer: torch.optim.Optimizer = hydra.utils.instantiate(
         cfg.algo.critic.optimizer,
         params=sac_agent.qfs.parameters(),
         _convert_="all",
     )
-    actor_optimizer = hydra.utils.instantiate(
+    actor_optimizer: torch.optim.Optimizer = hydra.utils.instantiate(
         cfg.algo.actor.optimizer,
         params=sac_agent.actor.parameters(),
         _convert_="all",
     )
-    alpha_optimizer = hydra.utils.instantiate(
+    alpha_optimizer: torch.optim.Optimizer = hydra.utils.instantiate(
         cfg.algo.alpha.optimizer,
         params=[sac_agent.log_alpha],
         _convert_="all",
     )
+
+    if cfg.checkpoint.resume_from:
+        ensembles_optimizer.load_state_dict((state or {}).get("ensembles_optimizer", ensembles_optimizer.state_dict()))
+        qf_optimizer.load_state_dict((state or {}).get("qf_optimizer", qf_optimizer.state_dict()))
+        actor_optimizer.load_state_dict((state or {}).get("actor_optimizer", actor_optimizer.state_dict()))
+        alpha_optimizer.load_state_dict((state or {}).get("alpha_optimizer", alpha_optimizer.state_dict()))
+
     ensembles_optimizer, qf_optimizer, actor_optimizer, alpha_optimizer = fabric.setup_optimizers(
         ensembles_optimizer, qf_optimizer, actor_optimizer, alpha_optimizer
     )  # type: ignore[attr-defined]
+
+    if fabric.is_global_zero:
+        save_configs(cfg, log_dir)
 
     # Create a metric aggregator to log the metrics
     aggregator: MetricAggregator | None = None
@@ -224,29 +259,35 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Train ensembles
-    train_ensembles(
-        fabric=fabric,
-        ensembles=ensembles,
-        ensembles_optimizer=ensembles_optimizer,
-        batch_size=cfg.algo.ensembles.batch_size,
-        training_offline_rb=training_offline_rb,
-        weight_decays=cfg.algo.ensembles.optimizer.weight_decays,
-        max_epochs=float("inf"),
-        max_epochs_since_update=5,
-        validation_offline_rb=validation_offline_rb,
-        aggregator=aggregator,
-        log_dir=log_dir,
-    )
+    if state is None or "wm_epoch" in state:
+        train_ensembles(
+            fabric=fabric,
+            ensembles=ensembles,
+            ensembles_optimizer=ensembles_optimizer,
+            batch_size=cfg.algo.ensembles.batch_size,
+            training_offline_rb=training_offline_rb,
+            weight_decays=cfg.algo.ensembles.optimizer.weight_decays,
+            max_epochs=cfg.algo.ensembles.max_epochs or float("inf"),
+            max_epochs_since_update=cfg.algo.ensembles.max_epochs_since_update,
+            validation_offline_rb=validation_offline_rb,
+            aggregator=aggregator,
+            log_dir=log_dir,
+            state=state,
+        )
+        # Save Last `cfg.checkpoint.keep_last` world model chekpoints
+        if os.path.isdir(os.path.join(log_dir, "checkpoint")):
+            shutil.copytree(os.path.join(log_dir, "checkpoint"), os.path.join(log_dir, "checkpoint", "wm"))
 
     offline_rb, _ = env.get_dataset(validation_split=0, seed=cfg.seed)
     h = cfg.algo.h
     batch_size = cfg.algo.per_rank_batch_size
     num_epochs = cfg.algo.num_epochs
-    epoch_length = cfg.algo.epoch_length
+    epoch_length = cfg.algo.total_steps // num_epochs
+    start_epoch = (state or {}).get("sac_epoch", 0)
     offline_rb_size = int(batch_size * 0.05)
     rollout_rb_size = batch_size - offline_rb_size
     rollout_batch_size = int(cfg.algo.rollout_batch_size)
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         # Rollout
         with torch.inference_mode():
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
@@ -322,9 +363,9 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
             "qf_optimizer": qf_optimizer.state_dict(),
             "actor_optimizer": actor_optimizer.state_dict(),
             "alpha_optimizer": alpha_optimizer.state_dict(),
-            "epoch": epoch,
+            "sac_epoch": epoch + 1,
         }
-        ckpt_path = os.path.join(log_dir, "checkpoint", "sac", f"ckpt_{epoch}_{fabric.global_rank}.ckpt")
+        ckpt_path = os.path.join(log_dir, "checkpoint", f"sac_ckpt_{epoch}_{fabric.global_rank}.ckpt")
         fabric.call(
             "on_checkpoint_coupled",
             fabric=fabric,

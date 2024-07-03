@@ -1,22 +1,16 @@
 # @package _global_
 
 defaults:
+  - override /env: d4rl
   - override /algo: mopo
-  - override /env: gym
-  # select the model manager configs
-  - override /model_manager: default
   - _self_
-
-algo:
-  total_steps: 0
 
 buffer:
   size: 2_000_000
-  share_data: False
 
 # override environment id
 env:
-  id: halfcheetah-medium-v0
+  id: walker2d-medium-expert-v0
 
 fabric:
   accelerator: cuda

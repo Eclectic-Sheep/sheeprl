@@ -1,0 +1,17 @@
+# @package _global_
+
+defaults:
+  - mopo
+  - _self_
+
+algo:
+  h: 5 # Rollout length
+  ensembles:
+    penalty_coef: 5.0
+
+# override environment id
+env:
+  id: hopper-medium-v0
+
+fabric:
+  accelerator: cuda

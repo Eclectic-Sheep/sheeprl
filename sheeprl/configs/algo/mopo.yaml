@@ -1,33 +1,32 @@
 defaults:
-  - default
   - sac
   - /optim@ensembles.optimizer: adam
   - _self_
 
-name: mopo # This must be set! And must be equal to the name of the file.py, found under the `my_awesome_algo` folder, where the implementation of the algorithm is defined
+name: mopo
 
 # Algorithm-related paramters
+total_steps: 1_000_000 # SAC updates
 h: 1 # Rollout length
 num_epochs: 1000
 rollout_batch_size: 50_000
-epoch_length: 1000
-per_rank_batch_size: 256
+per_rank_batch_size: 256 # SAC
 mlp_keys:
   encoder: [observations]
 cnn_keys:
   encoder: []
 
-# Agent model parameters
-# This is just an example where we suppose we have an Actor-Critic agent
-# with both an MLP and a CNN encoder
+# World model parameters
 ensembles:
   mlp_layers: 4
   dense_units: 200
   dense_act: torch.nn.SiLU
   num_ensembles: 7
   num_elites: 5
-  penalty_coef: 1.0
+  penalty_coef: 2.0
   batch_size: 512
+  max_epochs: null
+  max_epochs_since_update: 5
 
   # Override parameters coming from `adam.yaml` config
   optimizer:
