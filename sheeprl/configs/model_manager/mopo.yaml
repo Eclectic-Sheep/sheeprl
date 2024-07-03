@@ -1,0 +1,13 @@
+defaults:
+  - default
+  - _self_
+
+models:
+  ensembles:
+    model_name: "${exp_name}_ensembles"
+    description: "MOPO World Model in ${env.id} Environment"
+    tags: {}
+  agent:
+    model_name: "${exp_name}_agent"
+    description: "SAC Agent in ${env.id} Environment"
+    tags: {}

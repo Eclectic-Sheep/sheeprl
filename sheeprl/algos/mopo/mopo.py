@@ -385,3 +385,10 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
             aggregator.reset()
 
     env.close()
+
+    if not cfg.model_manager.disabled and fabric.is_global_zero:
+        from sheeprl.algos.sac.utils import log_models
+        from sheeprl.utils.mlflow import register_model
+
+        models_to_log = {"ensembles": ensembles, "agent": sac_agent}
+        register_model(fabric, log_models, cfg, models_to_log)

@@ -13,6 +13,7 @@ from sheeprl.utils.utils import dotdict
 
 AGGREGATOR_KEYS = SAC_AGGREGATOR_KEYS.copy()
 AGGREGATOR_KEYS.update({"Loss/validation_world_model", "Loss/train_world_model", "Grads/world_model"})
+MODELS_TO_REGISTER = {"ensembles", "agent"}
 
 
 @torch.inference_mode()

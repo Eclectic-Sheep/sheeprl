@@ -3,6 +3,7 @@
 defaults:
   - override /env: d4rl
   - override /algo: mopo
+  - override /model_manager: mopo
   - _self_
 
 buffer:
