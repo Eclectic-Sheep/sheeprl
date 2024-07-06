@@ -24,7 +24,7 @@ ensembles:
   num_ensembles: 7
   num_elites: 5
   penalty_coef: 2.0
-  batch_size: 512
+  per_rank_batch_size: 512
   max_epochs: null
   max_epochs_since_update: 5
 

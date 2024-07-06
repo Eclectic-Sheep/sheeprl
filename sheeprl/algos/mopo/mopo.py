@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import os
 import shutil
-from collections.abc import Sequence
 from operator import itemgetter
 from typing import Any
 
@@ -33,9 +32,7 @@ def train_ensembles(
     fabric: Fabric,
     ensembles: _FabricModule,
     ensembles_optimizer: _FabricOptimizer,
-    batch_size: int,
     training_offline_rb: ReplayBuffer,
-    weight_decays: Sequence[float],
     cfg: dotdict[str, Any],
     max_epochs: float = float("inf"),
     max_epochs_since_update: int = 5,
@@ -61,7 +58,7 @@ def train_ensembles(
     else:
         train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
         sampler = RandomSampler(train_idxes[0])
-    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
+    sampler = BatchSampler(sampler, batch_size=cfg.algo.ensembles.per_rank_batch_size, drop_last=False)
 
     train_obs, train_next_obs, train_actions, train_rewards = itemgetter(
         "observations", "next_observations", "actions", "rewards"
@@ -119,7 +116,7 @@ def train_ensembles(
                 mean,
                 logvar,
                 targets,
-                weight_decays=weight_decays,
+                weight_decays=cfg.algo.ensembles.optimizer.weight_decays,
                 ensembles=ensembles,
                 min_logvar=ensembles.min_logvar,
                 max_logvar=ensembles.max_logvar,
@@ -280,9 +277,8 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
             fabric=fabric,
             ensembles=ensembles,
             ensembles_optimizer=ensembles_optimizer,
-            batch_size=cfg.algo.ensembles.batch_size,
             training_offline_rb=training_offline_rb,
-            weight_decays=cfg.algo.ensembles.optimizer.weight_decays,
+            cfg=cfg,
             max_epochs=cfg.algo.ensembles.max_epochs or float("inf"),
             max_epochs_since_update=cfg.algo.ensembles.max_epochs_since_update,
             validation_offline_rb=validation_offline_rb,
