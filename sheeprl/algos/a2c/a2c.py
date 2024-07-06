@@ -10,8 +10,9 @@ from lightning.fabric import Fabric
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.a2c.loss import policy_loss, value_loss
+from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, build_agent
+from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import make_env
@@ -72,7 +73,9 @@ def train(
         with fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating), fabric.no_backward_sync(
             agent.actor, enabled=is_accumulating
         ), fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
-            _, logprobs, _, values = agent(normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1))
+            _, logprobs, entropy, new_values = agent(
+                normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+            )
 
             # Policy loss
             pg_loss = policy_loss(
@@ -83,12 +86,19 @@ def train(
 
             # Value loss
             v_loss = value_loss(
-                values,
+                new_values,
+                batch["values"],
                 batch["returns"],
+                0.0,
+                False,
                 cfg.algo.loss_reduction,
             )
 
-            loss = pg_loss + v_loss
+            # Entropy loss
+            ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
+
+            # Total loss
+            loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
             fabric.backward(loss)
 
         if not is_accumulating:

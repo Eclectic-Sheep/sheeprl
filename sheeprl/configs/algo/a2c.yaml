@@ -16,6 +16,7 @@ mlp_layers: 2
 dense_act: torch.nn.Tanh
 layer_norm: False
 max_grad_norm: 0.0
+ent_coef: 0.0
 
 # Encoder
 encoder:
