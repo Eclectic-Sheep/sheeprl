@@ -8,6 +8,7 @@ defaults:
 
 buffer:
   size: 2_000_000
+  share_data: False
 
 # override environment id
 env:

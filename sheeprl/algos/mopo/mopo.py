@@ -9,11 +9,11 @@ from typing import Any
 
 import gymnasium
 import hydra
-import numpy as np
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
 from torch import Tensor
+from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
 from sheeprl.algos.mopo.agent import build_agent
@@ -36,6 +36,7 @@ def train_ensembles(
     batch_size: int,
     training_offline_rb: ReplayBuffer,
     weight_decays: Sequence[float],
+    cfg: dotdict[str, Any],
     max_epochs: float = float("inf"),
     max_epochs_since_update: int = 5,
     validation_offline_rb: ReplayBuffer | None = None,
@@ -47,7 +48,21 @@ def train_ensembles(
     # Setup training
     epoch = (state or {}).get("wm_epoch", 0)
     epochs_since_update = (state or {}).get("epochs_since_update", 0)
-    train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
+
+    if cfg.buffer.share_data:
+        train_idxes = [torch.arange(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
+        sampler = DistributedSampler(
+            train_idxes[0],
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=cfg.seed,
+        )
+    else:
+        train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
+        sampler = RandomSampler(train_idxes[0])
+    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
+
     train_obs, train_next_obs, train_actions, train_rewards = itemgetter(
         "observations", "next_observations", "actions", "rewards"
     )(training_offline_rb.to_tensor(dtype=torch.float32, device=fabric.device))
@@ -80,20 +95,21 @@ def train_ensembles(
 
     while epochs_since_update < max_epochs_since_update and epoch < max_epochs:
         print(f"Starting Epoch: {epoch}")
-        train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
-        for i in range(int(np.ceil(training_offline_rb.buffer_size / batch_size))):
+        if not cfg.buffer.share_data:
+            train_idxes = [torch.randperm(training_offline_rb.buffer_size) for _ in range(ensembles.num_ensembles)]
+        for i, batch_idxes in enumerate(sampler):
             batch = {
-                "rewards": torch.stack(
-                    [train_rewards[idxes[i * batch_size : (i + 1) * batch_size]] for idxes in train_idxes], dim=0
-                ).to(device=fabric.device, dtype=torch.float32),
-                "actions": torch.stack(
-                    [train_actions[idxes[i * batch_size : (i + 1) * batch_size]] for idxes in train_idxes], dim=0
-                ).to(device=fabric.device, dtype=torch.float32),
-                "observations": torch.stack(
-                    [train_obs[idxes[i * batch_size : (i + 1) * batch_size]] for idxes in train_idxes], dim=0
-                ).to(device=fabric.device, dtype=torch.float32),
+                "rewards": torch.stack([train_rewards[idxes[batch_idxes]] for idxes in train_idxes], dim=0).to(
+                    device=fabric.device, dtype=torch.float32
+                ),
+                "actions": torch.stack([train_actions[idxes[batch_idxes]] for idxes in train_idxes], dim=0).to(
+                    device=fabric.device, dtype=torch.float32
+                ),
+                "observations": torch.stack([train_obs[idxes[batch_idxes]] for idxes in train_idxes], dim=0).to(
+                    device=fabric.device, dtype=torch.float32
+                ),
                 "next_observations": torch.stack(
-                    [train_next_obs[idxes[i * batch_size : (i + 1) * batch_size]] for idxes in train_idxes], dim=0
+                    [train_next_obs[idxes[batch_idxes]] for idxes in train_idxes], dim=0
                 ).to(device=fabric.device, dtype=torch.float32),
             }
             targets = torch.cat((batch["rewards"], batch["next_observations"] - batch["observations"]), dim=-1)
