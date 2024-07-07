@@ -576,17 +576,18 @@ def test_mopo(standard_args, start_time):
     args = standard_args + [
         "exp=mopo",
         "env=d4rl",
-        "algo.per_rank_batch_size=1",
-        "algo.ensembles.per_rank_batch_size=1",
-        "algo.per_rank_rollout_batch_size=1",
+        "algo.per_rank_batch_size=4",
+        "algo.ensembles.per_rank_batch_size=4",
+        "algo.ensembles.dense_units=2",
+        "algo.ensembles.mlp_layers=1",
+        "algo.ensembles.optimizer.weight_decays=[1e-4,1e-4]",
+        "algo.per_rank_rollout_batch_size=50",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.h=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         "algo.cnn_keys.encoder=[]",
-        "algo.cnn_keys.decoder=[]",
         "algo.mlp_keys.encoder=[observations]",
-        "algo.mlp_keys.decoder=[observations]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -607,6 +608,7 @@ def test_mopo_wrong_env(standard_args, start_time):
         "env.id=CartPole-v1",
         "algo.per_rank_batch_size=1",
         "algo.ensembles.per_rank_batch_size=1",
+        "algo.ensembles.optimizer.weight_decays=[1e-4,1e-4]",
         "algo.per_rank_rollout_batch_size=1",
         f"buffer.size={int(os.environ['LT_DEVICES'])}",
         "algo.h=1",

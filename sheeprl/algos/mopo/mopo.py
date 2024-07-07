@@ -138,10 +138,11 @@ def train_ensembles(
                 break
         epoch += 1
 
-        validation_losses = ensembles.validate(val_obs, val_actions, val_targets)
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/validation_world_model", torch.mean(validation_losses))
         with torch.inference_mode():
+            var_mean, var_logvar = ensembles(val_obs, val_actions)
+            validation_losses = ensembles.validate(var_mean, var_logvar, val_targets)
+            if aggregator and not aggregator.disabled:
+                aggregator.update("Loss/validation_world_model", torch.mean(validation_losses))
             updated = False
             if best_val_losses.isinf().any():
                 best_val_losses = validation_losses
@@ -185,7 +186,9 @@ def train_ensembles(
     ]
 
     # Final evaluation
-    validation_losses = ensembles.validate(val_obs, val_actions, val_targets, True)
+    with torch.inference_mode():
+        var_mean, var_logvar = ensembles(val_obs, val_actions)
+        validation_losses = ensembles.validate(var_mean, var_logvar, val_targets, True)
     fabric.log("Loss/validation_world_model", torch.mean(validation_losses), epoch)
 
 
@@ -297,8 +300,10 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
             state=state,
         )
         # Save Last `cfg.checkpoint.keep_last` world model chekpoints
-        if os.path.isdir(os.path.join(log_dir, "checkpoint")):
-            shutil.copytree(os.path.join(log_dir, "checkpoint"), os.path.join(log_dir, "checkpoint", "wm"))
+        if fabric.is_global_zero and os.path.isdir(os.path.join(log_dir, "checkpoint")):
+            shutil.copytree(
+                os.path.join(log_dir, "checkpoint"), os.path.join(log_dir, "checkpoint", "wm"), dirs_exist_ok=True
+            )
 
     offline_rb, _ = env.get_dataset(validation_split=0, seed=cfg.seed)
     h = cfg.algo.h
@@ -306,9 +311,10 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     num_epochs = cfg.algo.num_epochs if not cfg.dry_run else 1
     epoch_length = cfg.algo.total_steps // num_epochs if not cfg.dry_run else 1
     start_epoch = (state or {}).get("sac_epoch", 0)
-    offline_rb_size = int(batch_size * 0.05)
+    # At least one sample from the offline dataset
+    offline_rb_size = max(int(batch_size * 0.05), 1)
     rollout_rb_size = batch_size - offline_rb_size
-    rollout_batch_size = int(cfg.algo.rollout_batch_size)
+    rollout_batch_size = int(cfg.algo.per_rank_rollout_batch_size)
     for epoch in range(start_epoch, num_epochs):
         # Rollout
         with torch.inference_mode():
@@ -324,7 +330,8 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
                 obs = initial_states["observations"]
                 for j in range(h):
                     actions: Tensor = sac_player(obs)
-                    next_obs, rewards = ensembles.predict(obs, actions)
+                    mean, logvar = ensembles(obs, actions)
+                    next_obs, rewards = ensembles.predict(mean, logvar, obs)
                     terminated = TERMINATION_FUNCTIONS[cfg.env.id](obs, actions, next_obs)
                     truncated = torch.zeros_like(terminated) + float(j == h - 1)
                     buffer_data = {

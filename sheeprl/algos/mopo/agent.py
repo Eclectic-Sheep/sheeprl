@@ -78,18 +78,17 @@ class Ensembles(nn.Module):
         return mean, logvar
 
     @torch.inference_mode()
-    def validate(self, obs: Tensor, actions: Tensor, targets: Tensor, update_elites: bool = False) -> Tensor:
+    def validate(self, mean: Tensor, logvar: Tensor, targets: Tensor, update_elites: bool = False) -> Tensor:
         """Run validation loss for selecting the best `num_elites` models.
 
         Args:
-            obs: The observations of the validation set (validation_set_dim, obs_shape).
-            actions: The actions of the validation set (validation_set_dim, actions_shape).
+            mean: The mean computed by the ensembles on the validation set (validation_set_dim, obs_shape).
+            logvar: The logvar computed by the ensembles on the validation set (validation_set_dim, actions_shape).
             targets: The targets of the validation set (validation_set_dim, target_shape).
             update_elites: Whether or not to select the best `num_elites` models.
 
         Returns the validation loss (one for each model in the ensembles).
         """
-        mean, logvar = self(obs, actions)
         losses = world_model_loss(mean, logvar, targets, use_logvar=False)
         if update_elites:
             sorted_idxes = torch.argsort(losses, dim=0)
@@ -97,19 +96,18 @@ class Ensembles(nn.Module):
         return losses
 
     @torch.inference_mode()
-    def predict(self, obs: Tensor, actions: Tensor) -> tuple[Tensor, Tensor]:
+    def predict(self, mean: Tensor, logvar: Tensor, obs: Tensor) -> tuple[Tensor, Tensor]:
         """Predict the next observations and rewards.
 
         Args:
+            mean: The mean computed by the ensembles on the validation set (batch_shape, obs_shape).
+            logvar: The logvar computed by the ensembles on the validation set (batch_shape, actions_shape).
             obs: The observations of shape (batch_shape, obs_shape).
-            actions: The actions of shape (batch_shape, actions_shape).
 
         Returns three tensors:
             next_observations: The next observations.
             rewards: The penalized rewards.
         """
-        # Model Predictions
-        mean, logvar = self(obs, actions)
         logvar = torch.exp(logvar)
 
         # Add obs to the mean (the ensembles learn the difference between the next_obs and the obs)
