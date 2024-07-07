@@ -7,7 +7,7 @@ load_dotenv()
 ROOT_DIR = os.path.dirname(__file__)
 
 
-from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
+from sheeprl.utils.imports import _IS_MOPO_AVAILABLE, _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
@@ -20,7 +20,6 @@ from sheeprl.algos.dreamer_v1 import dreamer_v1  # noqa: F401
 from sheeprl.algos.dreamer_v2 import dreamer_v2  # noqa: F401
 from sheeprl.algos.dreamer_v3 import dreamer_v3  # noqa: F401
 from sheeprl.algos.droq import droq  # noqa: F401
-from sheeprl.algos.mopo import mopo  # noqa: F401
 from sheeprl.algos.p2e_dv1 import p2e_dv1_exploration  # noqa: F401
 from sheeprl.algos.p2e_dv1 import p2e_dv1_finetuning  # noqa: F401
 from sheeprl.algos.p2e_dv2 import p2e_dv2_exploration  # noqa: F401
@@ -39,7 +38,6 @@ from sheeprl.algos.dreamer_v1 import evaluate as dreamer_v1_evaluate  # noqa: F4
 from sheeprl.algos.dreamer_v2 import evaluate as dreamer_v2_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.dreamer_v3 import evaluate as dreamer_v3_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.droq import evaluate as droq_evaluate  # noqa: F401, isort:skip
-from sheeprl.algos.mopo import evaluate as mopo_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.p2e_dv1 import evaluate as p2e_dv1_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.p2e_dv2 import evaluate as p2e_dv2_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.p2e_dv3 import evaluate as p2e_dv3_evaluate  # noqa: F401, isort:skip
@@ -48,6 +46,11 @@ from sheeprl.algos.ppo_recurrent import evaluate as ppo_recurrent_evaluate  # no
 from sheeprl.algos.sac import evaluate as sac_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.sac_ae import evaluate as sac_ae_evaluate  # noqa: F401, isort:skip
 # fmt: on
+
+if _IS_MOPO_AVAILABLE:
+    from sheeprl.algos.mopo import mopo  # noqa: F401
+
+    from sheeprl.algos.mopo import evaluate as mopo_evaluate  # noqa: F401, isort:skip
 
 # Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
 np.float = np.float32

@@ -9,7 +9,7 @@ name: mopo
 total_steps: 1_000_000 # SAC updates
 h: 1 # Rollout length
 num_epochs: 1000
-rollout_batch_size: 50_000
+per_rank_rollout_batch_size: 50_000
 per_rank_batch_size: 256 # SAC
 mlp_keys:
   encoder: [observations]

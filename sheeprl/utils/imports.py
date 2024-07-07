@@ -15,3 +15,4 @@ _IS_MLFLOW_AVAILABLE = RequirementCache("mlflow>=2.8", "mlflow")
 _IS_SUPER_MARIO_BROS_AVAILABLE = RequirementCache("gym-super-mario-bros==7.4.0")
 _IS_TORCH_GREATER_EQUAL_2_0 = RequirementCache("torch>=2.0")
 _IS_WINDOWS = platform.system() == "Windows"
+_IS_MOPO_AVAILABLE = RequirementCache("d4rl")

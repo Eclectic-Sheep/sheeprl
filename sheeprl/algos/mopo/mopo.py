@@ -133,6 +133,9 @@ def train_ensembles(
             if aggregator and not aggregator.disabled:
                 aggregator.update("Grads/world_model", grads)
                 aggregator.update("Loss/train_world_model", loss)
+
+            if cfg.dry_run:
+                break
         epoch += 1
 
         validation_losses = ensembles.validate(val_obs, val_actions, val_targets)
@@ -172,6 +175,8 @@ def train_ensembles(
             state=state,
             replay_buffer=None,
         )
+        if cfg.dry_run:
+            break
 
     # Load best ensembles
     [
@@ -202,6 +207,11 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     fabric.print(f"Log dir: {log_dir}")
 
     env: gymnasium.Wrapper = hydra.utils.instantiate(cfg.env.wrapper)
+    if not hasattr(env, "get_dataset"):
+        raise RuntimeError(
+            "The environment must provide an offline dataset through the `get_dataset()` method. "
+            f"Env selected: {cfg.env.id}"
+        )
     if cfg.env.capture_video and fabric.global_rank == 0 and log_dir is not None:
         env = gymnasium.experimental.wrappers.RecordVideoV0(
             env, os.path.join(log_dir, "train_videos"), disable_logger=True
@@ -217,7 +227,7 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
         validation_split=cfg.env.validation_split, seed=cfg.seed
     )
     rb = ReplayBuffer(
-        buffer_size=cfg.buffer.size,
+        buffer_size=cfg.buffer.size // fabric.world_size,
         n_envs=1,
         obs_keys=cfg.algo.mlp_keys.encoder,
         memmap=cfg.buffer.memmap,
@@ -293,8 +303,8 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
     offline_rb, _ = env.get_dataset(validation_split=0, seed=cfg.seed)
     h = cfg.algo.h
     batch_size = cfg.algo.per_rank_batch_size
-    num_epochs = cfg.algo.num_epochs
-    epoch_length = cfg.algo.total_steps // num_epochs
+    num_epochs = cfg.algo.num_epochs if not cfg.dry_run else 1
+    epoch_length = cfg.algo.total_steps // num_epochs if not cfg.dry_run else 1
     start_epoch = (state or {}).get("sac_epoch", 0)
     offline_rb_size = int(batch_size * 0.05)
     rollout_rb_size = batch_size - offline_rb_size

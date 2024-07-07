@@ -10,7 +10,7 @@ import pytest
 
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
-from sheeprl.utils.imports import _IS_WINDOWS
+from sheeprl.utils.imports import _IS_MOPO_AVAILABLE, _IS_WINDOWS
 
 
 @pytest.fixture(params=["1", "2"])
@@ -563,4 +563,60 @@ def test_p2e_dv3(standard_args, env_id, start_time):
     with mock.patch.object(sys, "argv", args):
         run()
 
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_mopo(standard_args, start_time):
+    if not _IS_MOPO_AVAILABLE:
+        print("MOPO not available. Skipping...")
+        return
+
+    root_dir = os.path.join(f"pytest_{start_time}", "mopo", os.environ["LT_DEVICES"])
+    run_name = "test_mopo"
+    args = standard_args + [
+        "exp=mopo",
+        "env=d4rl",
+        "algo.per_rank_batch_size=1",
+        "algo.ensembles.per_rank_batch_size=1",
+        "algo.per_rank_rollout_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.h=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.cnn_keys.encoder=[]",
+        "algo.cnn_keys.decoder=[]",
+        "algo.mlp_keys.encoder=[observations]",
+        "algo.mlp_keys.decoder=[observations]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_mopo_wrong_env(standard_args, start_time):
+    if not _IS_MOPO_AVAILABLE:
+        print("MOPO not available. Skipping...")
+        return
+
+    root_dir = os.path.join(f"pytest_{start_time}", "mopo", os.environ["LT_DEVICES"])
+    run_name = "test_mopo"
+    args = standard_args + [
+        "exp=mopo",
+        "env=gym",
+        "env.id=CartPole-v1",
+        "algo.per_rank_batch_size=1",
+        "algo.ensembles.per_rank_batch_size=1",
+        "algo.per_rank_rollout_batch_size=1",
+        f"buffer.size={int(os.environ['LT_DEVICES'])}",
+        "algo.h=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.cnn_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[observations]",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        with pytest.raises(RuntimeError, match="The environment must provide an offline dataset"):
+            run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
