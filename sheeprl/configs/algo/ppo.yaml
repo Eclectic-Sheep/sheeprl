@@ -24,6 +24,15 @@ dense_act: torch.nn.Tanh
 layer_norm: False
 max_grad_norm: 0.0
 
+# Compile related parameters
+compile_gae:
+  disable: False
+  fullgraph: False
+
+compile_train_loop:
+  disable: False
+  fullgraph: False
+
 # Encoder
 encoder:
   cnn_features_dim: 512
@@ -32,6 +41,9 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  compile:
+    disable: False
+    fullgraph: True
 
 # Actor
 actor:
@@ -39,6 +51,9 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  compile:
+    disable: False
+    fullgraph: True
 
 # Critic
 critic:
@@ -46,6 +61,9 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  compile:
+    disable: False
+    fullgraph: True
 
 # Single optimizer for both actor and critic
 optimizer:

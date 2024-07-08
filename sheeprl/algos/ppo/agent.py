@@ -277,6 +277,11 @@ def build_agent(
     # Setup player agent
     player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
+    # Compile the agents with torch.compile
+    agent.feature_extractor = torch.compile(agent.feature_extractor, **cfg.algo.encoder.compile)
+    agent.critic = torch.compile(agent.critic, **cfg.algo.critic.compile)
+    agent.actor = torch.compile(agent.actor, **cfg.algo.actor.compile)
+
     # Setup training agent
     agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
     agent.critic = fabric.setup_module(agent.critic)

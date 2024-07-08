@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, Union
 
 import gymnasium as gym
 import hydra
@@ -27,6 +27,75 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
 
 
+def clip_gradients(fabric, agent, optimizer, max_grad_norm: float):
+    if max_grad_norm > 0.0:
+        fabric.clip_gradients(agent, optimizer, max_norm=max_grad_norm)
+
+
+def log_losses(aggregator: MetricAggregator | None, pg_loss, v_loss, ent_loss):
+    if aggregator and not aggregator.disabled:
+        aggregator.update("Loss/policy_loss", pg_loss.detach())
+        aggregator.update("Loss/value_loss", v_loss.detach())
+        aggregator.update("Loss/entropy_loss", ent_loss.detach())
+
+
+def train_loop(
+    fabric,
+    update_epochs: int,
+    sampler: BatchSampler,
+    data: Dict[str, torch.Tensor],
+    encoder_cnn_keys: list[str],
+    encoder_mlp_keys: list[str],
+    normalize_advantages: bool,
+    clip_coef: float,
+    clip_vloss: bool,
+    loss_reduction: str,
+    vf_coef: float,
+    ent_coef: float,
+    max_grad_norm: float,
+    share_data: bool,
+    agent: Union[nn.Module, _FabricModule],
+    optimizer: torch.optim.Optimizer,
+    aggregator: MetricAggregator | None,
+):
+    for epoch in range(update_epochs):
+        if share_data:
+            sampler.sampler.set_epoch(epoch)
+        for batch_idxes in sampler:
+            batch = {k: v[batch_idxes] for k, v in data.items()}
+            normalized_obs = normalize_obs(batch, encoder_cnn_keys, encoder_mlp_keys + encoder_cnn_keys)
+            _, logprobs, entropy, new_values = agent(
+                normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+            )
+
+            if normalize_advantages:
+                batch["advantages"] = normalize_tensor(batch["advantages"])
+
+            # Policy loss
+            pg_loss = torch.compiler.disable(policy_loss)(
+                logprobs, batch["logprobs"], batch["advantages"], clip_coef, loss_reduction
+            )
+
+            # Value loss
+            v_loss = torch.compiler.disable(value_loss)(
+                new_values, batch["values"], batch["returns"], clip_coef, clip_vloss, loss_reduction
+            )
+
+            # Entropy loss
+            ent_loss = torch.compiler.disable(entropy_loss)(entropy, loss_reduction)
+
+            # Equation (9) in the paper
+            loss = pg_loss + vf_coef * v_loss + ent_coef * ent_loss
+
+            torch.compiler.disable(optimizer.zero_grad)(set_to_none=True)
+            torch.compiler.disable(fabric.backward)(loss)
+            torch.compiler.disable(clip_gradients)(fabric, agent, optimizer, max_grad_norm)
+            optimizer.step()
+
+            # Update metrics
+            torch.compiler.disable(log_losses)(aggregator, pg_loss, v_loss, ent_loss)
+
+
 def train(
     fabric: Fabric,
     agent: Union[nn.Module, _FabricModule],
@@ -34,6 +103,7 @@ def train(
     data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
+    compiled_train_loop: Callable,
 ):
     """Train the agent on the data collected from the environment."""
     indexes = list(range(next(iter(data.values())).shape[0]))
@@ -47,59 +117,26 @@ def train(
         )
     else:
         sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
-
-    for epoch in range(cfg.algo.update_epochs):
-        if cfg.buffer.share_data:
-            sampler.sampler.set_epoch(epoch)
-        for batch_idxes in sampler:
-            batch = {k: v[batch_idxes] for k, v in data.items()}
-            normalized_obs = normalize_obs(
-                batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
-            )
-            _, logprobs, entropy, new_values = agent(
-                normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
-            )
-
-            if cfg.algo.normalize_advantages:
-                batch["advantages"] = normalize_tensor(batch["advantages"])
-
-            # Policy loss
-            pg_loss = policy_loss(
-                logprobs,
-                batch["logprobs"],
-                batch["advantages"],
-                cfg.algo.clip_coef,
-                cfg.algo.loss_reduction,
-            )
-
-            # Value loss
-            v_loss = value_loss(
-                new_values,
-                batch["values"],
-                batch["returns"],
-                cfg.algo.clip_coef,
-                cfg.algo.clip_vloss,
-                cfg.algo.loss_reduction,
-            )
-
-            # Entropy loss
-            ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
-
-            # Equation (9) in the paper
-            loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
-
-            optimizer.zero_grad(set_to_none=True)
-            fabric.backward(loss)
-            if cfg.algo.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-            optimizer.step()
-
-            # Update metrics
-            if aggregator and not aggregator.disabled:
-                aggregator.update("Loss/policy_loss", pg_loss.detach())
-                aggregator.update("Loss/value_loss", v_loss.detach())
-                aggregator.update("Loss/entropy_loss", ent_loss.detach())
+    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=True)
+    compiled_train_loop(
+        fabric,
+        cfg.algo.update_epochs,
+        sampler,
+        data,
+        cfg.algo.cnn_keys.encoder,
+        cfg.algo.mlp_keys.encoder,
+        cfg.algo.normalize_advantages,
+        cfg.algo.clip_coef,
+        cfg.algo.clip_vloss,
+        cfg.algo.loss_reduction,
+        cfg.algo.vf_coef,
+        cfg.algo.ent_coef,
+        cfg.algo.max_grad_norm,
+        cfg.buffer.share_data,
+        agent,
+        optimizer,
+        aggregator,
+    )
 
 
 @register_algorithm()
@@ -169,6 +206,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
+
+    # Compile gae method
+    compiled_gae = torch.compile(gae, **cfg.algo.compile_gae)
+
+    # Compile train_loop method
+    compiled_train_loop = torch.compile(train_loop, **cfg.algo.compile_train_loop)
+
     # Create the actor and critic models
     agent, player = build_agent(
         fabric,
@@ -346,7 +390,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.inference_mode():
             torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = player.get_values(torch_obs)
-            returns, advantages = gae(
+            returns, advantages = compiled_gae(
                 local_data["rewards"].to(torch.float64),
                 local_data["values"],
                 local_data["dones"],
@@ -369,7 +413,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
         with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-            train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+            train(fabric, agent, optimizer, gathered_data, aggregator, cfg, compiled_train_loop)
         train_step += world_size
 
         if cfg.metric.log_level > 0:
