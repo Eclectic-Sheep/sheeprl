@@ -2,12 +2,13 @@
 
 defaults:
   - override /algo: a2c
-  - override /env: atari
+  - override /env: mujoco
   - override /model_manager: a2c
   - _self_
 
 # Env
 env:
+  id: Hopper-v4
   num_envs: 1
   frame_stack: 4
   screen_size: 84
@@ -18,32 +19,47 @@ checkpoint:
 
 # Algorithm
 algo:
-  total_steps: 10_000_000
-  per_rank_batch_size: 80
+  total_steps: 1_000_000
+  per_rank_batch_size: 64
   anneal_lr: True
   gamma: 0.99
   gae_lambda: 0.95
   loss_reduction: mean
-  ent_coef: 0.01
-  vf_coef: 0.25
-  rollout_steps: 80
-  dense_units: 512
+  ent_coef: 0.0
+  vf_coef: 0.5
+  rollout_steps: 2048
+  dense_units: 64
   mlp_layers: 1
-  dense_act: torch.nn.ReLU
+  dense_act: torch.nn.Tanh
   layer_norm: False
-  max_grad_norm: 0.5
+  max_grad_norm: 0.0
   mlp_keys:
-    encoder: []
+    encoder: ["state"]
   cnn_keys:
-    encoder: ["rgb"]
+    encoder: []
 
   # Encoder
   encoder:
-    cnn_features_dim: 512
+    mlp_layers: 1
+    dense_units: 64
+
+  # Actor
+  actor:
+    mlp_layers: 2
+    dense_units: 64
+    dense_act: torch.nn.Tanh
+    layer_norm: false
+
+  # Critic
+  critic:
+    mlp_layers: 2
+    dense_units: 64
+    dense_act: torch.nn.Tanh
+    layer_norm: false
 
   # Single optimizer for both actor and critic
   optimizer:
-    lr: 0.0001
+    lr: 3e-4
     eps: 1.0e-8
     weight_decay: 0.0
 
