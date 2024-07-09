@@ -10,8 +10,6 @@ defaults:
 env:
   id: Hopper-v4
   num_envs: 1
-  frame_stack: 4
-  screen_size: 84
 
 # Checkpoint
 checkpoint:
@@ -46,7 +44,7 @@ algo:
 
   # Encoder
   encoder:
-    mlp_layers: 1
+    mlp_layers: 0
     dense_units: 64
 
   # Actor
@@ -55,6 +53,7 @@ algo:
     dense_units: 64
     dense_act: torch.nn.Tanh
     layer_norm: false
+    ortho_init: true
 
   # Critic
   critic:
@@ -62,11 +61,12 @@ algo:
     dense_units: 64
     dense_act: torch.nn.Tanh
     layer_norm: false
+    ortho_init: true
 
   # Single optimizer for both actor and critic
   optimizer:
     lr: 3e-4
-    eps: 1.0e-8
+    eps: 1.e-5
     weight_decay: 0.0
 
 # Buffer
