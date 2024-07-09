@@ -28,12 +28,12 @@ algo:
   loss_reduction: mean
   normalize_advantages: True
   clip_coef: 0.2
-  anneal_clip_coef: True
+  anneal_clip_coef: False
   clip_vloss: True
   ent_coef: 0.0
   anneal_ent_coef: False
   vf_coef: 0.5
-  rollout_steps: 64
+  rollout_steps: 2048
   dense_units: 64
   mlp_layers: 1
   dense_act: torch.nn.Tanh
