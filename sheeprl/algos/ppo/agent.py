@@ -52,6 +52,7 @@ class MLPEncoder(nn.Module):
         self.output_dim = features_dim if features_dim else dense_units
         if mlp_layers == 0:
             self.model = nn.Identity()
+            self.output_dim = input_dim
         else:
             self.model = MLP(
                 input_dim,
@@ -140,7 +141,7 @@ class PPOAgent(nn.Module):
             for layer in self.critic.modules():
                 if isinstance(layer, torch.nn.Linear):
                     torch.nn.init.orthogonal_(layer.weight, 1.0)
-                    layer.bias.data.zero
+                    layer.bias.data.zero_()
         actor_backbone = (
             MLP(
                 input_dims=features_dim,
@@ -167,7 +168,7 @@ class PPOAgent(nn.Module):
             for layer in self.actor.modules():
                 if isinstance(layer, torch.nn.Linear):
                     torch.nn.init.orthogonal_(layer.weight, 1.0)
-                    layer.bias.data.zero
+                    layer.bias.data.zero_()
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
