@@ -20,7 +20,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, save_configs
+from sheeprl.utils.utils import gae, normalize_tensor, save_configs
 
 
 def train(
@@ -76,6 +76,8 @@ def train(
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
+            if cfg.algo.normalize_advantages:
+                batch["advantages"] = normalize_tensor(batch["advantages"])
 
             # Policy loss
             pg_loss = policy_loss(
