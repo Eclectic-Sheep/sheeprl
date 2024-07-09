@@ -46,7 +46,7 @@ class Ensembles(nn.Module):
         self.scaler = TensorStandardScaler(input_dims, device=device)
         self.penalty_coef = penalty_coef
         self.num_elites = num_elites
-        self.elites_idxes: Tensor | None = None
+        self.register_buffer("elites_idxes", None)
 
     @cached_property
     def num_ensembles(self) -> int:
