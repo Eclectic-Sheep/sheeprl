@@ -30,6 +30,7 @@ algo:
   dense_units: 512
   mlp_layers: 1
   dense_act: torch.nn.ReLU
+  normalize_advantages: True
   layer_norm: False
   max_grad_norm: 0.5
   mlp_keys:
