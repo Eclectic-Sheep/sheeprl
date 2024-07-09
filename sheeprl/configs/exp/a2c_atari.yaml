@@ -19,14 +19,14 @@ checkpoint:
 # Algorithm
 algo:
   total_steps: 10_000_000
-  per_rank_batch_size: 80
+  per_rank_batch_size: 40
   anneal_lr: True
   gamma: 0.99
   gae_lambda: 0.95
   loss_reduction: mean
   ent_coef: 0.01
   vf_coef: 0.25
-  rollout_steps: 80
+  rollout_steps: 40
   dense_units: 512
   mlp_layers: 1
   dense_act: torch.nn.ReLU
