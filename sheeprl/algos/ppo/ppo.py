@@ -169,6 +169,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if is_continuous
         else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
     )
+    clip_rewards_fn = lambda r: np.tanh(r) if cfg.env.clip_rewards else r
     # Create the actor and critic models
     agent, player = build_agent(
         fabric,
@@ -304,7 +305,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         vals = player.get_values(real_next_obs).cpu().numpy()
                         rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
-                    rewards = rewards.reshape(cfg.env.num_envs, -1)
+                    rewards = clip_rewards_fn(rewards).reshape(cfg.env.num_envs, -1).astype(np.float32)
 
                 # Update the step data
                 step_data["dones"] = dones[np.newaxis]
@@ -347,7 +348,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = player.get_values(torch_obs)
             returns, advantages = gae(
-                local_data["rewards"].to(torch.float64),
+                local_data["rewards"],
                 local_data["values"],
                 local_data["dones"],
                 next_values,
