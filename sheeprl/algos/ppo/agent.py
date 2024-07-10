@@ -108,12 +108,12 @@ class PPOAgent(nn.Module):
         self.distribution = distribution_cfg.get("type", "auto").lower()
         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete"):
             raise ValueError(
-                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
+                "The distribution must be on of: `auto`, `discrete`, `normal` and `tanh_normal`. "
                 f"Found: {self.distribution}"
             )
         if self.distribution == "discrete" and is_continuous:
             raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
-        elif self.distribution != "discrete" and not is_continuous:
+        elif self.distribution not in {"discrete", "auto"} and not is_continuous:
             raise ValueError("You have choose a continuous distribution but `is_continuous` is false")
         if self.distribution == "auto":
             if is_continuous:
