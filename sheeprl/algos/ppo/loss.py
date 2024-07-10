@@ -52,14 +52,11 @@ def value_loss(
 ) -> Tensor:
     if not clip_vloss:
         values_pred = new_values
-        return F.mse_loss(values_pred, returns, reduction=reduction)
+        # return F.mse_loss(values_pred, returns, reduction=reduction)
     else:
-        v_loss_unclipped = (new_values - returns) ** 2
-        v_clipped = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
-        v_loss_clipped = (v_clipped - returns) ** 2
-        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-        v_loss = 0.5 * v_loss_max.mean()
-        return v_loss
+        values_pred = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
+        # return torch.max((new_values - returns) ** 2, (values_pred - returns) ** 2).mean()
+    return F.mse_loss(values_pred, returns, reduction=reduction)
 
 
 def entropy_loss(entropy: Tensor, reduction: str = "mean") -> Tensor:
