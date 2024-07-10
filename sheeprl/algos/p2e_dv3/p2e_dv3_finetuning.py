@@ -461,7 +461,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
         player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
-        test(player, fabric, cfg, log_dir, "few-shot", greedy=False)
+        test(player, fabric, cfg, log_dir, "few-shot", greedy=False, env=envs.envs[0])
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

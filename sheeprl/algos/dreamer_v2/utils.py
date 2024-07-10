@@ -124,6 +124,7 @@ def test(
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
+    env: gym.Env | gym.Wrapper | None = None,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -136,8 +137,11 @@ def test(
             Default to "".
         greedy (bool): whether or not to sample actions.
             Default to True.
+        env (gym.Env | gym.Wrapper): the environment to test on.
+            Default to None.
     """
-    env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
+    if env is None:
+        env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
     cumulative_rew = 0
     obs = env.reset(seed=cfg.seed)[0]
