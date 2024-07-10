@@ -228,8 +228,8 @@ def make_env(
             env = gym.wrappers.TransformObservation(
                 env,
                 lambda obs: {
-                    k: np.clip(obs[k], cfg.env.clip_obs_range[0], cfg.env.clip_obs_range[1])
-                    for k in cfg.algo.mlp_keys.encoder
+                    k: np.clip(obs[k], cfg.env.clip_obs_range[0], cfg.env.clip_obs_range[1]) if k in obs else obs[k]
+                    for k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
                 },
             )
 

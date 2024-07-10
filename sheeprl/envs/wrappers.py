@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, SupportsFloat,
 import gymnasium as gym
 import numpy as np
 from gymnasium.core import Env, RenderFrame
-from gymnasium.wrappers.normalize import NormalizeObservation, RunningMeanStd, update_mean_var_count_from_moments
+from gymnasium.wrappers.normalize import NormalizeObservation, RunningMeanStd
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -347,7 +347,8 @@ class NormalizeObservationWrapper(NormalizeObservation):
     """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
 
     Note:
-        The normalization depends on past trajectories and observations will not be normalized correctly if the wrapper was
+        The normalization depends on past trajectories and observations
+        will not be normalized correctly if the wrapper was
         newly instantiated or the policy was changed recently.
     """
 
