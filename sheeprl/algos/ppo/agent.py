@@ -191,7 +191,7 @@ class PPOAgent(nn.Module):
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
         tanh_actions = actions[0].float()
-        actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
+        actions = safeatanh(tanh_actions, eps=torch.finfo(tanh_actions.dtype).resolution)
         log_prob = normal.log_prob(actions)
         log_prob -= 2.0 * (
             torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
