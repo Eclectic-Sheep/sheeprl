@@ -5,8 +5,13 @@ sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
+clip_actions: False
 clip_rewards: False
+clip_obs: False
+clip_obs_range: null
 capture_video: True
+normalize_obs: False
+normalize_rewards: False
 frame_stack_dilation: 1
 actions_as_observation:
   num_stack: -1
