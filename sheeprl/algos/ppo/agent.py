@@ -182,12 +182,7 @@ class PPOAgent(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
-        if actions is None:
-            actions = normal.sample()
-        else:
-            # always composed by a tuple of one element containing all the
-            # continuous actions
-            actions = actions[0]
+        actions = actions[0]
         log_prob = normal.log_prob(actions)
         return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
 
@@ -195,14 +190,8 @@ class PPOAgent(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
-        if actions is None:
-            actions = normal.sample().float()
-            tanh_actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
-        else:
-            # always composed by a tuple of one element containing all the
-            # continuous actions
-            tanh_actions = actions[0].float()
-            actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
+        tanh_actions = actions[0].float()
+        actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
         log_prob = normal.log_prob(actions)
         log_prob -= 2.0 * (
             torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
