@@ -298,16 +298,3 @@ class Ratio:
         self._prev = state_dict["_prev"]
         self._pretrain_steps = state_dict["_pretrain_steps"]
         return self
-
-
-# https://github.com/pytorch/rl/blob/824f6d192e88c115790cf046e4df416ce2d7aaf6/torchrl/modules/distributions/utils.py#L156
-def safetanh(x, eps):
-    lim = 1.0 - eps
-    y = x.tanh()
-    return y.clamp(-lim, lim)
-
-
-# https://github.com/pytorch/rl/blob/824f6d192e88c115790cf046e4df416ce2d7aaf6/torchrl/modules/distributions/utils.py#L161
-def safeatanh(y, eps):
-    lim = 1.0 - eps
-    return y.clamp(-lim, lim).atanh()

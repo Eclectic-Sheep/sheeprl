@@ -2,22 +2,12 @@
 
 import math
 from numbers import Number
-from typing import Callable, Union
+from typing import Callable
 
 import torch
 import torch.nn.functional as F
-from packaging import version
-from torch import Tensor, autograd
-from torch import distributions as d
-from torch.distributions import (
-    Bernoulli,
-    Categorical,
-    Distribution,
-    Independent,
-    Transform,
-    TransformedDistribution,
-    constraints,
-)
+from torch import Tensor
+from torch.distributions import Bernoulli, Categorical, Distribution, constraints
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
 from torch.distributions.utils import broadcast_all
 
@@ -317,7 +307,6 @@ class OneHotCategoricalValidateArgs(Distribution):
         probs (Tensor): event probabilities
         logits (Tensor): event log probabilities (unnormalized)
     """
-
     arg_constraints = {"probs": constraints.simplex, "logits": constraints.real_vector}
     support = constraints.one_hot
     has_enumerate_support = True
@@ -402,7 +391,6 @@ class OneHotCategoricalStraightThroughValidateArgs(OneHotCategoricalValidateArgs
     [1] Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation
     (Bengio et al, 2013)
     """
-
     has_rsample = True
 
     def rsample(self, sample_shape=torch.Size()):
