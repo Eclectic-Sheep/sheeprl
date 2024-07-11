@@ -137,11 +137,6 @@ class PPOAgent(nn.Module):
                 else None
             ),
         )
-        if critic_cfg.ortho_init:
-            for layer in self.critic.modules():
-                if isinstance(layer, torch.nn.Linear):
-                    torch.nn.init.orthogonal_(layer.weight, 1.0)
-                    layer.bias.data.zero_()
         actor_backbone = (
             MLP(
                 input_dims=features_dim,
@@ -164,11 +159,6 @@ class PPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
-        if actor_cfg.ortho_init:
-            for layer in self.actor.modules():
-                if isinstance(layer, torch.nn.Linear):
-                    torch.nn.init.orthogonal_(layer.weight, 1.0)
-                    layer.bias.data.zero_()
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None

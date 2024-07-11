@@ -53,7 +53,6 @@ algo:
     dense_units: 64
     dense_act: torch.nn.Tanh
     layer_norm: false
-    ortho_init: true
 
   # Critic
   critic:
@@ -61,7 +60,6 @@ algo:
     dense_units: 64
     dense_act: torch.nn.Tanh
     layer_norm: false
-    ortho_init: true
 
   # Single optimizer for both actor and critic
   optimizer:
