@@ -27,7 +27,7 @@ algo:
   normalize_advantages: True
   clip_coef: 0.2
   anneal_clip_coef: False
-  clip_vloss: True
+  clip_vloss: False
   ent_coef: 0.0
   anneal_ent_coef: False
   vf_coef: 0.5
