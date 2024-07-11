@@ -412,16 +412,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             last_train = train_step
 
         # Checkpoint model
-        if (
-            (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every)
-            or cfg.dry_run
-            or (iter_num == total_iters and cfg.checkpoint.save_last)
+        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
+            iter_num == total_iters and cfg.checkpoint.save_last
         ):
             last_checkpoint = policy_step
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                 "iter_num": iter_num * world_size,
+                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
+                "last_log": last_log,
+                "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
