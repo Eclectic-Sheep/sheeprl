@@ -13,6 +13,10 @@ algo:
   mlp_keys:
     encoder: [state]
 
+# Distribution
+distribution:
+  type: "auto"
+
 # Buffer
 buffer:
   share_data: False

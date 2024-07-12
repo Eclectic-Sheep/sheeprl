@@ -14,6 +14,7 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.utils import safeatanh, safetanh
 
 
 class CNNEncoder(nn.Module):
@@ -69,11 +70,18 @@ class MLPEncoder(nn.Module):
 
 
 class PPOActor(nn.Module):
-    def __init__(self, actor_backbone: torch.nn.Module, actor_heads: torch.nn.ModuleList, is_continuous: bool) -> None:
+    def __init__(
+        self,
+        actor_backbone: torch.nn.Module,
+        actor_heads: torch.nn.ModuleList,
+        is_continuous: bool,
+        distribution: str = "auto",
+    ) -> None:
         super().__init__()
         self.actor_backbone = actor_backbone
         self.actor_heads = actor_heads
         self.is_continuous = is_continuous
+        self.distribution = distribution
 
     def forward(self, x: Tensor) -> List[Tensor]:
         x = self.actor_backbone(x)
@@ -97,6 +105,21 @@ class PPOAgent(nn.Module):
         super().__init__()
         self.is_continuous = is_continuous
         self.distribution_cfg = distribution_cfg
+        self.distribution = distribution_cfg.get("type", "auto").lower()
+        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete"):
+            raise ValueError(
+                "The distribution must be on of: `auto`, `discrete`, `normal` and `tanh_normal`. "
+                f"Found: {self.distribution}"
+            )
+        if self.distribution == "discrete" and is_continuous:
+            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        elif self.distribution not in {"discrete", "auto"} and not is_continuous:
+            raise ValueError("You have choose a continuous distribution but `is_continuous` is false")
+        if self.distribution == "auto":
+            if is_continuous:
+                self.distribution = "normal"
+            else:
+                self.distribution = "discrete"
         self.actions_dim = actions_dim
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
         mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
@@ -158,7 +181,29 @@ class PPOAgent(nn.Module):
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
-        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
+        self.actor = PPOActor(actor_backbone, actor_heads, is_continuous, self.distribution)
+
+    def _normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
+        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
+        std = log_std.exp()
+        normal = Independent(Normal(mean, std), 1)
+        actions = actions[0]
+        log_prob = normal.log_prob(actions)
+        return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
+
+    def _tanh_normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
+        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
+        std = log_std.exp()
+        normal = Independent(Normal(mean, std), 1)
+        tanh_actions = actions[0].float()
+        actions = safeatanh(tanh_actions, eps=torch.finfo(tanh_actions.dtype).resolution)
+        log_prob = normal.log_prob(actions)
+        log_prob -= 2.0 * (
+            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
+            - tanh_actions
+            - torch.nn.functional.softplus(-2.0 * tanh_actions)
+        ).sum(-1, keepdim=False)
+        return tanh_actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
@@ -167,17 +212,11 @@ class PPOAgent(nn.Module):
         actor_out: List[Tensor] = self.actor(feat)
         values = self.critic(feat)
         if self.is_continuous:
-            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
-            std = log_std.exp()
-            normal = Independent(Normal(mean, std), 1)
-            if actions is None:
-                actions = normal.sample()
-            else:
-                # always composed by a tuple of one element containing all the
-                # continuous actions
-                actions = actions[0]
-            log_prob = normal.log_prob(actions)
-            return tuple([actions]), log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1), values
+            if self.distribution == "normal":
+                actions, log_prob, entropy = self._normal(actor_out[0], actions)
+            elif self.distribution == "tanh_normal":
+                actions, log_prob, entropy = self._tanh_normal(actor_out[0], actions)
+            return tuple([actions]), log_prob, entropy, values
         else:
             should_append = False
             actions_logprobs: List[Tensor] = []
@@ -207,17 +246,38 @@ class PPOPlayer(nn.Module):
         self.critic = critic
         self.actor = actor
 
+    def _normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
+        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
+        std = log_std.exp()
+        normal = Independent(Normal(mean, std), 1)
+        actions = normal.sample()
+        log_prob = normal.log_prob(actions)
+        return actions, log_prob.unsqueeze(dim=-1)
+
+    def _tanh_normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
+        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
+        std = log_std.exp()
+        normal = Independent(Normal(mean, std), 1)
+        actions = normal.sample().float()
+        tanh_actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
+        log_prob = normal.log_prob(actions)
+        log_prob -= 2.0 * (
+            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
+            - tanh_actions
+            - torch.nn.functional.softplus(-2.0 * tanh_actions)
+        ).sum(-1, keepdim=False)
+        return tanh_actions, log_prob.unsqueeze(dim=-1)
+
     def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
         feat = self.feature_extractor(obs)
         values = self.critic(feat)
         actor_out: List[Tensor] = self.actor(feat)
         if self.actor.is_continuous:
-            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
-            std = log_std.exp()
-            normal = Independent(Normal(mean, std), 1)
-            actions = normal.sample()
-            log_prob = normal.log_prob(actions)
-            return tuple([actions]), log_prob.unsqueeze(dim=-1), values
+            if self.actor.distribution == "normal":
+                actions, log_prob = self._normal(actor_out[0])
+            elif self.actor.distribution == "tanh_normal":
+                actions, log_prob = self._tanh_normal(actor_out[0])
+            return tuple([actions]), log_prob, values
         else:
             actions_dist: List[Distribution] = []
             actions_logprobs: List[Tensor] = []
@@ -247,6 +307,8 @@ class PPOPlayer(nn.Module):
                 std = log_std.exp()
                 normal = Independent(Normal(mean, std), 1)
                 actions = normal.sample()
+            if self.actor.distribution == "tanh_normal":
+                actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
             return tuple([actions])
         else:
             actions: List[Tensor] = []
