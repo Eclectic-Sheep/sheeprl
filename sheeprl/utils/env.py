@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 
 import cv2
 import gymnasium as gym
@@ -13,6 +13,7 @@ from sheeprl.envs.wrappers import (
     FrameStack,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
+    NormalizeObservationWrapper,
     RewardAsObservationWrapper,
 )
 from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
@@ -210,6 +211,33 @@ def make_env(
 
         if cfg.env.actions_as_observation.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
             env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observation)
+
+        if cfg.env.normalize_obs:
+            env = NormalizeObservationWrapper(env)
+
+        if cfg.env.clip_obs:
+            if (
+                isinstance(cfg.env.clip_obs_range, Sequence)
+                and not isinstance(cfg.env.clip_obs_range, str)
+                and len(cfg.env.clip_obs_range) != 2
+            ):
+                raise ValueError(
+                    f"clip_obs_range must be a sequence of length 2, got: {cfg.env.clip_obs_range} of type "
+                    f"{type(cfg.env.clip_obs_range)}"
+                )
+            env = gym.wrappers.TransformObservation(
+                env,
+                lambda obs: {
+                    k: np.clip(obs[k], cfg.env.clip_obs_range[0], cfg.env.clip_obs_range[1]) if k in obs else obs[k]
+                    for k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                },
+            )
+
+        if cfg.env.clip_actions:
+            env = gym.wrappers.ClipAction(env)
+
+        if cfg.env.normalize_rewards:
+            env = gym.wrappers.NormalizeReward(env, gamma=cfg.algo.gamma)
 
         if cfg.env.reward_as_observation:
             env = RewardAsObservationWrapper(env)

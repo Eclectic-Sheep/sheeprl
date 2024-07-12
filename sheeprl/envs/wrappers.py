@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, SupportsFloat,
 import gymnasium as gym
 import numpy as np
 from gymnasium.core import Env, RenderFrame
+from gymnasium.wrappers.normalize import NormalizeObservation, RunningMeanStd
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -340,3 +341,53 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         actions_stack = list(self._actions)[self._dilation - 1 :: self._dilation]
         actions = np.concatenate(actions_stack, axis=-1)
         return actions.astype(np.float32)
+
+
+class NormalizeObservationWrapper(NormalizeObservation):
+    """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
+
+    Note:
+        The normalization depends on past trajectories and observations
+        will not be normalized correctly if the wrapper was
+        newly instantiated or the policy was changed recently.
+    """
+
+    def __init__(self, env: gym.Env, epsilon: float = 1e-8):
+        """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
+
+        Args:
+            env (Env): The environment to apply the wrapper
+            epsilon: A stability parameter that is used when scaling the observations.
+        """
+        super().__init__(env, epsilon=epsilon)
+        self._is_dict_space = False
+        if isinstance(env.observation_space, gym.spaces.Dict):
+            self._is_dict_space = True
+            self.obs_rms = {
+                k: RunningMeanStd(shape=self.observation_space[k].shape) for k in self.observation_space.keys()
+            }
+
+    def step(self, action):
+        """Steps through the environment and normalizes the observation."""
+        if not self._is_dict_space:
+            return super().step(action)
+        obs, rews, terminateds, truncateds, infos = self.env.step(action)
+        obs = self.normalize(obs)
+        return obs, rews, terminateds, truncateds, infos
+
+    def reset(self, **kwargs):
+        """Resets the environment and normalizes the observation."""
+        if not self._is_dict_space:
+            return super().reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
+        return self.normalize(obs), info
+
+    def normalize(self, obs):
+        """Normalises the observation using the running mean and variance of the observations."""
+        if not self._is_dict_space:
+            return super().normalize(obs)
+        new_obs = {}
+        for k in self.observation_space.keys():
+            self.obs_rms[k].update(obs[k][np.newaxis])
+            new_obs[k] = ((obs[k][np.newaxis] - self.obs_rms[k].mean) / np.sqrt(self.obs_rms[k].var + self.epsilon))[0]
+        return new_obs

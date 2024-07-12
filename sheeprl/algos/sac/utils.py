@@ -37,8 +37,9 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
-    env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
+def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, env: gym.Env | None = None):
+    if env is None:
+        env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
     cumulative_rew = 0
