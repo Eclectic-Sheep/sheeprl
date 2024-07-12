@@ -50,14 +50,18 @@ class MLPEncoder(nn.Module):
         self.keys = keys
         self.input_dim = input_dim
         self.output_dim = features_dim if features_dim else dense_units
-        self.model = MLP(
-            input_dim,
-            features_dim,
-            [dense_units] * mlp_layers,
-            activation=dense_act,
-            norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
-        )
+        if mlp_layers == 0:
+            self.model = nn.Identity()
+            self.output_dim = input_dim
+        else:
+            self.model = MLP(
+                input_dim,
+                features_dim,
+                [dense_units] * mlp_layers,
+                activation=dense_act,
+                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
+                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            )
 
     def forward(self, obs: Dict[str, Tensor]) -> Tensor:
         x = torch.cat([obs[k] for k in self.keys], dim=-1)
@@ -115,6 +119,11 @@ class PPOAgent(nn.Module):
             else None
         )
         self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
+        if encoder_cfg.ortho_init:
+            for layer in self.feature_extractor.modules():
+                if isinstance(layer, torch.nn.Linear):
+                    torch.nn.init.orthogonal_(layer.weight, 1.0)
+                    layer.bias.data.zero_()
         features_dim = self.feature_extractor.output_dim
         self.critic = MLP(
             input_dims=features_dim,

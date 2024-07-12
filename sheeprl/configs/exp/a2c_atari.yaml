@@ -1,0 +1,67 @@
+# @package _global_
+
+defaults:
+  - override /algo: a2c
+  - override /env: atari
+  - override /model_manager: a2c
+  - _self_
+
+# Env
+env:
+  num_envs: 1
+  frame_stack: 4
+  screen_size: 84
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Algorithm
+algo:
+  total_steps: 10_000_000
+  per_rank_batch_size: 40
+  anneal_lr: True
+  gamma: 0.99
+  gae_lambda: 0.95
+  loss_reduction: mean
+  ent_coef: 0.01
+  vf_coef: 0.25
+  rollout_steps: 40
+  dense_units: 512
+  mlp_layers: 1
+  dense_act: torch.nn.ReLU
+  normalize_advantages: True
+  layer_norm: False
+  max_grad_norm: 0.5
+  mlp_keys:
+    encoder: []
+  cnn_keys:
+    encoder: ["rgb"]
+
+  # Encoder
+  encoder:
+    cnn_features_dim: 512
+
+  # Single optimizer for both actor and critic
+  optimizer:
+    lr: 0.0001
+    eps: 1.0e-8
+    weight_decay: 0.0
+
+# Buffer
+buffer:
+  share_data: False
+  size: ${algo.rollout_steps}
+
+metric:
+  aggregator:
+    metrics:
+      Loss/value_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/entropy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
