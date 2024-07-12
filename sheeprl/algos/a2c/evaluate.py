@@ -5,8 +5,8 @@ from typing import Any, Dict
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.a2c.agent import build_agent
-from sheeprl.algos.a2c.utils import test
+from sheeprl.algos.ppo.agent import build_agent
+from sheeprl.algos.ppo.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation

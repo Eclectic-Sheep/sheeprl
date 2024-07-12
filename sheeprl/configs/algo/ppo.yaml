@@ -32,6 +32,7 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  ortho_init: False
 
 # Actor
 actor:
@@ -39,6 +40,7 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  ortho_init: False
 
 # Critic
 critic:
@@ -46,6 +48,7 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  ortho_init: False
 
 # Single optimizer for both actor and critic
 optimizer:

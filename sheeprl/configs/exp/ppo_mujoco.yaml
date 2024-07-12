@@ -1,0 +1,86 @@
+# @package _global_
+
+defaults:
+  - override /algo: ppo
+  - override /env: mujoco
+  - override /model_manager: ppo
+  - _self_
+
+# Env
+env:
+  id: Hopper-v4
+  num_envs: 1
+
+# Checkpoint
+checkpoint:
+  every: 100000
+
+# Algorithm
+algo:
+  total_steps: 1_000_000
+  per_rank_batch_size: 64
+  anneal_lr: True
+  gamma: 0.99
+  gae_lambda: 0.95
+  update_epochs: 10
+  loss_reduction: mean
+  normalize_advantages: True
+  clip_coef: 0.2
+  anneal_clip_coef: False
+  clip_vloss: False
+  ent_coef: 0.0
+  anneal_ent_coef: False
+  vf_coef: 0.5
+  rollout_steps: 2048
+  dense_units: 64
+  mlp_layers: 1
+  dense_act: torch.nn.Tanh
+  layer_norm: False
+  max_grad_norm: 0.0
+  mlp_keys:
+    encoder: ["state"]
+  cnn_keys:
+    encoder: []
+
+  # Encoder
+  encoder:
+    mlp_layers: 0
+    dense_units: 64
+
+  # Actor
+  actor:
+    mlp_layers: 2
+    dense_units: 64
+    dense_act: torch.nn.Tanh
+    layer_norm: false
+
+  # Critic
+  critic:
+    mlp_layers: 2
+    dense_units: 64
+    dense_act: torch.nn.Tanh
+    layer_norm: false
+
+  # Single optimizer for both actor and critic
+  optimizer:
+    lr: 3e-4
+    eps: 1.e-5
+    weight_decay: 0.0
+
+# Buffer
+buffer:
+  share_data: False
+  size: ${algo.rollout_steps}
+
+metric:
+  aggregator:
+    metrics:
+      Loss/value_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/policy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}
+      Loss/entropy_loss:
+        _target_: torchmetrics.MeanMetric
+        sync_on_compute: ${metric.sync_on_compute}

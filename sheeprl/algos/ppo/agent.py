@@ -142,6 +142,11 @@ class PPOAgent(nn.Module):
             else None
         )
         self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
+        if encoder_cfg.ortho_init:
+            for layer in self.feature_extractor.modules():
+                if isinstance(layer, torch.nn.Linear):
+                    torch.nn.init.orthogonal_(layer.weight, 1.0)
+                    layer.bias.data.zero_()
         features_dim = self.feature_extractor.output_dim
         self.critic = MLP(
             input_dims=features_dim,
