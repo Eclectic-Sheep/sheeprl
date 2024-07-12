@@ -8,6 +8,8 @@ from lightning.fabric.loggers.logger import Logger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.utilities.cloud_io import _is_dir, get_filesystem
 
+from sheeprl.utils.imports import _IS_WINDOWS
+
 
 def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
@@ -30,8 +32,18 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
                     "so the logger one will be ignored and replaced with the experiment `run_name`",
                     UserWarning,
                 )
+            if _IS_WINDOWS:
+                from pathlib import PureWindowsPath
+
+                root_dir = str(PureWindowsPath(root_dir))
+                run_name = str(PureWindowsPath(cfg.run_name))
+            else:
+                from pathlib import PurePosixPath
+
+                root_dir = str(PurePosixPath(root_dir))
+                run_name = str(PurePosixPath(cfg.run_name))
             cfg.metric.logger.root_dir = root_dir
-            cfg.metric.logger.name = cfg.run_name
+            cfg.metric.logger.name = run_name
         logger = hydra.utils.instantiate(cfg.metric.logger, _convert_="all")
     return logger
 
