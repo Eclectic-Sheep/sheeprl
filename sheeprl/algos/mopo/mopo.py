@@ -244,7 +244,7 @@ def main(fabric: Fabric, cfg: dotdict[str, Any]):
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
 
-    ensembles, sac_agent, sac_player = build_agent(fabric, cfg, obs_space, action_space)
+    ensembles, sac_agent, sac_player = build_agent(fabric, cfg, obs_space, action_space, state)
 
     # Optimizers
     ensembles_optimizer = torch.optim.Adam(

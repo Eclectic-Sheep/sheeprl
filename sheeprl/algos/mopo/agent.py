@@ -169,6 +169,7 @@ def build_agent(
     ).apply(init_weights)
 
     if state is not None:
+        ensembles.elites_idxes = state["ensembles"].get("elites_idxes", None)
         ensembles.load_state_dict(state["ensembles"])
 
     ensembles = fabric.setup_module(ensembles)
