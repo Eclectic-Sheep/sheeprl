@@ -43,7 +43,7 @@ if __name__ == "__main__":
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                memmap_dir = Path("white_paper") / "logs" / "runs" / algo / env[1]
+                memmap_dir = Path("logs") / "runs" / algo / env[1]
                 memmap_dir /= sorted(os.listdir(memmap_dir))[-1]
                 memmap_dir = memmap_dir / "version_0" / "memmap_buffer"
                 if os.path.isdir(memmap_dir):
