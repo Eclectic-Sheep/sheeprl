@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import jsonlines
 import torch
 
 if __name__ == "__main__":
@@ -65,7 +66,9 @@ if __name__ == "__main__":
                 with mock.patch.object(sys, "argv", args):
                     tic = time.perf_counter()
                     run()
-                    print(time.perf_counter() - tic)
+                    t = time.perf_counter() - tic
+                with jsonlines.open("times.jsonl", "a") as writer:
+                    writer.write({"algo": algo, "env": env[1], "seed": seed, "time": t})
                 gc.collect()
                 torch.cuda.empty_cache()
 
