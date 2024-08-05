@@ -76,6 +76,9 @@ buffer:
 fabric:
   accelerator: cuda
 
+distribution:
+  type: tanh_normal
+
 metric:
   aggregator:
     metrics:

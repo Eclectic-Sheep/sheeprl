@@ -68,6 +68,9 @@ buffer:
   share_data: False
   size: ${algo.rollout_steps}
 
+distribution:
+  type: tanh_normal
+
 metric:
   aggregator:
     metrics:
