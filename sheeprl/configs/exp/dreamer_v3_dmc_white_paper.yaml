@@ -1,0 +1,50 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /algo: dreamer_v3_S
+  - override /env: dmc
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 4
+  action_repeat: 2
+  max_episode_steps: -1
+  wrapper:
+    domain_name: ???
+    task_name: ???
+    from_vectors: False
+    from_pixels: True
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  size: 500_000
+  checkpoint: True
+  memmap: True
+
+# Algorithm
+algo:
+  total_steps: 500_000
+  cnn_keys:
+    encoder:
+      - rgb
+  mlp_keys:
+    encoder: []
+  learning_starts: 1300
+  replay_ratio: 0.5
+
+# Metric
+metric:
+  log_every: 5000
+
+fabric:
+  accelerator: cuda
+  precision: bf16-mixed

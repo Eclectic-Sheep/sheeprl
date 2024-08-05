@@ -1,0 +1,46 @@
+# @package _global_
+
+defaults:
+  - sac
+  - _self_
+
+env:
+  id: ???
+  num_envs: 1
+  sync_env: True
+
+algo:
+  total_steps: 1_000_000
+  learning_starts: 10_000
+  # Actor
+  actor:
+    hidden_size: ${algo.hidden_size}
+    optimizer:
+      lr: 3e-4
+      eps: 1e-8
+      weight_decay: 0.0
+  # Critic
+  critic:
+    n: 2
+    hidden_size: ${algo.hidden_size}
+    target_network_frequency: 1
+    optimizer:
+      lr: 3e-4
+      eps: 1e-8
+      weight_decay: 0.0
+  # Entropy coefficient
+  alpha:
+    alpha: 1.0
+    optimizer:
+      lr: 3e-4
+      eps: 1e-8
+      weight_decay: 0.0
+
+
+buffer:
+  size: 1_000_000
+  checkpoint: True
+  sample_next_obs: False
+
+fabric:
+  accelerator: cuda

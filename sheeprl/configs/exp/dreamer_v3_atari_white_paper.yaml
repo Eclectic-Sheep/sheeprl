@@ -1,0 +1,35 @@
+# @package _global_
+
+defaults:
+  - dreamer_v3
+  - override /algo: dreamer_v3_S
+  - override /env: atari
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  id: ???
+  num_envs: 1
+  action_repeat: 4
+  max_episode_steps: 27000
+
+# Checkpoint
+checkpoint:
+  every: 2000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+
+# Algorithm
+algo:
+  total_steps: 100000
+  learning_starts: 1024
+
+fabric:
+  accelerator: cuda
+  devices: 1
