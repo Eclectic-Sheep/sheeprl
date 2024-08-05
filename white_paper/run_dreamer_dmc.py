@@ -12,6 +12,8 @@ if __name__ == "__main__":
     from sheeprl import ROOT_DIR
     from sheeprl.cli import run
 
+    os.environ["MUJOCO_GL"] = "egl"
+
     algos = ["dreamer_v3"]
     environments = [
         ("dmc", "walker", "walk"),
@@ -29,6 +31,9 @@ if __name__ == "__main__":
                     f"env.wrapper.domain_name={env[1]}",
                     f"env.wrapper.task_name={env[2]}",
                     f"seed={seed}",
+                    "fabric.accelerator=cuda",
+                    "checkpoint.keep_last=1",
+                    "logger@metric.logger=csv",
                     "hydra.run.dir=./logs/runs/${root_dir}/${run_name}",
                 ]
                 with mock.patch.object(sys, "argv", args):
@@ -38,8 +43,8 @@ if __name__ == "__main__":
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                memmap_dir = Path("white_paper") / "logs" / "runs" / algo / env
-                memmap_dir /= os.listdir(memmap_dir)[0]
+                memmap_dir = Path("white_paper") / "logs" / "runs" / algo / env[1]
+                memmap_dir /= sorted(os.listdir(memmap_dir))[-1]
                 memmap_dir = memmap_dir / "version_0" / "memmap_buffer"
                 if os.path.isdir(memmap_dir):
                     shutil.rmtree(memmap_dir)

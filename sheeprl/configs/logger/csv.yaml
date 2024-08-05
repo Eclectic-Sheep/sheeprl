@@ -1,0 +1,6 @@
+_target_: lightning.pytorch.loggers.CSVLogger
+save_dir: logs/runs/${root_dir}
+name: ${run_name}
+version: null
+prefix: ""
+flush_logs_every_n_steps: 1
