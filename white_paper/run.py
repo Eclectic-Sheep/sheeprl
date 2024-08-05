@@ -57,7 +57,6 @@ if __name__ == "__main__":
                     f"exp={algo}_{env[0]}_white_paper",
                     f"env.id={env[1]}",
                     f"seed={seed}",
-                    "algo.total_steps=3_000",
                     "fabric.accelerator=cuda",
                     "checkpoint.keep_last=1",
                     "logger@metric.logger=csv",
