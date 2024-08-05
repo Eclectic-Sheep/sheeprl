@@ -15,7 +15,7 @@ from torch import nn
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 from torchmetrics import SumMetric
 
-from sheeprl.algos.ppo.agent import build_agent
+from sheeprl.algos.ppo.agent import PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
@@ -34,6 +34,7 @@ def train(
     data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
+    player: PPOPlayer,
 ):
     """Train the agent on the data collected from the environment."""
     indexes = list(range(next(iter(data.values())).shape[0]))
@@ -50,6 +51,28 @@ def train(
     sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
     for epoch in range(cfg.algo.update_epochs):
+        with torch.no_grad():
+            returns, advantages = gae(
+                data["rewards"],
+                data["values"],
+                data["dones"],
+                player.get_values(
+                    normalize_obs(
+                        {
+                            k: v[-1]
+                            for k, v in data.items()
+                            if k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+                        },
+                        cfg.algo.cnn_keys.encoder,
+                        cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder,
+                    )
+                ),
+                cfg.algo.rollout_steps,
+                cfg.algo.gamma,
+                cfg.algo.gae_lambda,
+            )
+            data["returns"] = returns.float()
+            data["advantages"] = advantages.float()
         if cfg.buffer.share_data:
             sampler.sampler.set_epoch(epoch)
         for batch_idxes in sampler:
@@ -344,21 +367,21 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
-        with torch.inference_mode():
-            torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-            next_values = player.get_values(torch_obs)
-            returns, advantages = gae(
-                local_data["rewards"],
-                local_data["values"],
-                local_data["dones"],
-                next_values,
-                cfg.algo.rollout_steps,
-                cfg.algo.gamma,
-                cfg.algo.gae_lambda,
-            )
-            # Add returns and advantages to the buffer
-            local_data["returns"] = returns.float()
-            local_data["advantages"] = advantages.float()
+        # with torch.inference_mode():
+        #     torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+        #     next_values = player.get_values(torch_obs)
+        #     returns, advantages = gae(
+        #         local_data["rewards"],
+        #         local_data["values"],
+        #         local_data["dones"],
+        #         next_values,
+        #         cfg.algo.rollout_steps,
+        #         cfg.algo.gamma,
+        #         cfg.algo.gae_lambda,
+        #     )
+        #     # Add returns and advantages to the buffer
+        #     local_data["returns"] = returns.float()
+        #     local_data["advantages"] = advantages.float()
 
         if cfg.buffer.share_data and fabric.world_size > 1:
             # Gather all the tensors from all the world and reshape them
@@ -370,7 +393,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
         with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-            train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+            train(fabric, agent, optimizer, gathered_data, aggregator, cfg, player)
         train_step += world_size
 
         if cfg.metric.log_level > 0:
