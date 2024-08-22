@@ -13,7 +13,7 @@ if __name__ == "__main__":
     from sheeprl import ROOT_DIR
     from sheeprl.cli import run
 
-    os.environ["MUJOCO_GL"] = "egl"
+    os.environ["MUJOCO_GL"] = "osmesa"
 
     algos = ["dreamer_v3"]
     environments = [
@@ -46,7 +46,7 @@ if __name__ == "__main__":
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                memmap_dir = Path("logs") / "runs" / algo / env[1]
+                memmap_dir = Path("logs") / "runs" / algo / env[1] + "_" + env[2]
                 memmap_dir /= sorted(os.listdir(memmap_dir))[-1]
                 memmap_dir = memmap_dir / "version_0" / "memmap_buffer"
                 if os.path.isdir(memmap_dir):
