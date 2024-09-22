@@ -8,6 +8,7 @@ defaults:
 
 # Algorithm
 algo:
+  train_after_step: true
   replay_ratio: 1
   total_steps: 5000000
   per_rank_batch_size: 16
