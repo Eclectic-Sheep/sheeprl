@@ -681,7 +681,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Train the agent
         if iter_num >= learning_starts:
             is_distributed = fabric.world_size > 1
-            if (cfg.algo.train_on_episode_end and reset_envs > 0 and not is_distributed) or not cfg.algo.train_on_episode_end:
+            if (
+                cfg.algo.train_on_episode_end and reset_envs > 0 and not is_distributed
+            ) or not cfg.algo.train_on_episode_end:
                 ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
                 per_rank_gradient_steps = ratio(ratio_steps / world_size)
                 if per_rank_gradient_steps > 0:
