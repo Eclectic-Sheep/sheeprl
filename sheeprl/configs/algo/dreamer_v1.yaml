@@ -11,6 +11,7 @@ horizon: 15
 name: dreamer_v1
 
 # Training recipe
+train_on_episode_end: false
 replay_ratio: 0.1
 learning_starts: 5000
 per_rank_pretrain_steps: 0

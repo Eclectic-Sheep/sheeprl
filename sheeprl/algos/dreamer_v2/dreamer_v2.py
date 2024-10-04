@@ -680,42 +680,46 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
-            per_rank_gradient_steps = ratio(ratio_steps / world_size)
-            if per_rank_gradient_steps > 0:
-                local_data = rb.sample_tensors(
-                    batch_size=cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for i in range(per_rank_gradient_steps):
-                        if (
-                            cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
-                            == 0
-                        ):
-                            for cp, tcp in zip(critic.module.parameters(), target_critic.module.parameters()):
-                                tcp.data.copy_(cp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
-                        train(
-                            fabric,
-                            world_model,
-                            actor,
-                            critic,
-                            target_critic,
-                            world_optimizer,
-                            actor_optimizer,
-                            critic_optimizer,
-                            batch,
-                            aggregator,
-                            cfg,
-                            actions_dim,
-                        )
-                        cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
+            is_distributed = fabric.world_size > 1
+            if (
+                cfg.algo.train_on_episode_end and reset_envs > 0 and not is_distributed
+            ) or not cfg.algo.train_on_episode_end:
+                ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+                per_rank_gradient_steps = ratio(ratio_steps / world_size)
+                if per_rank_gradient_steps > 0:
+                    local_data = rb.sample_tensors(
+                        batch_size=cfg.algo.per_rank_batch_size,
+                        sequence_length=cfg.algo.per_rank_sequence_length,
+                        n_samples=per_rank_gradient_steps,
+                        dtype=None,
+                        device=fabric.device,
+                        from_numpy=cfg.buffer.from_numpy,
+                    )
+                    with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                        for i in range(per_rank_gradient_steps):
+                            if (
+                                cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
+                                == 0
+                            ):
+                                for cp, tcp in zip(critic.module.parameters(), target_critic.module.parameters()):
+                                    tcp.data.copy_(cp.data)
+                            batch = {k: v[i].float() for k, v in local_data.items()}
+                            train(
+                                fabric,
+                                world_model,
+                                actor,
+                                critic,
+                                target_critic,
+                                world_optimizer,
+                                actor_optimizer,
+                                critic_optimizer,
+                                batch,
+                                aggregator,
+                                cfg,
+                                actions_dim,
+                            )
+                            cumulative_per_rank_gradient_steps += 1
+                        train_step += world_size
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):

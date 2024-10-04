@@ -5,6 +5,7 @@ defaults:
 
 name: p2e_dv3
 intrinsic_reward_multiplier: 1
+train_on_episode_end: false
 
 player:
   actor_type: exploration

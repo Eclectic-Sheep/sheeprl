@@ -324,44 +324,48 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
         # Train the agent
         if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
-            per_rank_gradient_steps = ratio(ratio_steps / world_size)
-            if per_rank_gradient_steps > 0:
-                if player.actor_type != "task":
-                    player.actor_type = "task"
-                    player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
-                    for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
-                        p.data = agent_p.data
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    sample = rb.sample_tensors(
-                        batch_size=cfg.algo.per_rank_batch_size,
-                        sequence_length=cfg.algo.per_rank_sequence_length,
-                        n_samples=per_rank_gradient_steps,
-                        dtype=None,
-                        device=device,
-                        from_numpy=cfg.buffer.from_numpy,
-                    )  # [N_samples, Seq_len, Batch_size, ...]
-                    for i in range(per_rank_gradient_steps):
-                        batch = {k: v[i].float() for k, v in sample.items()}
-                        train(
-                            fabric,
-                            world_model,
-                            actor_task,
-                            critic_task,
-                            world_optimizer,
-                            actor_task_optimizer,
-                            critic_task_optimizer,
-                            batch,
-                            aggregator,
-                            cfg,
+            is_distributed = fabric.world_size > 1
+            if (
+                cfg.algo.train_on_episode_end and reset_envs > 0 and not is_distributed
+            ) or not cfg.algo.train_on_episode_end:
+                ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+                per_rank_gradient_steps = ratio(ratio_steps / world_size)
+                if per_rank_gradient_steps > 0:
+                    if player.actor_type != "task":
+                        player.actor_type = "task"
+                        player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
+                        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+                            p.data = agent_p.data
+                    with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                        sample = rb.sample_tensors(
+                            batch_size=cfg.algo.per_rank_batch_size,
+                            sequence_length=cfg.algo.per_rank_sequence_length,
+                            n_samples=per_rank_gradient_steps,
+                            dtype=None,
+                            device=device,
+                            from_numpy=cfg.buffer.from_numpy,
+                        )  # [N_samples, Seq_len, Batch_size, ...]
+                        for i in range(per_rank_gradient_steps):
+                            batch = {k: v[i].float() for k, v in sample.items()}
+                            train(
+                                fabric,
+                                world_model,
+                                actor_task,
+                                critic_task,
+                                world_optimizer,
+                                actor_task_optimizer,
+                                critic_task_optimizer,
+                                batch,
+                                aggregator,
+                                cfg,
+                            )
+                            cumulative_per_rank_gradient_steps += 1
+                        train_step += world_size
+                    if aggregator and not aggregator.disabled:
+                        aggregator.update("Params/exploration_amount_task", actor_task._get_expl_amount(policy_step))
+                        aggregator.update(
+                            "Params/exploration_amount_exploration", actor_exploration._get_expl_amount(policy_step)
                         )
-                        cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
-                if aggregator and not aggregator.disabled:
-                    aggregator.update("Params/exploration_amount_task", actor_task._get_expl_amount(policy_step))
-                    aggregator.update(
-                        "Params/exploration_amount_exploration", actor_exploration._get_expl_amount(policy_step)
-                    )
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
