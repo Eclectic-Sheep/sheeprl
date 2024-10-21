@@ -83,9 +83,7 @@ class CNNEncoder(nn.Module):
                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
                 activation=activation,
                 norm_layer=[layer_norm_cls] * stages,
-                norm_args=[
-                    {**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)
-                ],
+                norm_args=[{**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)],
             ),
             nn.Flatten(-3, -1),
         )
