@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/PyCQA/autoflake
-    rev: v2.2.1
+    rev: v2.3.1
     hooks:
       - id: autoflake
         name: Remove unused variables and imports
@@ -28,7 +28,7 @@ repos:
         files: \.py$
 
   - repo: https://github.com/psf/black
-    rev: 23.12.1
+    rev: 24.10.0
     hooks:
       - id: black
         name: (black) Format Python code
@@ -43,7 +43,7 @@ repos:
         types: [jupyter]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.1.11"
+    rev: "v0.7.0"
     hooks:
       - id: ruff
         args: ["--config", "pyproject.toml", "--fix", "./sheeprl"]
