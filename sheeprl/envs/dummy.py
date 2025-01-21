@@ -18,7 +18,7 @@ class BaseDummyEnv(gym.Env, ABC):
         if self._dict_obs_space:
             self.observation_space = gym.spaces.Dict(
                 {
-                    "rgb": gym.spaces.Box(0, 256, shape=image_size, dtype=np.uint8),
+                    "rgb": gym.spaces.Box(0, 255, shape=image_size, dtype=np.uint8),
                     "state": gym.spaces.Box(-20, 20, shape=vector_shape, dtype=np.float32),
                 }
             )
@@ -43,7 +43,7 @@ class BaseDummyEnv(gym.Env, ABC):
         if self._dict_obs_space:
             return {
                 # da sostituire con np.random.rand
-                "rgb": np.full(self.observation_space["rgb"].shape, self._current_step % 256, dtype=np.uint8),
+                "rgb": np.full(self.observation_space["rgb"].shape, self._current_step % 255, dtype=np.uint8),
                 "state": np.full(self.observation_space["state"].shape, self._current_step, dtype=np.uint8),
             }
         else:

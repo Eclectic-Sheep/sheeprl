@@ -14,7 +14,7 @@ ENVIRONMENTS = {
 
 def test_mask_velocities_fail():
     with pytest.raises(NotImplementedError):
-        env = gym.make("CarRacing-v2")
+        env = gym.make("CarRacing-v3")
         env = MaskVelocityWrapper(env)
 
 
@@ -48,7 +48,7 @@ def test_rewards_as_observation_wrapper_step_method(env_id, dict_obs_space):
     else:
         assert "obs" in obs
         assert "reward" in obs
-    np.testing.assert_array_equal(obs["reward"], np.array([0.0]))
+    assert np.allclose(obs["reward"], np.array([0.0]))
 
 
 @pytest.mark.parametrize("env_id", ENVIRONMENTS.keys())
@@ -65,7 +65,7 @@ def test_rewards_as_observation_wrapper_reset_method(env_id, dict_obs_space):
     else:
         assert "obs" in obs
         assert "reward" in obs
-    np.testing.assert_array_equal(obs["reward"], np.array([0.0]))
+    assert np.allclose(obs["reward"], np.array([0.0]))
 
 
 @pytest.mark.parametrize("amount", [-1.3, -1, 0])

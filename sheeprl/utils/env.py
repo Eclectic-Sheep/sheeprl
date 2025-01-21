@@ -107,10 +107,14 @@ def make_env(
                         f"is allowed in {cfg.env.id}, "
                         f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
                     )
+                obs_key = "state"
                 if encoder_mlp_keys_length > 0:
-                    gym.wrappers.pixel_observation.STATE_KEY = cfg.algo.mlp_keys.encoder[0]
-                env = gym.wrappers.PixelObservationWrapper(
-                    env, pixels_only=encoder_mlp_keys_length == 0, pixel_keys=(cfg.algo.cnn_keys.encoder[0],)
+                    obs_key = cfg.algo.mlp_keys.encoder[0]
+                env = gym.wrappers.AddRenderObservation(
+                    env,
+                    render_only=encoder_mlp_keys_length == 0,
+                    render_key=cfg.algo.cnn_keys.encoder[0],
+                    obs_key=obs_key,
                 )
             else:
                 if encoder_mlp_keys_length > 1:
@@ -120,7 +124,7 @@ def make_env(
                         f"only the first one is kept: {cfg.algo.mlp_keys.encoder[0]}"
                     )
                 mlp_key = cfg.algo.mlp_keys.encoder[0]
-                env = gym.wrappers.TransformObservation(env, lambda obs: {mlp_key: obs})
+                env = gym.wrappers.TransformObservation(env, lambda obs: {mlp_key: obs}, None)
                 env.observation_space = gym.spaces.Dict({mlp_key: env.observation_space})
         elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
             # Pixel only observation
@@ -136,7 +140,9 @@ def make_env(
                     "Please set at least one cnn key in the config file: `algo.cnn_keys.encoder=[your_cnn_key]`"
                 )
             cnn_key = cfg.algo.cnn_keys.encoder[0]
-            env = gym.wrappers.TransformObservation(env, lambda obs: {cnn_key: obs})
+            env = gym.wrappers.TransformObservation(
+                env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
+            )
             env.observation_space = gym.spaces.Dict({cnn_key: env.observation_space})
 
         if (
@@ -195,7 +201,7 @@ def make_env(
 
             return obs
 
-        env = gym.wrappers.TransformObservation(env, transform_obs)
+        env = gym.wrappers.TransformObservation(env, transform_obs, None)
         for k in cnn_keys:
             env.observation_space[k] = gym.spaces.Box(
                 0, 255, (1 if cfg.env.grayscale else 3, cfg.env.screen_size, cfg.env.screen_size), np.uint8
@@ -222,7 +228,7 @@ def make_env(
         if cfg.env.capture_video and rank == 0 and vector_env_idx == 0 and run_name is not None:
             if cfg.env.grayscale:
                 env = GrayscaleRenderWrapper(env)
-            env = gym.experimental.wrappers.RecordVideoV0(
+            env = gym.wrappers.RecordVideo(
                 env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
             )
             env.metadata["render_fps"] = env.frames_per_sec

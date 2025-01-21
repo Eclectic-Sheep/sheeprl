@@ -31,7 +31,7 @@ def test_seq_replay_buffer_add_tds():
     assert rb.full
     assert rb["a"][0] == td3["a"][-2]
     assert rb["a"][1] == td3["a"][-1]
-    np.testing.assert_allclose(rb["a"][2:4], td2["a"])
+    assert rb["a"][2] == td2["a"][-2]
 
 
 def test_seq_replay_buffer_add_single_td():

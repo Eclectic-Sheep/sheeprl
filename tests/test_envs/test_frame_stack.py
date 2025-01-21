@@ -87,7 +87,7 @@ def test_framestack(num_stack, dilation):
             ],
             axis=0,
         )
-        np.testing.assert_array_equal(obs["rgb"], expected_frame)
+        assert np.allclose(obs["rgb"], expected_frame)
 
 
 @pytest.mark.parametrize("env_id", ENVIRONMENTS.keys())

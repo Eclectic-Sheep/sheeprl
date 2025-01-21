@@ -24,22 +24,25 @@ maintainers = [
 keywords = ["reinforcement", "machine", "learning", "distributed", "production"]
 license = { file = "LICENSE" }
 readme = { file = "docs/README.md", content-type = "text/markdown" }
-requires-python = ">=3.8,<3.12"
+requires-python = ">=3.9,<3.12"
 classifiers = ["Programming Language :: Python", "Topic :: Scientific/Engineering :: Artificial Intelligence"]
 dependencies = [
-  "gymnasium==0.29.*",
-  "pygame >=2.1.3",
+  "gymnasium==1.0.0",
+  "pygame>=2.1.3",
   "moviepy>=1.0.3",
   "tensorboard>=2.10",
   "python-dotenv>=1.0.0",
   "lightning>=2.0",
-  "lightning-utilities<=0.9",
+  "lightning-utilities<=0.11.9",
   "hydra-core==1.3.0",
   "torchmetrics",
   "rich==13.5.*",
-  "opencv-python==4.8.0.*",
-  "torch>=2.0,!=2.2.0",
-  "numpy<2.0"
+  "opencv-python==4.10.*",
+  "torch==2.3.1",
+  # Windows only:
+  "numpy==1.26.0; sys_platform == 'win32'",
+  # Non-Windows (Linux, macOS, etc.):
+  "numpy>=2.0.0; sys_platform != 'win32'",
 ]
 dynamic = ["version"]
 
@@ -74,13 +77,13 @@ dev = [
   "autoflake==2.2.1",
   "ruff==0.1.11",
 ]
-mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==0.29.*"]
+mujoco = ["mujoco>=2.3.3", "gymnasium[mujoco]==1.0.0"]
 dmc = ["dm_control>=1.0.12"]
-box2d = ["gymnasium[box2d]==0.29.*"]
+box2d = ["gymnasium[box2d]==1.0.0"]
 atari = [
-  "gymnasium[atari]==0.29.*",
-  "gymnasium[accept-rom-license]==0.29.*",
-  "gymnasium[other]==0.29.*",
+  "gymnasium[atari]==1.0.0",
+  "gymnasium[accept-rom-license]==1.0.0",
+  "gymnasium[other]==1.0.0",
 ]
 minedojo = ["minedojo==0.1", "importlib_resources==5.12.0", "gym==0.21.0"]
 minerl = ["setuptools==66.0.0", "minerl==0.4.4", "gym==0.19.0"]

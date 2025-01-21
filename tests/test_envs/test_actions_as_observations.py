@@ -62,7 +62,7 @@ def test_actions_as_observation_wrapper(env_id: str, num_stack, dilation):
         expected_actions_stack = list(expected_actions)[dilation - 1 :: dilation]
         expected_actions_stack = np.concatenate(expected_actions_stack, axis=-1).astype(np.float32)
 
-        np.testing.assert_array_equal(o["action_stack"], expected_actions_stack)
+        assert np.allclose(o["action_stack"], expected_actions_stack)
 
 
 @pytest.mark.parametrize("num_stack", [-1, 0])

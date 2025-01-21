@@ -25,7 +25,7 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
         "MountainCarContinuous-v0": np.array([1]),
         "Pendulum-v1": np.array([2]),
         "LunarLander-v2": np.array([2, 3, 5]),
-        "LunarLanderContinuous-v2": np.array([2, 3, 5]),
+        "LunarLanderContinuous-v3": np.array([2, 3, 5]),
     }
 
     def __init__(self, env: gym.Env):

@@ -10,7 +10,7 @@ run_benchmarks: True
 
 # Environment
 env:
-  id: LunarLanderContinuous-v2
+  id: LunarLanderContinuous-v3
   capture_video: False
   num_envs: 4
 
