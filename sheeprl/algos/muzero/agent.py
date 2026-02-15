@@ -17,8 +17,23 @@ class MuzeroAgent(torch.nn.Module):
         self.prediction: torch.nn.Module = prediction
         self.dynamics: torch.nn.Module = dynamics
 
+    @staticmethod
+    def normalize_hidden_state(hidden_state: torch.Tensor) -> torch.Tensor:
+        """Scale hidden state to [0, 1] per sample (MuZero paper, Appendix G).
+
+        This ensures the prediction network always sees inputs in the same
+        range, regardless of whether they came from the representation or
+        dynamics network.
+        """
+        h_min = hidden_state.min(dim=-1, keepdim=True)[0]
+        h_max = hidden_state.max(dim=-1, keepdim=True)[0]
+        return (hidden_state - h_min) / (h_max - h_min + 1e-8)
+
     def initial_inference(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden_state = self.representation(observation)
+        # Normalize before prediction so both initial and recurrent paths
+        # feed the same value range into the prediction network.
+        hidden_state = self.normalize_hidden_state(hidden_state)
         policy_logits, value = self.prediction(hidden_state)
         return hidden_state.unsqueeze(0), policy_logits, value
 
@@ -26,6 +41,7 @@ class MuzeroAgent(torch.nn.Module):
         self, action: torch.Tensor, hidden_state: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         reward, next_hidden_state = self.dynamics(action, hidden_state)
+        next_hidden_state = self.normalize_hidden_state(next_hidden_state)
         policy_logits, value = self.prediction(next_hidden_state)
         return next_hidden_state, reward, policy_logits, value
 
@@ -67,13 +83,16 @@ class MlpDynamics(torch.nn.Module):
         self,
         num_actions,
         embedding_size=256,
-        state_hidden_sizes=(64, 64, 16),
-        rew_hidden_sizes=(64, 64, 16),
+        state_hidden_sizes=(128, 64),
+        rew_hidden_sizes=(128, 64),
         full_support_size=601,
     ):
         super().__init__()
         self.hstate = MLP(
-            input_dims=embedding_size + int(num_actions), hidden_sizes=state_hidden_sizes, output_dim=embedding_size
+            input_dims=embedding_size + int(num_actions),
+            hidden_sizes=state_hidden_sizes,
+            activation=torch.nn.ELU,
+            output_dim=embedding_size,
         )
         self.mlp = MLP(
             input_dims=embedding_size + int(num_actions),
@@ -95,8 +114,8 @@ class Predictor(torch.nn.Module):
     def __init__(
         self,
         embedding_size=256,
-        policy_hidden_sizes=(64, 64, 16),
-        value_hidden_sizes=(64, 64, 16),
+        policy_hidden_sizes=(128, 64),
+        value_hidden_sizes=(128, 64),
         num_actions=4,
         full_support_size=601,
     ):
@@ -122,8 +141,8 @@ class RecurrentMuzero(MuzeroAgent):
     def __init__(self, hidden_state_size=256, num_actions=4):
         super().__init__()
         self.representation = NatureCNN(in_channels=3, features_dim=hidden_state_size)
-        self.dynamics: torch.nn.Module = GruMlpDynamics(hidden_state_size=hidden_state_size)
-        self.prediction: torch.nn.Module = Predictor(hidden_state_size=hidden_state_size, num_actions=num_actions)
+        self.dynamics: torch.nn.Module = GruMlpDynamics(embedding_size=hidden_state_size)
+        self.prediction: torch.nn.Module = Predictor(embedding_size=hidden_state_size, num_actions=num_actions)
 
 
 if __name__ == "__main__":
@@ -140,11 +159,11 @@ if __name__ == "__main__":
     print(value.shape)
 
     action = torch.rand(1, 1, 1)
-    hidden_state, policy_logits, reward, value = agent.recurrent_inference(action, hidden_state)
+    hidden_state, reward, policy_logits, value = agent.recurrent_inference(action, hidden_state)
     print("Recurrent inference:")
     print(hidden_state.shape)
-    print(policy_logits.shape)
     print(reward.shape)
+    print(policy_logits.shape)
     print(value.shape)
 
     ## Trainer:
@@ -157,11 +176,11 @@ if __name__ == "__main__":
     print(value.shape)
 
     action = torch.rand(1, batch_size, 1)
-    hidden_state, policy_logits, reward, value = agent.recurrent_inference(action, hidden_state)
+    hidden_state, reward, policy_logits, value = agent.recurrent_inference(action, hidden_state)
     print("Recurrent inference:")
     print(hidden_state.shape)
-    print(policy_logits.shape)
     print(reward.shape)
+    print(policy_logits.shape)
     print(value.shape)
     # action2 = torch.randint(0, 4, (1, 1)).to(torch.float32)
     # last_hidden_state, reward, policy_logits, value = agent.recurrent_inference(action2, next_hidden_state)

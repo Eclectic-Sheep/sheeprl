@@ -79,9 +79,19 @@ def nstep_returns(
     returns = torch.zeros_like(rewards)
     for t in range(rewards.shape[0]):
         n_to_consider = min(nstep_horizon, rewards.shape[0] - t)
-        returns[t] = (rewards[t : t + n_to_consider] * gammas[:n_to_consider]).sum() + (
-            gamma**n_to_consider
-        ) * values[t + n_to_consider - 1 : t + n_to_consider] * ~dones[t + n_to_consider - 1 : t + n_to_consider]
+        discounted_rewards = (rewards[t : t + n_to_consider] * gammas[:n_to_consider]).sum()
+        bootstrap_idx = t + n_to_consider
+        if bootstrap_idx < rewards.shape[0]:
+            # Bootstrap with value at the state AFTER all n reward steps
+            bootstrap = (
+                (gamma**n_to_consider)
+                * values[bootstrap_idx : bootstrap_idx + 1]
+                * ~dones[t + n_to_consider - 1 : t + n_to_consider]
+            )
+        else:
+            # End of trajectory — episode is done, no bootstrap
+            bootstrap = 0.0
+        returns[t] = discounted_rewards + bootstrap
 
     return returns
 
@@ -186,6 +196,8 @@ def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optio
     """
     if tensor.shape == torch.Size([]):
         tensor = tensor.unsqueeze(0)
+    # Ensure float dtype so scatter_add_ works and interpolation is correct
+    tensor = tensor.float()
     if num_buckets is None:
         num_buckets = support_range * 2 + 1
     if num_buckets % 2 == 0:
@@ -197,7 +209,7 @@ def two_hot_encoder(tensor: Tensor, support_range: int = 300, num_buckets: Optio
     right_idxs = torch.bucketize(tensor, buckets)
     left_idxs = (right_idxs - 1).clip(min=0)
 
-    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device, dtype=tensor.dtype)
+    two_hot = torch.zeros(tensor.shape[:-1] + (num_buckets,), device=tensor.device, dtype=torch.float32)
     left_value = torch.abs(buckets[right_idxs] - tensor) / bucket_size
     right_value = 1 - left_value
     two_hot.scatter_add_(-1, left_idxs, left_value)

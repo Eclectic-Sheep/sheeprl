@@ -72,19 +72,6 @@ cdef class Roots:
         return self.root_num
 
 
-cdef class Node:
-    cdef CNode cnode
-
-    def __cinit__(self):
-        pass
-
-    def __cinit__(self, float prior, int action_num):
-        # self.cnode = CNode(prior, action_num)
-        pass
-
-    def expand(self, int hidden_state_index_x, int hidden_state_index_y, float reward, list policy_logits):
-        cdef vector[float] cpolicy = policy_logits
-        self.cnode.expand(hidden_state_index_x, hidden_state_index_y, reward, cpolicy)
 
 def batch_back_propagate(int hidden_state_index_x, float gamma, list rewards, list values, list policies, MinMaxStatsList min_max_stats_lst, ResultsWrapper results):
     cdef int i

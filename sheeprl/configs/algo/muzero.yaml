@@ -8,6 +8,7 @@ name: muzero
 gamma: 0.99
 
 support_size: ???
+embedding_size: 64
 
 num_simulations: 50
 nstep_horizon: 50
@@ -16,6 +17,8 @@ exploration_fraction: 0.25
 priority_alpha: 0.5
 pb_c_base: 19652
 pb_c_init: 1.25
+max_grad_norm: 1.0
+value_target_clip: 300.0  # Clip stored MCTS values to prevent bootstrap divergence
 
 # Single optimizer for muzero agent
 optimizer:

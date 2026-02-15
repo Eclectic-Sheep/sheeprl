@@ -52,7 +52,7 @@ namespace tree{
         int action_num = this->action_num;
         float temp_policy;
         float policy_sum = 0.0;
-        float policy[action_num];
+        std::vector<float> policy(action_num);  // Use std::vector instead of VLA for C++ standards compliance
         float policy_max = FLOAT_MIN;
         for(int a = 0; a < action_num; ++a){
             if(policy_max < policy_logits[a]){

@@ -75,13 +75,13 @@ def main(cfg: DictConfig):
     num_actions = env_0.action_space.n
     obs_shape = env_0.observation_space.shape
     # Create the model
-    embedding_size = 10
+    embedding_size = cfg.algo.embedding_size
     full_support_size = 2 * cfg.algo.support_size + 1
     # TODO hydralize everything
     agent = MuzeroAgent(
         representation=MLP(
             input_dims=obs_shape,
-            hidden_sizes=tuple(),
+            hidden_sizes=(128, 64),
             output_dim=embedding_size,
             activation=torch.nn.ELU,
         ),
@@ -95,6 +95,15 @@ def main(cfg: DictConfig):
     optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters())
     agent = fabric.setup_module(agent)
     optimizer = fabric.setup_optimizers(optimizer)
+
+    # Global variables (must be computed before LR scheduler)
+    num_updates = int(cfg.total_steps // int(fabric.world_size)) if not cfg.dry_run else 1
+    cfg.learning_starts = cfg.learning_starts // int(fabric.world_size) if not cfg.dry_run else 1
+
+    # Learning rate schedule: cosine decay to 10% of initial LR
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_updates, eta_min=cfg.algo.optimizer.lr * 0.1
+    )
 
     # Metrics
     with device:
@@ -115,15 +124,13 @@ def main(cfg: DictConfig):
         )
 
     # Local data
-    buffer_size = cfg.buffer.size // int(fabric.world_size) if not cfg.dry_run else 1
+    buffer_size = cfg.buffer.size // int(fabric.world_size) if not cfg.dry_run else cfg.buffer.max_trajectory_len + 1
     rb = EpisodeBuffer(
         buffer_size=buffer_size, sequence_length=cfg.chunk_sequence_len, device=device, memmap=cfg.buffer.memmap
     )
 
     # Global variables
     start_time = time.perf_counter()
-    num_updates = int(cfg.total_steps // int(fabric.world_size)) if not cfg.dry_run else 1
-    cfg.learning_starts = cfg.learning_starts // int(fabric.world_size) if not cfg.dry_run else 1
 
     env_steps = 0
     num_collected_trajectories = 0
@@ -178,16 +185,26 @@ def main(cfg: DictConfig):
                         continue
 
                     visits_count, value, env = roots_distributions[env_idx], roots_values[env_idx], envs[env_idx]
-                    # select the argmax, not sampling
+                    # Clip MCTS root value to prevent bootstrap value divergence
+                    # (extreme values cause a positive feedback loop via n-step returns)
+                    value = max(-cfg.algo.value_target_clip, min(cfg.algo.value_target_clip, value))
                     temperature = visit_softmax_temperature(training_steps=env_steps)
-                    visit_probs = torch.tensor(visits_count) / cfg.algo.num_simulations
-                    visit_probs = torch.softmax(
-                        torch.where(visit_probs > 0, visit_probs, 1 / cfg.algo.num_simulations), dim=-1
-                    )
+                    # Policy target: normalized MCTS visit counts (no softmax!)
+                    visit_probs = torch.tensor(visits_count, dtype=torch.float32)
+                    total_visits = visit_probs.sum()
+                    if total_visits > 0:
+                        visit_probs = visit_probs / total_visits
+                    else:
+                        visit_probs = torch.ones(num_actions, dtype=torch.float32) / num_actions
+                    # Action selection with temperature
                     tiny = torch.finfo(visit_probs.dtype).tiny
                     visit_logits = torch.log(torch.maximum(visit_probs, torch.tensor(tiny, device=device)))
                     logits = apply_temperature(visit_logits, temperature)
                     action = torch.distributions.Categorical(logits=logits).sample()
+
+                    # Save the current observation BEFORE taking the action
+                    # (targets were computed from this observation via MCTS)
+                    current_obs = obs_pool[env_idx].clone()
 
                     next_obs, reward, done, truncated, info = env.step(action.item())
                     env_steps += 1
@@ -202,7 +219,7 @@ def main(cfg: DictConfig):
                         {
                             "policies": visit_probs.reshape(1, 1, num_actions),
                             "actions": action.reshape(1, 1, 1),
-                            "observations": next_obs.reshape(1, 1, *obs_shape),
+                            "observations": current_obs.reshape(1, 1, *obs_shape),
                             "rewards": torch.tensor([reward]).reshape(1, 1, 1),
                             "values": torch.tensor([value]).reshape(1, 1, 1),
                             "dones": torch.tensor([done or truncated]).reshape(1, 1, 1),
@@ -214,7 +231,7 @@ def main(cfg: DictConfig):
                         steps_data[env_idx] = trajectory_step_data
                     else:
                         steps_data[env_idx] = torch.cat([steps_data[env_idx], trajectory_step_data])
-                    obs_pool[env_idx] = torch.tensor(next_obs).reshape(1, -1)
+                    obs_pool[env_idx] = torch.tensor(next_obs, device=device).reshape(1, -1)
                 if dones.all():  # TODO maybe we can change to continuously add stuff to the buffer
                     # and reset the single steps data instead of waiting for everyone to finish
                     for env_idx in range(num_envs):
@@ -242,6 +259,7 @@ def main(cfg: DictConfig):
         if len(rb) >= cfg.learning_starts:
             warmup_phase = False
             print("UPDATING")
+            agent.train()  # Ensure model is in training mode (MCTS sets eval())
             all_data = rb.sample(batch_size=cfg.chunks_per_batch, n_samples=cfg.update_epochs, shuffle=True)
 
             for epoch_idx in range(cfg.update_epochs):
@@ -253,55 +271,54 @@ def main(cfg: DictConfig):
                 target_policies = data["policies"]
                 observations = data["observations"]  # shape should be (L, N, C, H, W)
                 actions = data["actions"]
-                weights = data["weights"].squeeze()
 
                 hidden_states, policy_0, value_0 = agent.initial_inference(
                     observations[0]
                 )  # in shape should be (N, C, H, W)
 
                 # Policy loss
-                pg_loss = (policy_loss(policy_0, target_policies[0]) * (1 / weights[0])).mean()
+                pg_loss = policy_loss(policy_0, target_policies[0]).mean()
                 # Value loss
-                v_loss = (value_loss(value_0, target_values[0]) * (1 / weights[0])).mean()
+                v_loss = value_loss(value_0, target_values[0]).mean()
                 # Reward loss
                 r_loss = torch.tensor(0.0, device=device)
                 entropy = torch.distributions.Categorical(logits=policy_0.detach()).entropy().unsqueeze(0)
                 kl_div = torch.nn.functional.kl_div(
-                    policy_0.detach(), target_policies[0], reduction="batchmean", log_target=True
+                    torch.nn.functional.log_softmax(policy_0.detach(), dim=-1),
+                    target_policies[0],
+                    reduction="batchmean",
                 )
                 # hidden_states.register_hook(lambda grad: grad * 0.5)
 
                 for sequence_idx in range(1, cfg.chunk_sequence_len):
-                    hidden_states = (hidden_states - hidden_states.min()) / (hidden_states.max() - hidden_states.min())
+                    # Use action from previous step (a_{t+k-1}) to transition h_{k-1} → h_k
                     hidden_states, rewards, policies, values = agent.recurrent_inference(
-                        actions[sequence_idx : sequence_idx + 1].to(dtype=torch.float32), hidden_states
+                        actions[sequence_idx - 1 : sequence_idx].to(dtype=torch.float32), hidden_states
                     )  # action should be (1, N, 1)
                     # Policy loss
-                    pg_loss += (
-                        policy_loss(policies.squeeze(), target_policies[sequence_idx]) * (1 / weights[sequence_idx])
-                    ).mean()
+                    pg_loss += policy_loss(policies.squeeze(), target_policies[sequence_idx]).mean()
                     # Value loss
-                    v_loss += (
-                        value_loss(values.squeeze(), target_values[sequence_idx]) * (1 / weights[sequence_idx])
-                    ).mean()
-                    # Reward loss
-                    r_loss += (
-                        reward_loss(rewards.squeeze(), target_rewards[sequence_idx]) * (1 / weights[sequence_idx])
-                    ).mean()
+                    v_loss += value_loss(values.squeeze(), target_values[sequence_idx]).mean()
+                    # Reward loss — predicted reward matches the reward for the transition action a_{t+k-1}
+                    r_loss += reward_loss(rewards.squeeze(), target_rewards[sequence_idx - 1]).mean()
                     entropy += torch.distributions.Categorical(logits=policies.detach()).entropy()
                     kl_div += torch.nn.functional.kl_div(
-                        policies.detach().squeeze(),
+                        torch.nn.functional.log_softmax(policies.detach().squeeze(), dim=-1),
                         target_policies[sequence_idx],
                         reduction="batchmean",
-                        log_target=True,
                     )
+                    # Scale gradient by 0.5 at each unroll step (MuZero gradient scaling)
                     hidden_states.register_hook(lambda grad: grad * 0.5)
 
                 # Equation (1) in the paper, the regularization loss is handled by `weight_decay` in the optimizer
-                loss = (pg_loss + v_loss + r_loss) / cfg.chunk_sequence_len
+                # Value loss weight (default 1.0, can reduce to give policy loss more relative influence)
+                value_loss_weight = getattr(cfg.algo, 'value_loss_weight', 1.0)
+                loss = (pg_loss + value_loss_weight * v_loss + r_loss) / cfg.chunk_sequence_len
 
                 optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
+                # Gradient clipping for stability (MuZero paper, Appendix G)
+                torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=cfg.algo.max_grad_norm)
                 optimizer.step()
 
                 # Update metrics
@@ -313,6 +330,7 @@ def main(cfg: DictConfig):
                 aggregator.update("Info/policy_entropy", entropy.mean())
                 aggregator.update("Info/kl_div", kl_div)
                 aggregator.update("Info/policy_loss - entropy", pg_loss.detach() - entropy.mean())
+            lr_scheduler.step()
             update_steps += 1
         aggregator.update("Time/step_per_second", int(update_steps / (time.perf_counter() - start_time)))
         fabric.log_dict(aggregator.compute(), env_steps)
@@ -326,6 +344,7 @@ def main(cfg: DictConfig):
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
+                "lr_scheduler": lr_scheduler.state_dict(),
                 "update_steps": update_steps,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{update_steps}_{fabric.global_rank}.ckpt")

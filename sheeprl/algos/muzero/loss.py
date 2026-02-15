@@ -16,4 +16,17 @@ def value_loss(predicted_value, target_value):
 
 
 def policy_loss(predicted_policy_logits, target_policy):
+    """Compute cross-entropy loss between predicted policy logits and target policy distribution.
+    
+    Args:
+        predicted_policy_logits: Model output logits, shape [batch, num_actions]
+        target_policy: Target probability distribution (e.g., from MCTS), shape [batch, num_actions]
+    
+    Returns:
+        Loss per batch element, shape [batch]
+    
+    Note:
+        PyTorch's cross_entropy with float targets (probabilities) computes:
+        -sum(target * log_softmax(input)) which is the correct cross-entropy for distributions.
+    """
     return torch.nn.functional.cross_entropy(predicted_policy_logits, target_policy, reduction="none")

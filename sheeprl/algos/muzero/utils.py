@@ -67,8 +67,8 @@ class MinMaxStats:
     """A class that holds the min-max values of the tree."""
 
     def __init__(self):
-        self.maximum = float("inf")
-        self.minimum = -float("inf")
+        self.maximum = -float("inf")
+        self.minimum = float("inf")
 
     def update(self, value: float):
         self.maximum = max(self.maximum, value)
@@ -256,40 +256,65 @@ def ucb_score(
 
     prior_score = pb_c * children_priors
 
-    min_max_normalized = min_max_stats.normalize(children_values)
-    min_value = torch.min(children_rewards + gamma * min_max_normalized)
-    max_value = torch.max(children_rewards + gamma * min_max_normalized) + 1e-7
-    value_score = (children_rewards + gamma * min_max_normalized - min_value) / (max_value - min_value)
+    # Q(s,a) = r(s,a) + gamma * V(child), normalized by global min-max stats (MuZero paper Appendix B)
+    q_values = children_rewards + gamma * children_values
+    value_score = min_max_stats.normalize(q_values)
+    # Clip to [0, 1] as in the reference implementation
+    value_score = torch.clamp(value_score, 0.0, 1.0)
     return prior_score + value_score
 
 
 @torch.no_grad()
 def test(agent: MuzeroAgent, env: gym.Env, fabric: Fabric, cfg: DictConfig):
+    """Test the agent on a single episode using MCTS for action selection."""
     agent.eval()
-    torch.tensor(np.array(env.reset(seed=cfg.seed)[0]), device=fabric.device, dtype=torch.float32).unsqueeze(0)
-    """
+    device = fabric.device
+    num_actions = env.action_space.n
+    
+    obs, _ = env.reset(seed=cfg.seed)
+    next_obs = torch.tensor(np.array(obs), device=device, dtype=torch.float32).unsqueeze(0).reshape(1, -1)
+    
+    done = False
+    cumulative_rew = 0.0
+    
+    mcts = MCTS(
+        num_simulations=cfg.algo.num_simulations,
+        value_delta_max=0.01,
+        device=device,
+        pb_c_base=cfg.algo.pb_c_base,
+        pb_c_init=cfg.algo.pb_c_init,
+        discount=cfg.algo.gamma,
+        support_range=cfg.algo.support_size,
+    )
+    
     while not done:
-        # Act greedly through the environment
-        node = Node(prior=0, image=next_obs)
-
-        # start MCTS
-        node.mcts(agent, cfg.num_simulations, cfg.gamma, cfg.dirichlet_alpha, cfg.exploration_fraction)
-
-        # Select action based on the visit count distribution and the temperature
-        visits_count = torch.tensor([child.visit_count for child in node.children.values()])
-        visits_count = visits_count
-        action = torch.distributions.Categorical(logits=visits_count).sample()
-        print(f"Mcts completed, action: {action}")
+        # Run MCTS from current observation
+        hidden_states, logits, _ = agent.initial_inference(next_obs)
+        policy_logits_pool = logits.tolist()
+        
+        roots = tree.Roots(1, num_actions, cfg.algo.num_simulations)
+        # No exploration noise during testing
+        roots.prepare_no_noise([0.0], policy_logits_pool)
+        
+        mcts.search(roots, agent, hidden_states.squeeze(0).tolist())
+        
+        # Select action greedily based on visit counts
+        visits_count = roots.get_distributions()[0]
+        action = int(np.argmax(visits_count))
+        
         # Single environment step
-        next_obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         cumulative_rew += reward
+        next_obs = torch.tensor(np.array(obs), device=device, dtype=torch.float32).unsqueeze(0).reshape(1, -1)
 
         if cfg.dry_run:
             done = True
+            
     fabric.print("Test - Reward:", cumulative_rew)
-    fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+    if fabric.logger is not None:
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
     env.close()
-    """
 
 
 class MCTS:
@@ -354,7 +379,6 @@ class MCTS:
                 #         hidden_state_nodes, reward, policy_logits, value =
                 #         model.recurrent_inference(last_actions, hidden_states)
                 # else:
-                hidden_states = (hidden_states - hidden_states.min()) / (hidden_states.max() - hidden_states.min())
                 hidden_state_nodes, reward, policy_logits, value = model.recurrent_inference(
                     last_actions.view(num, 1), hidden_states
                 )
@@ -378,8 +402,8 @@ class MCTS:
                 tree.batch_back_propagate(
                     hidden_state_index_x,
                     self.discount,
-                    value_pool,
                     reward_pool,
+                    value_pool,
                     policy_logits_pool,
                     min_max_stats_lst,
                     results,
