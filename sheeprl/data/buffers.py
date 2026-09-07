@@ -135,12 +135,10 @@ class ReplayBuffer:
         return buf
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
-        ...
+    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None: ...
 
     @typing.overload
-    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None:
-        ...
+    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None: ...
 
     def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray], validate_args: bool = False) -> None:
         """Add data to the replay buffer. If the replay buffer is full, then the oldest data is overwritten.
@@ -617,12 +615,10 @@ class EnvIndependentReplayBuffer:
         return self.buffer_size
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None:
-        ...
+    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None: ...
 
     @typing.overload
-    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None:
-        ...
+    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None: ...
 
     def add(
         self,
@@ -860,8 +856,9 @@ class EpisodeBuffer:
         return self._cum_lengths[-1] if len(self._buf) > 0 else 0
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", env_idxes: Sequence[int] | None = None, validate_args: bool = False) -> None:
-        ...
+    def add(
+        self, data: "ReplayBuffer", env_idxes: Sequence[int] | None = None, validate_args: bool = False
+    ) -> None: ...
 
     @typing.overload
     def add(
@@ -869,8 +866,7 @@ class EpisodeBuffer:
         data: Dict[str, np.ndarray],
         env_idxes: Sequence[int] | None = None,
         validate_args: bool = False,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def add(
         self,

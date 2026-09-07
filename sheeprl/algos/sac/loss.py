@@ -1,5 +1,4 @@
-"""Based on "Soft Actor-Critic Algorithms and Applications": https://arxiv.org/abs/1812.05905
-"""
+"""Based on "Soft Actor-Critic Algorithms and Applications": https://arxiv.org/abs/1812.05905"""
 
 from numbers import Number
 
