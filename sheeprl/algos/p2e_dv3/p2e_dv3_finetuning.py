@@ -129,7 +129,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    (world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, player) = build_agent(
+    world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, player = build_agent(
         fabric,
         actions_dim,
         is_continuous,
