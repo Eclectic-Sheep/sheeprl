@@ -91,6 +91,21 @@ def test_seq_replay_buffer_sample_full():
     assert not np.logical_and((samples["a"][:, 0, :] < rb._pos), (samples["a"][:, -1, :] >= rb._pos)).any()
 
 
+@pytest.mark.parametrize("pos", [0, 3, 5, 9])
+def test_seq_replay_buffer_sample_full_support(pos):
+    # When the buffer is full a sequence can start anywhere, except where it would cross the position
+    # of the next insertion, joining the newest and the oldest data in the buffer
+    buf_size = 10
+    seq_len = 4
+    rb = SequentialReplayBuffer(buf_size, 1)
+    rb.add({"idx": np.arange(buf_size + pos).reshape(-1, 1, 1) % buf_size})
+    assert rb.full and rb._pos == pos
+    sequences = rb.sample(2000, sequence_length=seq_len)["idx"][0, ..., 0]  # [Seq_len, Batch]
+    starts = set(sequences[0].tolist())
+    assert starts == {(pos + r) % buf_size for r in range(buf_size - seq_len + 1)}
+    np.testing.assert_array_equal(sequences, (sequences[:1] + np.arange(seq_len).reshape(-1, 1)) % buf_size)
+
+
 def test_seq_replay_buffer_sample_full_large_sl():
     buf_size = 10000
     n_envs = 1
