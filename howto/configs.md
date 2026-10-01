@@ -28,7 +28,6 @@ sheeprl/configs
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
 │   ├── p2e_dv3.yaml
-│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
@@ -89,7 +88,6 @@ sheeprl/configs
 │   ├── p2e_dv3_finetuning.yaml
 │   ├── p2e_dv3_fntn_L_doapp_64px_gray_combo_discrete_5Mstps.yaml
 │   ├── ppo_benchmarks.yaml
-│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo_super_mario_bros.yaml
 │   ├── ppo.yaml
