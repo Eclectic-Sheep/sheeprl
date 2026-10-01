@@ -30,31 +30,39 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "pip"
-          cache-dependency-path: |
-            pyproject.toml
-            setup.py
+
+      # The venv links to the runner's Python, so the key holds its full patch version
+      - name: Restore venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: env
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'setup.py') }}
 
       - name: Create venv
+        if: ${{ steps.venv-cache.outputs.cache-hit != 'true' }}
         run: |
           python -m venv env
 
       - name: Install packages Windows
-        if: ${{ matrix.os == 'windows-latest' }}
+        if: ${{ matrix.os == 'windows-latest' && steps.venv-cache.outputs.cache-hit != 'true' }}
         shell: powershell
         run: |
           choco upgrade swig -y
           env\\Scripts\\Activate.ps1
           python -m pip install -e .[atari,box2d,test,dev]
 
+      # The default Linux wheel of torch pulls in the CUDA libraries, which the CPU tests never use
       - name: Install packages Linux
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+        if: ${{ matrix.os == 'ubuntu-latest' && steps.venv-cache.outputs.cache-hit != 'true' }}
         run: |
           sudo apt-get install --no-install-recommends -y --only-upgrade swig
           source env/bin/activate
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .[atari,box2d,test,dev]
 
       - name: Run tests Windows
