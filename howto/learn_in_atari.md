@@ -5,7 +5,9 @@ First, we should install the Atari environments with:
 pip install .[atari]
 ```
 
-For more information: https://gymnasium.farama.org/environments/atari/ 
+The Atari environments are provided by the [Arcade Learning Environment](https://ale.farama.org/) (`ale-py`), which already ships the game ROMs and registers the environments in Gymnasium (e.g. `ALE/Pong-v5` or `PongNoFrameskip-v4`).
+
+For more information: https://ale.farama.org/getting-started/
 
 ## Train your agent
 

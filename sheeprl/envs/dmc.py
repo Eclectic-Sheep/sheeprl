@@ -46,7 +46,7 @@ def _flatten_obs(obs: Dict[Any, Any]) -> np.ndarray:
     return np.concatenate(obs_pieces, axis=0)
 
 
-class DMCWrapper(gym.Wrapper):
+class DMCWrapper(gym.Env):
     def __init__(
         self,
         domain_name: str,
@@ -134,7 +134,7 @@ class DMCWrapper(gym.Wrapper):
             visualize_reward=visualize_reward,
             environment_kwargs=environment_kwargs,
         )
-        super().__init__(env)
+        self.env = env
 
         # true and normalized action spaces
         self._true_action_space = _spec_to_box([self.env.action_spec()], np.float32)
@@ -160,7 +160,7 @@ class DMCWrapper(gym.Wrapper):
         # render
         self._render_mode: str = "rgb_array"
         # metadata
-        self._metadata = {}
+        self.metadata = {"render_modes": ["rgb_array"]}
         # set seed
         self.seed(seed=seed)
 
@@ -242,3 +242,6 @@ class DMCWrapper(gym.Wrapper):
 
     def render(self, camera_id: Optional[int] = None) -> np.ndarray:
         return self.env.physics.render(height=self._height, width=self._width, camera_id=camera_id or self._camera_id)
+
+    def close(self) -> None:
+        self.env.close()

@@ -402,7 +402,7 @@ mlp_keys:
 
 The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers for the following environments:
 
-* [Atari](https://gymnasium.farama.org/environments/atari/)
+* [Atari](https://ale.farama.org/environments/)
 * [Diambra](https://docs.diambra.ai/)
 * [Deepmind Control Suite (DMC)](https://github.com/deepmind/dm_control/)
 * [Gymnasium](https://www.gymlibrary.dev/)

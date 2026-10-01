@@ -616,6 +616,13 @@ def build_agent(
         action_high=action_space.high,
     )
 
+    # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`) and they are
+    # trained only through the critic and decoder losses: they must be ignored by the actor DDP reducer,
+    # otherwise the same parameters would be synchronized by multiple DDP reducers
+    critic_params = {id(p) for p in agent.critic.parameters()}
+    torch.nn.parallel.DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(
+        agent.actor, [name for name, p in agent.actor.named_parameters() if id(p) in critic_params]
+    )
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
     agent.actor = fabric.setup_module(agent.actor)

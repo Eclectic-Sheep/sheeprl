@@ -1,6 +1,5 @@
 import os
 
-import decorator
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,8 +10,6 @@ from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
-
-import numpy as np
 
 # fmt: off
 from sheeprl.algos.a2c import a2c  # noqa: F401
@@ -47,42 +44,4 @@ from sheeprl.algos.sac import evaluate as sac_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.sac_ae import evaluate as sac_ae_evaluate  # noqa: F401, isort:skip
 # fmt: on
 
-# Needed because MineRL 0.4.4 is not compatible with the latest version of numpy
-np.float = np.float32
-np.int = np.int64
-np.bool = bool
-
 __version__ = "0.5.8.dev"
-
-
-# Replace `moviepy.decorators.use_clip_fps_by_default` method to work with python 3.8, 3.9, and 3.10
-import moviepy.decorators
-
-
-# Taken from https://github.com/Zulko/moviepy/blob/master/moviepy/decorators.py#L118
-@decorator.decorator
-def custom_use_clip_fps_by_default(func, clip, *args, **kwargs):
-    """Will use ``clip.fps`` if no ``fps=...`` is provided in **kwargs**."""
-    import inspect
-
-    def find_fps(fps):
-        if fps is not None:
-            return fps
-        elif getattr(clip, "fps", None):
-            return clip.fps
-        raise AttributeError(
-            "No 'fps' (frames per second) attribute specified"
-            " for function %s and the clip has no 'fps' attribute. Either"
-            " provide e.g. fps=24 in the arguments of the function, or define"
-            " the clip's fps with `clip.fps=24`" % func.__name__
-        )
-
-    names = inspect.getfullargspec(func).args[1:]
-
-    new_args = [find_fps(arg) if (name == "fps") else arg for (arg, name) in zip(args, names)]
-    new_kwargs = {kwarg: find_fps(value) if kwarg == "fps" else value for (kwarg, value) in kwargs.items()}
-
-    return func(clip, *new_args, **new_kwargs)
-
-
-moviepy.decorators.use_clip_fps_by_default = custom_use_clip_fps_by_default
