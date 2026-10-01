@@ -129,6 +129,37 @@ def test_sac(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_sac_gradient_steps(standard_args, start_time):
+    # Every iteration plays `num_envs * world_size` policy steps, so with a replay ratio of 1 every rank
+    # must perform `num_envs` gradient steps. They are counted on the rank-0 process, which runs the test
+    from sheeprl.algos.sac import sac
+
+    gradient_steps = []
+
+    def train(*args, **kwargs):
+        gradient_steps.append(1)
+        return sac_train(*args, **kwargs)
+
+    sac_train = sac.train
+    root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
+    run_name = "test_sac_gradient_steps"
+    args = standard_args + [
+        "exp=sac",
+        "algo.per_rank_batch_size=1",
+        "buffer.size=8",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(sac, "train", train), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    # A single iteration is played with `dry_run=True` and `env.num_envs=2`
+    assert len(gradient_steps) == 2
+
+
 def test_sac_ae(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac_ae", os.environ["LT_DEVICES"])
     run_name = "test_sac_ae"
