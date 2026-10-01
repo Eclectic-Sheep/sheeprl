@@ -23,6 +23,7 @@ from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -119,90 +120,99 @@ def train(
     # [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
     posterior = torch.zeros(1, batch_size, stochastic_size, device=device)
 
-    # initialize the tensors for dynamic learning
-    # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
-    # and its dimension is (sequence_length, batch_size, recurrent_state_size)
-    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
-    # posteriors will contain all the posterior states computed during the dynamic learning phase,
-    # and its dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+    # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
+    with autocast_cache_scope(fabric):
+        # The outputs of every step are concatenated at the end of the unroll: writing them in place into
+        # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
+        # recurrent_states will contain all the recurrent states computed during the dynamic learning phase,
+        # and its dimension is (sequence_length, batch_size, recurrent_state_size)
+        recurrent_states = []
+        # posteriors will contain all the posterior states computed during the dynamic learning phase,
+        # and its dimension is (sequence_length, batch_size, stochastic_size)
+        posteriors = []
 
-    # posteriors_mean and posteriors_std will contain all
-    # the actual means and stds of the posterior states respectively,
-    # their dimension is (sequence_length, batch_size, stochastic_size)
-    posteriors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    posteriors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+        # posteriors_mean and posteriors_std will contain all
+        # the actual means and stds of the posterior states respectively,
+        # their dimension is (sequence_length, batch_size, stochastic_size)
+        posteriors_mean = []
+        posteriors_std = []
 
-    # priors_mean and priors_std will contain all
-    # the predicted means and stds of the prior states respectively,
-    # their dimension is (sequence_length, batch_size, stochastic_size)
-    priors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    priors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
+        # priors_mean and priors_std will contain all
+        # the predicted means and stds of the prior states respectively,
+        # their dimension is (sequence_length, batch_size, stochastic_size)
+        priors_mean = []
+        priors_std = []
 
-    embedded_obs = world_model.encoder(batch_obs)
+        embedded_obs = world_model.encoder(batch_obs)
 
-    for i in range(0, sequence_length):
-        # one step of dynamic learning, take the posterior state, the recurrent state, the action, and the observation
-        # compute the mean and std of both the posterior and prior state, the new recurrent state
-        # and the new posterior state
-        recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
-            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+        for i in range(0, sequence_length):
+            # one step of dynamic learning, take the posterior state, the recurrent state, the action,
+            # and the observation; compute the mean and std of both the posterior and prior state,
+            # the new recurrent state and the new posterior state
+            recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
+                posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+            )
+            recurrent_states.append(recurrent_state)
+            posteriors.append(posterior)
+            posteriors_mean.append(posterior_mean_std[0])
+            posteriors_std.append(posterior_mean_std[1])
+            priors_mean.append(prior_state_mean_std[0])
+            priors_std.append(prior_state_mean_std[1])
+        recurrent_states = torch.cat(recurrent_states, dim=0)
+        posteriors = torch.cat(posteriors, dim=0)
+        posteriors_mean = torch.cat(posteriors_mean, dim=0)
+        posteriors_std = torch.cat(posteriors_std, dim=0)
+        priors_mean = torch.cat(priors_mean, dim=0)
+        priors_std = torch.cat(priors_std, dim=0)
+
+        # concatenate the posterior states with the recurrent states on the last dimension
+        # latent_states tensor has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size)
+        latent_states = torch.cat((posteriors, recurrent_states), -1)
+
+        # compute predictions for the observations
+        decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
+        # compute the distribution of the reconstructed observations
+        # it is necessary an Independent distribution because
+        # it is necessary to create (batch_size * sequence_length) independent distributions,
+        # each producing a sample of size observations.shape
+        qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+
+        # compute predictions for the rewards
+        # it is necessary an Independent distribution because
+        # it is necessary to create (batch_size * sequence_length) independent distributions,
+        # each producing a sample of size equal to the number of rewards
+        qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
+
+        # compute predictions for terminal steps, if required
+        if cfg.algo.world_model.use_continues and world_model.continue_model:
+            qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
+            continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
+        else:
+            qc = continues_targets = None
+
+        # compute the distributions of the states (posteriors and priors)
+        # it is necessary an Independent distribution because
+        # it is necessary to create (batch_size * sequence_length) independent distributions,
+        # each producing a sample of size equal to the stochastic size
+        posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
+        priors_dist = Independent(Normal(priors_mean, priors_std), 1)
+
+        # world model optimization step
+        world_optimizer.zero_grad(set_to_none=True)
+        # compute the overall loss of the world model
+        rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+            qo,
+            batch_obs,
+            qr,
+            data["rewards"],
+            posteriors_dist,
+            priors_dist,
+            cfg.algo.world_model.kl_free_nats,
+            cfg.algo.world_model.kl_regularizer,
+            qc,
+            continues_targets,
+            cfg.algo.world_model.continue_scale_factor,
         )
-        recurrent_states[i] = recurrent_state
-        posteriors[i] = posterior
-        posteriors_mean[i] = posterior_mean_std[0]
-        posteriors_std[i] = posterior_mean_std[1]
-        priors_mean[i] = prior_state_mean_std[0]
-        priors_std[i] = prior_state_mean_std[1]
-
-    # concatenate the posterior states with the recurrent states on the last dimension
-    # latent_states tensor has dimension (sequence_length, batch_size, recurrent_state_size + stochastic_size)
-    latent_states = torch.cat((posteriors, recurrent_states), -1)
-
-    # compute predictions for the observations
-    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    # compute the distribution of the reconstructed observations
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size observations.shape
-    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
-
-    # compute predictions for the rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of rewards
-    qr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
-
-    # compute predictions for terminal steps, if required
-    if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
-        continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
-    else:
-        qc = continues_targets = None
-
-    # compute the distributions of the states (posteriors and priors)
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the stochastic size
-    posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
-    priors_dist = Independent(Normal(priors_mean, priors_std), 1)
-
-    # world model optimization step
-    world_optimizer.zero_grad(set_to_none=True)
-    # compute the overall loss of the world model
-    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        qo,
-        batch_obs,
-        qr,
-        data["rewards"],
-        posteriors_dist,
-        priors_dist,
-        cfg.algo.world_model.kl_free_nats,
-        cfg.algo.world_model.kl_regularizer,
-        qc,
-        continues_targets,
-        cfg.algo.world_model.continue_scale_factor,
-    )
     fabric.backward(rec_loss)
     world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -215,103 +225,108 @@ def train(
     world_optimizer.step()
 
     # Behaviour Learning
-    # Unflatten first 2 dimensions of recurrent and posterior states in order
-    # to have all the states on the first dimension.
-    # The 1 in the second dimension is needed for the recurrent model in the imagination step,
-    # 1 because the agent imagines one state at a time.
-    # (1, batch_size * sequence_length, stochastic_size)
-    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
+    with autocast_cache_scope(fabric):
+        # Unflatten first 2 dimensions of recurrent and posterior states in order
+        # to have all the states on the first dimension.
+        # The 1 in the second dimension is needed for the recurrent model in the imagination step,
+        # 1 because the agent imagines one state at a time.
+        # (1, batch_size * sequence_length, stochastic_size)
+        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
 
-    # initialize the recurrent state of the recurrent model with the recurrent states computed
-    # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+        # initialize the recurrent state of the recurrent model with the recurrent states computed
+        # during the dynamic learning phase, its shape is (1, batch_size * sequence_length, recurrent_state_size).
+        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
 
-    # starting states for the imagination phase.
-    # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
-    imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
-
-    # initialize the tensor of the imagined states
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size, device=device
-    )
-
-    # imagine trajectories in the latent space
-    for i in range(cfg.algo.horizon):
-        # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
-        actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
-
-        # imagination step
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-
-        # update current state
+        # starting states for the imagination phase.
+        # (1, batch_size * sequence_length, determinisitic_size + stochastic_size)
         imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_states
 
-    # predict values and rewards
-    # it is necessary an Independent distribution because
-    # it is necessary to create (batch_size * sequence_length) independent distributions,
-    # each producing a sample of size equal to the number of values/rewards
-    predicted_values = critic(imagined_trajectories)
-    predicted_rewards = world_model.reward_model(imagined_trajectories)
+        # the imagined states are concatenated at the end of the imagination,
+        # obtaining a tensor of shape (horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size)
+        imagined_trajectories = []
 
-    # predict the probability that the episode will continue in the imagined states
-    if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-    else:
-        predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
+        # imagine trajectories in the latent space
+        for i in range(cfg.algo.horizon):
+            # actions tensor has dimension (1, batch_size * sequence_length, num_actions)
+            actions = torch.cat(actor(imagined_latent_states.detach())[0], dim=-1)
 
-    # compute the lambda_values, by passing as last values the values of the last imagined state
-    # the dimensions of the lambda_values tensor are
-    # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
-    lambda_values = compute_lambda_values(
-        predicted_rewards,
-        predicted_values,
-        predicted_continues,
-        last_values=predicted_values[-1],
-        horizon=cfg.algo.horizon,
-        lmbda=cfg.algo.lmbda,
-    )
+            # imagination step
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
 
-    # compute the discounts to multiply to the lambda values
-    with torch.no_grad():
-        # the time steps in Eq. 7 and Eq. 8 of the paper are weighted by the cumulative product of the predicted
-        # discount factors, estimated by the continue model, so terms are wighted down based on how likely
-        # the imagined trajectory would have ended.
-        # Ref. subsection "Learning objectives" of paragraph 3 (Learning Behaviors by Latent Imagination)
-        # in [https://doi.org/10.48550/arXiv.1912.01603](https://doi.org/10.48550/arXiv.1912.01603)
-        #
-        # Suppose the case in which the continue model is not used and gamma = .99
-        # predicted_continues.shape = (15, 2500, 1)
-        # predicted_continues = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (15 rows)
-        # torch.ones_like(predicted_continues[:1]) = [
-        #   [ [1.], ..., [1.] ]
-        # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
-        # predicted_continues[:-2] = [
-        #   [ [.99], ..., [.99] ], (2500 columns)
-        #   ...
-        # ] (13 rows)
-        # torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   ...,
-        #   [ [.99], ..., [.99] ],
-        # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
-        # torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0) = [
-        #   [ [1.], ..., [1.] ], (2500 columns)
-        #   [ [.99], ..., [.99] ],
-        #   [ [.9801], ..., [.9801] ],
-        #   ...,
-        #   [ [.8775], ..., [.8775] ],
-        # ] (14 rows)
-        discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
+            # update current state
+            imagined_latent_states = torch.cat((imagined_prior, recurrent_state), -1)
+            imagined_trajectories.append(imagined_latent_states)
+        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
 
-    # actor optimization step
-    actor_optimizer.zero_grad(set_to_none=True)
-    # compute the policy loss
-    policy_loss = actor_loss(discount * lambda_values)
+        # predict values and rewards
+        # it is necessary an Independent distribution because
+        # it is necessary to create (batch_size * sequence_length) independent distributions,
+        # each producing a sample of size equal to the number of values/rewards
+        predicted_values = critic(imagined_trajectories)
+        predicted_rewards = world_model.reward_model(imagined_trajectories)
+
+        # predict the probability that the episode will continue in the imagined states
+        if cfg.algo.world_model.use_continues and world_model.continue_model:
+            predicted_continues = logits_to_probs(
+                logits=world_model.continue_model(imagined_trajectories), is_binary=True
+            )
+        else:
+            predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
+
+        # compute the lambda_values, by passing as last values the values of the last imagined state
+        # the dimensions of the lambda_values tensor are
+        # (horizon, batch_size * sequence_length, recurrent_state_size + stochastic_size)
+        lambda_values = compute_lambda_values(
+            predicted_rewards,
+            predicted_values,
+            predicted_continues,
+            last_values=predicted_values[-1],
+            horizon=cfg.algo.horizon,
+            lmbda=cfg.algo.lmbda,
+        )
+
+        # compute the discounts to multiply to the lambda values
+        with torch.no_grad():
+            # the time steps in Eq. 7 and Eq. 8 of the paper are weighted by the cumulative product of the predicted
+            # discount factors, estimated by the continue model, so terms are wighted down based on how likely
+            # the imagined trajectory would have ended.
+            # Ref. subsection "Learning objectives" of paragraph 3 (Learning Behaviors by Latent Imagination)
+            # in [https://doi.org/10.48550/arXiv.1912.01603](https://doi.org/10.48550/arXiv.1912.01603)
+            #
+            # Suppose the case in which the continue model is not used and gamma = .99
+            # predicted_continues.shape = (15, 2500, 1)
+            # predicted_continues = [
+            #   [ [.99], ..., [.99] ], (2500 columns)
+            #   ...
+            # ] (15 rows)
+            # torch.ones_like(predicted_continues[:1]) = [
+            #   [ [1.], ..., [1.] ]
+            # ] (1 row and 2500 columns), the discount of the time step 0 is 1.
+            # predicted_continues[:-2] = [
+            #   [ [.99], ..., [.99] ], (2500 columns)
+            #   ...
+            # ] (13 rows)
+            # torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0) = [
+            #   [ [1.], ..., [1.] ], (2500 columns)
+            #   [ [.99], ..., [.99] ],
+            #   ...,
+            #   [ [.99], ..., [.99] ],
+            # ] (14 rows), the total number of imagined steps is 15, but one is lost because of the values computation
+            # torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0) = [
+            #   [ [1.], ..., [1.] ], (2500 columns)
+            #   [ [.99], ..., [.99] ],
+            #   [ [.9801], ..., [.9801] ],
+            #   ...,
+            #   [ [.8775], ..., [.8775] ],
+            # ] (14 rows)
+            discount = torch.cumprod(
+                torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0
+            )
+
+        # actor optimization step
+        actor_optimizer.zero_grad(set_to_none=True)
+        # compute the policy loss
+        policy_loss = actor_loss(discount * lambda_values)
     fabric.backward(policy_loss)
     actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -323,19 +338,20 @@ def train(
         )
     actor_optimizer.step()
 
-    # Predict the values distribution only for the first H (horizon) imagined states
-    # (to match the dimension with the lambda values),
-    # it removes the last imagined state in the trajectory
-    # because it is used only for computing correclty the lambda values
-    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
+    with autocast_cache_scope(fabric):
+        # Predict the values distribution only for the first H (horizon) imagined states
+        # (to match the dimension with the lambda values),
+        # it removes the last imagined state in the trajectory
+        # because it is used only for computing correclty the lambda values
+        qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
-    # critic optimization step
-    critic_optimizer.zero_grad(set_to_none=True)
-    # compute the value loss
-    # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
-    # it is necessary to remove the last dimension to properly match the shapes
-    # for the log prob
-    value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
+        # critic optimization step
+        critic_optimizer.zero_grad(set_to_none=True)
+        # compute the value loss
+        # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
+        # it is necessary to remove the last dimension to properly match the shapes
+        # for the log prob
+        value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
     fabric.backward(value_loss)
     critic_grads = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:

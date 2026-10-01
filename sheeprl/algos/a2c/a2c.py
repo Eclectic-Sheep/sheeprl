@@ -16,6 +16,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -75,34 +76,35 @@ def train(
             fabric.no_backward_sync(agent.actor, enabled=is_accumulating),
             fabric.no_backward_sync(agent.critic, enabled=is_accumulating),
         ):
-            _, logprobs, entropy, new_values = agent(
-                normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
-            )
-            if cfg.algo.normalize_advantages:
-                batch["advantages"] = normalize_tensor(batch["advantages"])
+            with autocast_cache_scope(fabric):
+                _, logprobs, entropy, new_values = agent(
+                    normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
+                )
+                if cfg.algo.normalize_advantages:
+                    batch["advantages"] = normalize_tensor(batch["advantages"])
 
-            # Policy loss
-            pg_loss = policy_loss(
-                logprobs,
-                batch["advantages"],
-                cfg.algo.loss_reduction,
-            )
+                # Policy loss
+                pg_loss = policy_loss(
+                    logprobs,
+                    batch["advantages"],
+                    cfg.algo.loss_reduction,
+                )
 
-            # Value loss
-            v_loss = value_loss(
-                new_values,
-                batch["values"],
-                batch["returns"],
-                0.0,
-                False,
-                cfg.algo.loss_reduction,
-            )
+                # Value loss
+                v_loss = value_loss(
+                    new_values,
+                    batch["values"],
+                    batch["returns"],
+                    0.0,
+                    False,
+                    cfg.algo.loss_reduction,
+                )
 
-            # Entropy loss
-            ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
+                # Entropy loss
+                ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
 
-            # Total loss
-            loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+                # Total loss
+                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
             fabric.backward(loss)
 
         if not is_accumulating:

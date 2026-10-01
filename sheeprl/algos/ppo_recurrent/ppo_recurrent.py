@@ -21,6 +21,7 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -66,44 +67,45 @@ def train(
                 for k in cfg.algo.cnn_keys.encoder:
                     batch[k] = batch[k] / 255.0 - 0.5
 
-                _, logprobs, entropies, values, _ = agent(
-                    {k: batch[k] for k in set(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)},
-                    prev_actions=batch["prev_actions"],
-                    prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
-                    actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
-                    mask=mask,
-                )
+                with autocast_cache_scope(fabric):
+                    _, logprobs, entropies, values, _ = agent(
+                        {k: batch[k] for k in set(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)},
+                        prev_actions=batch["prev_actions"],
+                        prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
+                        actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
+                        mask=mask,
+                    )
 
-                normalized_advantages = batch["advantages"][mask]
-                if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
-                    normalized_advantages = normalize_tensor(normalized_advantages)
+                    normalized_advantages = batch["advantages"][mask]
+                    if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
+                        normalized_advantages = normalize_tensor(normalized_advantages)
 
-                # Policy loss
-                pg_loss = policy_loss(
-                    logprobs[mask],
-                    batch["logprobs"][mask],
-                    normalized_advantages,
-                    cfg.algo.clip_coef,
-                    "mean",
-                )
+                    # Policy loss
+                    pg_loss = policy_loss(
+                        logprobs[mask],
+                        batch["logprobs"][mask],
+                        normalized_advantages,
+                        cfg.algo.clip_coef,
+                        "mean",
+                    )
 
-                # Value loss
-                v_loss = value_loss(
-                    values[mask],
-                    batch["values"][mask],
-                    batch["returns"][mask],
-                    cfg.algo.clip_coef,
-                    cfg.algo.clip_vloss,
-                    "mean",
-                )
+                    # Value loss
+                    v_loss = value_loss(
+                        values[mask],
+                        batch["values"][mask],
+                        batch["returns"][mask],
+                        cfg.algo.clip_coef,
+                        cfg.algo.clip_vloss,
+                        "mean",
+                    )
 
-                # Entropy loss
-                ent_loss = entropy_loss(entropies[mask], cfg.algo.loss_reduction)
+                    # Entropy loss
+                    ent_loss = entropy_loss(entropies[mask], cfg.algo.loss_reduction)
 
-                # Equation (9) in the paper
-                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+                    # Equation (9) in the paper
+                    loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
 
-                optimizer.zero_grad(set_to_none=True)
+                    optimizer.zero_grad(set_to_none=True)
                 fabric.backward(loss)
                 if cfg.algo.max_grad_norm > 0.0:
                     fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
