@@ -41,6 +41,10 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "args": ["exp=ppo", "algo.rollout_steps=4", "algo.per_rank_batch_size=4"],
         "models": ["agent"],
     },
+    "a2c": {
+        "args": ["exp=a2c", "algo.rollout_steps=4"],
+        "models": ["agent"],
+    },
 }
 
 
