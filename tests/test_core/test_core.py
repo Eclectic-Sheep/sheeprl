@@ -236,6 +236,26 @@ def test_update_clips_the_gradient_norm(fabric):
     assert total_norm.item() == pytest.approx(0.5, rel=1e-5)
 
 
+def test_update_returns_the_gradient_norm_before_clipping(fabric):
+    model = core.setup_module(fabric, Parent())
+    optimizer = fabric.setup_optimizers(torch.optim.SGD(model.parameters(), lr=0.0))
+    x = torch.randn(5, 3)
+    assert update(fabric, model(x).square().mean(), optimizer) is None
+    grad_norm = update(fabric, 1000 * model(x).square().mean(), optimizer, max_grad_norm=0.5)
+    reference = copy.deepcopy(model)
+    reference.zero_grad(set_to_none=True)
+    (1000 * reference(x).square().mean()).backward()
+    expected = torch.linalg.vector_norm(torch.stack([p.grad.norm() for p in reference.parameters()]))
+    assert grad_norm.item() == pytest.approx(expected.item(), rel=1e-5)
+    # A non-finite norm raises only when asked to
+    loss = model(x).square().mean() * float("inf")
+    with pytest.raises(RuntimeError, match="non-finite"):
+        update(fabric, loss, optimizer, max_grad_norm=0.5)
+    assert not torch.isfinite(
+        update(fabric, model(x).square().mean() * float("inf"), optimizer, max_grad_norm=0.5, error_if_nonfinite=False)
+    )
+
+
 def test_env_step_final_obs_reads_the_last_observations_of_the_ended_episodes():
     final_obs = np.array([None, {"state": np.full(2, 7.0)}, {"state": np.full(2, 9.0)}], dtype=object)
     step = EnvStep(

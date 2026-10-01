@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 from lightning import Fabric
 
+from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.metric import MetricAggregator
 
@@ -36,6 +38,10 @@ class EnvRunner:
 
     Every process has `cfg.env.num_envs` environments, seeded differently on every process. `obs` holds the current
     observations, and `policy_step` counts the steps played by all the environments of all the processes.
+
+    With `restart_on_exception`, an environment that raises an exception is created again (`RestartOnException`)
+    instead of stopping the run: its step then returns the first observation of a new episode, with
+    `info["restart_on_exception"]` set.
     """
 
     def __init__(
@@ -45,6 +51,7 @@ class EnvRunner:
         log_dir: str,
         aggregator: Optional[MetricAggregator] = None,
         policy_step: int = 0,
+        restart_on_exception: bool = False,
     ) -> None:
         self.fabric = fabric
         self.cfg = cfg
@@ -53,20 +60,20 @@ class EnvRunner:
         self.policy_step = policy_step
         rank = fabric.global_rank
         self._first_seed = cfg.seed + rank * self.num_envs
-        vector_env_cls = get_vector_env_cls(cfg.env.sync_env)
-        self.envs = vector_env_cls(
-            [
-                make_env(
-                    cfg,
-                    self._first_seed + i,
-                    rank * self.num_envs,
-                    log_dir if rank == 0 else None,
-                    "train",
-                    vector_env_idx=i,
-                )
-                for i in range(self.num_envs)
-            ]
-        )
+        env_fns = [
+            make_env(
+                cfg,
+                self._first_seed + i,
+                rank * self.num_envs,
+                log_dir if rank == 0 else None,
+                "train",
+                vector_env_idx=i,
+            )
+            for i in range(self.num_envs)
+        ]
+        if restart_on_exception:
+            env_fns = [partial(RestartOnException, env_fn) for env_fn in env_fns]
+        self.envs = get_vector_env_cls(cfg.env.sync_env)(env_fns)
         # Seed the random actions (e.g. those played before the training starts)
         self.envs.action_space.seed(cfg.seed + rank)
         self.observation_space = self.envs.single_observation_space

@@ -930,40 +930,28 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
 
-def build_agent(
-    fabric: Fabric,
+def build_models(
+    device: torch.device,
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
-    world_model_state: Optional[Dict[str, Tensor]] = None,
-    actor_state: Optional[Dict[str, Tensor]] = None,
-    critic_state: Optional[Dict[str, Tensor]] = None,
-    target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
-    """Build the models and wrap them with Fabric.
+) -> Tuple[WorldModel, Actor | MinedojoActor, nn.Module]:
+    """Create the world model, the actor and the critic, with their initial weights. They are not set up with Fabric:
+    only the RSSM is moved to `device`, since its initial recurrent state belongs to no submodule.
 
     Args:
-        fabric (Fabric): the fabric object.
+        device (torch.device): the device of the RSSM.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
         cfg (DictConfig): the configs of DreamerV3.
         obs_space (Dict[str, Any]): the observation space.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
-            Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
-        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and
         reward models and the continue model.
-        The actor (_FabricModule).
-        The critic (_FabricModule).
-        The target critic (nn.Module).
+        The actor (Actor | MinedojoActor).
+        The critic (nn.Module).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -1060,7 +1048,7 @@ def build_agent(
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
         learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
-    ).to(fabric.device)
+    ).to(device)
 
     cnn_decoder = (
         CNNDecoder(
@@ -1176,6 +1164,45 @@ def build_agent(
             mlp_decoder.heads.apply(uniform_init_weights(1.0))
         if cnn_decoder is not None:
             cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
+    return world_model, actor, critic
+
+
+def build_agent(
+    fabric: Fabric,
+    actions_dim: Sequence[int],
+    is_continuous: bool,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
+    """Build the models and wrap them with Fabric.
+
+    Args:
+        fabric (Fabric): the fabric object.
+        actions_dim (Sequence[int]): the dimension of the actions.
+        is_continuous (bool): whether or not the actions are continuous.
+        cfg (DictConfig): the configs of DreamerV3.
+        obs_space (Dict[str, Any]): the observation space.
+        world_model_state (Dict[str, Tensor], optional): the state of the world model.
+            Default to None.
+        actor_state: (Dict[str, Tensor], optional): the state of the actor.
+            Default to None.
+        critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
+        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
+
+    Returns:
+        The world model (WorldModel): composed by the encoder, rssm, observation and
+        reward models and the continue model.
+        The actor (_FabricModule).
+        The critic (_FabricModule).
+        The target critic (nn.Module).
+    """
+    world_model, actor, critic = build_models(fabric.device, actions_dim, is_continuous, cfg, obs_space)
 
     # Load models from checkpoint
     if world_model_state:

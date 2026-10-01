@@ -47,7 +47,14 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
-    env = EnvRunner(fabric, cfg, log_dir, aggregator, policy_step=schedule.policy_step)
+    env = EnvRunner(
+        fabric,
+        cfg,
+        log_dir,
+        aggregator,
+        policy_step=schedule.policy_step,
+        restart_on_exception=algo.restart_crashed_envs,
+    )
     state, store = algo.build(env.observation_space, env.action_space, schedule, log_dir)
     # The replay buffer of the off-policy algorithms is saved in the checkpoints
     save_buffer = algo.off_policy and cfg.buffer.checkpoint

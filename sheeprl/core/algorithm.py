@@ -104,6 +104,9 @@ class Algorithm:
     # `algo.learning_starts` policy steps, does `algo.replay_ratio` gradient steps per policy step, and the buffer
     # (the store returned by `build`) is saved in the checkpoints when `buffer.checkpoint` is set
     off_policy: bool = False
+    # Whether a crashed environment is created again instead of stopping the run (`EnvRunner`): the player must then
+    # handle `info["restart_on_exception"]`, which marks the first observation of the new environment
+    restart_crashed_envs: bool = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
         self.fabric = fabric

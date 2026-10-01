@@ -758,13 +758,17 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
     exploration = importlib.import_module(f"sheeprl.algos.{algo}.{algo}_exploration")
     inputs_require_grad = []
 
-    def build_agent(*args, **kwargs):
-        agent = exploration_build_agent(*args, **kwargs)
-        for ens in agent[1]:
-            ens.register_forward_pre_hook(lambda _, inputs: inputs_require_grad.append(inputs[0].requires_grad))
-        return agent
+    # The algorithms ported to the shared core create their models with `build_models` (the ensembles last), the
+    # others with `build_agent` (the ensembles second)
+    builder_name, ensembles_idx = ("build_models", -1) if hasattr(exploration, "build_models") else ("build_agent", 1)
+    exploration_builder = getattr(exploration, builder_name)
 
-    exploration_build_agent = exploration.build_agent
+    def builder(*args, **kwargs):
+        models = exploration_builder(*args, **kwargs)
+        for ens in models[ensembles_idx]:
+            ens.register_forward_pre_hook(lambda _, inputs: inputs_require_grad.append(inputs[0].requires_grad))
+        return models
+
     root_dir = os.path.join(f"pytest_{start_time}", algo, os.environ["LT_DEVICES"])
     run_name = f"test_{algo}_intrinsic_reward_is_differentiable"
     args = standard_args + [
@@ -790,7 +794,7 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
         "algo.mlp_keys.decoder=[state]",
     ]
 
-    with mock.patch.object(exploration, "build_agent", build_agent), mock.patch.object(sys, "argv", args):
+    with mock.patch.object(exploration, builder_name, builder), mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert any(inputs_require_grad)

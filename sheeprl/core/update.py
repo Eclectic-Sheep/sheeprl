@@ -50,7 +50,8 @@ def update(
     optimizer: Optimizer,
     max_grad_norm: float = 0.0,
     params: Optional[Iterable[Tensor]] = None,
-) -> None:
+    error_if_nonfinite: bool = True,
+) -> Optional[Tensor]:
     """One optimizer step on `loss`.
 
     The gradients are computed only for `params` (default: the weights of `optimizer`), averaged over the
@@ -63,15 +64,23 @@ def update(
         optimizer: the optimizer of the weights to update, set up with `fabric.setup_optimizers`.
         max_grad_norm: the maximum norm of the gradients; 0 to not clip them.
         params: the weights to compute the gradients of; default: all the weights of `optimizer`.
+        error_if_nonfinite: when clipping, raise if the norm of the gradients is not finite.
+
+    Returns:
+        The norm of the gradients before clipping, as a tensor; `None` if they are not clipped.
     """
     params = [p for group in optimizer.param_groups for p in group["params"]] if params is None else list(params)
     optimizer.zero_grad(set_to_none=True)
     fabric.backward(loss, inputs=params)
     all_reduce_gradients(fabric, params)
+    grad_norm = None
     if max_grad_norm > 0.0:
         # The first argument (the module) is used only by FSDP, which SheepRL doesn't use
-        fabric.clip_gradients(None, optimizer, max_norm=max_grad_norm)
+        grad_norm = fabric.clip_gradients(
+            None, optimizer, max_norm=max_grad_norm, error_if_nonfinite=error_if_nonfinite
+        )
     optimizer.step()
+    return grad_norm
 
 
 def all_reduce_gradients(fabric: Fabric, params: List[Tensor]) -> None:
