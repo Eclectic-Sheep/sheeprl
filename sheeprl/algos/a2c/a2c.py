@@ -15,7 +15,7 @@ from sheeprl.algos.ppo.agent import PPOAgent, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.env import make_env
+from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -70,9 +70,11 @@ def train(
         # is_accumulating is True for every i except for the last one
         is_accumulating = i < len(sampler) - 1
 
-        with fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating), fabric.no_backward_sync(
-            agent.actor, enabled=is_accumulating
-        ), fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
+        with (
+            fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating),
+            fabric.no_backward_sync(agent.actor, enabled=is_accumulating),
+            fabric.no_backward_sync(agent.critic, enabled=is_accumulating),
+        ):
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
@@ -131,7 +133,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
 
     # Create Logger. This will create the logger only on the
     # rank-0 process
@@ -143,7 +145,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env(
         [
             make_env(
@@ -304,7 +306,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             for k in obs_keys
                         }
                         for i, truncated_env in enumerate(truncated_envs):
-                            for k, v in info["final_observation"][truncated_env].items():
+                            for k, v in info["final_obs"][truncated_env].items():
                                 torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
                                 if k in cfg.algo.cnn_keys.encoder:
                                     torch_v = torch_v.view(-1, *v.shape[-2:])
@@ -337,16 +339,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     step_data[k] = _obs[np.newaxis]
                     next_obs[k] = _obs
 
-                if cfg.metric.log_level > 0 and "final_info" in info:
-                    for i, agent_ep_info in enumerate(info["final_info"]):
-                        if agent_ep_info is not None:
-                            ep_rew = agent_ep_info["episode"]["r"]
-                            ep_len = agent_ep_info["episode"]["l"]
-                            if aggregator and "Rewards/rew_avg" in aggregator:
-                                aggregator.update("Rewards/rew_avg", ep_rew)
-                            if aggregator and "Game/ep_len_avg" in aggregator:
-                                aggregator.update("Game/ep_len_avg", ep_len)
-                            fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+                if cfg.metric.log_level > 0:
+                    for i, ep_rew, ep_len in get_episode_stats(info):
+                        if aggregator and "Rewards/rew_avg" in aggregator:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                        if aggregator and "Game/ep_len_avg" in aggregator:
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
         # Transform the data into PyTorch Tensors
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)

@@ -10,9 +10,9 @@ import rich.syntax
 import rich.tree
 import torch
 import torch.nn as nn
+from lightning.fabric.utilities.rank_zero import rank_zero_only
 from lightning.fabric.wrappers import _FabricModule
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor
 
 NUMPY_TO_TORCH_DTYPE_DICT = {

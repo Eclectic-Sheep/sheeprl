@@ -224,7 +224,7 @@ def eval_algorithm(cfg: DictConfig):
     fabric.seed_everything(cfg.seed)
 
     # Load the checkpoint
-    state = fabric.load(cfg.checkpoint_path)
+    state = fabric.load(cfg.checkpoint_path, weights_only=False)
 
     # Given the algorithm's name, retrieve the module where
     # 'cfg.algo.name'.py is contained; from there retrieve the
@@ -427,7 +427,7 @@ def registration(cfg: DictConfig):
     fabric = Fabric(devices=1, accelerator="cpu", num_nodes=1, precision=precision)
 
     # Load the checkpoint
-    state = fabric.load(cfg.checkpoint_path)
+    state = fabric.load(cfg.checkpoint_path, weights_only=False)
     # Retrieve the algorithm name, used to import the custom
     # log_models_from_checkpoint function.
     algo_name = cfg.algo.name
