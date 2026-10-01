@@ -600,6 +600,69 @@ def test_dreamer_v3(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_dreamer_v3_restart_on_exception(standard_args, start_time):
+    # The second environment crashes during its first step and it is restarted by the `RestartOnException`
+    # wrapper: the restart must be handled for that environment only (the environments run in the rank-0 process)
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("The crash is injected in the environments of the rank-0 process only")
+    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
+    from sheeprl.envs.dummy import DiscreteDummyEnv
+
+    envs, crashes, reset_envs = [], [], []
+    dummy_init, dummy_step, player_init_states = DiscreteDummyEnv.__init__, DiscreteDummyEnv.step, PlayerDV3.init_states
+
+    def init(self, *args, **kwargs):
+        dummy_init(self, *args, **kwargs)
+        envs.append(self)
+
+    def step(self, action):
+        if self is envs[1] and len(crashes) == 0:
+            crashes.append(1)
+            raise RuntimeError("Environment crashed")
+        return dummy_step(self, action)
+
+    def init_states(self, reset_envs_idxes=None):
+        reset_envs.append(reset_envs_idxes)
+        return player_init_states(self, reset_envs_idxes)
+
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
+    run_name = "test_dreamer_v3_restart_on_exception"
+    args = standard_args + [
+        "exp=dreamer_v3",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        "buffer.size=4",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        "algo.horizon=8",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
+    ]
+
+    with (
+        mock.patch.object(DiscreteDummyEnv, "__init__", init),
+        mock.patch.object(DiscreteDummyEnv, "step", step),
+        mock.patch.object(PlayerDV3, "init_states", init_states),
+        mock.patch("time.sleep"),
+        mock.patch.object(sys, "argv", args),
+    ):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert len(crashes) == 1
+    assert [1] in reset_envs
+
+
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv3(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])

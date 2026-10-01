@@ -834,8 +834,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             step_data["is_first"] = np.zeros_like(step_data["terminated"])
             if "restart_on_exception" in infos:
+                restarted_envs = []
                 for i, agent_roe in enumerate(infos["restart_on_exception"]):
                     if agent_roe and not dones[i]:
+                        # The last observation stored for the restarted environment ends its episode
                         last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
                         rb.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
                             rb.buffer[i]["terminated"][last_inserted_idx]
@@ -843,10 +845,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         rb.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
                             rb.buffer[i]["truncated"][last_inserted_idx]
                         )
-                        rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
-                            rb.buffer[i]["is_first"][last_inserted_idx]
-                        )
-                        step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
+                        # The observation returned after the restart starts a new episode
+                        step_data["is_first"][:, i] = np.ones_like(step_data["is_first"][:, i])
+                        restarted_envs.append(i)
+                if len(restarted_envs) > 0:
+                    player.init_states(restarted_envs)
 
             if cfg.metric.log_level > 0:
                 for i, ep_rew, ep_len in get_episode_stats(infos):
