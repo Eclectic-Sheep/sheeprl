@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from lightning import Fabric
 
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
 
 
@@ -150,6 +150,19 @@ def test_replay_buffer_sample():
     s = rb.sample(4, n_samples=2, clone=True, sample_next_obs=True)
     assert s["a"].shape == tuple([2, 4, 1])
     assert s["next_a"].shape == tuple([2, 4, 1])
+
+
+@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
+def test_replay_buffer_sample_seed(buffer_cls):
+    data = {"a": np.arange(40, dtype=np.float32).reshape(20, 2, 1)}
+    kwargs = {"sequence_length": 3} if buffer_cls is SequentialReplayBuffer else {}
+    samples = []
+    for seed in (42, 42, 0):
+        rb = buffer_cls(20, 2, obs_keys=("a",), seed=seed)
+        rb.add(data)
+        samples.append(rb.sample(8, n_samples=2, **kwargs)["a"])
+    np.testing.assert_array_equal(samples[0], samples[1])
+    assert not np.array_equal(samples[0], samples[2])
 
 
 def test_replay_buffer_sample_one_sample_next_obs_error():

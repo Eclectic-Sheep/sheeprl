@@ -185,6 +185,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
             buffer_cls=SequentialReplayBuffer,
+            seed=cfg.seed + rank,
         )
     elif buffer_type == "episode":
         rb = EpisodeBuffer(

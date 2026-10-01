@@ -161,6 +161,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             for i in range(cfg.env.num_envs)
         ]
     )
+    # Seed the random actions played before the training starts
+    envs.action_space.seed(cfg.seed + rank)
     observation_space = envs.single_observation_space
 
     if not isinstance(observation_space, gym.spaces.Dict):
@@ -258,6 +260,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        seed=cfg.seed + rank,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):

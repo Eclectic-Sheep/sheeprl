@@ -28,6 +28,7 @@ class ReplayBuffer:
         memmap: bool = False,
         memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
+        seed: int | np.random.SeedSequence | None = None,
         **kwargs,
     ):
         """A standard replay buffer implementation. Internally this is represented by a
@@ -45,6 +46,8 @@ class ReplayBuffer:
             memmap_mode (str, optional): memory-map mode.
                 Possible values are: "r+", "w+", "c", "copyonwrite", "readwrite", "write".
                 Defaults to "r+".
+            seed (int | np.random.SeedSequence | None, optional): the seed of the random number generator
+                used to sample from the buffer. Defaults to None.
             kwargs: additional keyword arguments.
         """
         if buffer_size <= 0:
@@ -76,7 +79,7 @@ class ReplayBuffer:
         self._pos = 0
         self._full = False
         self._memmap_specs = {}
-        self._rng: np.random.Generator = np.random.default_rng()
+        self._rng: np.random.Generator = np.random.default_rng(seed)
 
     @property
     def buffer(self) -> Dict[str, np.ndarray]:
@@ -367,6 +370,7 @@ class SequentialReplayBuffer(ReplayBuffer):
         memmap: bool = False,
         memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
+        seed: int | np.random.SeedSequence | None = None,
         **kwargs,
     ):
         """A sequential replay buffer implementation. Internally this is represented by a
@@ -384,9 +388,11 @@ class SequentialReplayBuffer(ReplayBuffer):
                 Defaults to None.
             memmap_mode (str, optional): memory-map mode. Possible values are: "r+", "w+", "c", "copyonwrite",
                 "readwrite", "write". Defaults to "r+".
+            seed (int | np.random.SeedSequence | None, optional): the seed of the random number generator
+                used to sample from the buffer. Defaults to None.
             kwargs: additional keyword arguments.
         """
-        super().__init__(buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, **kwargs)
+        super().__init__(buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, seed=seed, **kwargs)
 
     def sample(
         self,
@@ -525,6 +531,7 @@ class EnvIndependentReplayBuffer:
         memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
         buffer_cls: Type[ReplayBuffer] = ReplayBuffer,
+        seed: int | np.random.SeedSequence | None = None,
         **kwargs,
     ):
         """A replay buffer implementation that is composed of multiple independent replay buffers.
@@ -540,6 +547,8 @@ class EnvIndependentReplayBuffer:
             memmap_mode (str, optional): memory-map mode. Possible values are: "r+", "w+", "c", "copyonwrite",
                 "readwrite", "write". Defaults to "r+".
             buffer_cls (Type[ReplayBuffer], optional): the replay buffer class to use. Defaults to ReplayBuffer.
+            seed (int | np.random.SeedSequence | None, optional): the seed from which the independent random number
+                generators of this buffer and of every environment buffer are derived. Defaults to None.
             kwargs: additional keyword arguments.
         """
         if buffer_size <= 0:
@@ -561,6 +570,7 @@ class EnvIndependentReplayBuffer:
             else:
                 memmap_dir = Path(memmap_dir)
                 memmap_dir.mkdir(parents=True, exist_ok=True)
+        seed_sequences = np.random.SeedSequence(seed).spawn(n_envs + 1)
         self._buf: Sequence[ReplayBuffer] = [
             buffer_cls(
                 buffer_size=buffer_size,
@@ -569,13 +579,14 @@ class EnvIndependentReplayBuffer:
                 memmap=memmap,
                 memmap_dir=memmap_dir / f"env_{i}" if memmap else None,
                 memmap_mode=memmap_mode,
+                seed=seed_sequences[i],
                 **kwargs,
             )
             for i in range(n_envs)
         ]
         self._buffer_size = buffer_size
         self._n_envs = n_envs
-        self._rng: np.random.Generator = np.random.default_rng()
+        self._rng: np.random.Generator = np.random.default_rng(seed_sequences[-1])
         self._concat_along_axis = buffer_cls.batch_axis
 
     @property

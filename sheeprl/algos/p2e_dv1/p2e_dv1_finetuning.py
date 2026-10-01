@@ -179,6 +179,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         buffer_cls=SequentialReplayBuffer,
+        seed=cfg.seed + rank,
     )
     if resume_from_checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):

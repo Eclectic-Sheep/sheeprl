@@ -62,6 +62,8 @@ def player(
             for i in range(cfg.env.num_envs)
         ]
     )
+    # Seed the random actions played before the training starts
+    envs.action_space.seed(cfg.seed + rank)
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
     if not isinstance(action_space, gym.spaces.Box):
@@ -119,6 +121,7 @@ def player(
         cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        seed=cfg.seed + rank,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], ReplayBuffer):
