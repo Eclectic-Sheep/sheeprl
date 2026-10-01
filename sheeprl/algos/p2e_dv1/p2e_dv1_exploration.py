@@ -212,8 +212,11 @@ def train(
         embedded_obs.shape[-1],
         device=device,
     )
+    # The intrinsic reward is not detached from the imagined trajectories, as in the reference
+    # implementation: with continuous actions the exploration actor is trained by backpropagating
+    # the lambda-values, intrinsic rewards included, through the dynamics
     for i, ens in enumerate(ensembles):
-        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1))
+        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories, imagined_actions), -1))
 
     # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
     intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
