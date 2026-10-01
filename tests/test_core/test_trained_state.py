@@ -35,14 +35,29 @@ COMMON_ARGS = [
     "algo.run_test=False",
 ]
 
-# For every algorithm: the overrides of a short training, and the models it registers
+
+def entries(saved: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tensor]:
+    """The saved weights whose key starts with `prefix`, without it."""
+    return {k[len(prefix) :]: v for k, v in saved.items() if k.startswith(prefix)}
+
+
+# For every algorithm: the overrides of a short training, the weights its policy plays with (from the checkpoint) and
+# the models it registers
 ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "ppo": {
         "args": ["exp=ppo", "algo.rollout_steps=4", "algo.per_rank_batch_size=4"],
+        "policy": lambda saved: saved["agent"],
         "models": ["agent"],
     },
     "a2c": {
         "args": ["exp=a2c", "algo.rollout_steps=4"],
+        "policy": lambda saved: saved["agent"],
+        "models": ["agent"],
+    },
+    "sac": {
+        "args": ["exp=sac", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "algo.learning_starts=0"],
+        # The policy is made of the modules of the actor
+        "policy": lambda saved: entries(saved["agent"], "_actor."),
         "models": ["agent"],
     },
 }
@@ -93,7 +108,7 @@ def test_evaluation_plays_the_trained_models(name):
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     # The policy plays with the trained weights
     (policy,) = played
-    assert_same_weights(policy, saved["agent"])
+    assert_same_weights(policy, ALGORITHMS[name]["policy"](saved))
 
 
 @pytest.mark.parametrize("name", list(ALGORITHMS))
