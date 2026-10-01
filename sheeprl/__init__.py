@@ -1,6 +1,5 @@
 import os
 
-import decorator
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,8 +10,6 @@ from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
 
 if not _IS_TORCH_GREATER_EQUAL_2_0:
     raise ModuleNotFoundError(_IS_TORCH_GREATER_EQUAL_2_0)
-
-import numpy as np
 
 # fmt: off
 from sheeprl.algos.a2c import a2c  # noqa: F401

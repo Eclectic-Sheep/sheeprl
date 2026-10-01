@@ -26,6 +26,8 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
         "Pendulum-v1": np.array([2]),
         "LunarLander-v2": np.array([2, 3, 5]),
         "LunarLanderContinuous-v2": np.array([2, 3, 5]),
+        "LunarLander-v3": np.array([2, 3, 5]),
+        "LunarLanderContinuous-v3": np.array([2, 3, 5]),
     }
 
     def __init__(self, env: gym.Env):
@@ -201,7 +203,9 @@ class RewardAsObservationWrapper(gym.Wrapper):
     def __init__(self, env: Env) -> None:
         super().__init__(env)
         reward_range = (
-            self.env.reward_range or (-np.inf, np.inf) if hasattr(self.env, "reward_range") else (-np.inf, np.inf)
+            self.env.get_wrapper_attr("reward_range") or (-np.inf, np.inf)
+            if self.env.has_wrapper_attr("reward_range")
+            else (-np.inf, np.inf)
         )
         # The reward is assumed to be a scalar
         if isinstance(self.env.observation_space, gym.spaces.Dict):

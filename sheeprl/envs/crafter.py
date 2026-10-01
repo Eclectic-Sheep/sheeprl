@@ -14,14 +14,13 @@ from gymnasium import spaces
 from gymnasium.core import RenderFrame
 
 
-class CrafterWrapper(gym.Wrapper):
+class CrafterWrapper(gym.Env):
     def __init__(self, id: str, screen_size: Sequence[int, int] | int, seed: int | None = None) -> None:
         assert id in {"crafter_reward", "crafter_nonreward"}
         if isinstance(screen_size, int):
             screen_size = (screen_size,) * 2
 
-        env = crafter.Env(size=screen_size, seed=seed, reward=(id == "crafter_reward"))
-        super().__init__(env)
+        self.env = crafter.Env(size=screen_size, seed=seed, reward=(id == "crafter_reward"))
         self.observation_space = spaces.Dict(
             {
                 "rgb": spaces.Box(
@@ -39,7 +38,7 @@ class CrafterWrapper(gym.Wrapper):
         # render
         self._render_mode: str = "rgb_array"
         # metadata
-        self._metadata = {"render_fps": 30}
+        self.metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     @property
     def render_mode(self) -> str | None:

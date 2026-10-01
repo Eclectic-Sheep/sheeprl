@@ -23,11 +23,11 @@ class JoypadSpaceCustomReset(JoypadSpace):
         return self.env.reset(seed=seed, options=options)
 
 
-class SuperMarioBrosWrapper(gym.Wrapper):
+class SuperMarioBrosWrapper(gym.Env):
     def __init__(self, id: str, action_space: str = "simple", render_mode: str = "rgb_array"):
         env = gsmb.make(id)
         env = JoypadSpaceCustomReset(env, ACTIONS_SPACE_MAP[action_space])
-        super().__init__(env)
+        self.env = env
 
         self._render_mode = render_mode
         self.observation_space = gym.spaces.Dict(
@@ -68,3 +68,6 @@ class SuperMarioBrosWrapper(gym.Wrapper):
         obs = self.env.reset(seed=seed, options=options)
         converted_obs = {"rgb": obs.copy()}
         return converted_obs, {}
+
+    def close(self) -> None:
+        self.env.close()

@@ -20,7 +20,7 @@ from sheeprl.algos.sac.agent import SACAgent, SACCritic, build_agent
 from sheeprl.algos.sac.sac import train
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.env import make_env
+from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir
 from sheeprl.utils.metric import MetricAggregator
@@ -41,14 +41,14 @@ def player(
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric_player.load(cfg.checkpoint.resume_from)
+        state = fabric_player.load(cfg.checkpoint.resume_from, weights_only=False)
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
         cfg.algo.cnn_keys.encoder = []
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env(
         [
             make_env(
@@ -193,20 +193,17 @@ def player(
             next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
             rewards = rewards.reshape(cfg.env.num_envs, -1)
 
-        if cfg.metric.log_level > 0 and "final_info" in infos:
-            for i, agent_ep_info in enumerate(infos["final_info"]):
-                if agent_ep_info is not None:
-                    ep_rew = agent_ep_info["episode"]["r"]
-                    ep_len = agent_ep_info["episode"]["l"]
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+        if cfg.metric.log_level > 0:
+            for i, ep_rew, ep_len in get_episode_stats(infos):
+                if aggregator and not aggregator.disabled:
+                    aggregator.update("Rewards/rew_avg", ep_rew)
+                    aggregator.update("Game/ep_len_avg", ep_len)
+                fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
         # Save the real next observation
         real_next_obs = copy.deepcopy(next_obs)
-        if "final_observation" in infos:
-            for idx, final_obs in enumerate(infos["final_observation"]):
+        if "final_obs" in infos:
+            for idx, final_obs in enumerate(infos["final_obs"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
@@ -373,7 +370,7 @@ def trainer(
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
 
     # Receive (possibly updated, by the make_env method for example) cfg from the player
     data = [None]
@@ -381,7 +378,7 @@ def trainer(
     cfg: Dict[str, Any] = data[0]
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env([make_env(cfg, 0, 0, None)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 

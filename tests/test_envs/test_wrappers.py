@@ -14,7 +14,7 @@ ENVIRONMENTS = {
 
 def test_mask_velocities_fail():
     with pytest.raises(NotImplementedError):
-        env = gym.make("CarRacing-v2")
+        env = gym.make("CarRacing-v3")
         env = MaskVelocityWrapper(env)
 
 

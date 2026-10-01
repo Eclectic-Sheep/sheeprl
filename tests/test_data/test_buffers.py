@@ -268,7 +268,7 @@ def test_memmap_to_file_replay_buffer():
     fabric = Fabric(devices=1, accelerator="cpu")
     ckpt_file = os.path.join(root_dir, "checkpoint", "ckpt.ckpt")
     fabric.save(ckpt_file, {"rb": rb})
-    ckpt = fabric.load(ckpt_file)
+    ckpt = fabric.load(ckpt_file, weights_only=False)
     assert (ckpt["rb"]["observations"][:10] == rb["observations"][:10]).all()
     del rb
     del ckpt
