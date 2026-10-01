@@ -21,6 +21,7 @@ from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -103,13 +104,14 @@ def train(
             )
             for qf_value_idx in range(agent.num_critics):
                 # Line 8 - Algorithm 2
-                qf_loss = F.mse_loss(
-                    agent.get_ith_q_value(
-                        critic_batch_data["observations"], critic_batch_data["actions"], qf_value_idx
-                    ),
-                    next_target_qf_value,
-                )
-                qf_optimizer.zero_grad(set_to_none=True)
+                with autocast_cache_scope(fabric):
+                    qf_loss = F.mse_loss(
+                        agent.get_ith_q_value(
+                            critic_batch_data["observations"], critic_batch_data["actions"], qf_value_idx
+                        ),
+                        next_target_qf_value,
+                    )
+                    qf_optimizer.zero_grad(set_to_none=True)
                 fabric.backward(qf_loss)
                 qf_optimizer.step()
                 if aggregator and not aggregator.disabled:
@@ -119,11 +121,12 @@ def train(
                 agent.qfs_target_ema(critic_idx=qf_value_idx)
 
         # Update the actor
-        actions, logprobs = agent.get_actions_and_log_probs(actor_data["observations"])
-        qf_values = agent.get_q_values(actor_data["observations"], actions)
-        min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
-        actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-        actor_optimizer.zero_grad(set_to_none=True)
+        with autocast_cache_scope(fabric):
+            actions, logprobs = agent.get_actions_and_log_probs(actor_data["observations"])
+            qf_values = agent.get_q_values(actor_data["observations"], actions)
+            min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
+            actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+            actor_optimizer.zero_grad(set_to_none=True)
         fabric.backward(actor_loss)
         actor_optimizer.step()
 

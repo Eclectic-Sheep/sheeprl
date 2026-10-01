@@ -34,6 +34,7 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -106,88 +107,94 @@ def train(
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
-    priors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
 
-    # Embed observations from the environment
-    embedded_obs = world_model.encoder(batch_obs)
+    # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
+    with autocast_cache_scope(fabric):
+        # Embed observations from the environment
+        embedded_obs = world_model.encoder(batch_obs)
 
-    if cfg.algo.world_model.decoupled_rssm:
-        posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
-        for i in range(0, sequence_length):
-            if i == 0:
-                posterior = torch.zeros_like(posteriors[:1])
-            else:
-                posterior = posteriors[i - 1 : i]
-            recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                batch_actions[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states[i] = recurrent_state
-            priors_logits[i] = prior_logits
-    else:
-        posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
-        posteriors = torch.empty(sequence_length, batch_size, stochastic_size, discrete_size, device=device)
-        posteriors_logits = torch.empty(sequence_length, batch_size, stoch_state_size, device=device)
-        for i in range(0, sequence_length):
-            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                batch_actions[i : i + 1],
-                embedded_obs[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states[i] = recurrent_state
-            priors_logits[i] = prior_logits
-            posteriors[i] = posterior
-            posteriors_logits[i] = posterior_logits
-    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+        # The outputs of every step are concatenated at the end of the unroll: writing them in place into
+        # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
+        recurrent_states, priors_logits = [], []
+        if cfg.algo.world_model.decoupled_rssm:
+            posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
+            for i in range(0, sequence_length):
+                if i == 0:
+                    posterior = torch.zeros_like(posteriors[:1])
+                else:
+                    posterior = posteriors[i - 1 : i]
+                recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                    posterior,
+                    recurrent_state,
+                    batch_actions[i : i + 1],
+                    data["is_first"][i : i + 1],
+                )
+                recurrent_states.append(recurrent_state)
+                priors_logits.append(prior_logits)
+        else:
+            posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+            posteriors, posteriors_logits = [], []
+            for i in range(0, sequence_length):
+                recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                    posterior,
+                    recurrent_state,
+                    batch_actions[i : i + 1],
+                    embedded_obs[i : i + 1],
+                    data["is_first"][i : i + 1],
+                )
+                recurrent_states.append(recurrent_state)
+                priors_logits.append(prior_logits)
+                posteriors.append(posterior)
+                posteriors_logits.append(posterior_logits)
+            posteriors = torch.cat(posteriors, dim=0)
+            posteriors_logits = torch.cat(posteriors_logits, dim=0)
+        recurrent_states = torch.cat(recurrent_states, dim=0)
+        priors_logits = torch.cat(priors_logits, dim=0)
+        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
-    # Compute predictions for the observations
-    reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
+        # Compute predictions for the observations
+        reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
-    # Compute the distribution over the reconstructed observations
-    po = {
-        k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
-        for k in cfg.algo.cnn_keys.decoder
-    }
-    po.update(
-        {
-            k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
-            for k in cfg.algo.mlp_keys.decoder
+        # Compute the distribution over the reconstructed observations
+        po = {
+            k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
+            for k in cfg.algo.cnn_keys.decoder
         }
-    )
+        po.update(
+            {
+                k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
+                for k in cfg.algo.mlp_keys.decoder
+            }
+        )
 
-    # Compute the distribution over the rewards
-    pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
+        # Compute the distribution over the rewards
+        pr = TwoHotEncodingDistribution(world_model.reward_model(latent_states), dims=1)
 
-    # Compute the distribution over the terminal steps, if required
-    pc = Independent(BernoulliSafeMode(logits=world_model.continue_model(latent_states)), 1)
-    continues_targets = 1 - data["terminated"]
+        # Compute the distribution over the terminal steps, if required
+        pc = Independent(BernoulliSafeMode(logits=world_model.continue_model(latent_states)), 1)
+        continues_targets = 1 - data["terminated"]
 
-    # Reshape posterior and prior logits to shape [B, T, 32, 32]
-    priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
-    posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
+        # Reshape posterior and prior logits to shape [B, T, 32, 32]
+        priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
+        posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
 
-    # World model optimization step. Eq. 4 in the paper
-    world_optimizer.zero_grad(set_to_none=True)
-    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        po,
-        batch_obs,
-        pr,
-        data["rewards"],
-        priors_logits,
-        posteriors_logits,
-        cfg.algo.world_model.kl_dynamic,
-        cfg.algo.world_model.kl_representation,
-        cfg.algo.world_model.kl_free_nats,
-        cfg.algo.world_model.kl_regularizer,
-        pc,
-        continues_targets,
-        cfg.algo.world_model.continue_scale_factor,
-    )
+        # World model optimization step. Eq. 4 in the paper
+        world_optimizer.zero_grad(set_to_none=True)
+        rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+            po,
+            batch_obs,
+            pr,
+            data["rewards"],
+            priors_logits,
+            posteriors_logits,
+            cfg.algo.world_model.kl_dynamic,
+            cfg.algo.world_model.kl_representation,
+            cfg.algo.world_model.kl_free_nats,
+            cfg.algo.world_model.kl_regularizer,
+            pc,
+            continues_targets,
+            cfg.algo.world_model.continue_scale_factor,
+        )
     fabric.backward(rec_loss)
     world_model_grads = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -200,101 +207,92 @@ def train(
     world_optimizer.step()
 
     # Behaviour Learning
-    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon + 1,
-        batch_size * sequence_length,
-        stoch_state_size + recurrent_state_size,
-        device=device,
-    )
-    imagined_trajectories[0] = imagined_latent_state
-    imagined_actions = torch.empty(
-        cfg.algo.horizon + 1,
-        batch_size * sequence_length,
-        data["actions"].shape[-1],
-        device=device,
-    )
-    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
-    imagined_actions[0] = actions
-
-    # The imagination goes like this, with H=3:
-    # Actions:           a'0      a'1      a'2     a'4
-    #                    ^ \      ^ \      ^ \     ^
-    #                   /   \    /   \    /   \   /
-    #                  /     \  /     \  /     \ /
-    # States:        z0 ---> z'1 ---> z'2 ---> z'3
-    # Rewards:       r'0     r'1      r'2      r'3
-    # Values:        v'0     v'1      v'2      v'3
-    # Lambda-values:         l'1      l'2      l'3
-    # Continues:     c0      c'1      c'2      c'3
-    # where z0 comes from the posterior, while z'i is the imagined states (prior)
-
-    # Imagine trajectories in the latent space
-    for i in range(1, cfg.algo.horizon + 1):
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
+    with autocast_cache_scope(fabric):
+        imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
+        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_state
         actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
-        imagined_actions[i] = actions
+        imagined_trajectories = [imagined_latent_state]
+        imagined_actions = [actions]
 
-    # Predict values, rewards and continues
-    predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
-    predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
-    continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
-    true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
-    continues = torch.cat((true_continue, continues[1:]))
+        # The imagination goes like this, with H=3:
+        # Actions:           a'0      a'1      a'2     a'4
+        #                    ^ \      ^ \      ^ \     ^
+        #                   /   \    /   \    /   \   /
+        #                  /     \  /     \  /     \ /
+        # States:        z0 ---> z'1 ---> z'2 ---> z'3
+        # Rewards:       r'0     r'1      r'2      r'3
+        # Values:        v'0     v'1      v'2      v'3
+        # Lambda-values:         l'1      l'2      l'3
+        # Continues:     c0      c'1      c'2      c'3
+        # where z0 comes from the posterior, while z'i is the imagined states (prior)
 
-    # Estimate lambda-values
-    lambda_values = compute_lambda_values(
-        predicted_rewards[1:],
-        predicted_values[1:],
-        continues[1:] * cfg.algo.gamma,
-        lmbda=cfg.algo.lmbda,
-    )
+        # Imagine trajectories in the latent space
+        for i in range(1, cfg.algo.horizon + 1):
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+            imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
+            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+            actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+            imagined_trajectories.append(imagined_latent_state)
+            imagined_actions.append(actions)
+        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
+        imagined_actions = torch.cat(imagined_actions, dim=0)
 
-    # Compute the discounts to multiply the lambda values to
-    with torch.no_grad():
-        discount = torch.cumprod(continues * cfg.algo.gamma, dim=0) / cfg.algo.gamma
+        # Predict values, rewards and continues
+        predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
+        predicted_rewards = TwoHotEncodingDistribution(world_model.reward_model(imagined_trajectories), dims=1).mean
+        continues = Independent(BernoulliSafeMode(logits=world_model.continue_model(imagined_trajectories)), 1).mode
+        true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1)
+        continues = torch.cat((true_continue, continues[1:]))
 
-    # Actor optimization step. Eq. 11 from the paper
-    # Given the following diagram, with H=3
-    # Actions:          [a'0]    [a'1]    [a'2]    a'3
-    #                    ^ \      ^ \      ^ \     ^
-    #                   /   \    /   \    /   \   /
-    #                  /     \  /     \  /     \ /
-    # States:       [z0] -> [z'1] -> [z'2] ->  z'3
-    # Values:       [v'0]   [v'1]    [v'2]     v'3
-    # Lambda-values:        [l'1]    [l'2]    [l'3]
-    # Entropies:    [e'0]   [e'1]    [e'2]
-    actor_optimizer.zero_grad(set_to_none=True)
-    policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
-
-    baseline = predicted_values[:-1]
-    offset, invscale = moments(lambda_values, fabric)
-    normed_lambda_values = (lambda_values - offset) / invscale
-    normed_baseline = (baseline - offset) / invscale
-    advantage = normed_lambda_values - normed_baseline
-    if is_continuous:
-        objective = advantage
-    else:
-        objective = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, dim=-1))
-                ],
-                dim=-1,
-            ).sum(dim=-1)
-            * advantage.detach()
+        # Estimate lambda-values
+        lambda_values = compute_lambda_values(
+            predicted_rewards[1:],
+            predicted_values[1:],
+            continues[1:] * cfg.algo.gamma,
+            lmbda=cfg.algo.lmbda,
         )
-    try:
-        entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-    except NotImplementedError:
-        entropy = torch.zeros_like(objective)
-    policy_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
+
+        # Compute the discounts to multiply the lambda values to
+        with torch.no_grad():
+            discount = torch.cumprod(continues * cfg.algo.gamma, dim=0) / cfg.algo.gamma
+
+        # Actor optimization step. Eq. 11 from the paper
+        # Given the following diagram, with H=3
+        # Actions:          [a'0]    [a'1]    [a'2]    a'3
+        #                    ^ \      ^ \      ^ \     ^
+        #                   /   \    /   \    /   \   /
+        #                  /     \  /     \  /     \ /
+        # States:       [z0] -> [z'1] -> [z'2] ->  z'3
+        # Values:       [v'0]   [v'1]    [v'2]     v'3
+        # Lambda-values:        [l'1]    [l'2]    [l'3]
+        # Entropies:    [e'0]   [e'1]    [e'2]
+        actor_optimizer.zero_grad(set_to_none=True)
+        policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
+
+        baseline = predicted_values[:-1]
+        offset, invscale = moments(lambda_values, fabric)
+        normed_lambda_values = (lambda_values - offset) / invscale
+        normed_baseline = (baseline - offset) / invscale
+        advantage = normed_lambda_values - normed_baseline
+        if is_continuous:
+            objective = advantage
+        else:
+            objective = (
+                torch.stack(
+                    [
+                        p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
+                        for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, dim=-1))
+                    ],
+                    dim=-1,
+                ).sum(dim=-1)
+                * advantage.detach()
+            )
+        try:
+            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
+        except NotImplementedError:
+            entropy = torch.zeros_like(objective)
+        policy_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
     fabric.backward(policy_loss)
     actor_grads = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -303,17 +301,18 @@ def train(
         )
     actor_optimizer.step()
 
-    # Predict the values
-    qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
-    predicted_target_values = TwoHotEncodingDistribution(
-        target_critic(imagined_trajectories.detach()[:-1]), dims=1
-    ).mean
+    with autocast_cache_scope(fabric):
+        # Predict the values
+        qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
+        predicted_target_values = TwoHotEncodingDistribution(
+            target_critic(imagined_trajectories.detach()[:-1]), dims=1
+        ).mean
 
-    # Critic optimization. Eq. 10 in the paper
-    critic_optimizer.zero_grad(set_to_none=True)
-    value_loss = -qv.log_prob(lambda_values.detach())
-    value_loss = value_loss - qv.log_prob(predicted_target_values.detach())
-    value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
+        # Critic optimization. Eq. 10 in the paper
+        critic_optimizer.zero_grad(set_to_none=True)
+        value_loss = -qv.log_prob(lambda_values.detach())
+        value_loss = value_loss - qv.log_prob(predicted_target_values.detach())
+        value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
     fabric.backward(value_loss)
     critic_grads = None
@@ -596,8 +595,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             step_data["is_first"] = np.zeros_like(step_data["terminated"])
             if "restart_on_exception" in infos:
+                restarted_envs = []
                 for i, agent_roe in enumerate(infos["restart_on_exception"]):
                     if agent_roe and not dones[i]:
+                        # The last observation stored for the restarted environment ends its episode
                         last_inserted_idx = (rb.buffer[i]._pos - 1) % rb.buffer[i].buffer_size
                         rb.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
                             rb.buffer[i]["terminated"][last_inserted_idx]
@@ -605,10 +606,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         rb.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
                             rb.buffer[i]["truncated"][last_inserted_idx]
                         )
-                        rb.buffer[i]["is_first"][last_inserted_idx] = np.zeros_like(
-                            rb.buffer[i]["is_first"][last_inserted_idx]
-                        )
-                        step_data["is_first"][i] = np.ones_like(step_data["is_first"][i])
+                        # The observation returned after the restart starts a new episode
+                        step_data["is_first"][:, i] = np.ones_like(step_data["is_first"][:, i])
+                        restarted_envs.append(i)
+                if len(restarted_envs) > 0:
+                    player.init_states(restarted_envs)
 
             if cfg.metric.log_level > 0:
                 for i, ep_rew, ep_len in get_episode_stats(infos):

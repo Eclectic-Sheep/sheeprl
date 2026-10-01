@@ -24,7 +24,7 @@ from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -107,53 +107,64 @@ def train(
     # Dynamic Learning
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, stochastic_size, device=device)
-    recurrent_states = torch.empty(sequence_length, batch_size, recurrent_state_size, device=device)
-    posteriors = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    priors = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    posteriors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    posteriors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    priors_mean = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    priors_std = torch.empty(sequence_length, batch_size, stochastic_size, device=device)
-    embedded_obs = world_model.encoder(batch_obs)
+    # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
+    with autocast_cache_scope(fabric):
+        # The outputs of every step are concatenated at the end of the unroll: writing them in place into
+        # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
+        recurrent_states = []
+        posteriors = []
+        priors = []
+        posteriors_mean = []
+        posteriors_std = []
+        priors_mean = []
+        priors_std = []
+        embedded_obs = world_model.encoder(batch_obs)
 
-    for i in range(0, sequence_length):
-        recurrent_state, posterior, prior, posterior_mean_std, prior_mean_std = world_model.rssm.dynamic(
-            posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+        for i in range(0, sequence_length):
+            recurrent_state, posterior, prior, posterior_mean_std, prior_mean_std = world_model.rssm.dynamic(
+                posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+            )
+            recurrent_states.append(recurrent_state)
+            posteriors.append(posterior)
+            posteriors_mean.append(posterior_mean_std[0])
+            posteriors_std.append(posterior_mean_std[1])
+            priors_mean.append(prior_mean_std[0])
+            priors_std.append(prior_mean_std[1])
+            priors.append(prior)
+        recurrent_states = torch.cat(recurrent_states, dim=0)
+        posteriors = torch.cat(posteriors, dim=0)
+        posteriors_mean = torch.cat(posteriors_mean, dim=0)
+        posteriors_std = torch.cat(posteriors_std, dim=0)
+        priors_mean = torch.cat(priors_mean, dim=0)
+        priors_std = torch.cat(priors_std, dim=0)
+        priors = torch.cat(priors, dim=0)
+        latent_states = torch.cat((posteriors, recurrent_states), -1)
+
+        decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
+        qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+        qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
+        if cfg.algo.world_model.use_continues and world_model.continue_model:
+            qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
+            continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
+        else:
+            qc = continues_targets = None
+        posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
+        priors_dist = Independent(Normal(priors_mean, priors_std), 1)
+
+        world_optimizer.zero_grad(set_to_none=True)
+        rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+            qo,
+            batch_obs,
+            qr,
+            data["rewards"],
+            posteriors_dist,
+            priors_dist,
+            cfg.algo.world_model.kl_free_nats,
+            cfg.algo.world_model.kl_regularizer,
+            qc,
+            continues_targets,
+            cfg.algo.world_model.continue_scale_factor,
         )
-        recurrent_states[i] = recurrent_state
-        posteriors[i] = posterior
-        posteriors_mean[i] = posterior_mean_std[0]
-        posteriors_std[i] = posterior_mean_std[1]
-        priors_mean[i] = prior_mean_std[0]
-        priors_std[i] = prior_mean_std[1]
-        priors[i] = prior
-    latent_states = torch.cat((posteriors, recurrent_states), -1)
-
-    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
-    qr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
-    if cfg.algo.world_model.use_continues and world_model.continue_model:
-        qc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
-        continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
-    else:
-        qc = continues_targets = None
-    posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
-    priors_dist = Independent(Normal(priors_mean, priors_std), 1)
-
-    world_optimizer.zero_grad(set_to_none=True)
-    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        qo,
-        batch_obs,
-        qr,
-        data["rewards"],
-        posteriors_dist,
-        priors_dist,
-        cfg.algo.world_model.kl_free_nats,
-        cfg.algo.world_model.kl_regularizer,
-        qc,
-        continues_targets,
-        cfg.algo.world_model.continue_scale_factor,
-    )
     fabric.backward(rec_loss)
     world_grad = None
     if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
@@ -166,12 +177,13 @@ def train(
     world_optimizer.step()
 
     # Ensemble Learning
-    loss = 0.0
-    ensemble_optimizer.zero_grad(set_to_none=True)
-    for ens in ensembles:
-        out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
-        next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-        loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
+    with autocast_cache_scope(fabric):
+        loss = 0.0
+        ensemble_optimizer.zero_grad(set_to_none=True)
+        for ens in ensembles:
+            out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
+            next_obs_embedding_dist = Independent(Normal(out, 1), 1)
+            loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
     loss.backward()
     ensemble_grad = None
     if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
@@ -184,59 +196,60 @@ def train(
     ensemble_optimizer.step()
 
     # Behaviour Learning Exploration
-    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size, device=device
-    )
-    # initialize the tensor of imagined actions, they are used to compute the intrinsic reward
-    imagined_actions = torch.zeros(
-        cfg.algo.horizon, batch_size * sequence_length, data["actions"].shape[-1], device=device
-    )
-
-    # imagine trajectories in the latent space
-    for i in range(cfg.algo.horizon):
-        actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
-        imagined_actions[i] = actions
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+    with autocast_cache_scope(fabric):
+        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
+        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_state
-    predicted_values_exploration = critic_exploration(imagined_trajectories)
+        # the imagined states and actions are concatenated at the end of the imagination
+        imagined_trajectories = []
+        # initialize the list of imagined actions, they are used to compute the intrinsic reward
+        imagined_actions = []
 
-    # Predict intrinsic reward
-    next_obs_embedding = torch.zeros(
-        len(ensembles),
-        cfg.algo.horizon,
-        batch_size * sequence_length,
-        embedded_obs.shape[-1],
-        device=device,
-    )
-    for i, ens in enumerate(ensembles):
-        next_obs_embedding[i] = ens(torch.cat((imagined_trajectories.detach(), imagined_actions.detach()), -1))
+        # imagine trajectories in the latent space
+        for i in range(cfg.algo.horizon):
+            actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
+            imagined_actions.append(actions)
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+            imagined_trajectories.append(imagined_latent_state)
+        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
+        imagined_actions = torch.cat(imagined_actions, dim=0)
+        predicted_values_exploration = critic_exploration(imagined_trajectories)
 
-    # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
-    intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
+        # Predict intrinsic reward
+        # The intrinsic reward is not detached from the imagined trajectories, as in the reference
+        # implementation: with continuous actions the exploration actor is trained by backpropagating
+        # the lambda-values, intrinsic rewards included, through the dynamics
+        next_obs_embedding = torch.stack(
+            [ens(torch.cat((imagined_trajectories, imagined_actions), -1)) for ens in ensembles], dim=0
+        )
 
-    if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-    else:
-        predicted_continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
+        # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
+        intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
 
-    lambda_values_exploration = compute_lambda_values(
-        intrinsic_reward,
-        predicted_values_exploration,
-        predicted_continues,
-        last_values=predicted_values_exploration[-1],
-        horizon=cfg.algo.horizon,
-        lmbda=cfg.algo.lmbda,
-    )
+        if cfg.algo.world_model.use_continues and world_model.continue_model:
+            predicted_continues = logits_to_probs(
+                logits=world_model.continue_model(imagined_trajectories), is_binary=True
+            )
+        else:
+            predicted_continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
 
-    with torch.no_grad():
-        discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
+        lambda_values_exploration = compute_lambda_values(
+            intrinsic_reward,
+            predicted_values_exploration,
+            predicted_continues,
+            last_values=predicted_values_exploration[-1],
+            horizon=cfg.algo.horizon,
+            lmbda=cfg.algo.lmbda,
+        )
 
-    actor_exploration_optimizer.zero_grad(set_to_none=True)
-    policy_loss_exploration = actor_loss(discount * lambda_values_exploration)
+        with torch.no_grad():
+            discount = torch.cumprod(
+                torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0
+            )
+
+        actor_exploration_optimizer.zero_grad(set_to_none=True)
+        policy_loss_exploration = actor_loss(discount * lambda_values_exploration)
     fabric.backward(policy_loss_exploration)
     actor_exploration_grad = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -248,9 +261,10 @@ def train(
         )
     actor_exploration_optimizer.step()
 
-    qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
-    critic_exploration_optimizer.zero_grad(set_to_none=True)
-    value_loss_exploration = critic_loss(qv, lambda_values_exploration.detach(), discount[..., 0])
+    with autocast_cache_scope(fabric):
+        qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
+        critic_exploration_optimizer.zero_grad(set_to_none=True)
+        value_loss_exploration = critic_loss(qv, lambda_values_exploration.detach(), discount[..., 0])
     fabric.backward(value_loss_exploration)
     critic_exploration_grad = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
@@ -266,39 +280,43 @@ def train(
     world_optimizer.zero_grad(set_to_none=True)
 
     # Behaviour Learning Task
-    imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
-    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    imagined_trajectories = torch.empty(
-        cfg.algo.horizon, batch_size * sequence_length, stochastic_size + recurrent_state_size, device=device
-    )
-    for i in range(cfg.algo.horizon):
-        actions = torch.cat(actor_task(imagined_latent_state.detach())[0], dim=-1)
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+    with autocast_cache_scope(fabric):
+        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size)
+        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        imagined_trajectories[i] = imagined_latent_state
+        imagined_trajectories = []
+        for i in range(cfg.algo.horizon):
+            actions = torch.cat(actor_task(imagined_latent_state.detach())[0], dim=-1)
+            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+            imagined_trajectories.append(imagined_latent_state)
+        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
 
-    predicted_values_task = critic_task(imagined_trajectories)
-    predicted_rewards = world_model.reward_model(imagined_trajectories)
-    if cfg.algo.world_model.use_continues and world_model.continue_model:
-        predicted_continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-    else:
-        predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
+        predicted_values_task = critic_task(imagined_trajectories)
+        predicted_rewards = world_model.reward_model(imagined_trajectories)
+        if cfg.algo.world_model.use_continues and world_model.continue_model:
+            predicted_continues = logits_to_probs(
+                logits=world_model.continue_model(imagined_trajectories), is_binary=True
+            )
+        else:
+            predicted_continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
-    lambda_values_task = compute_lambda_values(
-        predicted_rewards,
-        predicted_values_task,
-        predicted_continues,
-        last_values=predicted_values_task[-1],
-        horizon=cfg.algo.horizon,
-        lmbda=cfg.algo.lmbda,
-    )
+        lambda_values_task = compute_lambda_values(
+            predicted_rewards,
+            predicted_values_task,
+            predicted_continues,
+            last_values=predicted_values_task[-1],
+            horizon=cfg.algo.horizon,
+            lmbda=cfg.algo.lmbda,
+        )
 
-    with torch.no_grad():
-        discount = torch.cumprod(torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0)
+        with torch.no_grad():
+            discount = torch.cumprod(
+                torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0
+            )
 
-    actor_task_optimizer.zero_grad(set_to_none=True)
-    policy_loss_task = actor_loss(discount * lambda_values_task)
+        actor_task_optimizer.zero_grad(set_to_none=True)
+        policy_loss_task = actor_loss(discount * lambda_values_task)
     fabric.backward(policy_loss_task)
     actor_task_grad = None
     if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
@@ -310,9 +328,10 @@ def train(
         )
     actor_task_optimizer.step()
 
-    qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
-    critic_task_optimizer.zero_grad(set_to_none=True)
-    value_loss_task = critic_loss(qv, lambda_values_task.detach(), discount[..., 0])
+    with autocast_cache_scope(fabric):
+        qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
+        critic_task_optimizer.zero_grad(set_to_none=True)
+        value_loss_task = critic_loss(qv, lambda_values_task.detach(), discount[..., 0])
     fabric.backward(value_loss_task)
     critic_task_grad = None
     if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:

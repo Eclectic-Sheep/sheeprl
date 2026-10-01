@@ -25,6 +25,7 @@ from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -59,12 +60,13 @@ def train(
             normalized_next_obs[k] = data[f"next_{k}"]
 
     # Update the soft-critic
-    next_target_qf_value = agent.get_next_target_q_values(
-        normalized_next_obs, data["rewards"], data["terminated"], cfg.algo.gamma
-    )
-    qf_values = agent.get_q_values(normalized_obs, data["actions"])
-    qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
-    qf_optimizer.zero_grad(set_to_none=True)
+    with autocast_cache_scope(fabric):
+        next_target_qf_value = agent.get_next_target_q_values(
+            normalized_next_obs, data["rewards"], data["terminated"], cfg.algo.gamma
+        )
+        qf_values = agent.get_q_values(normalized_obs, data["actions"])
+        qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
+        qf_optimizer.zero_grad(set_to_none=True)
     fabric.backward(qf_loss)
     qf_optimizer.step()
     if aggregator and not aggregator.disabled:
@@ -77,11 +79,12 @@ def train(
 
     # Update the actor
     if cumulative_per_rank_gradient_steps % cfg.algo.actor.per_rank_update_freq == 0:
-        actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
-        qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
-        min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
-        actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-        actor_optimizer.zero_grad(set_to_none=True)
+        with autocast_cache_scope(fabric):
+            actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
+            qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
+            min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
+            actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+            actor_optimizer.zero_grad(set_to_none=True)
         fabric.backward(actor_loss)
         actor_optimizer.step()
 
@@ -98,17 +101,18 @@ def train(
 
     # Update the decoder
     if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
-        hidden = encoder(normalized_obs)
-        reconstruction = decoder(hidden)
-        reconstruction_loss = 0
-        for k in cfg.algo.cnn_keys.decoder + cfg.algo.mlp_keys.decoder:
-            target = preprocess_obs(data[k], bits=5) if k in cfg.algo.cnn_keys.decoder else data[k]
-            reconstruction_loss += (
-                F.mse_loss(target, reconstruction[k])  # Reconstruction
-                + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
-            )
-        encoder_optimizer.zero_grad(set_to_none=True)
-        decoder_optimizer.zero_grad(set_to_none=True)
+        with autocast_cache_scope(fabric):
+            hidden = encoder(normalized_obs)
+            reconstruction = decoder(hidden)
+            reconstruction_loss = 0
+            for k in cfg.algo.cnn_keys.decoder + cfg.algo.mlp_keys.decoder:
+                target = preprocess_obs(data[k], bits=5) if k in cfg.algo.cnn_keys.decoder else data[k]
+                reconstruction_loss += (
+                    F.mse_loss(target, reconstruction[k])  # Reconstruction
+                    + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
+                )
+            encoder_optimizer.zero_grad(set_to_none=True)
+            decoder_optimizer.zero_grad(set_to_none=True)
         fabric.backward(reconstruction_loss)
         encoder_optimizer.step()
         decoder_optimizer.step()
