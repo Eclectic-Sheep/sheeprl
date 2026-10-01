@@ -31,7 +31,9 @@ def standard_args():
         "env.capture_video=False",
         "fabric.devices=auto",
         "fabric.accelerator=cpu",
-        "fabric.precision=bf16-true",
+        # The CPU bf16 matmul of torch crashes with an illegal instruction (0xc000001d) on part of the Windows
+        # runners of GitHub Actions, depending on the host CPU: Windows runs in fp32, Linux keeps testing bf16
+        f"fabric.precision={'32-true' if _IS_WINDOWS else 'bf16-true'}",
         "metric.log_level=0",
         "metric.disable_timer=True",
     ]
