@@ -70,9 +70,11 @@ def train(
         # is_accumulating is True for every i except for the last one
         is_accumulating = i < len(sampler) - 1
 
-        with fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating), fabric.no_backward_sync(
-            agent.actor, enabled=is_accumulating
-        ), fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
+        with (
+            fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating),
+            fabric.no_backward_sync(agent.actor, enabled=is_accumulating),
+            fabric.no_backward_sync(agent.critic, enabled=is_accumulating),
+        ):
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
