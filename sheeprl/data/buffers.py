@@ -244,14 +244,12 @@ class ReplayBuffer:
                 "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
             )
         if self._full:
-            first_range_end = self._pos - 1 if sample_next_obs else self._pos
-            second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
-            valid_idxes = np.array(
-                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)), dtype=np.intp
-            )
-            batch_idxes = valid_idxes[
-                self._rng.integers(0, len(valid_idxes), size=(batch_size * n_samples,), dtype=np.intp)
-            ]
+            # Every row can be sampled, except the last inserted one if the next observation is needed:
+            # the valid rows are the ones in [pos, pos + n_valid) (modulo the buffer size)
+            n_valid = self.buffer_size - int(sample_next_obs)
+            batch_idxes = (
+                self._pos + self._rng.integers(0, n_valid, size=(batch_size * n_samples,), dtype=np.intp)
+            ) % self.buffer_size
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
             if max_pos_to_sample == 0:
@@ -435,20 +433,13 @@ class SequentialReplayBuffer(ReplayBuffer):
 
         # Do not sample the element with index 'self.pos' as the transitions is invalid
         if self.full:
-            # when the buffer is full, it is necessary to avoid the starting index
-            # to be between (self.pos - sequence_length)
-            # and self.pos, so it is possible to sample
-            # the starting index between (0, self.pos - sequence_length) and (self.pos, self.buffer_size)
-            first_range_end = self._pos - sequence_length + 1
-            # end of the second range, if the first range is empty, then the second range ends
-            # in (buffer_size + (self._pos - sequence_length + 1)), otherwise the sequence will contain
-            # invalid values
-            second_range_end = self.buffer_size if first_range_end >= 0 else self.buffer_size + first_range_end
-            valid_idxes = np.array(
-                list(range(0, first_range_end)) + list(range(self._pos, second_range_end)), dtype=np.intp
-            )
-            # start_idxes are the indices of the first elements of the sequences
-            start_idxes = valid_idxes[self._rng.integers(0, len(valid_idxes), size=(batch_dim,), dtype=np.intp)]
+            # when the buffer is full, a sequence must not cross the position of the next insertion,
+            # where the newest data are followed by the oldest ones: the valid starting indices are the ones
+            # in [pos, pos + buffer_size - sequence_length] (modulo the buffer size)
+            n_valid = self.buffer_size - sequence_length + 1
+            start_idxes = (
+                self._pos + self._rng.integers(0, n_valid, size=(batch_dim,), dtype=np.intp)
+            ) % self.buffer_size
         else:
             # when the buffer is not full, we need to start the sequence so that it does not go out of bounds
             start_idxes = self._rng.integers(0, self._pos - sequence_length + 1, size=(batch_dim,), dtype=np.intp)

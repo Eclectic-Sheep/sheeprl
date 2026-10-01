@@ -204,6 +204,20 @@ def test_replay_buffer_sample_next_obs_full():
     assert td1["observations"][-1] not in s["observations"]
 
 
+@pytest.mark.parametrize("sample_next_obs", [False, True])
+@pytest.mark.parametrize("pos", [0, 1, 4, 9])
+def test_replay_buffer_sample_full_support(sample_next_obs, pos):
+    # When the buffer is full every row can be sampled, except the last inserted one when its
+    # next observation is needed, since the row following it is the oldest one in the buffer
+    buf_size = 10
+    rb = ReplayBuffer(buf_size, 1, obs_keys=("idx",))
+    rb.add({"idx": np.arange(buf_size + pos).reshape(-1, 1, 1) % buf_size})
+    assert rb.full and rb._pos == pos
+    sampled = set(rb.sample(2000, sample_next_obs=sample_next_obs)["idx"].ravel().tolist())
+    expected = set(range(buf_size)) - ({(pos - 1) % buf_size} if sample_next_obs else set())
+    assert sampled == expected
+
+
 def test_replay_buffer_sample_full():
     buf_size = 5
     n_envs = 1
