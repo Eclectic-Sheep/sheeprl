@@ -146,6 +146,28 @@ def test_sac_decoupled(standard_args, start_time):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_sac_decoupled_multiple_trainers(standard_args, start_time):
+    # One player and two trainers: the player must send a different chunk of data to each trainer
+    if os.environ["LT_DEVICES"] == "1":
+        pytest.skip("The test runs with three devices, it is enough to run it once")
+    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", "3")
+    run_name = "test_sac_decoupled_multiple_trainers"
+    args = standard_args + [
+        "exp=sac_decoupled",
+        "algo.per_rank_batch_size=2",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        "fabric.devices=3",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    # Fabric reads the number of devices from the `LT_DEVICES` environment variable, which takes precedence
+    with mock.patch.dict(os.environ, {"LT_DEVICES": "3"}), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_a2c(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
