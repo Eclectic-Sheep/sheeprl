@@ -56,12 +56,14 @@ jobs:
           env\\Scripts\\Activate.ps1
           python -m pip install -e .[atari,box2d,test,dev]
 
-      # The default Linux wheel of torch pulls in the CUDA libraries, which the CPU tests never use
+      # The default Linux wheel of torch pulls in the CUDA libraries, which the CPU tests never use.
+      # The pip bundled with Python 3.10 (23.0.1) cannot install torch's dependencies from the PyTorch index
       - name: Install packages Linux
         if: ${{ matrix.os == 'ubuntu-latest' && steps.venv-cache.outputs.cache-hit != 'true' }}
         run: |
           sudo apt-get install --no-install-recommends -y --only-upgrade swig
           source env/bin/activate
+          python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .[atari,box2d,test,dev]
 
