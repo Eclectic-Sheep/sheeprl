@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import tempfile
+import warnings
 from typing import Any, Dict, Tuple
 
+import gymnasium as gym
 import hydra
 import torch
 from lightning import Fabric
@@ -92,3 +95,26 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
 
     env.close()
     return state, log_dir
+
+
+def load_trained_state(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    algo: Algorithm,
+    checkpoint: Dict[str, Any],
+    observation_space: gym.spaces.Dict,
+    action_space: gym.Space,
+) -> TrainState:
+    """The training state of `algo`, restored from `checkpoint`: the trained models, e.g. to evaluate or register them.
+
+    The state is built by `algo.build`, as for training. The store of the collected data is not needed: it is built in
+    a temporary directory and discarded.
+    """
+    with warnings.catch_warnings():
+        # The warnings of the schedule are about the logging and checkpoint intervals of a training
+        warnings.simplefilter("ignore")
+        schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, off_policy=algo.off_policy)
+    with tempfile.TemporaryDirectory() as store_dir:
+        state, _ = algo.build(observation_space, action_space, schedule, store_dir)
+    state.load_state_dict(checkpoint)
+    return state

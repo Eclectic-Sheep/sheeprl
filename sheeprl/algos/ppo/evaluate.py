@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.ppo.agent import build_agent
+from sheeprl.algos.ppo.ppo import PPO
 from sheeprl.algos.ppo.utils import test
+from sheeprl.core import load_trained_state
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
 
 
-@register_evaluation(algorithms="ppo")
+@register_evaluation(algorithms=["ppo", "ppo_decoupled"])
 def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
@@ -21,40 +21,9 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
     fabric.print(f"Log dir: {log_dir}")
 
-    env = make_env(
-        cfg,
-        cfg.seed,
-        0,
-        log_dir,
-        "test",
-        vector_env_idx=0,
-    )()
-    observation_space = env.observation_space
-
-    if not isinstance(observation_space, gym.spaces.Dict):
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
-    fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-    fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    # Create the actor and critic models
-    _, agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
-    del _
-    test(agent, fabric, cfg, log_dir)
-
-
-# This is just for showcase
-@register_evaluation(algorithms="ppo_decoupled")
-def evaluate_ppo_decoupled(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    evaluate_ppo(fabric, cfg, state)
+    # The spaces of the environment, to build the agent
+    env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
+    algo = PPO(fabric, cfg)
+    trained = load_trained_state(fabric, cfg, algo, state, env.observation_space, env.action_space)
+    env.close()
+    test(algo.policy(trained), fabric, cfg, log_dir)

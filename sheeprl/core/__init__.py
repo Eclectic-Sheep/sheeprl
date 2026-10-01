@@ -5,7 +5,7 @@ See `sheeprl/algos/ppo/ppo.py` for an algorithm written on it.
 
 from sheeprl.core.algorithm import Algorithm, Player, TrainState
 from sheeprl.core.cadence import Cadence
-from sheeprl.core.loop import run
+from sheeprl.core.loop import load_trained_state, run
 from sheeprl.core.runner import EnvRunner, EnvStep
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import Rollout, load_replay_buffer
@@ -23,6 +23,7 @@ __all__ = [
     "all_reduce_gradients",
     "autocast",
     "load_replay_buffer",
+    "load_trained_state",
     "run",
     "setup_module",
     "update",

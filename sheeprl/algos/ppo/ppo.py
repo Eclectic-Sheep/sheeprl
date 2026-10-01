@@ -38,11 +38,6 @@ class PPOState(TrainState):
     ent_coef: Tensor
 
 
-def policy(state: PPOState) -> PPOPlayer:
-    """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
-    return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
-
-
 class RolloutPlayer:
     """Plays the policy in the environments and writes every step in the rollout."""
 
@@ -184,8 +179,12 @@ class PPO(Algorithm):
         )
         return state, Rollout(buffer)
 
+    def policy(self, state: PPOState) -> PPOPlayer:
+        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
+        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+
     def player(self, state: PPOState) -> RolloutPlayer:
-        return RolloutPlayer(self.fabric, self.cfg, policy(state))
+        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
     def batches(
         self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
@@ -284,10 +283,11 @@ class PPO(Algorithm):
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
-    state, log_dir = run(fabric, cfg, PPO(fabric, cfg))
+    algo = PPO(fabric, cfg)
+    state, log_dir = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(policy(state), fabric, cfg, log_dir)
+        test(algo.policy(state), fabric, cfg, log_dir)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models
