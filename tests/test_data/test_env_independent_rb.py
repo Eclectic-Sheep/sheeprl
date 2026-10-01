@@ -78,6 +78,17 @@ def test_env_independent_sample():
         assert (sample["dones"] == i).any()
 
 
+def test_env_independent_sample_seed():
+    data = {"a": np.arange(80, dtype=np.float32).reshape(20, 4, 1)}
+    samples = []
+    for seed in (42, 42, 0):
+        rb = EnvIndependentReplayBuffer(20, 4, buffer_cls=SequentialReplayBuffer, seed=seed)
+        rb.add(data)
+        samples.append(rb.sample(8, n_samples=2, sequence_length=3)["a"])
+    np.testing.assert_array_equal(samples[0], samples[1])
+    assert not np.array_equal(samples[0], samples[2])
+
+
 def test_env_independent_sample_error():
     bs = 20
     n_envs = 4

@@ -220,8 +220,8 @@ def eval_algorithm(cfg: DictConfig):
         cfg.fabric, accelerator=accelerator, devices=1, num_nodes=1, _convert_="all"
     )
 
-    # Seed everything
-    fabric.seed_everything(cfg.seed)
+    # Seed everything: if no seed is specified, the one picked by `seed_everything` is used
+    cfg.seed = fabric.seed_everything(cfg.seed)
 
     # Load the checkpoint
     state = fabric.load(cfg.checkpoint_path, weights_only=False)

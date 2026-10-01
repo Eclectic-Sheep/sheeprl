@@ -124,6 +124,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             for i in range(cfg.env.num_envs)
         ]
     )
+    # Seed the random actions played before the training starts
+    envs.action_space.seed(cfg.seed + rank)
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
     if not isinstance(action_space, gym.spaces.Box):
@@ -186,6 +188,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        seed=cfg.seed + rank,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
@@ -241,7 +244,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    obs = envs.reset(seed=cfg.seed)[0]
+    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0
