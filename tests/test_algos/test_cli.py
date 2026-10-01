@@ -369,3 +369,73 @@ def test_evaluate():
         shutil.rmtree(path)
     except (OSError, WindowsError):
         warnings.warn("Unable to delete folder {}.".format(path))
+
+
+def test_evaluate_p2e_dv3_plays_the_task_actor():
+    # The evaluation of a P2E-DV3 checkpoint must play the task actor stored in the checkpoint
+    import torch
+
+    from sheeprl.algos.p2e_dv3 import evaluate as p2e_dv3_evaluate
+    from sheeprl.cli import evaluation
+
+    root_dir = "pytest_test_evaluate_p2e_dv3"
+    run_name = "test_evaluate_p2e_dv3"
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "hydra/job_logging=disabled",
+        "hydra/hydra_logging=disabled",
+        "exp=p2e_dv3_exploration",
+        "env=dummy",
+        "dry_run=True",
+        "env.num_envs=1",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "algo.dense_units=8",
+        "algo.horizon=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.cnn_keys.decoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.mlp_keys.decoder=[state]",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=1",
+        "buffer.size=10",
+        "buffer.checkpoint=False",
+        "checkpoint.save_last=True",
+        "metric.log_level=0",
+        "metric.disable_timer=True",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+
+    ckpt_root = os.path.join("logs", "runs", root_dir, run_name)
+    ckpt_dir = sorted([d for d in os.listdir(ckpt_root) if "version" in d])[-1]
+    ckpt_path = os.path.join(ckpt_root, ckpt_dir, "checkpoint")
+    ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
+
+    players = []
+    with mock.patch.object(p2e_dv3_evaluate, "test", lambda player, *args, **kwargs: players.append(player)):
+        with mock.patch.object(
+            sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False", "seed=42"]
+        ):
+            evaluation()
+
+    actor_task_state = torch.load(ckpt_path, weights_only=False)["actor_task"]
+    player_actor_state = players[0].actor.state_dict()
+    assert player_actor_state.keys() == actor_task_state.keys()
+    for k, v in actor_task_state.items():
+        assert torch.equal(player_actor_state[k].cpu(), v.cpu())
+
+    try:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir))
+    except (OSError, WindowsError):
+        warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))
