@@ -60,6 +60,33 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "policy": lambda saved: entries(saved["agent"], "_actor."),
         "models": ["agent"],
     },
+    "dreamer_v3": {
+        "args": [
+            "exp=dreamer_v3",
+            "env=dummy",
+            "env.id=discrete_dummy",
+            "algo.cnn_keys.encoder=[rgb]",
+            "algo.cnn_keys.decoder=[rgb]",
+            "algo.mlp_keys.encoder=[state]",
+            "algo.mlp_keys.decoder=[state]",
+            "algo.dense_units=8",
+            "algo.world_model.encoder.cnn_channels_multiplier=2",
+            "algo.world_model.recurrent_model.recurrent_state_size=8",
+            "algo.world_model.representation_model.hidden_size=8",
+            "algo.world_model.transition_model.hidden_size=8",
+            "algo.horizon=4",
+            "algo.per_rank_batch_size=1",
+            "algo.per_rank_sequence_length=1",
+            "algo.learning_starts=0",
+            "buffer.size=10",
+        ],
+        # The policy is made of the encoder and the RSSM of the world model, and of the actor
+        "policy": lambda saved: {
+            **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
+            **{"actor." + k: v for k, v in saved["actor"].items()},
+        },
+        "models": ["world_model", "actor", "critic", "target_critic", "moments"],
+    },
 }
 
 
