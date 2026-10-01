@@ -1,22 +1,16 @@
-import copy
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Sequence, Tuple, Union
 
 import hydra
-import torch
 from lightning.fabric import Fabric
-from lightning.fabric.wrappers import _FabricModule
 from lightning.pytorch.utilities.seed import isolate_rng
 from torch import nn
 
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
-from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
+from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_models as dv3_build_models
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.utils import unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -138,7 +132,7 @@ def build_models(
     cfg: Dict[str, Any],
     obs_space: Dict[str, Any],
 ) -> Tuple[WorldModel, nn.Module, nn.Module, nn.Module, Dict[str, Dict[str, Any]], nn.ModuleList]:
-    """Create all the models of P2E-DV3 with their initial weights, in the same order as `build_agent`. They are not
+    """Create all the models of P2E-DV3 with their initial weights. They are not
     set up with Fabric (only the RSSM is moved to the device).
 
     Returns:
@@ -151,123 +145,3 @@ def build_models(
     init_exploration_actor(actor_exploration, cfg)
     ensembles = build_ensembles(fabric, actions_dim, cfg)
     return world_model, actor_task, critic_task, actor_exploration, critics_exploration, ensembles
-
-
-def build_agent(
-    fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
-    cfg: Dict[str, Any],
-    obs_space: Dict[str, Any],
-    world_model_state: Optional[Dict[str, torch.Tensor]] = None,
-    ensembles_state: Optional[Dict[str, torch.Tensor]] = None,
-    actor_task_state: Optional[Dict[str, torch.Tensor]] = None,
-    critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
-    target_critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
-    actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
-    critics_exploration_state: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Tuple[
-    WorldModel, nn.ModuleList, _FabricModule, _FabricModule, _FabricModule, _FabricModule, Dict[str, Any], PlayerDV3
-]:
-    """Build the models and wrap them with Fabric.
-
-    Args:
-        fabric (Fabric): the fabric object.
-        action_dim (int): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
-        cfg (Dict[str, Any]): the configs of P2E_DV3.
-        obs_space (Dict[str, Any]): The observations space of the environment.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        ensembles_state (Dict[str, Tensor], optional): the state of the ensembles.
-            Default to None.
-        actor_task_state (Dict[str, Tensor], optional): the state of the actor_task.
-            Default to None.
-        critic_task_state (Dict[str, Tensor], optional): the state of the critic_task.
-            Default to None.
-        target_critic_task_state (Dict[str, Tensor], optional): the state of the target
-            critic_task. Default to None.
-        actor_exploration_state (Dict[str, Tensor], optional): the state of the actor_exploration.
-            Default to None.
-        critics_exploration_state (Dict[str, Dict[str, Any]], optional): the state of the critics_exploration.
-            Default to None.
-
-    Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and
-            reward models and the continue model.
-
-        The ensembles (_FabricModule): for estimating the intrinsic reward.
-        The actor_task (_FabricModule): for learning the task.
-        The critic_task (_FabricModule): for predicting the values of the task.
-        The target_critic_task (nn.Module): takes a EMA of the critic_task weights.
-        The actor_exploration (_FabricModule): for exploring the environment.
-        The critics_exploration (_FabricModule): for predicting the values of the exploration.
-        The critics_exploration (Dict[str, Dict[str, Any]]): python dictionary containing all the exploration critics.
-            The critic is under the 'module' key, whereas, the target critic is under the 'target_critic' key.
-    """
-    # Create task models
-    world_model, actor_task, critic_task, target_critic_task, player = dv3_build_agent(
-        fabric,
-        actions_dim=actions_dim,
-        is_continuous=is_continuous,
-        cfg=cfg,
-        obs_space=obs_space,
-        world_model_state=world_model_state,
-        actor_state=actor_task_state,
-        critic_state=critic_task_state,
-        target_critic_state=target_critic_task_state,
-    )
-
-    # Create exploration models
-    actor_exploration = build_exploration_actor(actions_dim, is_continuous, cfg)
-    single_device_fabric = get_single_device_fabric(fabric)
-    critics_exploration = build_exploration_critics(cfg)
-    for k in critics_exploration:
-        if critics_exploration_state:
-            critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
-        critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
-        critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
-        if critics_exploration_state:
-            critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
-        critics_exploration[k]["target_module"] = single_device_fabric.setup_module(
-            critics_exploration[k]["target_module"]
-        )
-    init_exploration_actor(actor_exploration, cfg)
-
-    # Load exploration models from checkpoint
-    if actor_exploration_state:
-        actor_exploration.load_state_dict(actor_exploration_state)
-
-    # Setup exploration models with Fabric
-    actor_exploration = fabric.setup_module(actor_exploration)
-
-    # Set requires_grad=False for all target critics
-    target_critic_task.requires_grad_(False)
-    for c in critics_exploration.values():
-        c["target_module"].requires_grad_(False)
-
-    # initialize the ensembles with different seeds to be sure they have different weights
-    ensembles = build_ensembles(fabric, actions_dim, cfg)
-    if ensembles_state:
-        ensembles.load_state_dict(ensembles_state)
-    for i in range(len(ensembles)):
-        ensembles[i] = fabric.setup_module(ensembles[i])
-
-    # Setup player agent
-    if cfg.algo.player.actor_type == "exploration":
-        fabric_player = get_single_device_fabric(fabric)
-        player_actor = unwrap_fabric(actor_exploration)
-        player.actor = fabric_player.setup_module(player_actor)
-        for agent_p, p in zip(actor_exploration.parameters(), player.actor.parameters()):
-            p.data = agent_p.data
-
-    return (
-        world_model,
-        ensembles,
-        actor_task,
-        critic_task,
-        target_critic_task,
-        actor_exploration,
-        critics_exploration,
-        player,
-    )

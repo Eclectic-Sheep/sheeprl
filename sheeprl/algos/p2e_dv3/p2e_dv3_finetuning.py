@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -47,34 +47,38 @@ class P2EDV3Finetuning(Algorithm):
 
     off_policy = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Optional[Dict[str, Any]] = None) -> None:
+        """`exploration_cfg` is the configuration of the exploration to start from. Without it the algorithm only
+        rebuilds the models of a finetuning from its own configuration, which already holds the values of the
+        exploration (e.g. to evaluate a finetuning checkpoint)."""
         super().__init__(fabric, cfg)
         self.exploration_cfg = exploration_cfg
-        # All the models must be equal to the ones of the exploration phase
-        cfg.algo.gamma = exploration_cfg.algo.gamma
-        cfg.algo.lmbda = exploration_cfg.algo.lmbda
-        cfg.algo.horizon = exploration_cfg.algo.horizon
-        cfg.algo.layer_norm = exploration_cfg.algo.layer_norm
-        cfg.algo.dense_units = exploration_cfg.algo.dense_units
-        cfg.algo.mlp_layers = exploration_cfg.algo.mlp_layers
-        cfg.algo.dense_act = exploration_cfg.algo.dense_act
-        cfg.algo.cnn_act = exploration_cfg.algo.cnn_act
-        cfg.algo.unimix = exploration_cfg.algo.unimix
-        cfg.algo.hafner_initialization = exploration_cfg.algo.hafner_initialization
-        cfg.algo.world_model = exploration_cfg.algo.world_model
-        cfg.algo.actor = exploration_cfg.algo.actor
-        cfg.algo.critic = exploration_cfg.algo.critic
-        # Rewards must be clipped in the same way as during exploration
-        cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
-        # If the buffer is the same of the exploration, then we have to mantain the same number
-        # of environments:
-        #   - With less environments, you will replay too old experiences after a certain number of steps.
-        #   - With more environments, you will raise an exception when you add new experienves.
-        if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
-            cfg.env.num_envs = exploration_cfg.env.num_envs
-        # There must be the same cnn and mlp keys during exploration and finetuning
-        cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
-        cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
+        if exploration_cfg is not None:
+            # All the models must be equal to the ones of the exploration phase
+            cfg.algo.gamma = exploration_cfg.algo.gamma
+            cfg.algo.lmbda = exploration_cfg.algo.lmbda
+            cfg.algo.horizon = exploration_cfg.algo.horizon
+            cfg.algo.layer_norm = exploration_cfg.algo.layer_norm
+            cfg.algo.dense_units = exploration_cfg.algo.dense_units
+            cfg.algo.mlp_layers = exploration_cfg.algo.mlp_layers
+            cfg.algo.dense_act = exploration_cfg.algo.dense_act
+            cfg.algo.cnn_act = exploration_cfg.algo.cnn_act
+            cfg.algo.unimix = exploration_cfg.algo.unimix
+            cfg.algo.hafner_initialization = exploration_cfg.algo.hafner_initialization
+            cfg.algo.world_model = exploration_cfg.algo.world_model
+            cfg.algo.actor = exploration_cfg.algo.actor
+            cfg.algo.critic = exploration_cfg.algo.critic
+            # Rewards must be clipped in the same way as during exploration
+            cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+            # If the buffer is the same of the exploration, then we have to mantain the same number
+            # of environments:
+            #   - With less environments, you will replay too old experiences after a certain number of steps.
+            #   - With more environments, you will raise an exception when you add new experienves.
+            if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
+                cfg.env.num_envs = exploration_cfg.env.num_envs
+            # There must be the same cnn and mlp keys during exploration and finetuning
+            cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
+            cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
 
         # These arguments cannot be changed
         cfg.env.frame_stack = 1
@@ -164,7 +168,7 @@ class P2EDV3Finetuning(Algorithm):
         )
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop)
-        if not cfg.checkpoint.resume_from:
+        if self.exploration_cfg is not None and not cfg.checkpoint.resume_from:
             exploration = fabric.load(cfg.checkpoint.exploration_ckpt_path, weights_only=False)
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -8,7 +7,6 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import (
@@ -34,7 +32,6 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -1165,97 +1162,3 @@ def build_models(
         if cnn_decoder is not None:
             cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
     return world_model, actor, critic
-
-
-def build_agent(
-    fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    world_model_state: Optional[Dict[str, Tensor]] = None,
-    actor_state: Optional[Dict[str, Tensor]] = None,
-    critic_state: Optional[Dict[str, Tensor]] = None,
-    target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
-    """Build the models and wrap them with Fabric.
-
-    Args:
-        fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
-        cfg (DictConfig): the configs of DreamerV3.
-        obs_space (Dict[str, Any]): the observation space.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
-            Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
-        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
-
-    Returns:
-        The world model (WorldModel): composed by the encoder, rssm, observation and
-        reward models and the continue model.
-        The actor (_FabricModule).
-        The critic (_FabricModule).
-        The target critic (nn.Module).
-    """
-    world_model, actor, critic = build_models(fabric.device, actions_dim, is_continuous, cfg, obs_space)
-
-    # Load models from checkpoint
-    if world_model_state:
-        world_model.load_state_dict(world_model_state)
-    if actor_state:
-        actor.load_state_dict(actor_state)
-    if critic_state:
-        critic.load_state_dict(critic_state)
-
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-    )
-
-    # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
-    if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
-
-    # Setup target critic with a SingleDeviceStrategy
-    target_critic = copy.deepcopy(critic.module)
-    if target_critic_state:
-        target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
-
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
-    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
-    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-        p.data = agent_p.data
-    return world_model, actor, critic, target_critic, player

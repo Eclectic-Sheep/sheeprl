@@ -41,8 +41,49 @@ def entries(saved: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tens
     return {k[len(prefix) :]: v for k, v in saved.items() if k.startswith(prefix)}
 
 
+# The overrides of a short training of the Dreamer-like algorithms, on the dummy environment
+DREAMER_ARGS = [
+    "env=dummy",
+    "env.id=discrete_dummy",
+    "algo.cnn_keys.encoder=[rgb]",
+    "algo.cnn_keys.decoder=[rgb]",
+    "algo.mlp_keys.encoder=[state]",
+    "algo.mlp_keys.decoder=[state]",
+    "algo.dense_units=8",
+    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.world_model.recurrent_model.recurrent_state_size=8",
+    "algo.world_model.representation_model.hidden_size=8",
+    "algo.world_model.transition_model.hidden_size=8",
+    "algo.horizon=4",
+    "algo.per_rank_batch_size=1",
+    "algo.per_rank_sequence_length=1",
+    "algo.learning_starts=0",
+    "buffer.size=10",
+]
+
+
+def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
+    """The weights of a Dreamer player: the encoder and the RSSM of the world model, and the actor `actor`."""
+    return {
+        **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
+        **{"actor." + k: v for k, v in saved[actor].items()},
+    }
+
+
+def p2e_saved_model(saved: Dict[str, Any], name: str) -> Dict[str, torch.Tensor]:
+    """The saved weights of the P2E model `name`: the exploration critics are saved together, by critic."""
+    for prefix, key in (("critic_exploration_", "module"), ("target_critic_exploration_", "target_module")):
+        if name.startswith(prefix):
+            return saved["critics_exploration"][name[len(prefix) :]][key]
+    return saved[name]
+
+
+P2E_TASK_MODELS = ["world_model", "actor_task", "critic_task", "target_critic_task", "moments_task"]
+
 # For every algorithm: the overrides of a short training, the weights its policy plays with (from the checkpoint) and
-# the models it registers
+# the models it registers. Optionally: its module (`module`, default the name), the saved weights of a registered model
+# (`saved_model`, default the entry of the checkpoint named after it) and the exploration it starts from
+# (`exploration`, an algorithm trained before it)
 ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "ppo": {
         "args": ["exp=ppo", "algo.rollout_steps=4", "algo.per_rank_batch_size=4"],
@@ -61,43 +102,52 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "models": ["agent"],
     },
     "dreamer_v3": {
-        "args": [
-            "exp=dreamer_v3",
-            "env=dummy",
-            "env.id=discrete_dummy",
-            "algo.cnn_keys.encoder=[rgb]",
-            "algo.cnn_keys.decoder=[rgb]",
-            "algo.mlp_keys.encoder=[state]",
-            "algo.mlp_keys.decoder=[state]",
-            "algo.dense_units=8",
-            "algo.world_model.encoder.cnn_channels_multiplier=2",
-            "algo.world_model.recurrent_model.recurrent_state_size=8",
-            "algo.world_model.representation_model.hidden_size=8",
-            "algo.world_model.transition_model.hidden_size=8",
-            "algo.horizon=4",
-            "algo.per_rank_batch_size=1",
-            "algo.per_rank_sequence_length=1",
-            "algo.learning_starts=0",
-            "buffer.size=10",
-        ],
-        # The policy is made of the encoder and the RSSM of the world model, and of the actor
-        "policy": lambda saved: {
-            **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
-            **{"actor." + k: v for k, v in saved["actor"].items()},
-        },
+        "args": ["exp=dreamer_v3", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_policy(saved, "actor"),
         "models": ["world_model", "actor", "critic", "target_critic", "moments"],
+    },
+    "p2e_dv3_exploration": {
+        "module": "p2e_dv3",
+        "args": ["exp=p2e_dv3_exploration", *DREAMER_ARGS],
+        # The evaluation plays the task actor
+        "policy": lambda saved: dreamer_policy(saved, "actor_task"),
+        "models": [
+            *P2E_TASK_MODELS,
+            "ensembles",
+            "actor_exploration",
+            *[
+                f"{m}_exploration_{k}"
+                for m in ("critic", "target_critic", "moments")
+                for k in ("intrinsic", "extrinsic")
+            ],
+        ],
+        "saved_model": p2e_saved_model,
+    },
+    "p2e_dv3_finetuning": {
+        "module": "p2e_dv3",
+        "exploration": "p2e_dv3_exploration",
+        "args": ["exp=p2e_dv3_finetuning", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_policy(saved, "actor_task"),
+        "models": P2E_TASK_MODELS,
     },
 }
 
 
-def train(name: str, root_dir: str) -> str:
-    """Train the algorithm `name` for one iteration and return the path of its checkpoint."""
+def train(name: str, root_dir: str, run_name: str = "run") -> str:
+    """Train the algorithm `name` for one iteration (after its exploration, if any) and return the path of its
+    checkpoint."""
     from sheeprl.cli import run
 
     args = [os.path.join(ROOT_DIR, "__main__.py"), *COMMON_ARGS, *ALGORITHMS[name]["args"], f"root_dir={root_dir}"]
-    with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(sys, "argv", [*args, "run_name=run"]):
+    if "exploration" in ALGORITHMS[name]:
+        exploration_ckpt_path = train(ALGORITHMS[name]["exploration"], root_dir, run_name="exploration")
+        args.append(f"checkpoint.exploration_ckpt_path={exploration_ckpt_path}")
+    with (
+        mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+        mock.patch.object(sys, "argv", [*args, f"run_name={run_name}"]),
+    ):
         run()
-    (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "run", "version_*", "checkpoint", "*.ckpt"))
+    (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, run_name, "version_*", "checkpoint", "*.ckpt"))
     return ckpt_path
 
 
@@ -117,7 +167,7 @@ def test_evaluation_plays_the_trained_models(name):
     ckpt_path = train(name, root_dir)
     saved = torch.load(ckpt_path, weights_only=False)
 
-    evaluate = importlib.import_module(f"sheeprl.algos.{name}.evaluate")
+    evaluate = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
     played: List[torch.nn.Module] = []
 
     def test(policy, *args, **kwargs):
@@ -158,7 +208,7 @@ def test_registration_logs_the_trained_models(name):
         pytorch=types.SimpleNamespace(log_model=lambda model, artifact_path: logged.setdefault(artifact_path, model)),
         log_dict=lambda *args, **kwargs: None,
     )
-    utils = importlib.import_module(f"sheeprl.algos.{name}.utils")
+    utils = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.utils")
     cfg = dotdict({"run": {"id": None, "name": None}, "experiment": {"id": None}, "to_log": train_cfg, **train_cfg})
     fabric = Fabric(devices=1, accelerator="cpu")
     env = make_env(cfg, cfg.seed, 0, None, "test", vector_env_idx=0)()
@@ -172,5 +222,6 @@ def test_registration_logs_the_trained_models(name):
         env.close()
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert sorted(logged) == sorted(ALGORITHMS[name]["models"])
+    saved_model = ALGORITHMS[name].get("saved_model", lambda saved, k: saved[k])
     for k, model in logged.items():
-        assert_same_weights(model, saved[k])
+        assert_same_weights(model, saved_model(saved, k))
