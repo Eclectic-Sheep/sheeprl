@@ -81,6 +81,36 @@ def test_droq(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_droq_actor_batch_size(standard_args, start_time):
+    # The actor and the entropy coefficient must be updated with a whole minibatch on every rank.
+    # The policy loss is checked on the rank-0 process, which is the one running the test
+    from sheeprl.algos.droq import droq
+
+    batch_sizes = []
+
+    def policy_loss(alpha, logprobs, qf_values):
+        batch_sizes.append(logprobs.shape[0])
+        return droq_policy_loss(alpha, logprobs, qf_values)
+
+    droq_policy_loss = droq.policy_loss
+    root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
+    run_name = "test_droq_actor_batch_size"
+    args = standard_args + [
+        "exp=droq",
+        "algo.per_rank_batch_size=4",
+        "buffer.size=8",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(droq, "policy_loss", policy_loss), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert len(batch_sizes) > 0 and all(batch_size == 4 for batch_size in batch_sizes)
+
+
 def test_sac(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "test_sac"
@@ -97,6 +127,37 @@ def test_sac(standard_args, start_time):
     with mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_sac_gradient_steps(standard_args, start_time):
+    # Every iteration plays `num_envs * world_size` policy steps, so with a replay ratio of 1 every rank
+    # must perform `num_envs` gradient steps. They are counted on the rank-0 process, which runs the test
+    from sheeprl.algos.sac import sac
+
+    gradient_steps = []
+
+    def train(*args, **kwargs):
+        gradient_steps.append(1)
+        return sac_train(*args, **kwargs)
+
+    sac_train = sac.train
+    root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
+    run_name = "test_sac_gradient_steps"
+    args = standard_args + [
+        "exp=sac",
+        "algo.per_rank_batch_size=1",
+        "buffer.size=8",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(sac, "train", train), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    # A single iteration is played with `dry_run=True` and `env.num_envs=2`
+    assert len(gradient_steps) == 2
 
 
 def test_sac_ae(standard_args, start_time):
@@ -144,6 +205,28 @@ def test_sac_decoupled(standard_args, start_time):
 
     if os.environ["LT_DEVICES"] != "1":
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_sac_decoupled_multiple_trainers(standard_args, start_time):
+    # One player and two trainers: the player must send a different chunk of data to each trainer
+    if os.environ["LT_DEVICES"] == "1":
+        pytest.skip("The test runs with three devices, it is enough to run it once")
+    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", "3")
+    run_name = "test_sac_decoupled_multiple_trainers"
+    args = standard_args + [
+        "exp=sac_decoupled",
+        "algo.per_rank_batch_size=2",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        "fabric.devices=3",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    # Fabric reads the number of devices from the `LT_DEVICES` environment variable, which takes precedence
+    with mock.patch.dict(os.environ, {"LT_DEVICES": "3"}), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
 def test_a2c(standard_args, start_time):

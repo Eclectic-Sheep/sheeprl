@@ -297,11 +297,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Train the agent
         if iter_num >= learning_starts:
-            per_rank_gradient_steps = (
-                ratio((policy_step - prefill_steps + policy_steps_per_iter) / world_size)
-                if not cfg.run_benchmarks
-                else 1
-            )
+            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+            per_rank_gradient_steps = ratio(ratio_steps / world_size) if not cfg.run_benchmarks else 1
             if per_rank_gradient_steps > 0:
                 # We sample one time to reduce the communications between processes
                 sample = rb.sample_tensors(

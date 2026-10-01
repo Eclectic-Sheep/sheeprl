@@ -247,9 +247,12 @@ def player(
                     device=device,
                     from_numpy=cfg.buffer.from_numpy,
                 )
-                # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]}
+                # The sampled tensors have shape [1, G * B * (W - 1), ...], where `1` is the number of samples,
+                # G the per-rank gradient steps, B the per-rank batch size and W the world size.
+                # chunks = {k1: [k1_chunk_1, k1_chunk_2, ...], k2: [k2_chunk_1, k2_chunk_2, ...]},
+                # with one chunk of shape [G * B, ...] for every trainer
                 chunks = {
-                    k: v.float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
+                    k: v[0].float().split(per_rank_gradient_steps * cfg.algo.per_rank_batch_size)
                     for k, v in sample.items()
                 }
                 # chunks = [{k1: k1_chunk_1, k2: k2_chunk_1}, {k1: k1_chunk_2, k2: k2_chunk_2}, ...]
