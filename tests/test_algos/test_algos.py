@@ -211,6 +211,38 @@ def test_ppo_decoupled(standard_args, start_time, env_id):
         remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+@pytest.mark.parametrize("algo", ["ppo", "ppo_decoupled", "a2c", "ppo_recurrent"])
+def test_on_policy_truncated_episodes(standard_args, start_time, algo):
+    # The time limit truncates the episodes during the rollout, so the value of the final observation
+    # of every truncated episode is bootstrapped: the frame-stacked `rgb` is the only selected key,
+    # while the `state` key returned by the environment is not used by the agent
+    if algo == "ppo_decoupled" and os.environ["LT_DEVICES"] == "1":
+        pytest.skip("The decoupled algorithms need at least two devices")
+    root_dir = os.path.join(f"pytest_{start_time}", algo, os.environ["LT_DEVICES"])
+    run_name = f"test_{algo}_truncated_episodes"
+    args = standard_args + [
+        f"exp={algo}",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "env.max_episode_steps=2",
+        "env.frame_stack=2",
+        "algo.rollout_steps=4",
+        "algo.per_rank_batch_size=1",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[]",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+    if algo == "ppo_decoupled":
+        args.append(f"fabric.devices={os.environ['LT_DEVICES']}")
+    if algo == "ppo_recurrent":
+        args += ["algo.per_rank_sequence_length=2", "fabric.precision=32"]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_ppo_recurrent(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
