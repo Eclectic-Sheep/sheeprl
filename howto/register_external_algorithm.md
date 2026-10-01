@@ -455,7 +455,7 @@ def train(
         aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -695,7 +695,7 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
                 "iter_num": iter_num * world_size,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
+            fabric.call("on_checkpoint", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:

@@ -9,7 +9,6 @@ def available_agents():
     table.add_column("Module")
     table.add_column("Algorithm")
     table.add_column("Entrypoint")
-    table.add_column("Decoupled")
     table.add_column("Evaluated by")
 
     for module, implementations in algorithm_registry.items():
@@ -26,7 +25,6 @@ def available_agents():
                 module,
                 algo["name"],
                 algo["entrypoint"],
-                str(algo["decoupled"]),
                 evaluated_by,
             )
 

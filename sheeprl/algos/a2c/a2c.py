@@ -271,7 +271,7 @@ class A2C(Algorithm):
         return {"Loss/policy_loss": torch.stack(policy_losses), "Loss/value_loss": torch.stack(value_losses)}
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
     algo = A2C(fabric, cfg)
     state, log_dir = run(fabric, cfg, algo)

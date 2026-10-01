@@ -500,7 +500,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "last_checkpoint": last_checkpoint,
             }
             ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=ckpt_state)
+            fabric.call("on_checkpoint", fabric=fabric, ckpt_path=ckpt_path, state=ckpt_state)
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
