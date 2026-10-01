@@ -231,8 +231,9 @@ class SACAgent(nn.Module):
         return
 
     @property
-    def alpha(self) -> float:
-        return self._log_alpha.exp().item()
+    def alpha(self) -> Tensor:
+        # A tensor, not a float: reading its value on the CPU would wait for the GPU at every call
+        return self._log_alpha.exp().detach()
 
     @property
     def target_entropy(self) -> Tensor:

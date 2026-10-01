@@ -13,6 +13,7 @@ from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.runner import EnvRunner
 from sheeprl.core.schedule import TrainSchedule
+from sheeprl.core.store import load_replay_buffer
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import timer
@@ -45,11 +46,15 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     if not MetricAggregator.disabled:
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
-    schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint)
+    schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
     env = EnvRunner(fabric, cfg, log_dir, aggregator, policy_step=schedule.policy_step)
     state, store = algo.build(env.observation_space, env.action_space, schedule, log_dir)
+    # The replay buffer of the off-policy algorithms is saved in the checkpoints
+    save_buffer = algo.off_policy and cfg.buffer.checkpoint
     if checkpoint is not None:
         state.load_state_dict(checkpoint)
+        if save_buffer:
+            store = load_replay_buffer(fabric, checkpoint["rb"], store)
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
     cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint)
@@ -62,21 +67,21 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
             for _ in range(algo.steps_per_iteration):
                 player.step(env, store)
 
-        # Train
-        trained = False
-        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-            for batch in algo.batches(state, store, schedule.gradient_steps(env.policy_step)):
-                cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
-                schedule.gradient_step += 1
-                trained = True
-        if trained:
+        # Train: `n_steps` is None for on-policy algorithms (they decide it from the rollout), and is 0 for
+        # off-policy algorithms before `algo.learning_starts`
+        n_steps = schedule.gradient_steps(iteration)
+        if n_steps != 0:
+            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                for batch in algo.batches(state, store, n_steps, iteration):
+                    cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
+                    schedule.gradient_step += 1
             cadence.train_step += fabric.world_size
 
         info = algo.end_iteration(state, iteration)
         if cfg.metric.log_level > 0 and info:
             fabric.log_dict(info, env.policy_step)
-        cadence.log(env.policy_step, iteration, schedule.total_iters)
-        cadence.checkpoint(state, schedule, env.policy_step, iteration)
+        cadence.log(env.policy_step, iteration, schedule)
+        cadence.checkpoint(state, schedule, env.policy_step, iteration, store if save_buffer else None)
 
     env.close()
     return state, log_dir

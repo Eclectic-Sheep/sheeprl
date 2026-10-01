@@ -100,6 +100,10 @@ class Algorithm:
     # Environment steps played by every environment before each training phase
     # (e.g. the rollout length of on-policy algorithms; 1 for off-policy algorithms)
     steps_per_iteration: int = 1
+    # Whether the algorithm trains on a replay buffer of past steps. Then the training starts after
+    # `algo.learning_starts` policy steps, does `algo.replay_ratio` gradient steps per policy step, and the buffer
+    # (the store returned by `build`) is saved in the checkpoints when `buffer.checkpoint` is set
+    off_policy: bool = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
         self.fabric = fabric
@@ -122,11 +126,14 @@ class Algorithm:
         """Return the object that plays the current policy in the environments."""
         raise NotImplementedError
 
-    def batches(self, state: TrainState, store: Any, n_steps: int | None) -> Iterator[Dict[str, Tensor]]:
-        """Prepare the training data of this iteration and yield one batch per gradient step.
+    def batches(
+        self, state: TrainState, store: Any, n_steps: int | None, iteration: int
+    ) -> Iterator[Dict[str, Tensor]]:
+        """Prepare the training data of the iteration `iteration` and yield one batch per gradient step.
 
-        `n_steps` is the number of gradient steps asked by the replay ratio of off-policy algorithms; it is `None`
-        for on-policy algorithms, which decide it from the rollout (epochs x minibatches).
+        `n_steps` is the number of gradient steps asked by the replay ratio of off-policy algorithms (never 0: the
+        training loop doesn't call `batches` then); it is `None` for on-policy algorithms, which decide it from the
+        rollout (epochs x minibatches).
         """
         raise NotImplementedError
 

@@ -43,16 +43,21 @@ class Cadence:
                 if name in self.aggregator:
                     self.aggregator.update(name, value)
 
-    def log(self, policy_step: int, iteration: int, total_iters: int) -> None:
+    def log(self, policy_step: int, iteration: int, schedule: TrainSchedule) -> None:
         """Log the accumulated metrics and the speed of the run, if it's time to."""
         cfg = self.cfg
         if cfg.metric.log_level == 0:
             return
-        if policy_step - self.last_log < cfg.metric.log_every and iteration != total_iters:
+        if policy_step - self.last_log < cfg.metric.log_every and iteration != schedule.total_iters:
             return
         if self.aggregator is not None and not self.aggregator.disabled:
             self.fabric.log_dict(self.aggregator.compute(), policy_step)
             self.aggregator.reset()
+        if schedule.off_policy:
+            # Gradient steps of all the processes per policy step
+            self.fabric.log(
+                "Params/replay_ratio", schedule.gradient_step * self.fabric.world_size / policy_step, policy_step
+            )
         if not timer.disabled:
             timer_metrics = timer.compute()
             if timer_metrics.get("Time/train_time", 0) > 0:
@@ -78,8 +83,13 @@ class Cadence:
         schedule: TrainSchedule,
         policy_step: int,
         iteration: int,
+        replay_buffer: Optional[Any] = None,
     ) -> None:
-        """Save the training state and the counters needed to resume the run, if it's time to."""
+        """Save the training state and the counters needed to resume the run, if it's time to.
+
+        `replay_buffer`, if given, is saved too: with several processes, the buffers of all of them, in the
+        checkpoint of rank 0.
+        """
         cfg = self.cfg
         every = cfg.checkpoint.every > 0 and policy_step - self.last_checkpoint >= cfg.checkpoint.every
         last = iteration == schedule.total_iters and cfg.checkpoint.save_last
@@ -95,10 +105,13 @@ class Cadence:
             "last_log": self.last_log,
             "last_checkpoint": self.last_checkpoint,
         }
+        if schedule.ratio is not None:
+            ckpt["ratio"] = schedule.ratio.state_dict()
         ckpt_path = os.path.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
         self.fabric.call(
             "on_checkpoint_coupled",
             fabric=self.fabric,
             ckpt_path=ckpt_path,
             state=ckpt,
+            replay_buffer=replay_buffer,
         )

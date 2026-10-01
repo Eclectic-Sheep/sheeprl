@@ -8,7 +8,7 @@ from sheeprl.core.cadence import Cadence
 from sheeprl.core.loop import run
 from sheeprl.core.runner import EnvRunner, EnvStep
 from sheeprl.core.schedule import TrainSchedule
-from sheeprl.core.store import Rollout
+from sheeprl.core.store import Rollout, load_replay_buffer
 from sheeprl.core.update import all_reduce_gradients, autocast, setup_module, update
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     "TrainState",
     "all_reduce_gradients",
     "autocast",
+    "load_replay_buffer",
     "run",
     "setup_module",
     "update",

@@ -59,7 +59,7 @@ def remove_test_dir(path: str) -> None:
     """Utility function to cleanup a temporary folder if it still exists."""
     try:
         shutil.rmtree(path, False, None)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -135,12 +135,12 @@ def test_sac_gradient_steps(standard_args, start_time):
     from sheeprl.algos.sac import sac
 
     gradient_steps = []
+    sac_train_step = sac.SAC.train_step
 
-    def train(*args, **kwargs):
+    def train_step(*args, **kwargs):
         gradient_steps.append(1)
-        return sac_train(*args, **kwargs)
+        return sac_train_step(*args, **kwargs)
 
-    sac_train = sac.train
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "test_sac_gradient_steps"
     args = standard_args + [
@@ -153,7 +153,7 @@ def test_sac_gradient_steps(standard_args, start_time):
         f"run_name={run_name}",
     ]
 
-    with mock.patch.object(sac, "train", train), mock.patch.object(sys, "argv", args):
+    with mock.patch.object(sac.SAC, "train_step", train_step), mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     # A single iteration is played with `dry_run=True` and `env.num_envs=2`

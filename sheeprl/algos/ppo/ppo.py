@@ -187,7 +187,9 @@ class PPO(Algorithm):
     def player(self, state: PPOState) -> RolloutPlayer:
         return RolloutPlayer(self.fabric, self.cfg, policy(state))
 
-    def batches(self, state: PPOState, rollout: Rollout, n_steps: Optional[int]) -> Iterator[Dict[str, Tensor]]:
+    def batches(
+        self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
+    ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 

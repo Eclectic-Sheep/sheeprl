@@ -78,6 +78,10 @@ class EnvRunner:
         self.obs = self.envs.reset(seed=self._first_seed)[0]
         return self.obs
 
+    def random_actions(self) -> np.ndarray:
+        """Uniformly random actions, one row per environment (e.g. to fill a replay buffer before the training)."""
+        return self.envs.action_space.sample()
+
     def step(self, actions: np.ndarray) -> EnvStep:
         """Play `actions` (one row per environment) and return what happened. Ended episodes are logged."""
         next_obs, rewards, terminated, truncated, info = self.envs.step(actions.reshape(self.envs.action_space.shape))
