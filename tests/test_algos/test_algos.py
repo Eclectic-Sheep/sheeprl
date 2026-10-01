@@ -81,6 +81,36 @@ def test_droq(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_droq_actor_batch_size(standard_args, start_time):
+    # The actor and the entropy coefficient must be updated with a whole minibatch on every rank.
+    # The policy loss is checked on the rank-0 process, which is the one running the test
+    from sheeprl.algos.droq import droq
+
+    batch_sizes = []
+
+    def policy_loss(alpha, logprobs, qf_values):
+        batch_sizes.append(logprobs.shape[0])
+        return droq_policy_loss(alpha, logprobs, qf_values)
+
+    droq_policy_loss = droq.policy_loss
+    root_dir = os.path.join(f"pytest_{start_time}", "droq", os.environ["LT_DEVICES"])
+    run_name = "test_droq_actor_batch_size"
+    args = standard_args + [
+        "exp=droq",
+        "algo.per_rank_batch_size=4",
+        "buffer.size=8",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(droq, "policy_loss", policy_loss), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert len(batch_sizes) > 0 and all(batch_size == 4 for batch_size in batch_sizes)
+
+
 def test_sac(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "test_sac"

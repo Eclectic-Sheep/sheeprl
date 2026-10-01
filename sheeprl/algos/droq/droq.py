@@ -73,7 +73,7 @@ def train(
     sample = rb.sample_tensors(cfg.algo.per_rank_batch_size, from_numpy=cfg.buffer.from_numpy)
     actor_data = fabric.all_gather(sample)
     for k, v in actor_data.items():
-        actor_data[k] = v.float()  # [G*B*World]
+        actor_data[k] = v.float()  # [B*World]
         if fabric.world_size > 1:
             actor_data[k] = actor_data[k].flatten(start_dim=0, end_dim=2)
         else:
@@ -87,7 +87,9 @@ def train(
             seed=cfg.seed,
             drop_last=False,
         )
-        actor_data = {k: actor_data[k][next(iter(actor_sampler))] for k in actor_data.keys()}
+        # The sampler yields the B indices assigned to this rank
+        actor_idxes = list(actor_sampler)
+        actor_data = {k: actor_data[k][actor_idxes] for k in actor_data.keys()}
 
     with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
         # Update the soft-critic
