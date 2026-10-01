@@ -257,7 +257,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     step_data = {}
-    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    next_obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
     for k in obs_keys:
         if k in cfg.algo.cnn_keys.encoder:
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])

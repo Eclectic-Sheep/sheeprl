@@ -241,7 +241,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    obs = envs.reset(seed=cfg.seed)[0]
+    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
 
     per_rank_gradient_steps = 0
     cumulative_per_rank_gradient_steps = 0

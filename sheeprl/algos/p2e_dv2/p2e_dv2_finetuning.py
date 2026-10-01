@@ -252,7 +252,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     step_data = {}
-    obs = envs.reset(seed=cfg.seed)[0]
+    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
     step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
