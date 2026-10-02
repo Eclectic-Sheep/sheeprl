@@ -23,7 +23,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import build_buffer, compute_lambda_values, prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope
@@ -308,22 +308,16 @@ def train(
         actor_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
 
-        # Dynamics backpropagation
-        dynamics = lambda_values[1:]
+        def reinforce() -> Tensor:
+            advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+            logprobs = [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ]
+            return torch.stack(logprobs, -1).sum(-1) * advantage
 
-        # Reinforce
-        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
-        reinforce = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                ],
-                -1,
-            ).sum(-1)
-            * advantage
-        )
-        objective = cfg.algo.actor.objective_mix * reinforce + (1 - cfg.algo.actor.objective_mix) * dynamics
+        # Dynamics backpropagation (the lambda-values) and REINFORCE
+        objective = actor_objective(cfg.algo.actor.objective_mix, actor.is_continuous, lambda_values[1:], reinforce)
         try:
             entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
         except NotImplementedError:
