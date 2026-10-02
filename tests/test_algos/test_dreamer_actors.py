@@ -7,6 +7,7 @@ from torch import nn
 from torch.distributions import Independent, Normal, TanhTransform, TransformedDistribution
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
+from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
 from sheeprl.utils.distribution import entropy
@@ -115,3 +116,64 @@ def test_the_entropy_estimate_is_finite_where_the_tanh_saturates():
     # The analytic entropy of the other distributions
     normal = Independent(Normal(torch.zeros(3, 2), 2.0), 1)
     torch.testing.assert_close(entropy(normal), normal.entropy())
+
+
+# The MineDojo actions: the functional action (15: craft, 16 and 17: equip and place, 18: destroy), the item to craft
+# and the item to equip, place or destroy
+MINEDOJO_ACTIONS_DIM = (19, 4, 5)
+
+
+def minedojo_masks():
+    """The masks of 3 environments: the first can only craft item 2, the second only equip item 1, the third only
+    destroy item 3."""
+    masks = {
+        "mask_action_type": torch.zeros(1, 3, 19, dtype=torch.bool),
+        "mask_craft_smelt": torch.zeros(1, 3, 4, dtype=torch.bool),
+        "mask_equip_place": torch.zeros(1, 3, 5, dtype=torch.bool),
+        "mask_destroy": torch.zeros(1, 3, 5, dtype=torch.bool),
+    }
+    masks["mask_action_type"][0, 0, 15] = masks["mask_action_type"][0, 1, 16] = masks["mask_action_type"][0, 2, 18] = 1
+    masks["mask_craft_smelt"][..., 2] = True
+    masks["mask_equip_place"][..., 1] = True
+    masks["mask_destroy"][..., 3] = True
+    return masks
+
+
+def assert_allowed(actions):
+    functional, craft, item = (a.argmax(-1)[0].tolist() for a in actions)
+    assert functional == [15, 16, 18]
+    assert craft[0] == 2
+    assert item[1:] == [1, 3]
+
+
+def test_the_minedojo_actor_of_dreamer_v2_samples_allowed_actions_in_every_environment():
+    # With more than one environment, the mask of the destroyed items was written with the indices of the last
+    # environment of the previous loop: the player crashed
+    actor = make_actor(DV2MinedojoActor, "discrete", actions_dim=MINEDOJO_ACTIONS_DIM, is_continuous=False)
+    actions, _ = actor(torch.randn(1, 3, LATENT), mask=minedojo_masks())
+    assert_allowed(actions)
+
+
+def test_the_minedojo_actor_of_dreamer_v2_explores_with_allowed_actions():
+    # Its exploration crashed (`self.device`), and its random actions ignored the masks
+    actor = make_actor(
+        DV2MinedojoActor, "discrete", actions_dim=MINEDOJO_ACTIONS_DIM, is_continuous=False, expl_amount=1.0
+    )
+    torch.manual_seed(0)
+    # The actions to explore from: no-ops (functional action 0)
+    actions = [nn.functional.one_hot(torch.zeros(1, 3, dtype=torch.long), n).float() for n in MINEDOJO_ACTIONS_DIM]
+    assert_allowed(actor.add_exploration_noise(actions, mask=minedojo_masks()))
+
+
+def test_each_environment_explores_on_its_own_in_minedojo():
+    # One random draw decided for all the environments whether they played a random action
+    actor = make_actor(
+        DV2MinedojoActor, "discrete", actions_dim=MINEDOJO_ACTIONS_DIM, is_continuous=False, expl_amount=0.5
+    )
+    torch.manual_seed(0)
+    num_envs = 1000
+    actions = [nn.functional.one_hot(torch.zeros(1, num_envs, dtype=torch.long), n).float() for n in (4,)]
+    (explored,) = actor.add_exploration_noise(actions)
+    changed = (explored != actions[0]).any(-1).float().mean().item()
+    # About half of the environments explore, and 3/4 of their random actions differ from the played one
+    assert 0.3 < changed < 0.45, changed
