@@ -567,10 +567,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 if iter_num <= learning_starts and "minedojo" not in cfg.env.wrapper._target_.lower():
                     real_actions = actions = np.array(envs.action_space.sample())
                     if not is_continuous:
+                        # One row per environment and one column per discrete action: the one-hots of every discrete
+                        # action of every environment (they were mixed between the environments)
+                        per_action = actions.reshape(cfg.env.num_envs, len(actions_dim)).T
                         actions = np.concatenate(
                             [
                                 F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                                for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
+                                for act, act_dim in zip(per_action, actions_dim)
                             ],
                             axis=-1,
                         )
