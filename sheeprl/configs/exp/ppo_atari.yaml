@@ -31,7 +31,8 @@ algo:
   clip_vloss: True
   ent_coef: 0.01
   anneal_ent_coef: False
-  vf_coef: 0.5
+  # 0.5 in CleanRL, whose value loss is half the squared error
+  vf_coef: 0.25
   rollout_steps: 1024
   dense_units: 512
   mlp_layers: 1

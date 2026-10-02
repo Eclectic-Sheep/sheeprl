@@ -16,11 +16,15 @@ def value_loss(
     clip_vloss: bool,
 ) -> Tensor:
     if not clip_vloss:
-        values_pred = new_values
-    else:
-        values_pred = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
-    return mse_loss(values_pred, returns)
+        return mse_loss(new_values, returns)
+    v_loss_unclipped = (new_values - returns) ** 2
+    v_clipped = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
+    v_loss_clipped = (v_clipped - returns) ** 2
+    return torch.max(v_loss_unclipped, v_loss_clipped).mean()
 ```
+
+Both are the squared error without a factor ½, as in Stable-Baselines3: `algo.vf_coef` weighs this scale (CleanRL halves
+the squared error, so its `vf_coef` is twice ours).
 
 Advantages and logprobs are used to compute the *policy loss*, using also the logprobs from the updated model.
 
