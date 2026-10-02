@@ -35,10 +35,11 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
             f"Got '{cfg.algo.name}', but the algorithm of the experiment of the checkpoint was {old_cfg.algo.name}. "
             "Set properly the algorithm name for restarting the experiment."
         )
-    if old_cfg.algo.learning_starts > 0:
+    # The off-policy algorithms whose replay buffer isn't in the checkpoint fill a new one before training again
+    if (cfg.algo.get("learning_starts") or 0) > 0 and not old_cfg.buffer.checkpoint:
         warnings.warn(
-            "The `algo.learning_starts` parameter is greater than zero. "
-            "This means that the resuming experiment will pre-fill the buffer for `algo.learning_starts` steps. "
+            "The replay buffer is not saved in the checkpoint (`buffer.checkpoint=False`): the resumed experiment "
+            "will fill a new one, playing its policy for `algo.learning_starts` steps before training again. "
             "If this is not intended please set the `algo.learning_starts=0` parameter in the experiment configuration "
             "or through the CLI."
         )

@@ -28,7 +28,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.utils import off_policy_schedule, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -528,17 +528,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_iter = int(cfg.env.num_envs * world_size)
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
-    learning_starts = (cfg.algo.learning_starts // policy_steps_per_iter) if not cfg.dry_run else 0
-    prefill_steps = learning_starts - int(learning_starts > 0)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        learning_starts += start_iter
-        prefill_steps += start_iter
-
-    # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-    if cfg.checkpoint.resume_from:
-        ratio.load_state_dict(state["ratio"])
+    # Random actions in the iterations up to `learning_starts`, training from `train_starts`
+    learning_starts, train_starts, ratio = off_policy_schedule(
+        cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
+    )
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
@@ -579,11 +574,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # to get the action given the observation and the time taken into the environment
             with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
                 # Sample an action given the observation received by the environment
-                if (
-                    iter_num <= learning_starts
-                    and cfg.checkpoint.resume_from is None
-                    and "minedojo" not in cfg.env.wrapper._target_.lower()
-                ):
+                if iter_num <= learning_starts and "minedojo" not in cfg.env.wrapper._target_.lower():
                     real_actions = actions = np.array(envs.action_space.sample())
                     if not is_continuous:
                         actions = np.concatenate(
@@ -660,8 +651,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 player.init_states(reset_envs=dones_idxes)
 
         # Train the agent
-        if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+        if iter_num >= train_starts:
+            ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
             if per_rank_gradient_steps > 0:
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
