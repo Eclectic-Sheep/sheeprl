@@ -621,8 +621,12 @@ def build_agent(
     )
     encoder = fabric.setup_module(encoder)
     decoder = fabric.setup_module(decoder)
+    # Setting the critic makes the target critic a copy of it: the one of the checkpoint is kept
+    critic_target = agent.critic_target
     agent.actor = fabric.setup_module(agent.actor)
     agent.critic = fabric.setup_module(agent.critic)
+    if agent_state:
+        agent.critic_target = critic_target
 
     # Wrap the target critic with a single-device fabric. This lets the target critic
     # to be on the same device as the agent and to run with the same precision
