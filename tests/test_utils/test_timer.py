@@ -65,3 +65,50 @@ def test_the_training_timer_waits_for_the_gpu(device, disabled, synchronized, mo
         with training_timer(device):
             pass
     assert synchronize.call_count == int(synchronized)
+
+
+def logged_speeds(exp, args, root_dir):
+    """The speeds logged by a dry run of `exp`, with every phase timed 1 second."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    from sheeprl.cli import run
+
+    argv = [os.path.join(ROOT_DIR, "__main__.py"), *RUN_ARGS, f"exp={exp}", *args, f"root_dir={root_dir}"]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(
+                timer, "compute", return_value={"Time/train_time": 1.0, "Time/env_interaction_time": 1.0}
+            ),
+        ):
+            run()
+        events = EventAccumulator(os.path.join("logs", "runs", root_dir, "run", "version_0"))
+        events.Reload()
+        return {tag: [e.value for e in events.Scalars(tag)] for tag in ("Time/sps_train", "Time/sps_env_interaction")}
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "exp,args,gradient_steps",
+    [
+        # 2 environments, 4 steps: 8 samples in 2 minibatches of 4, for 3 epochs
+        (
+            "ppo",
+            ["algo.rollout_steps=4", "algo.per_rank_batch_size=4", "algo.update_epochs=3"],
+            3 * 2,
+        ),
+        # 2 policy steps, replay ratio 2
+        (
+            "sac",
+            ["env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "algo.learning_starts=0", "algo.replay_ratio=2"],
+            2 * 2,
+        ),
+    ],
+)
+def test_the_training_speed_counts_the_gradient_steps(exp, args, gradient_steps):
+    # It counted the training iterations, whatever their gradient steps: its meaning changed with the replay ratio, the
+    # number of environments, the epochs and the minibatches
+    speeds = logged_speeds(exp, [*args, "run_name=run"], f"pytest_speed_{exp}")
+    assert speeds["Time/sps_train"] == [gradient_steps]

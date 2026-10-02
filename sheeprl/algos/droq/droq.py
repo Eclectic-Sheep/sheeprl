@@ -370,7 +370,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     cfg,
                     per_rank_gradient_steps,
                 )
-                train_step += world_size
+                # The gradient steps of all the processes
+                train_step += world_size * per_rank_gradient_steps
                 cumulative_per_rank_gradient_steps += per_rank_gradient_steps
 
         # Log metrics

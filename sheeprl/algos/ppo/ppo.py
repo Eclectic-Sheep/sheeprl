@@ -34,8 +34,8 @@ def train(
     data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
-):
-    """Train the agent on the data collected from the environment."""
+) -> int:
+    """Train the agent on the data collected from the environment and return the gradient steps it did."""
     indexes = list(range(next(iter(data.values())).shape[0]))
     if cfg.buffer.share_data:
         sampler = DistributedSampler(
@@ -101,6 +101,8 @@ def train(
                 aggregator.update("Loss/policy_loss", pg_loss.detach())
                 aggregator.update("Loss/value_loss", v_loss.detach())
                 aggregator.update("Loss/entropy_loss", ent_loss.detach())
+
+    return cfg.algo.update_epochs * len(sampler)
 
 
 @register_algorithm()
@@ -355,8 +357,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
         with training_timer(fabric.device):
-            train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
-        train_step += world_size
+            gradient_steps = train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+        # The gradient steps of all the processes
+        train_step += world_size * gradient_steps
 
         if cfg.metric.log_level > 0:
             # Log lr and coefficients

@@ -359,7 +359,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                             cfg,
                         )
                         cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
+                    # The gradient steps of all the processes
+                    train_step += world_size * per_rank_gradient_steps
                 if aggregator and not aggregator.disabled:
                     aggregator.update("Params/exploration_amount_task", actor_task._get_expl_amount(policy_step))
                     aggregator.update(

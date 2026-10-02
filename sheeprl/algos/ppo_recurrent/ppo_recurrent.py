@@ -36,7 +36,8 @@ def train(
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
-):
+) -> int:
+    """Train the agent on the sequences of the rollout and return the gradient steps it did."""
     num_sequences = data[next(iter(data.keys()))].shape[1]
     if cfg.algo.per_rank_num_batches > 0:
         batch_size = num_sequences // cfg.algo.per_rank_num_batches
@@ -121,6 +122,8 @@ def train(
             aggregator.update("Loss/policy_loss", pg_loss.detach())
             aggregator.update("Loss/value_loss", v_loss.detach())
             aggregator.update("Loss/entropy_loss", ent_loss.detach())
+
+    return gradient_steps
 
 
 @register_algorithm()
@@ -435,8 +438,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         padded_sequences["mask"] = mask.to(device).bool()
 
         with training_timer(fabric.device):
-            train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
-        train_step += world_size
+            gradient_steps = train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
+        # The gradient steps of all the processes
+        train_step += world_size * gradient_steps
 
         fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], policy_step)
         fabric.log("Info/clip_coef", cfg.algo.clip_coef, policy_step)

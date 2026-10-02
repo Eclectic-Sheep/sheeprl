@@ -367,6 +367,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         with training_timer(fabric.device):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+        # One gradient step of every process (the gradients of the minibatches are accumulated)
         train_step += world_size
 
         # Log metrics
