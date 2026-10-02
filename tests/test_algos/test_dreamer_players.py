@@ -1,4 +1,4 @@
-"""The rows the DreamerV3 player writes in the replay buffer."""
+"""The rows the Dreamer players write in the replay buffer."""
 
 from types import SimpleNamespace
 
@@ -6,14 +6,16 @@ import numpy as np
 import pytest
 from lightning import Fabric
 
-from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer as DV2SequencePlayer
+from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer as DV3SequencePlayer
 from sheeprl.core import EnvStep
 from sheeprl.utils.utils import dotdict
 
 
+@pytest.mark.parametrize("player_cls", [DV2SequencePlayer, DV3SequencePlayer])
 @pytest.mark.parametrize("actions_dim", [[3], [3, 5]])
 @pytest.mark.parametrize("num_envs", [1, 4])
-def test_random_actions_are_stored_as_played(actions_dim, num_envs):
+def test_random_actions_are_stored_as_played(actions_dim, num_envs, player_cls):
     # The random actions are written one-hot: with multi-discrete actions and several envs they were mixed between the
     # envs (#10), so the buffer didn't hold the actions the envs played
     rng = np.random.default_rng(0)
@@ -34,16 +36,21 @@ def test_random_actions_are_stored_as_played(actions_dim, num_envs):
     cfg = dotdict(
         {
             "algo": {"cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
-            "buffer": {"validate_args": False},
+            "buffer": {"validate_args": False, "type": "sequential"},
             "env": {"clip_rewards": False},
+            "dry_run": False,
         }
     )
     policy = SimpleNamespace(init_states=lambda reset_envs=None: None)
     schedule = SimpleNamespace(warmup=lambda policy_step: True)
-    player = SequencePlayer(Fabric(accelerator="cpu", devices=1), cfg, policy, schedule, actions_dim, False, True)
+    player = player_cls(Fabric(accelerator="cpu", devices=1), cfg, policy, schedule, actions_dim, False, True)
     for _ in range(20):
         player.step(env, buffer)
 
+    # DreamerV2 writes the first observations before the first step, with a zero action, and every action in the row
+    # of the observation it led to; DreamerV3 writes every action in the row of the observation it was played from
+    if player_cls is DV2SequencePlayer:
+        rows = rows[1:]
     split = np.cumsum(actions_dim)[:-1]
     stored = [np.stack([a.argmax(-1) for a in np.split(row[0], split, axis=-1)], -1) for row in rows]
     np.testing.assert_array_equal(stored, played)

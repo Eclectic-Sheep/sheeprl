@@ -8,7 +8,9 @@ compares.
 
 On `main` the finetuning never writes `truncated` in the buffer (known issue #12, fixed by the port), so `pendulum`,
 whose finetuning plays episodes truncated by the time limit, was recorded with the port: checked against the reference
-of `main` first, the only differences are the 4 `truncated` of the 2 rows ending those episodes (1 instead of 0).
+of `main` first, the only differences are the 4 `truncated` of the 2 rows ending those episodes (1 instead of 0). It
+was recorded again when the continuous actions were normalized to [-1, 1] (#54), checked first: identical with
+`algo.normalize_actions=False` (see `test_dreamer_v2_equivalence.py` for the actions).
 
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.

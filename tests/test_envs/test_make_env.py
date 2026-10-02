@@ -8,6 +8,7 @@ from hydra import compose, initialize_config_module
 from lightning import Fabric
 from omegaconf import OmegaConf
 
+from sheeprl.algos.p2e_dv2.p2e_dv2_finetuning import P2EDV2Finetuning
 from sheeprl.algos.p2e_dv3.p2e_dv3_finetuning import P2EDV3Finetuning
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import dotdict
@@ -37,10 +38,20 @@ def played_actions(cfg: dotdict, actions: List[np.ndarray]) -> List[np.ndarray]:
     return played
 
 
-@pytest.mark.parametrize("exp", ["dreamer_v3", "p2e_dv3_exploration", "p2e_dv3_finetuning"])
-def test_dreamer_v3_plays_normalized_actions(exp):
-    # The actor of DreamerV3 acts in [-1, 1]: Pendulum (±2) gets twice its actions, and the random ones are sampled in
-    # [-1, 1] too (they were sampled in ±2, and the policy could never reach the bounds)
+@pytest.mark.parametrize(
+    "exp",
+    [
+        "dreamer_v3",
+        "p2e_dv3_exploration",
+        "p2e_dv3_finetuning",
+        "dreamer_v2",
+        "p2e_dv2_exploration",
+        "p2e_dv2_finetuning",
+    ],
+)
+def test_dreamers_play_normalized_actions(exp):
+    # The actors of the Dreamers act in [-1, 1]: Pendulum (±2) gets twice their actions, and the random ones are
+    # sampled in [-1, 1] too (they were sampled in ±2, and the policy could never reach the bounds)
     cfg = config([f"exp={exp}", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"])
     env = make_env(cfg, seed=0, rank=0)()
     assert env.action_space == gym.spaces.Box(-1, 1, (1,), np.float32)
@@ -62,15 +73,17 @@ def test_other_algorithms_and_old_configs_play_the_actions_as_they_are():
         np.testing.assert_allclose(played_actions(cfg, [np.array([1.5], np.float32)]), [[1.5]])
 
 
+@pytest.mark.parametrize("algo", ["p2e_dv3", "p2e_dv2"])
 @pytest.mark.parametrize("explored_with", [True, False, None])
-def test_p2e_dv3_finetuning_normalizes_the_actions_as_the_exploration(explored_with):
+def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with, algo):
     overrides = ["env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"]
-    exploration_cfg = config(["exp=p2e_dv3_exploration", *overrides])
+    exploration_cfg = config([f"exp={algo}_exploration", *overrides])
     if explored_with is None:
         # An exploration saved before the option didn't normalize the actions
         del exploration_cfg.algo["normalize_actions"]
     else:
         exploration_cfg.algo.normalize_actions = explored_with
-    cfg = config(["exp=p2e_dv3_finetuning", *overrides])
-    P2EDV3Finetuning(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
+    cfg = config([f"exp={algo}_finetuning", *overrides])
+    finetuning_cls = P2EDV3Finetuning if algo == "p2e_dv3" else P2EDV2Finetuning
+    finetuning_cls(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
     assert cfg.algo.normalize_actions is bool(explored_with)

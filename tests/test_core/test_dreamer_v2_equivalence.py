@@ -6,6 +6,13 @@ every value given to the metric aggregator (the losses, the KL, the entropies an
 step, the episode statistics) and checksums of the final checkpoint (weights, optimizer states, replay ratio). The
 images in the buffer are recorded as checksums. The test runs the same configurations and compares.
 
+Two configurations were recorded again after fixes that change them on purpose, checked against the old reference
+first: `pendulum_truncated` (the continuous actions normalized to [-1, 1], #54: with `algo.normalize_actions=False`
+identical; with it the stored random actions are exactly half the old ones and Pendulum receives twice the stored
+actions) and `dummy_multidiscrete` (the random multi-discrete actions of several envs stored as played, #10: every
+stored action is now the played one, 3 of the 16 steps were not, and the rows before the first wrong one are
+otherwise identical).
+
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
 
@@ -125,8 +132,7 @@ CONFIGS: Dict[str, List[str]] = {
         "buffer.type=episode",
         "buffer.prioritize_ends=True",
     ],
-    # Multi-discrete actions, episodes truncated every 5 steps (the random actions of the 2 envs are one-hot encoded
-    # as `main` does, #10)
+    # Multi-discrete actions, episodes truncated every 5 steps
     "dummy_multidiscrete": [
         "env=dummy",
         "env.id=multidiscrete_dummy",
