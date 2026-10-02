@@ -225,6 +225,8 @@ def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
             mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
             mock.patch.object(sys, "argv", argv),
             mock.patch.object(algo_module, "policy_entropy", recording_entropy),
+            # The task actor of P2E-DV3 learns as the actor of DreamerV3
+            mock.patch("sheeprl.algos.dreamer_v3.dreamer_v3.policy_entropy", recording_entropy),
         ):
             run()
     finally:
