@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import prod
+from math import prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -11,7 +11,17 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+from sheeprl.utils.model import per_layer_ortho_init_weights
 from sheeprl.utils.utils import safeatanh, safetanh
+
+
+def ortho_init_linear_layers(module: nn.Module, gain: float, output_gain: Optional[float] = None) -> None:
+    """Orthogonal weights with `gain` and zero biases for every linear layer of `module`; with `output_gain`, the last
+    linear layer (the output of an MLP) gets that gain instead."""
+    linear_layers = [m for m in module.modules() if isinstance(m, nn.Linear)]
+    for i, layer in enumerate(linear_layers):
+        is_output = output_gain is not None and i == len(linear_layers) - 1
+        per_layer_ortho_init_weights(layer, gain=output_gain if is_output else gain)
 
 
 class CNNEncoder(nn.Module):
@@ -179,6 +189,14 @@ class PPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous, self.distribution)
+        # Orthogonal initialization as in the PPO implementation details (https://iclr-blog-track.github.io/2022/03/25/
+        # ppo-implementation-details/): hidden layers with gain sqrt(2), the actor's heads with 0.01 (an almost uniform
+        # initial policy) and the critic's output with 1
+        if actor_cfg.ortho_init:
+            ortho_init_linear_layers(actor_backbone, gain=sqrt(2))
+            ortho_init_linear_layers(actor_heads, gain=0.01)
+        if critic_cfg.ortho_init:
+            ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
     def _normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
