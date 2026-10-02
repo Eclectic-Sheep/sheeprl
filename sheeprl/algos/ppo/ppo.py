@@ -19,7 +19,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -89,12 +89,7 @@ def train(
 
                 # Equation (9) in the paper
                 loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
-
-                optimizer.zero_grad(set_to_none=True)
-            fabric.backward(loss)
-            if cfg.algo.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-            optimizer.step()
+            update(fabric, loss, optimizer, cfg.algo.max_grad_norm)
 
             # Update metrics
             if aggregator and not aggregator.disabled:
