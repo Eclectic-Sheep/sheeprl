@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -118,6 +118,22 @@ def build_buffer(
             memmap_dir=memmap_dir,
         )
     raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+
+
+def actor_objective(
+    objective_mix: Optional[float], is_continuous: bool, dynamics: Tensor, reinforce: Callable[[], Tensor]
+) -> Tensor:
+    """The objective of the DreamerV2 actor: `objective_mix` times the REINFORCE objective (`reinforce()`) plus
+    `1 - objective_mix` times the dynamics backpropagation (`dynamics`, the lambda-values). `None` (the default of
+    `algo.actor.objective_mix`): the dynamics for continuous actions, REINFORCE for discrete ones, as DreamerV2 does
+    (`actor_grad: auto`)."""
+    if objective_mix is None:
+        objective_mix = 0.0 if is_continuous else 1.0
+    if objective_mix == 0:
+        return dynamics
+    if objective_mix == 1:
+        return reinforce()
+    return objective_mix * reinforce() + (1 - objective_mix) * dynamics
 
 
 def compute_lambda_values(

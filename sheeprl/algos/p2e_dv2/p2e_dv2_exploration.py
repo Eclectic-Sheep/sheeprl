@@ -18,7 +18,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import build_buffer, compute_lambda_values, prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, compute_lambda_values, prepare_obs, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
@@ -285,21 +285,19 @@ def train(
 
         actor_exploration_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor_exploration(imagined_trajectories[:-2].detach())[1]
-        if is_continuous:
-            objective = lambda_values_exploration[1:]
-        else:
-            baseline = target_critic_exploration(imagined_trajectories)
-            advantage = (lambda_values_exploration[1:] - baseline[:-2]).detach()
-            objective = (
-                torch.stack(
-                    [
-                        p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                        for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                    ],
-                    -1,
-                ).sum(-1)
-                * advantage
-            )
+
+        def reinforce() -> Tensor:
+            advantage = (lambda_values_exploration[1:] - predicted_target_values_exploration[:-2]).detach()
+            logprobs = [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ]
+            return torch.stack(logprobs, -1).sum(-1) * advantage
+
+        # Dynamics backpropagation (the lambda-values) and REINFORCE
+        objective = actor_objective(
+            cfg.algo.actor.objective_mix, is_continuous, lambda_values_exploration[1:], reinforce
+        )
         try:
             entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
         except NotImplementedError:
@@ -377,21 +375,17 @@ def train(
 
         actor_task_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor_task(imagined_trajectories[:-2].detach())[1]
-        if is_continuous:
-            objective = lambda_values_task[1:]
-        else:
-            baseline = target_critic_task(imagined_trajectories)
-            advantage = (lambda_values_task[1:] - baseline[:-2]).detach()
-            objective = (
-                torch.stack(
-                    [
-                        p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                        for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                    ],
-                    -1,
-                ).sum(-1)
-                * advantage
-            )
+
+        def reinforce() -> Tensor:
+            advantage = (lambda_values_task[1:] - predicted_target_values_task[:-2]).detach()
+            logprobs = [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ]
+            return torch.stack(logprobs, -1).sum(-1) * advantage
+
+        # Dynamics backpropagation (the lambda-values) and REINFORCE
+        objective = actor_objective(cfg.algo.actor.objective_mix, is_continuous, lambda_values_task[1:], reinforce)
         try:
             entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
         except NotImplementedError:
