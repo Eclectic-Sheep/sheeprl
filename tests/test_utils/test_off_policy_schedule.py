@@ -1,5 +1,6 @@
 """When an off-policy run plays random actions and trains, also when it resumes (`off_policy_schedule`)."""
 
+import warnings
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pytest
@@ -65,3 +66,26 @@ def test_a_resumed_run_without_its_buffer_fills_a_new_one_with_its_policy():
     # starts as in a new run
     assert random == []
     assert steps == [0, 0, 0, 0, 2, 2, 2]
+
+
+def test_the_ratio_of_a_checkpoint_counting_from_another_start_is_realigned():
+    # A run resumed by an older version counted the steps of its ratio from where it resumed (here 4 iterations later):
+    # its checkpoint, resumed, would do all the gradient steps of those iterations at once
+    _, full_steps, ratio = schedule(range(1, 9))
+    state = ratio.state_dict()
+    state["_prev"] -= 4 * POLICY_STEPS_PER_ITER
+    with pytest.warns(UserWarning, match="instead of doing 8 gradient steps at once"):
+        _, steps, _ = schedule(range(9, 12), state={"ratio": state})
+    assert steps == [2, 2, 2]
+
+
+@pytest.mark.parametrize("replay_ratio", [0.25, 0.5, 1.0, 3.0])
+def test_a_consistent_ratio_is_not_realigned(replay_ratio):
+    ratio = Ratio(replay_ratio)
+    for step in range(1, 20, 3):
+        ratio(step)
+    state = ratio.state_dict()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ratio.realign(19)
+    assert ratio.state_dict() == state
