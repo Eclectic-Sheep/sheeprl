@@ -62,6 +62,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     cfg.algo.critic = exploration_cfg.algo.critic
     # Rewards must be clipped in the same way as during exploration
     cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+    # And the actions normalized in the same way (an exploration saved before the option didn't normalize them)
+    cfg.algo.normalize_actions = exploration_cfg.algo.get("normalize_actions", False)
     # If the buffer is the same of the exploration, then we have to mantain the same number
     # of environments:
     #   - With less environments, you will replay too old experiences after a certain number of steps.
