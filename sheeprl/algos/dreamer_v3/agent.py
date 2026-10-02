@@ -649,7 +649,10 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
+            # since the states of the environments are then reset one by one
+            self.recurrent_state = recurrent_state.clone()
             self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
