@@ -1,8 +1,9 @@
-"""DreamerV1 (and P2E-DV1): the continue loss."""
+"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise."""
 
 import os
 import shutil
 import sys
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -11,6 +12,7 @@ from torch.distributions import Bernoulli, Independent, Normal
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v2.agent import Actor
 
 DREAMER_ARGS = [
     "hydra/job_logging=disabled",
@@ -77,3 +79,23 @@ def test_the_continue_model_is_trained(exp):
     run_dreamer_v1(
         [f"exp={exp}", "env.id=discrete_dummy", "algo.world_model.use_continues=True"], f"pytest_{exp}_continues"
     )
+
+
+def test_the_exploration_noise_halves_every_decay_steps():
+    # The amount was `0.5 ** step / decay`: `expl_min` from the first steps
+    actor = SimpleNamespace(_expl_amount=0.4, _expl_decay=1000, _expl_min=0.05)
+    for step, amount in ((0, 0.4), (1000, 0.2), (2000, 0.1), (4000, 0.05)):
+        assert Actor._get_expl_amount(actor, step) == pytest.approx(amount)
+
+
+def test_each_environment_explores_on_its_own():
+    # One random draw decided for all the environments whether they played a random action
+    torch.manual_seed(0)
+    num_envs = 1000
+    actions = torch.nn.functional.one_hot(torch.zeros(1, num_envs, dtype=torch.long), 4).float()
+    actor = SimpleNamespace(is_continuous=False, _get_expl_amount=lambda step: 0.5)
+    (explored,) = Actor.add_exploration_noise(actor, [actions])
+    assert explored.shape == actions.shape
+    changed = (explored != actions).any(-1).sum().item()
+    # About half of the envs explore, and 3/4 of the random actions differ from the played one
+    assert 300 < changed < 450, changed
