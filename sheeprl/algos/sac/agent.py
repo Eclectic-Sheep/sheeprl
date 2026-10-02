@@ -345,9 +345,13 @@ def build_agent(
         action_high=action_space.high,
     )
 
-    # Setup training agent
+    # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
+    # are kept
+    qfs_target = agent.qfs_target
     agent.actor = fabric.setup_module(agent.actor)
     agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+    if agent_state:
+        agent.qfs_target = qfs_target
 
     # Wrap the target q-functions with a single-device fabric. This let the target q-functions
     # to be on the same device as the agent and to run with the same precision
