@@ -53,16 +53,13 @@ class DreamerV1State(TrainState):
 class SequencePlayer:
     """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
 
-    Every row holds an observation, the action that led to it and the reward, `terminated` and `truncated` of that step.
-    The first row of every environment holds its first observation, with a zero action. When an episode ends, its row
-    holds the final observation, and a further row the first observation of the new episode (zero action and reward).
+    Every row holds an observation, the action that led to it and the reward, `terminated`, `truncated` and `is_first`
+    of that step. The first row of every environment holds its first observation, with a zero action and `is_first`.
+    When an episode ends, its row holds the final observation, and a further row the first observation of the new
+    episode (zero action and reward, `is_first`).
 
     With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
     `policy` (`PlayerDV1`) with its exploration noise, and its recurrent state is reset at the start of every episode.
-
-    `stack_discrete_actions` is False for the loops that gave the environments the indices of their discrete actions
-    concatenated instead of stacked (known issue #10), which mixes up the actions of different environments when
-    there are several discrete actions (multi-discrete).
     """
 
     def __init__(
@@ -74,7 +71,6 @@ class SequencePlayer:
         actions_dim: Sequence[int],
         is_continuous: bool,
         random_warmup: bool,
-        stack_discrete_actions: bool,
     ) -> None:
         self.fabric = fabric
         self.cfg = cfg
@@ -83,7 +79,6 @@ class SequencePlayer:
         self.actions_dim = actions_dim
         self.is_continuous = is_continuous
         self.random_warmup = random_warmup
-        self.stack_discrete_actions = stack_discrete_actions
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
         self.started = False
 
@@ -97,6 +92,7 @@ class SequencePlayer:
             step_data["truncated"] = np.zeros((1, num_envs, 1))
             step_data["actions"] = np.zeros((1, num_envs, sum(self.actions_dim)))
             step_data["rewards"] = np.zeros((1, num_envs, 1))
+            step_data["is_first"] = np.ones((1, num_envs, 1))
             buffer.add(step_data, validate_args=cfg.buffer.validate_args)
             self.policy.init_states()
             self.started = True
@@ -105,12 +101,12 @@ class SequencePlayer:
         if self.random_warmup and self.schedule.warmup(env.policy_step):
             real_actions = actions = np.array(env.random_actions())
             if not self.is_continuous:
-                # Known issue #10: the random actions of several environments are one-hot encoded by reading them
-                # column by column, which mixes them up when there are several discrete actions (multi-discrete)
+                # One row per environment, one column per discrete action: one-hot each column
+                per_action = actions.reshape(num_envs, len(self.actions_dim)).T
                 actions = np.concatenate(
                     [
                         F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(actions.reshape(len(self.actions_dim), -1), self.actions_dim)
+                        for act, act_dim in zip(per_action, self.actions_dim)
                     ],
                     axis=-1,
                 )
@@ -126,8 +122,7 @@ class SequencePlayer:
             if self.is_continuous:
                 real_actions = torch.stack(real_actions, -1).cpu().numpy()
             else:
-                join = torch.stack if self.stack_discrete_actions else torch.cat
-                real_actions = join([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+                real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         step = env.step(real_actions)
         dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
@@ -140,11 +135,12 @@ class SequencePlayer:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
         step_data = {k: real_next_obs[k][np.newaxis] for k in self.obs_keys}
-        step_data["terminated"] = step.terminated[np.newaxis]
-        step_data["truncated"] = step.truncated[np.newaxis]
-        step_data["actions"] = actions[np.newaxis]
+        step_data["terminated"] = step.terminated.reshape((1, num_envs, -1))
+        step_data["truncated"] = step.truncated.reshape((1, num_envs, -1))
+        step_data["actions"] = actions.reshape((1, num_envs, -1))
         rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
-        step_data["rewards"] = rewards[np.newaxis]
+        step_data["rewards"] = rewards.reshape((1, num_envs, -1))
+        step_data["is_first"] = np.zeros((1, num_envs, 1))
         buffer.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # The episodes that have just ended get a row with the first observation of the new episode
@@ -156,6 +152,7 @@ class SequencePlayer:
             reset_data["truncated"] = np.zeros((1, reset_envs, 1))
             reset_data["actions"] = np.zeros((1, reset_envs, np.sum(self.actions_dim)))
             reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+            reset_data["is_first"] = np.ones((1, reset_envs, 1))
             buffer.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
             self.policy.init_states(reset_envs=dones_idxes)
 
@@ -191,6 +188,10 @@ def world_model_learning(
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
 
+    # Every sequence starts from the zero state, as an episode does: its first step is treated as the first one of an
+    # episode (its action, which comes from before the sequence, is not seen)
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
+
     # The states start from zero at the beginning of every sequence: (1, batch_size, state_size)
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, stochastic_size, device=device)
@@ -204,9 +205,13 @@ def world_model_learning(
         for i in range(0, sequence_length):
             # One step of dynamic learning, which takes the posterior state, the recurrent state, the action and the
             # observation and computes the next recurrent and posterior states, and the distributions of the
-            # posterior and of the prior
+            # posterior and of the prior. The states are reset at the start of every episode
             recurrent_state, posterior, _, posterior_mean_std, prior_mean_std = world_model.rssm.dynamic(
-                posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+                posterior,
+                recurrent_state,
+                data["actions"][i : i + 1],
+                embedded_obs[i : i + 1],
+                data["is_first"][i : i + 1],
             )
             recurrent_states.append(recurrent_state)
             posteriors.append(posterior)
@@ -476,6 +481,7 @@ class DreamerV1(Algorithm):
             cfg.algo.world_model.stochastic_size,
             cfg.algo.world_model.recurrent_model.recurrent_state_size,
             self.fabric.device,
+            min_std=cfg.algo.world_model.min_std,
         )
 
     def player(self, state: DreamerV1State) -> SequencePlayer:
@@ -489,7 +495,6 @@ class DreamerV1(Algorithm):
             self.actions_dim,
             self.is_continuous,
             random_warmup,
-            stack_discrete_actions=False,
         )
 
     def batches(

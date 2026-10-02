@@ -496,7 +496,8 @@ class Actor(nn.Module):
     def _get_expl_amount(self, step: int) -> Tensor:
         amount = self._expl_amount
         if self._expl_decay:
-            amount *= 0.5 ** float(step) / self._expl_decay
+            # Halved every `expl_decay` steps
+            amount *= 0.5 ** (float(step) / self._expl_decay)
         return max(amount, self._expl_min)
 
     def forward(
@@ -565,9 +566,9 @@ class Actor(nn.Module):
             expl_actions = []
             for act in actions:
                 sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
-                )
+                # A random action with probability `expl_amount`, drawn for every environment
+                explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+                expl_actions.append(torch.where(explore, sample, act))
         return tuple(expl_actions)
 
 

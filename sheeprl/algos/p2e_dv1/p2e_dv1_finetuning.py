@@ -71,6 +71,8 @@ class P2EDV1Finetuning(Algorithm):
             cfg.algo.critic = exploration_cfg.algo.critic
             # Rewards must be clipped in the same way as during exploration
             cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+            # And the actions normalized in the same way (an exploration saved before the option didn't normalize them)
+            cfg.algo.normalize_actions = exploration_cfg.algo.get("normalize_actions", False)
             # If the buffer is the same of the exploration, then we have to mantain the same number
             # of environments:
             #   - With less environments, you will replay too old experiences after a certain number of steps.
@@ -145,6 +147,7 @@ class P2EDV1Finetuning(Algorithm):
             cfg.algo.world_model.recurrent_model.recurrent_state_size,
             self.fabric.device,
             actor_type=actor_type,
+            min_std=cfg.algo.world_model.min_std,
         )
 
     def player(self, state: P2EDV1FinetuningState) -> SequencePlayer:
@@ -161,7 +164,6 @@ class P2EDV1Finetuning(Algorithm):
             self.actions_dim,
             self.is_continuous,
             random_warmup=False,
-            stack_discrete_actions=True,
         )
 
     def batches(

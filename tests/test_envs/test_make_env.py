@@ -8,6 +8,7 @@ from hydra import compose, initialize_config_module
 from lightning import Fabric
 from omegaconf import OmegaConf
 
+from sheeprl.algos.p2e_dv1.p2e_dv1_finetuning import P2EDV1Finetuning
 from sheeprl.algos.p2e_dv2.p2e_dv2_finetuning import P2EDV2Finetuning
 from sheeprl.algos.p2e_dv3.p2e_dv3_finetuning import P2EDV3Finetuning
 from sheeprl.utils.env import make_env
@@ -47,6 +48,9 @@ def played_actions(cfg: dotdict, actions: List[np.ndarray]) -> List[np.ndarray]:
         "dreamer_v2",
         "p2e_dv2_exploration",
         "p2e_dv2_finetuning",
+        "dreamer_v1",
+        "p2e_dv1_exploration",
+        "p2e_dv1_finetuning",
     ],
 )
 def test_dreamers_play_normalized_actions(exp):
@@ -73,7 +77,7 @@ def test_other_algorithms_and_old_configs_play_the_actions_as_they_are():
         np.testing.assert_allclose(played_actions(cfg, [np.array([1.5], np.float32)]), [[1.5]])
 
 
-@pytest.mark.parametrize("algo", ["p2e_dv3", "p2e_dv2"])
+@pytest.mark.parametrize("algo", ["p2e_dv3", "p2e_dv2", "p2e_dv1"])
 @pytest.mark.parametrize("explored_with", [True, False, None])
 def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with, algo):
     overrides = ["env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"]
@@ -84,6 +88,6 @@ def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with,
     else:
         exploration_cfg.algo.normalize_actions = explored_with
     cfg = config([f"exp={algo}_finetuning", *overrides])
-    finetuning_cls = P2EDV3Finetuning if algo == "p2e_dv3" else P2EDV2Finetuning
+    finetuning_cls = {"p2e_dv3": P2EDV3Finetuning, "p2e_dv2": P2EDV2Finetuning, "p2e_dv1": P2EDV1Finetuning}[algo]
     finetuning_cls(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
     assert cfg.algo.normalize_actions is bool(explored_with)

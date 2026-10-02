@@ -129,6 +129,7 @@ class P2EDV1Exploration(Algorithm):
             cfg.algo.world_model.recurrent_model.recurrent_state_size,
             self.fabric.device,
             actor_type=actor_type,
+            min_std=cfg.algo.world_model.min_std,
         )
 
     def player(self, state: P2EDV1ExplorationState) -> SequencePlayer:
@@ -142,7 +143,6 @@ class P2EDV1Exploration(Algorithm):
             self.actions_dim,
             self.is_continuous,
             random_warmup,
-            stack_discrete_actions=False,
         )
 
     def batches(

@@ -66,10 +66,10 @@ def reconstruction_loss(
             Default to 3.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
-        qc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
-            0s for the entries that are relative to a terminal step, 1s otherwise.
+        qc (Bernoulli, optional): the predicted Bernoulli distribution of the continuation of the episodes.
             Default to None.
-        continue_targets (Tensor, optional): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        continue_targets (Tensor, optional): the discount (gamma) for the steps that don't end the episode, 0 for the
+            terminal ones.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
@@ -88,7 +88,7 @@ def reconstruction_loss(
     free_nats = torch.full_like(kl, kl_free_nats)
     state_loss = torch.max(kl, free_nats)
     if qc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * qc.log_prob(continue_targets)
+        continue_loss = continue_scale_factor * -qc.log_prob(continue_targets).mean()
     else:
         continue_loss = torch.zeros_like(reward_loss)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss

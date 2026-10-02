@@ -6,7 +6,13 @@ every value given to the metric aggregator (the losses, the KL, the entropies an
 step, the episode statistics) and checksums of the final checkpoint (weights, optimizer states, replay ratio). The
 images in the buffer are recorded as checksums. The test runs the same configurations and compares.
 
-The continue model (`algo.world_model.use_continues`) is not covered: it crashes on `main` (known issue #11).
+All the configurations were recorded again after the fixes of DreamerV1 and P2E-DV1 (#10, #11, #17, #24, #54, #59, #60),
+checked against the reference of `main` first: with every fix disabled the code gave it exactly; with one fix enabled
+only the configurations it concerns changed: the multi-discrete ones (#10: the actions stored as played), the one with
+an exploration decay (#17), the Pendulum ones (#54: the actions normalized to [-1, 1]), the discrete ones with
+exploration noise (#59: a random draw per environment), all those that train on sequences (#24: the episode starts in
+the sequences); #60 changes none (they use the default minimum std). The continue model
+(`algo.world_model.use_continues`), which crashed on `main` (#11), is now used by the Pendulum configurations.
 
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
@@ -89,15 +95,15 @@ CONFIGS: Dict[str, List[str]] = {
         "algo.replay_ratio=0.25",
         "algo.per_rank_pretrain_steps=16",
     ],
-    # Continuous actions with a decay of the exploration noise (with known issue #17 the noise is `expl_min` from the
-    # first step), episodes truncated by the time limit, 2 gradient steps per iteration, rewards squashed with tanh,
-    # buffer in memory
+    # Continuous actions with a decay of the exploration noise, episodes truncated by the time limit, the continue
+    # model, 2 gradient steps per iteration, rewards squashed with tanh, buffer in memory
     "pendulum_truncated": [
         "env=gym",
         "env.id=Pendulum-v1",
         "env.max_episode_steps=6",
         "env.clip_rewards=True",
         *VECTORS,
+        "algo.world_model.use_continues=True",
         "algo.total_steps=32",
         "algo.replay_ratio=1",
         "algo.actor.expl_decay=1000",
