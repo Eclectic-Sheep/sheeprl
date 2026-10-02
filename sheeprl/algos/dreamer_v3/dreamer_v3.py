@@ -63,7 +63,6 @@ def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "mlp_decoder_keys": tuple(cfg.algo.mlp_keys.decoder),
         "stochastic_size": world_model_cfg.stochastic_size,
         "discrete_size": world_model_cfg.discrete_size,
-        "recurrent_state_size": world_model_cfg.recurrent_model.recurrent_state_size,
         "decoupled_rssm": bool(world_model_cfg.decoupled_rssm),
         "kl_dynamic": world_model_cfg.kl_dynamic,
         "kl_representation": world_model_cfg.kl_representation,
@@ -83,7 +82,6 @@ def world_model_loss(
     mlp_decoder_keys: Sequence[str],
     stochastic_size: int,
     discrete_size: int,
-    recurrent_state_size: int,
     decoupled_rssm: bool,
     kl_dynamic: float,
     kl_representation: float,
@@ -114,7 +112,6 @@ def world_model_loss(
     # Dones:         0        d1       d2       d3
     # Is-first       1        i1       i2       i3
     sequence_length, batch_size = data["actions"].shape[:2]
-    device = data["actions"].device
     batch_obs = {k: data[k] / 255.0 - 0.5 for k in cnn_keys}
     batch_obs.update({k: data[k] for k in mlp_keys})
 
@@ -122,15 +119,15 @@ def world_model_loss(
     # and add the first one as the zero action
     batch_actions = torch.cat((torch.zeros_like(data["actions"][:1]), data["actions"][:-1]), dim=0)
 
-    # Dynamic Learning
-    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-
     # Embed observations from the environment
     embedded_obs = world_model.encoder(batch_obs)
 
     # The outputs of every step are concatenated at the end of the unroll: writing them in place into
     # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
-    recurrent_states, priors_logits = [], []
+    recurrent_states = []
+    # The initial states, where the episodes start, are the same at every step
+    initial_states = world_model.rssm.get_initial_states((1, batch_size))
+    recurrent_state = torch.zeros_like(initial_states[0])
     if decoupled_rssm:
         posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
         for i in range(0, sequence_length):
@@ -138,33 +135,37 @@ def world_model_loss(
                 posterior = torch.zeros_like(posteriors[:1])
             else:
                 posterior = posteriors[i - 1 : i]
-            recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
+            recurrent_state = world_model.rssm.dynamic(
                 posterior,
                 recurrent_state,
                 batch_actions[i : i + 1],
                 data["is_first"][i : i + 1],
+                initial_states,
             )
             recurrent_states.append(recurrent_state)
-            priors_logits.append(prior_logits)
     else:
-        posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+        posterior = torch.zeros_like(initial_states[1])
         posteriors, posteriors_logits = [], []
+        # The part of the representation model that depends on the observations, for the whole sequence at once
+        observations_projection = world_model.rssm.project_observations(embedded_obs)
         for i in range(0, sequence_length):
-            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+            recurrent_state, posterior, posterior_logits = world_model.rssm.dynamic(
                 posterior,
                 recurrent_state,
                 batch_actions[i : i + 1],
-                embedded_obs[i : i + 1],
+                observations_projection[i : i + 1],
                 data["is_first"][i : i + 1],
+                initial_states,
+                projected=True,
             )
             recurrent_states.append(recurrent_state)
-            priors_logits.append(prior_logits)
             posteriors.append(posterior)
             posteriors_logits.append(posterior_logits)
         posteriors = torch.cat(posteriors, dim=0)
         posteriors_logits = torch.cat(posteriors_logits, dim=0)
     recurrent_states = torch.cat(recurrent_states, dim=0)
-    priors_logits = torch.cat(priors_logits, dim=0)
+    # The priors don't take part in the recurrence: computed for the whole sequence at once
+    priors_logits = world_model.rssm.prior_logits(recurrent_states)
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     # Compute predictions for the observations
@@ -422,7 +423,10 @@ def behaviour_learning(
         clipping (`actor_grads`, `critic_grads`).
     """
     metrics = {}
-    with autocast_cache_scope(fabric):
+    # The actor learns the discrete actions by REINFORCE, from the imagined actions and the lambda-values without
+    # their gradients: the imagination needs a computational graph only for the continuous actions (dynamics
+    # backpropagation)
+    with autocast_cache_scope(fabric), torch.set_grad_enabled(is_continuous):
         imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = imagine(
             world_model,
             actor,
@@ -434,6 +438,7 @@ def behaviour_learning(
             gamma=cfg.algo.gamma,
             lmbda=cfg.algo.lmbda,
         )
+    with autocast_cache_scope(fabric):
         actor_optimizer.zero_grad(set_to_none=True)
         # The normalization of the returns, from their percentiles
         offset, invscale = moments(lambda_values, fabric)
