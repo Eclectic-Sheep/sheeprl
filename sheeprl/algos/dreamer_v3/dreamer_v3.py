@@ -695,6 +695,11 @@ class DreamerV3(Algorithm):
         world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
         if world_model.continue_model:
             world_model.continue_model = setup_module(fabric, world_model.continue_model)
+        if fabric.device.type == "cuda":
+            # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
+            # activations from and to it (the values of the weights don't change)
+            world_model.encoder.to(memory_format=torch.channels_last)
+            world_model.observation_model.to(memory_format=torch.channels_last)
         actor = setup_module(fabric, actor)
         critic = setup_module(fabric, critic)
         target_critic = setup_module(fabric, copy.deepcopy(critic.module))
