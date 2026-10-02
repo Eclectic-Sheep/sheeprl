@@ -340,21 +340,18 @@ def test_cuda_graphs_are_used_only_in_the_tested_precisions(monkeypatch):
         assert dreamer_v3.compile_mode(cfg) is None
 
 
-def test_the_losses_are_compiled_only_when_enabled_on_a_single_device(monkeypatch):
-    monkeypatch.setattr(dreamer_v3, "_WARNED", {})
+@pytest.mark.parametrize("strategy", ["auto", "ddp"])
+def test_the_losses_are_compiled_only_when_enabled(monkeypatch, strategy):
     monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
-    fabric = Fabric(accelerator="cpu", devices=1)
+    fabric = Fabric(accelerator="cpu", devices=1, strategy=strategy)
     cfg = dotdict({"algo": {"compile": {"enabled": False, "mode": None}}, "fabric": {"precision": "32-true"}})
     assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is dreamer_v3.world_model_loss
+    # Also with the strategy of several processes: the modules are not wrapped by DistributedDataParallel, whose forward
+    # isn't traced by `torch.compile`
     cfg.algo.compile.enabled = True
-    assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is not dreamer_v3.world_model_loss
-    # With several processes the modules are wrapped by DistributedDataParallel: the losses run eagerly
-    fabric = Fabric(accelerator="cpu", devices=1, strategy="ddp")
-    with pytest.warns(UserWarning, match="only on a single device"):
-        assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is dreamer_v3.world_model_loss
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        dreamer_v3.compiled(dreamer_v3.critic_loss, fabric, cfg)
+        assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is not dreamer_v3.world_model_loss
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")

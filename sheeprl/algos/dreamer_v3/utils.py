@@ -37,22 +37,6 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"world_model", "actor", "critic", "target_critic", "moments"}
 
 
-def average_initial_state_gradient(fabric: Fabric, rssm: nn.Module) -> None:
-    """Average the gradient of the learnable initial recurrent state of `rssm` over the processes.
-
-    The other weights of the world model are in modules wrapped by DDP, which averages their gradients during the
-    backward pass; the initial recurrent state belongs to the RSSM itself, which is not wrapped: without this, every
-    process would train its own.
-    """
-    initial_recurrent_state = getattr(rssm, "initial_recurrent_state", None)
-    if (
-        fabric.world_size > 1
-        and isinstance(initial_recurrent_state, nn.Parameter)
-        and initial_recurrent_state.grad is not None
-    ):
-        initial_recurrent_state.grad = fabric.all_reduce(initial_recurrent_state.grad, reduce_op="mean")
-
-
 class Moments(nn.Module):
     def __init__(
         self,

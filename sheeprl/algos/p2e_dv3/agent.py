@@ -14,7 +14,7 @@ from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -146,7 +146,7 @@ def build_agent(
                 critics_exploration[k]["module"].model[-1].apply(uniform_init_weights(0.0))
             if critics_exploration_state:
                 critics_exploration[k]["module"].load_state_dict(critics_exploration_state[k]["module"])
-            critics_exploration[k]["module"] = fabric.setup_module(critics_exploration[k]["module"])
+            critics_exploration[k]["module"] = setup_module(fabric, critics_exploration[k]["module"])
             critics_exploration[k]["target_module"] = copy.deepcopy(critics_exploration[k]["module"].module)
             if critics_exploration_state:
                 critics_exploration[k]["target_module"].load_state_dict(critics_exploration_state[k]["target_module"])
@@ -166,7 +166,7 @@ def build_agent(
         actor_exploration.load_state_dict(actor_exploration_state)
 
     # Setup exploration models with Fabric
-    actor_exploration = fabric.setup_module(actor_exploration)
+    actor_exploration = setup_module(fabric, actor_exploration)
 
     # Set requires_grad=False for all target critics
     target_critic_task.requires_grad_(False)
@@ -203,7 +203,7 @@ def build_agent(
     if ensembles_state:
         ensembles.load_state_dict(ensembles_state)
     for i in range(len(ensembles)):
-        ensembles[i] = fabric.setup_module(ensembles[i])
+        ensembles[i] = setup_module(fabric, ensembles[i])
 
     # Setup player agent
     if cfg.algo.player.actor_type == "exploration":

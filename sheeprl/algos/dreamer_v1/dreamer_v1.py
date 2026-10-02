@@ -22,7 +22,7 @@ from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import env_buffer_size, prepare_obs, sample_batches, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -205,7 +205,6 @@ def train(
         priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
         # world model optimization step
-        world_optimizer.zero_grad(set_to_none=True)
         # compute the overall loss of the world model
         rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
             qo,
@@ -220,16 +219,9 @@ def train(
             continues_targets,
             cfg.algo.world_model.continue_scale_factor,
         )
-    fabric.backward(rec_loss)
-    world_model_grads = None
-    if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
-        world_model_grads = fabric.clip_gradients(
-            module=world_model,
-            optimizer=world_optimizer,
-            max_norm=cfg.algo.world_model.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    world_optimizer.step()
+    world_model_grads = update(
+        fabric, rec_loss, world_optimizer, cfg.algo.world_model.clip_gradients, error_if_nonfinite=False
+    )
 
     # Behaviour Learning
     with autocast_cache_scope(fabric):
@@ -331,19 +323,9 @@ def train(
             )
 
         # actor optimization step
-        actor_optimizer.zero_grad(set_to_none=True)
         # compute the policy loss
         policy_loss = actor_loss(discount * lambda_values)
-    fabric.backward(policy_loss)
-    actor_grads = None
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_grads = fabric.clip_gradients(
-            module=actor,
-            optimizer=actor_optimizer,
-            max_norm=cfg.algo.actor.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    actor_optimizer.step()
+    actor_grads = update(fabric, policy_loss, actor_optimizer, cfg.algo.actor.clip_gradients, error_if_nonfinite=False)
 
     with autocast_cache_scope(fabric):
         # Predict the values distribution only for the first H (horizon) imagined states
@@ -353,22 +335,14 @@ def train(
         qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
 
         # critic optimization step
-        critic_optimizer.zero_grad(set_to_none=True)
         # compute the value loss
         # the discount has shape (horizon, seuqence_length * batch_size, 1), so,
         # it is necessary to remove the last dimension to properly match the shapes
         # for the log prob
         value_loss = critic_loss(qv, lambda_values.detach(), discount[..., 0])
-    fabric.backward(value_loss)
-    critic_grads = None
-    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-        critic_grads = fabric.clip_gradients(
-            module=critic,
-            optimizer=critic_optimizer,
-            max_norm=cfg.algo.critic.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    critic_optimizer.step()
+    critic_grads = update(
+        fabric, value_loss, critic_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+    )
 
     # Log metrics
     if aggregator and not aggregator.disabled:

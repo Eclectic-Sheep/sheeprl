@@ -17,7 +17,7 @@ from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import init_weights
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -514,16 +514,16 @@ def build_agent(
         critic.load_state_dict(critic_state)
 
     # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
     if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    actor = setup_module(fabric, actor)
+    critic = setup_module(fabric, critic)
 
     # The player plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
     # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
