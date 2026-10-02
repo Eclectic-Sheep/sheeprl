@@ -6,7 +6,7 @@ import gymnasium as gym
 from lightning import Fabric
 
 from sheeprl.algos.dreamer_v1.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV1
-from sheeprl.algos.p2e_dv1.agent import build_agent
+from sheeprl.core import Algorithm
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -52,6 +52,17 @@ MODELS_TO_REGISTER = {
 }
 
 
+def trained_algorithm(fabric: Fabric, cfg: Dict[str, Any]) -> Algorithm:
+    """The algorithm of a P2E-DV1 run (`cfg`), to rebuild its trained models: the exploration, or the finetuning
+    without the exploration it started from (its configuration already holds the values of the exploration)."""
+    from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import P2EDV1Exploration
+    from sheeprl.algos.p2e_dv1.p2e_dv1_finetuning import P2EDV1Finetuning
+
+    if "finetuning" in cfg.algo.name:
+        return P2EDV1Finetuning(fabric, cfg)
+    return P2EDV1Exploration(fabric, cfg)
+
+
 def log_models_from_checkpoint(
     fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
@@ -59,49 +70,19 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    (
-        world_model,
-        ensembles,
-        actor_task,
-        critic_task,
-        actor_exploration,
-        critic_exploration,
-    ) = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        env.observation_space,
-        state["world_model"],
-        state["ensembles"] if "exploration" in cfg.algo.name else None,
-        state["actor_task"],
-        state["critic_task"],
-        state["actor_exploration"] if "exploration" in cfg.algo.name else None,
-        state["critic_exploration"] if "exploration" in cfg.algo.name else None,
-    )
+    from sheeprl.core import load_trained_state
+
+    # The models are built as by the training, with its configuration
+    algo = trained_algorithm(fabric, cfg.to_log)
+    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
+    names = ["world_model", "actor_task", "critic_task"]
+    if "exploration" in cfg.to_log.algo.name:
+        names += ["ensembles", "actor_exploration", "critic_exploration"]
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
-        model_info["actor_task"] = mlflow.pytorch.log_model(unwrap_fabric(actor_task), artifact_path="actor_task")
-        model_info["critic_task"] = mlflow.pytorch.log_model(unwrap_fabric(critic_task), artifact_path="critic_task")
-        if "exploration" in cfg.algo.name:
-            model_info["ensembles"] = mlflow.pytorch.log_model(unwrap_fabric(ensembles), artifact_path="ensembles")
-            model_info["actor_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(actor_exploration), artifact_path="actor_exploration"
-            )
-            model_info["critic_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(critic_exploration), artifact_path="critic_exploration"
-            )
+        for name in names:
+            model_info[name] = mlflow.pytorch.log_model(unwrap_fabric(getattr(trained, name)), artifact_path=name)
         mlflow.log_dict(cfg.to_log, "config.json")
-
     return model_info

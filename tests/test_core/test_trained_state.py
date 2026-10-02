@@ -71,8 +71,8 @@ def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torc
 
 
 def dreamer_v2_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a DreamerV2 player: the encoder, the recurrent and representation models of the world model,
-    and the actor `actor`."""
+    """The weights of a DreamerV2 (or DreamerV1) player: the encoder, the recurrent and representation models of the
+    world model, and the actor `actor`."""
     world_model = saved["world_model"]
     return {
         **{k: v for k, v in world_model.items() if k.startswith("encoder.")},
@@ -147,6 +147,25 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "args": ["exp=dreamer_v3", *DREAMER_ARGS],
         "policy": lambda saved: dreamer_policy(saved, "actor"),
         "models": ["world_model", "actor", "critic", "target_critic", "moments"],
+    },
+    "dreamer_v1": {
+        "args": ["exp=dreamer_v1", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor"),
+        "models": ["world_model", "actor", "critic"],
+    },
+    "p2e_dv1_exploration": {
+        "module": "p2e_dv1",
+        "args": ["exp=p2e_dv1_exploration", *DREAMER_ARGS, "algo.ensembles.n=2"],
+        # The evaluation plays the task actor
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor_task"),
+        "models": ["world_model", "actor_task", "critic_task", "ensembles", "actor_exploration", "critic_exploration"],
+    },
+    "p2e_dv1_finetuning": {
+        "module": "p2e_dv1",
+        "exploration": "p2e_dv1_exploration",
+        "args": ["exp=p2e_dv1_finetuning", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor_task"),
+        "models": ["world_model", "actor_task", "critic_task"],
     },
     "dreamer_v2": {
         "args": ["exp=dreamer_v2", *DREAMER_ARGS],
