@@ -32,6 +32,7 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights (gain 1) and zero biases for the linear layers
   ortho_init: False
 
 # Actor
@@ -40,6 +41,7 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases: gain sqrt(2) for the hidden layers, 0.01 for the heads
   ortho_init: False
 
 # Critic
@@ -48,6 +50,7 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases: gain sqrt(2) for the hidden layers, 1 for the output
   ortho_init: False
 
 # Single optimizer for both actor and critic
