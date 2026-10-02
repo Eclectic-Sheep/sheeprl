@@ -539,9 +539,10 @@ class Actor(nn.Module):
             if not greedy:
                 actions = actions_dist.rsample()
             else:
+                # The most likely of 100 samples, for every state
                 sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
+                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
             actions = [actions]
             actions_dist = [actions_dist]
         else:

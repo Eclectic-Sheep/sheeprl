@@ -820,9 +820,10 @@ class Actor(nn.Module):
             if not greedy:
                 actions = actions_dist.rsample()
             else:
+                # The most likely of 100 samples, for every state
                 sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
+                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
             if self._action_clip > 0.0:
                 action_clip = torch.full_like(actions, self._action_clip)
                 actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
