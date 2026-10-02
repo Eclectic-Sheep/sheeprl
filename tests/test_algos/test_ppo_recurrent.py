@@ -27,9 +27,7 @@ def build_agent(ortho_init: bool = False, is_continuous: bool = False) -> Recurr
     return RecurrentPPOAgent(
         actions_dim=[2] if is_continuous else [3],
         obs_space=gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)}),
-        encoder_cfg=dotdict(
-            {**networks, "cnn_features_dim": 64, "mlp_features_dim": 32, "ortho_init": ortho_init}
-        ),
+        encoder_cfg=dotdict({**networks, "cnn_features_dim": 64, "mlp_features_dim": 32, "ortho_init": ortho_init}),
         rnn_cfg=dotdict({"lstm": {"hidden_size": HIDDEN_SIZE}, "pre_rnn_mlp": no_mlp, "post_rnn_mlp": no_mlp}),
         actor_cfg=dotdict({**networks, "ortho_init": ortho_init}),
         critic_cfg=dotdict({**networks, "ortho_init": ortho_init}),
