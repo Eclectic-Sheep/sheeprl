@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import copy
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -8,7 +8,6 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import (
@@ -34,7 +33,6 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -339,6 +337,46 @@ class RecurrentModel(nn.Module):
         return out
 
 
+class RepresentationModel(MLP):
+    """The representation model of the RSSM: an MLP of the recurrent state and of the embedded observation,
+    concatenated (in this order).
+
+    The part of its first layer that depends on the observations can be computed for a whole sequence at once, with
+    one matrix product (`forward(observations=...)`), and then added to the part of the recurrent state at every step
+    of the unroll (`forward(recurrent_state=..., observation_projection=...)`), instead of one product of the whole
+    input per step. The weights are the ones of the `MLP`.
+
+    Args:
+        recurrent_state_size (int): the size of the recurrent state, the first part of the input.
+        **kwargs: the arguments of the `MLP`.
+    """
+
+    def __init__(self, recurrent_state_size: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.recurrent_state_size = recurrent_state_size
+
+    def forward(
+        self,
+        x: Optional[Tensor] = None,
+        *,
+        observations: Optional[Tensor] = None,
+        recurrent_state: Optional[Tensor] = None,
+        observation_projection: Optional[Tensor] = None,
+    ) -> Tensor:
+        """With `x` (the concatenated input), the output of the MLP. With `observations`, the part of the first layer
+        that depends on them. With `recurrent_state` and `observation_projection` (the part of the observations), the
+        output of the MLP."""
+        if x is not None:
+            return super().forward(x)
+        first = self.model[0]
+        if observations is not None:
+            return F.linear(observations, first.weight[:, self.recurrent_state_size :])
+        x = F.linear(recurrent_state, first.weight[:, : self.recurrent_state_size], first.bias) + observation_projection
+        for layer in list(self.model)[1:]:
+            x = layer(x)
+        return x
+
+
 class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
@@ -392,8 +430,15 @@ class RSSM(nn.Module):
         return initial_recurrent_state, initial_posterior
 
     def dynamic(
-        self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        self,
+        posterior: Tensor,
+        recurrent_state: Tensor,
+        action: Tensor,
+        embedded_obs: Tensor,
+        is_first: Tensor,
+        initial_states: Optional[Tuple[Tensor, Tensor]] = None,
+        projected: bool = False,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -411,26 +456,36 @@ class RSSM(nn.Module):
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode.
+            initial_states (Tuple[Tensor, Tensor], optional): the initial recurrent state and posterior of the batch
+                (`get_initial_states`), to compute them once for a whole sequence. Default: computed here.
+            projected (bool): whether `embedded_obs` is the projection of the embedded observations
+                (`project_observations`), computed once for a whole sequence.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior stochastic state (Tensor): computed by the representation model
-            The prior stochastic state (Tensor): computed by the transition model
-            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
-            from the recurrent state and the embbedded observation.
+            The logits of the posterior state (Tensor): computed by the representation model from the recurrent state
+                and the embedded observation.
+            The logits of the prior are not computed: the recurrence doesn't use them, and `prior_logits` computes them
+            for the recurrent states of a whole sequence at once.
         """
         action = (1 - is_first) * action
 
-        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        if initial_states is None:
+            initial_states = self.get_initial_states(recurrent_state.shape[:2])
+        initial_recurrent_state, initial_posterior = initial_states
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
 
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_state)
-        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, prior, posterior_logits, prior_logits
+        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs, projected)
+        return recurrent_state, posterior, posterior_logits
+
+    def prior_logits(self, recurrent_states: Tensor) -> Tensor:
+        """The logits of the priors of the transition model, for any number of recurrent states at once (e.g. the ones
+        of a whole sequence, after the unroll of `dynamic`)."""
+        return self._uniform_mix(self.transition_model(recurrent_states))
 
     def _uniform_mix(self, logits: Tensor) -> Tensor:
         dim = logits.dim()
@@ -446,19 +501,34 @@ class RSSM(nn.Module):
         logits = logits.view(*logits.shape[:-2], -1)
         return logits
 
-    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
+    def project_observations(self, embedded_obs: Tensor) -> Tensor:
+        """The part of the first layer of the representation model that depends on the embedded observations, for a
+        whole sequence at once (`RepresentationModel`): `dynamic(..., projected=True)` takes it in place of the
+        embedded observations."""
+        return self.representation_model(observations=embedded_obs)
+
+    def _representation(
+        self, recurrent_state: Tensor, embedded_obs: Tensor, projected: bool = False
+    ) -> Tuple[Tensor, Tensor]:
         """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
                 what is called h or deterministic state in
                 [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-            embedded_obs (Tensor): the embedded real observations provided by the environment.
+            embedded_obs (Tensor): the embedded real observations provided by the environment, or their projection
+                (`project_observations`) if `projected`.
+            projected (bool): whether `embedded_obs` is the projection of the embedded observations.
 
         Returns:
             logits (Tensor): the logits of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior stochastic state.
         """
-        logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
+        if projected:
+            logits: Tensor = self.representation_model(
+                recurrent_state=recurrent_state, observation_projection=embedded_obs
+            )
+        else:
+            logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
         logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
@@ -538,8 +608,13 @@ class DecoupledRSSM(RSSM):
         )
 
     def dynamic(
-        self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        self,
+        posterior: Tensor,
+        recurrent_state: Tensor,
+        action: Tensor,
+        is_first: Tensor,
+        initial_states: Optional[Tuple[Tensor, Tensor]] = None,
+    ) -> Tensor:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -555,27 +630,24 @@ class DecoupledRSSM(RSSM):
                 to be of dimension `[stoch_size, self.discrete]`, which by default is `[32, 32]`.
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
-            embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode.
+            initial_states (Tuple[Tensor, Tensor], optional): the initial recurrent state and posterior of the batch
+                (`get_initial_states`), to compute them once for a whole sequence. Default: computed here.
 
         Returns:
-            The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The posterior stochastic state (Tensor): computed by the representation model
-            The prior stochastic state (Tensor): computed by the transition model
-            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
-            from the recurrent state and the embbedded observation.
+            The recurrent state (Tensor): the recurrent state of the recurrent model. The logits of the prior are not
+            computed: `prior_logits` computes them for the recurrent states of a whole sequence at once.
         """
         action = (1 - is_first) * action
 
-        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        if initial_states is None:
+            initial_states = self.get_initial_states(recurrent_state.shape[:2])
+        initial_recurrent_state, initial_posterior = initial_states
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
 
-        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_state)
-        return recurrent_state, prior, prior_logits
+        return self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
 
     def _representation(self, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -649,7 +721,10 @@ class PlayerDV3(nn.Module):
         """
         if reset_envs is None or len(reset_envs) == 0:
             self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
+            # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
+            # since the states of the environments are then reset one by one
+            self.recurrent_state = recurrent_state.clone()
             self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
         else:
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
@@ -806,6 +881,8 @@ class Actor(nn.Module):
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
+                # The std is the output of the network: made positive as the one of `tanh_normal`
+                std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "scaled_normal":
@@ -815,9 +892,10 @@ class Actor(nn.Module):
             if not greedy:
                 actions = actions_dist.rsample()
             else:
+                # The most likely of 100 samples, for every state
                 sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
+                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
             if self._action_clip > 0.0:
                 action_clip = torch.full_like(actions, self._action_clip)
                 actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
@@ -852,6 +930,7 @@ class MinedojoActor(Actor):
         distribution_cfg: Dict[str, Any],
         init_std: float = 0,
         min_std: float = 0.1,
+        max_std: float = 1.0,
         dense_units: int = 1024,
         activation: nn.Module = nn.SiLU,
         mlp_layers: int = 5,
@@ -867,6 +946,7 @@ class MinedojoActor(Actor):
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
+            max_std=max_std,
             dense_units=dense_units,
             activation=activation,
             mlp_layers=mlp_layers,
@@ -877,7 +957,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, greedy: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -886,7 +966,7 @@ class MinedojoActor(Actor):
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
             greedy (bool): whether or not to sample the actions.
-                Default to True.
+                Default to False.
             mask (Dict[str, Tensor], optional): the mask to apply to the actions.
                 Default to None.
 
@@ -930,40 +1010,28 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
 
-def build_agent(
-    fabric: Fabric,
+def build_models(
+    device: torch.device,
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
-    world_model_state: Optional[Dict[str, Tensor]] = None,
-    actor_state: Optional[Dict[str, Tensor]] = None,
-    critic_state: Optional[Dict[str, Tensor]] = None,
-    target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
-    """Build the models and wrap them with Fabric.
+) -> Tuple[WorldModel, Actor | MinedojoActor, nn.Module]:
+    """Create the world model, the actor and the critic, with their initial weights. They are not set up with Fabric:
+    only the RSSM is moved to `device`, since its initial recurrent state belongs to no submodule.
 
     Args:
-        fabric (Fabric): the fabric object.
+        device (torch.device): the device of the RSSM.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
         cfg (DictConfig): the configs of DreamerV3.
         obs_space (Dict[str, Any]): the observation space.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
-            Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
-        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and
         reward models and the continue model.
-        The actor (_FabricModule).
-        The critic (_FabricModule).
-        The target critic (nn.Module).
+        The actor (Actor | MinedojoActor).
+        The critic (nn.Module).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -1016,7 +1084,10 @@ def build_agent(
     if not cfg.algo.world_model.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
     representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
-    representation_model = MLP(
+    representation_cls = (
+        MLP if cfg.algo.world_model.decoupled_rssm else partial(RepresentationModel, recurrent_state_size)
+    )
+    representation_model = representation_cls(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
@@ -1060,7 +1131,7 @@ def build_agent(
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
         learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
-    ).to(fabric.device)
+    ).to(device)
 
     cnn_decoder = (
         CNNDecoder(
@@ -1072,7 +1143,7 @@ def build_agent(
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
+            layer_norm_kw=world_model_cfg.observation_model.cnn_layer_norm.kw,
             stages=cnn_stages,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
@@ -1138,13 +1209,14 @@ def build_agent(
         is_continuous=is_continuous,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
+        max_std=actor_cfg.max_std,
         dense_units=actor_cfg.dense_units,
         activation=hydra.utils.get_class(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
         layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
         layer_norm_kw=actor_cfg.layer_norm.kw,
-        unimix=cfg.algo.unimix,
+        unimix=actor_cfg.unimix,
         action_clip=actor_cfg.action_clip,
     )
 
@@ -1176,59 +1248,4 @@ def build_agent(
             mlp_decoder.heads.apply(uniform_init_weights(1.0))
         if cnn_decoder is not None:
             cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
-
-    # Load models from checkpoint
-    if world_model_state:
-        world_model.load_state_dict(world_model_state)
-    if actor_state:
-        actor.load_state_dict(actor_state)
-    if critic_state:
-        critic.load_state_dict(critic_state)
-
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-    )
-
-    # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
-    if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
-
-    # Setup target critic with a SingleDeviceStrategy
-    target_critic = copy.deepcopy(critic.module)
-    if target_critic_state:
-        target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
-
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
-    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
-    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-        p.data = agent_p.data
-    return world_model, actor, critic, target_critic, player
+    return world_model, actor, critic

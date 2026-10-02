@@ -12,14 +12,10 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, Repl
 
 
 class CheckpointCallback:
-    """Callback to checkpoint the training.
-    Three methods are defined to checkpoint the models, the optimizers, and the replay buffers during the training:
-        1. `on_checkpoint_coupled`: The method called by all processes in coupled algorithms,
-            the process on rank-0 gets the buffers from all the processes and saves the state of the training.
-        2. `on_checkpoint_player`: called by the player process of decoupled algorithms (rank-0),
-            it receives the state from the trainer of rank-1 and, if required, adds the replay_buffer to the state.
-        3. `on_checkpoint_trainer`: called by the rank-1 trainer process of decoupled algorithms that
-            sends the state to the player process (rank-0).
+    """Callback to checkpoint the training: the models, the optimizers and the replay buffers.
+
+    `on_checkpoint` is called by all the processes: the process of rank 0 gets the buffers of all the processes
+    and saves the state of the training.
 
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
     """
@@ -27,7 +23,7 @@ class CheckpointCallback:
     def __init__(self, keep_last: int | None = None) -> None:
         self.keep_last = keep_last
 
-    def on_checkpoint_coupled(
+    def on_checkpoint(
         self,
         fabric: Fabric,
         ckpt_path: str,
@@ -54,35 +50,6 @@ class CheckpointCallback:
             self._experiment_consistent_rb(replay_buffer, rb_state)
         if fabric.is_global_zero and self.keep_last:
             self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
-
-    def on_checkpoint_player(
-        self,
-        fabric: Fabric,
-        player_trainer_collective: TorchCollective,
-        ckpt_path: str,
-        replay_buffer: Optional["ReplayBuffer"] = None,
-        ratio_state_dict: Dict[str, Any] | None = None,
-    ):
-        state = [None]
-        player_trainer_collective.broadcast_object_list(state, src=1)
-        state = state[0]
-        if replay_buffer is not None:
-            rb_state = self._ckpt_rb(replay_buffer)
-            state["rb"] = replay_buffer
-        if ratio_state_dict is not None:
-            state["ratio"] = ratio_state_dict
-        fabric.save(ckpt_path, state)
-        if replay_buffer is not None:
-            self._experiment_consistent_rb(replay_buffer, rb_state)
-        if fabric.is_global_zero and self.keep_last:
-            self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
-
-    def on_checkpoint_trainer(
-        self, fabric: Fabric, player_trainer_collective: TorchCollective, state: Dict[str, Any], ckpt_path: str
-    ):
-        if fabric.global_rank == 1:
-            player_trainer_collective.broadcast_object_list([state], src=1)
-        fabric.save(ckpt_path, state)
 
     def _ckpt_rb(
         self, rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer

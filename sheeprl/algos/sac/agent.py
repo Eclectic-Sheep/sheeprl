@@ -1,17 +1,13 @@
 import copy
-from math import prod
-from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, Sequence, SupportsFloat, Tuple, Union
 
-import gymnasium
 import torch
 import torch.nn as nn
-from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -182,11 +178,7 @@ class SACAgent(nn.Module):
     def critics(self, critics: Sequence[Union[SACCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
-        # Create target critic unwrapping the DDP module from the critics to prevent
-        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group
-        # argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SAC for example
+        # The target critics are copies of the critics without their wrappers (Fabric, DDP)
         qfs_unwrapped_modules = []
         for critic in critics:
             if hasattr(critic, "module"):
@@ -231,8 +223,9 @@ class SACAgent(nn.Module):
         return
 
     @property
-    def alpha(self) -> float:
-        return self._log_alpha.exp().item()
+    def alpha(self) -> Tensor:
+        # A tensor, not a float: reading its value on the CPU would wait for the GPU at every call
+        return self._log_alpha.exp().detach()
 
     @property
     def target_entropy(self) -> Tensor:
@@ -312,60 +305,3 @@ class SACPlayer(nn.Module):
 
     def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
         return self(obs, greedy=greedy)
-
-
-def build_agent(
-    fabric: Fabric,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    action_space: gymnasium.spaces.Box,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAgent, SACPlayer]:
-    act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-    critics = [
-        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
-        for _ in range(cfg.algo.critic.n)
-    ]
-    target_entropy = -act_dim
-    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = SACPlayer(
-        copy.deepcopy(agent.actor.model),
-        copy.deepcopy(agent.actor.fc_mean),
-        copy.deepcopy(agent.actor.fc_logstd),
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-
-    # Setup training agent
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
-
-    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
-    # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
-    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
-
-    # Setup player agent
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    return agent, player

@@ -1,20 +1,34 @@
 from __future__ import annotations
 
-import copy
-from math import prod
+from math import log, prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
 import torch
 import torch.nn as nn
-from lightning import Fabric
+import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.utils import safeatanh, safetanh
+from sheeprl.utils.model import per_layer_ortho_init_weights
+from sheeprl.utils.utils import safetanh
+
+
+def tanh_log_abs_det_jacobian(x: Tensor) -> Tensor:
+    """log |d tanh(x) / dx| = log(1 - tanh(x)²), summed over the last dimension, from the values `x` before the tanh;
+    the form of `torch.distributions.TanhTransform`, finite where the tanh saturates."""
+    return (2.0 * (log(2.0) - x - F.softplus(-2.0 * x))).sum(-1)
+
+
+def ortho_init_linear_layers(module: nn.Module, gain: float, output_gain: Optional[float] = None) -> None:
+    """Orthogonal weights with `gain` and zero biases for every linear layer of `module`; with `output_gain`, the last
+    linear layer (the output of an MLP) gets that gain instead."""
+    linear_layers = [m for m in module.modules() if isinstance(m, nn.Linear)]
+    for i, layer in enumerate(linear_layers):
+        is_output = output_gain is not None and i == len(linear_layers) - 1
+        per_layer_ortho_init_weights(layer, gain=output_gain if is_output else gain)
 
 
 class CNNEncoder(nn.Module):
@@ -182,6 +196,14 @@ class PPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous, self.distribution)
+        # Orthogonal initialization as in the PPO implementation details (https://iclr-blog-track.github.io/2022/03/25/
+        # ppo-implementation-details/): hidden layers with gain sqrt(2), the actor's heads with 0.01 (an almost uniform
+        # initial policy) and the critic's output with 1
+        if actor_cfg.ortho_init:
+            ortho_init_linear_layers(actor_backbone, gain=sqrt(2))
+            ortho_init_linear_layers(actor_heads, gain=0.01)
+        if critic_cfg.ortho_init:
+            ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
     def _normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
@@ -195,15 +217,11 @@ class PPOAgent(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
-        tanh_actions = actions[0].float()
-        actions = safeatanh(tanh_actions, eps=torch.finfo(tanh_actions.dtype).resolution)
-        log_prob = normal.log_prob(actions)
-        log_prob -= 2.0 * (
-            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
-            - tanh_actions
-            - torch.nn.functional.softplus(-2.0 * tanh_actions)
-        ).sum(-1, keepdim=False)
-        return tanh_actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
+        # The actions played are stored before the tanh (`PPOPlayer.env_actions`): their log-probability is computed
+        # from them, as the player did, also where the tanh saturates
+        actions = actions[0].float()
+        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
+        return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
@@ -258,15 +276,10 @@ class PPOPlayer(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
+        # Returned before the tanh, which `env_actions` applies: the agent computes the same log-probability from them
         actions = normal.sample().float()
-        tanh_actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
-        log_prob = normal.log_prob(actions)
-        log_prob -= 2.0 * (
-            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
-            - tanh_actions
-            - torch.nn.functional.softplus(-2.0 * tanh_actions)
-        ).sum(-1, keepdim=False)
-        return tanh_actions, log_prob.unsqueeze(dim=-1)
+        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
+        return actions, log_prob.unsqueeze(dim=-1)
 
     def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
         feat = self.feature_extractor(obs)
@@ -296,6 +309,16 @@ class PPOPlayer(nn.Module):
         feat = self.feature_extractor(obs)
         return self.critic(feat)
 
+    def env_actions(self, actions: Sequence[Tensor]) -> Tensor:
+        """The actions to play in the environments, from the ones returned by `forward`: the indices of the discrete
+        actions; the continuous actions, squashed by the tanh with `tanh_normal`."""
+        if self.actor.is_continuous:
+            env_actions = torch.stack(actions, dim=-1)
+            if self.actor.distribution == "tanh_normal":
+                env_actions = safetanh(env_actions, eps=torch.finfo(env_actions.dtype).resolution)
+            return env_actions
+        return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
+
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs)
         actor_out: List[Tensor] = self.actor(feat)
@@ -308,7 +331,7 @@ class PPOPlayer(nn.Module):
                 normal = Independent(Normal(mean, std), 1)
                 actions = normal.sample()
             if self.actor.distribution == "tanh_normal":
-                actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
+                actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
             return tuple([actions])
         else:
             actions: List[Tensor] = []
@@ -320,50 +343,3 @@ class PPOPlayer(nn.Module):
                 else:
                     actions.append(actions_dist[-1].sample())
             return tuple(actions)
-
-
-def build_agent(
-    fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[PPOAgent, PPOPlayer]:
-    agent = PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
-        screen_size=cfg.env.screen_size,
-        distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
-    )
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
-
-    # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
-
-    # Setup player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
-    player.critic = fabric_player.setup_module(player.critic)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
-        player_p.data = agent_p.data
-    return agent, player

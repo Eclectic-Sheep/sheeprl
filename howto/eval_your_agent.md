@@ -6,11 +6,13 @@ In this document, we give the user some advice to evaluate its agents. To evalua
 python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt
 ```
 
-The agent and the configs used during the training are loaded automatically. The user can modify only few parameters for evaluation:
+or `sheeprl-eval checkpoint_path=/path/to/checkpoint.ckpt` if you have installed SheepRL from PyPi.
 
-1. `fabric` related ones: you can use the accelerator you want for evaluating the agent, you just need to specify it in the command. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu` for evaluating the agent on the GPU. If you want to choose the GPU, then you need to define the `CUDA_VISIBLE_DEVICES` environment variable in the `.env` file or set it before running the script. For example, you can execute the following command to evaluate your agent on the GPU with index 2: `CUDA_VISIBLE_DEVICES="2" python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu`. By default, the number of devices and nodes is set to 1, while the precision and the plugins are set to the ones set in the checkpoint config.
-2. `env.capture_video`: you can decide whether to capture the video of the episode during the evaluation or not. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt env.capture_video=Ture` for capturing the video of the evaluation.
-3. `seed`: the user can specify the seed used for evaluation with `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt seed=42`. By default the seed is set to `None`.
+The agent and the configs used during the training are loaded automatically: the configs are read from the `config.yaml` file next to the `checkpoint` folder, and the agent is built as during the training and its weights are loaded from the checkpoint (`sheeprl.core.load_trained_state`). The user can modify only few parameters for evaluation:
+
+1. `fabric` related ones: you can use the accelerator you want for evaluating the agent, you just need to specify it in the command. For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu` for evaluating the agent on the GPU. If you want to choose the GPU, then you need to define the `CUDA_VISIBLE_DEVICES` environment variable in the `.env` file or set it before running the script. For example, you can execute the following command to evaluate your agent on the GPU with index 2: `CUDA_VISIBLE_DEVICES="2" python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt fabric.accelerator=gpu`. By default, the accelerator is the CPU (`sheeprl/configs/eval_config.yaml`) and the number of devices and nodes is set to 1, while the precision and the plugins are set to the ones set in the checkpoint config.
+2. `env.capture_video`: you can decide whether to capture the video of the episode during the evaluation or not (by default it is captured). For instance, `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt env.capture_video=False` for not capturing the video of the evaluation.
+3. `seed`: the user can specify the seed used for evaluation with `python sheeprl_eval.py checkpoint_path=/path/to/checkpoint.ckpt seed=42`. By default the seed is set to `None`, so the one chosen by `fabric.seed_everything` is used (`0`, unless the `PL_GLOBAL_SEED` environment variable is set).
 
 All the other parameters are loaded from the checkpoint config file used during the training. Moreover, the following parameters are automatically set during the evaluation:
 
@@ -28,7 +30,7 @@ logs
 └── runs
     └── ppo
         └── CartPole-v1
-            └── 2023-10-27_11-46-05_default_42
+            └── 2023-10-27_11-46-05_ppo_CartPole-v1_42
                 ├── .hydra
                 │   ├── config.yaml
                 │   ├── hydra.yaml
@@ -39,46 +41,33 @@ logs
                     │   ├── ckpt_1024_0.ckpt
                     │   ├── ckpt_1536_0.ckpt
                     │   └── ckpt_512_0.ckpt
+                    ├── config.yaml
                     ├── events.out.tfevents.1698399966.72040.0
                     ├── memmap_buffer
                     │   └── rank_0
                     │       ├── actions.memmap
-                    │       ├── actions.meta.pt
                     │       ├── advantages.memmap
-                    │       ├── advantages.meta.pt
                     │       ├── dones.memmap
-                    │       ├── dones.meta.pt
                     │       ├── logprobs.memmap
-                    │       ├── logprobs.meta.pt
-                    │       ├── meta.pt
                     │       ├── returns.memmap
-                    │       ├── returns.meta.pt
                     │       ├── rewards.memmap
-                    │       ├── rewards.meta.pt
                     │       ├── state.memmap
-                    │       ├── state.meta.pt
-                    │       ├── values.memmap
-                    │       └── values.meta.pt
+                    │       └── values.memmap
                     └── train_videos
                         ├── rl-video-episode-0.mp4
                         ├── rl-video-episode-1.mp4
                         └── rl-video-episode-8.mp4
 ```
 
-Where `./logs/runs/ppo/2023-10-27_11-46-05_default_42` contains your experiment. The evaluation script will create a subfolder, named `evaluation`, in the `./logs/runs/ppo/2023-10-27_11-46-05_default_42/version_0` folder, which will contain all the evaluations of the agents.
+Where `./logs/runs/ppo/CartPole-v1/2023-10-27_11-46-05_ppo_CartPole-v1_42` contains your experiment. The evaluation script will create a subfolder, named `evaluation`, in the `./logs/runs/ppo/CartPole-v1/2023-10-27_11-46-05_ppo_CartPole-v1_42/version_0` folder, which will contain all the evaluations of the agents.
 
 For example, if we run two evaluations, then the log directory of the experiment will be as follows:
 ```diff
 logs
 └── runs
-    ├── .hydra
-    │   ├── config.yaml
-    │   ├── hydra.yaml
-    │   └── overrides.yaml
-    ├── cli.log
     └── ppo
         └── CartPole-v1
-            └── 2023-10-27_11-46-05_default_42
+            └── 2023-10-27_11-46-05_ppo_CartPole-v1_42
                 ├── .hydra
                 │   ├── config.yaml
                 │   ├── hydra.yaml
@@ -89,6 +78,7 @@ logs
                     │   ├── ckpt_1024_0.ckpt
                     │   ├── ckpt_1536_0.ckpt
                     │   └── ckpt_512_0.ckpt
+                    ├── config.yaml
 +                   ├── evaluation
 +                   │   ├── version_0
 +                   │   │   ├── events.out.tfevents.1698400212.73839.0
@@ -102,22 +92,13 @@ logs
                     ├── memmap_buffer
                     │   └── rank_0
                     │       ├── actions.memmap
-                    │       ├── actions.meta.pt
                     │       ├── advantages.memmap
-                    │       ├── advantages.meta.pt
                     │       ├── dones.memmap
-                    │       ├── dones.meta.pt
                     │       ├── logprobs.memmap
-                    │       ├── logprobs.meta.pt
-                    │       ├── meta.pt
                     │       ├── returns.memmap
-                    │       ├── returns.meta.pt
                     │       ├── rewards.memmap
-                    │       ├── rewards.meta.pt
                     │       ├── state.memmap
-                    │       ├── state.meta.pt
-                    │       ├── values.memmap
-                    │       └── values.meta.pt
+                    │       └── values.memmap
                     └── train_videos
                         ├── rl-video-episode-0.mp4
                         ├── rl-video-episode-1.mp4

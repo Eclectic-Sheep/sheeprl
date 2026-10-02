@@ -11,13 +11,14 @@ from torch import Tensor
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo.utils import normalize_obs
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+    from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer
 
 
 AGGREGATOR_KEYS = ppo_aggregator_keys
@@ -39,7 +40,9 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+    """Play one episode and log its return at `policy_step`: the last policy step of the training (0 for an
+    evaluation)."""
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -72,7 +75,7 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
@@ -83,19 +86,18 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    agent = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
+    from sheeprl.algos.ppo_recurrent.ppo_recurrent import PPORecurrent
+    from sheeprl.core import load_trained_state
+
+    # The models are built as by the training, with its configuration
+    algo = PPORecurrent(fabric, cfg.to_log)
+    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+        model_info["agent"] = mlflow.pytorch.log_model(
+            unwrap_fabric(trained.agent), name="agent", serialization_format="pickle"
+        )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

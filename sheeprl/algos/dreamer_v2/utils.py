@@ -124,6 +124,7 @@ def test(
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
+    policy_step: int = 0,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -136,6 +137,9 @@ def test(
             Default to "".
         greedy (bool): whether or not to sample actions.
             Default to True.
+        policy_step (int): the step of the logged return: the last policy step of the training (0 for an
+            evaluation).
+            Default to 0.
     """
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
@@ -160,7 +164,7 @@ def test(
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
-        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
@@ -171,34 +175,19 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.dreamer_v2.agent import build_agent
+    from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2
+    from sheeprl.core import load_trained_state
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    world_model, actor, critic, target_critic = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        env.observation_space,
-        state["world_model"],
-        state["actor"],
-        state["critic"],
-        state["target_critic"],
-    )
+    # The models are built as by the training, with its configuration
+    algo = DreamerV2(fabric, cfg.to_log)
+    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
-        model_info["actor"] = mlflow.pytorch.log_model(unwrap_fabric(actor), artifact_path="actor")
-        model_info["critic"] = mlflow.pytorch.log_model(unwrap_fabric(critic), artifact_path="critic")
-        model_info["target_critic"] = mlflow.pytorch.log_model(target_critic, artifact_path="target_critic")
+        for name in ("world_model", "actor", "critic", "target_critic"):
+            model_info[name] = mlflow.pytorch.log_model(
+                unwrap_fabric(getattr(trained, name)), name=name, serialization_format="pickle"
+            )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

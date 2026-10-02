@@ -1,431 +1,285 @@
+"""Advantage Actor-Critic (https://arxiv.org/abs/1602.01783), written on the shared training loop of `sheeprl.core`:
+`A2C` says how to build, play and train; `sheeprl.core.loop.run` does the rest. The agent is the one of PPO."""
+
+from __future__ import annotations
+
 import os
-import warnings
-from typing import Any, Dict
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
+from torch import Tensor
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import PolynomialLR
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.a2c.loss import policy_loss
-from sheeprl.algos.ppo.agent import PPOAgent, build_agent
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
-from sheeprl.data import ReplayBuffer
-from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.logger import get_log_dir, get_logger
-from sheeprl.utils.metric import MetricAggregator
+from sheeprl.core import (
+    Algorithm,
+    EnvRunner,
+    Rollout,
+    TrainSchedule,
+    TrainState,
+    all_reduce_gradients,
+    autocast,
+    run,
+    setup_module,
+)
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, save_configs
+from sheeprl.utils.utils import gae, normalize_tensor
 
 
-def train(
-    fabric: Fabric,
-    agent: PPOAgent,
-    optimizer: torch.optim.Optimizer,
-    data: Dict[str, torch.Tensor],
-    aggregator: MetricAggregator,
-    cfg: Dict[str, Any],
-):
-    """Train the agent on the data collected from the environment."""
-
-    # Prepare the sampler
-    # If we are in the distributed setting, we need to use a DistributedSampler, which
-    # will shuffle the data at each epoch and will ensure that each process will get
-    # a different part of the data
-    indexes = list(range(next(iter(data.values())).shape[0]))
-    if cfg.buffer.share_data:
-        sampler = DistributedSampler(
-            indexes,
-            num_replicas=fabric.world_size,
-            rank=fabric.global_rank,
-            shuffle=True,
-            seed=cfg.seed,
-        )
-    else:
-        sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
-
-    optimizer.zero_grad(set_to_none=True)
-    if cfg.buffer.share_data:
-        sampler.sampler.set_epoch(0)
-
-    # Train the agent
-    # Even though in the Spinning-Up A2C algorithm implementation
-    # (https://spinningup.openai.com/en/latest/algorithms/vpg.html) the policy gradient is estimated
-    # by taking the mean over all the sequences collected
-    # of the sum of the actions log-probabilities gradients' multiplied by the advantages,
-    # we do not do that, instead we take the overall sum (or mean, depending on the loss reduction).
-    # This is achieved by accumulating the gradients and calling the backward method only at the end.
-    for i, batch_idxes in enumerate(sampler):
-        batch = {k: v[batch_idxes] for k, v in data.items()}
-        normalized_obs = normalize_obs(
-            batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
-        )
-
-        # is_accumulating is True for every i except for the last one
-        is_accumulating = i < len(sampler) - 1
-
-        with (
-            fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating),
-            fabric.no_backward_sync(agent.actor, enabled=is_accumulating),
-            fabric.no_backward_sync(agent.critic, enabled=is_accumulating),
-        ):
-            with autocast_cache_scope(fabric):
-                _, logprobs, entropy, new_values = agent(
-                    normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
-                )
-                if cfg.algo.normalize_advantages:
-                    batch["advantages"] = normalize_tensor(batch["advantages"])
-
-                # Policy loss
-                pg_loss = policy_loss(
-                    logprobs,
-                    batch["advantages"],
-                    cfg.algo.loss_reduction,
-                )
-
-                # Value loss
-                v_loss = value_loss(
-                    new_values,
-                    batch["values"],
-                    batch["returns"],
-                    0.0,
-                    False,
-                    cfg.algo.loss_reduction,
-                )
-
-                # Entropy loss
-                ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
-
-                # Total loss
-                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
-            fabric.backward(loss)
-
-        if not is_accumulating:
-            if cfg.algo.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-            optimizer.step()
-
-        # Update metrics
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/policy_loss", pg_loss.detach())
-            aggregator.update("Loss/value_loss", v_loss.detach())
+@dataclass
+class A2CState(TrainState):
+    # Feature extractor, actor and critic
+    agent: PPOAgent
+    optimizer: Optimizer
+    # Created with `algo.anneal_lr`, but never stepped: the learning rate is not annealed
+    scheduler: Optional[PolynomialLR]
 
 
-@register_algorithm(decoupled=False)
-def main(fabric: Fabric, cfg: Dict[str, Any]):
-    if "minedojo" in cfg.env.wrapper._target_.lower():
-        raise ValueError(
-            "MineDojo is not currently supported by PPO agent, since it does not take "
-            "into consideration the action masks provided by the environment, but needed "
-            "in order to play correctly the game. "
-            "As an alternative you can use one of the Dreamers' agents."
-        )
+class RolloutPlayer:
+    """Plays the policy in the environments and writes every step in the rollout. Unlike PPO's player, the rewards
+    are stored in float64 and are not clipped (`env.clip_rewards` is ignored)."""
 
-    # Initialize Fabric
-    rank = fabric.global_rank
-    world_size = fabric.world_size
-    device = fabric.device
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
+        self.fabric = fabric
+        self.cfg = cfg
+        self.policy = policy
+        self.cnn_keys = cfg.algo.cnn_keys.encoder
+        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    # Resume from checkpoint
-    if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+    def step(self, env: EnvRunner, rollout: Rollout) -> None:
+        cfg = self.cfg
+        num_envs = env.num_envs
 
-    # Create Logger. This will create the logger only on the
-    # rank-0 process
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-    fabric.print(f"Log dir: {log_dir}")
+        # Sample the actions: one-hot for discrete actions, while the environments take their indices
+        obs = {k: env.obs[k] for k in self.obs_keys}
+        obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        actions, logprobs, values = self.policy(obs)
+        env_actions = self.policy.env_actions(actions).cpu().numpy()
+        actions = torch.cat(actions, dim=-1).cpu().numpy()
 
-    # Environment setup
-    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
-    envs = vectorized_env(
-        [
-            make_env(
-                cfg,
-                cfg.seed + rank * cfg.env.num_envs + i,
-                rank * cfg.env.num_envs,
-                log_dir if rank == 0 else None,
-                "train",
-                vector_env_idx=i,
+        step = env.step(env_actions)
+
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
+        # bootstrap the value of their final observation
+        rewards = step.rewards
+        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
+        if len(truncated_envs) > 0:
+            final_obs = prepare_obs(
+                self.fabric,
+                step.final_obs(truncated_envs, self.obs_keys),
+                cnn_keys=self.cnn_keys,
+                num_envs=len(truncated_envs),
             )
-            for i in range(cfg.env.num_envs)
-        ]
-    )
-    observation_space = envs.single_observation_space
+            final_values = self.policy.get_values(final_obs).cpu().numpy()
+            rewards[truncated_envs] += cfg.algo.gamma * final_values.reshape(rewards[truncated_envs].shape)
+        dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
+        rewards = rewards.reshape(num_envs, -1)
 
-    if not isinstance(observation_space, gym.spaces.Dict):
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
-    if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        # The stacked frames of an image are stored as its channels
+        data = {}
+        for k in self.obs_keys:
+            data[k] = step.obs[k]
+            if k in self.cnn_keys:
+                data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
+            data[k] = data[k][np.newaxis]
+        data["dones"] = dones[np.newaxis]
+        data["values"] = values.cpu().numpy()[np.newaxis]
+        data["actions"] = actions[np.newaxis]
+        data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
+        data["rewards"] = rewards[np.newaxis]
+        if cfg.buffer.memmap:
+            data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+            data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+        rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
 
-    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        envs.single_action_space.shape
-        if is_continuous
-        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
-    )
-    # Create the actor and critic models
-    agent, player = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        observation_space,
-        state["agent"] if cfg.checkpoint.resume_from else None,
-    )
 
-    # Define the optimizer
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+class A2C(Algorithm):
+    """Every iteration plays `algo.rollout_steps` steps, then does one optimizer step on the whole rollout: the
+    gradients of its minibatches are accumulated."""
 
-    if fabric.is_global_zero:
-        save_configs(cfg, log_dir)
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+        super().__init__(fabric, cfg)
+        if "minedojo" in cfg.env.wrapper._target_.lower():
+            raise ValueError(
+                "MineDojo is not currently supported by PPO agent, since it does not take "
+                "into consideration the action masks provided by the environment, but needed "
+                "in order to play correctly the game. "
+                "As an alternative you can use one of the Dreamers' agents."
+            )
+        if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+            raise RuntimeError(
+                "You should specify at least one CNN keys or MLP keys from the cli: "
+                "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+            )
+        # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+        if cfg.buffer.size != cfg.algo.rollout_steps:
+            raise ValueError(
+                f"The size of the buffer ({cfg.buffer.size}) must be equal "
+                f"to the rollout steps ({cfg.algo.rollout_steps})"
+            )
+        self.steps_per_iteration = cfg.algo.rollout_steps
 
-    # Load the state from the checkpoint
-    if cfg.checkpoint.resume_from:
-        optimizer.load_state_dict(state["optimizer"])
-
-    # Setup agent and optimizer with Fabric
-    optimizer = fabric.setup_optimizers(optimizer)
-
-    # Create a metric aggregator to log the metrics
-    aggregator = None
-    if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
-
-    # Local data
-    if cfg.buffer.size < cfg.algo.rollout_steps:
-        raise ValueError(
-            f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
-            f"than the rollout steps ({cfg.algo.rollout_steps})"
-        )
-    rb = ReplayBuffer(
-        cfg.buffer.size,
-        cfg.env.num_envs,
-        memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        obs_keys=obs_keys,
-    )
-
-    # Global variables
-    last_train = 0
-    train_step = 0
-    start_iter = (
-        # + 1 because the checkpoint is at the end of the update step
-        # (when resuming from a checkpoint, the update at the checkpoint
-        # is ended and you have to start with the next one)
-        (state["iter_num"] // fabric.world_size) + 1
-        if cfg.checkpoint.resume_from
-        else 1
-    )
-    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
-    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
-    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
-    if cfg.checkpoint.resume_from:
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-
-    # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
-        )
-    if cfg.checkpoint.every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
+    def build(
+        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
+    ) -> Tuple[A2CState, Rollout]:
+        cfg = self.cfg
+        if not isinstance(obs_space, gym.spaces.Dict):
+            raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        if cfg.metric.log_level > 0:
+            self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+            self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+        is_continuous = isinstance(action_space, gym.spaces.Box)
+        is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
+        actions_dim = tuple(
+            action_space.shape
+            if is_continuous
+            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
         )
 
-    # Linear learning rate scheduler
-    if cfg.algo.anneal_lr:
-        from torch.optim.lr_scheduler import PolynomialLR
+        agent = PPOAgent(
+            actions_dim=actions_dim,
+            obs_space=obs_space,
+            encoder_cfg=cfg.algo.encoder,
+            actor_cfg=cfg.algo.actor,
+            critic_cfg=cfg.algo.critic,
+            cnn_keys=cfg.algo.cnn_keys.encoder,
+            mlp_keys=cfg.algo.mlp_keys.encoder,
+            screen_size=cfg.env.screen_size,
+            distribution_cfg=cfg.distribution,
+            is_continuous=is_continuous,
+        )
+        agent.feature_extractor = setup_module(self.fabric, agent.feature_extractor)
+        agent.actor = setup_module(self.fabric, agent.actor)
+        agent.critic = setup_module(self.fabric, agent.critic)
 
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=total_iters, power=1.0)
-        if cfg.checkpoint.resume_from:
-            scheduler.load_state_dict(state["scheduler"])
+        optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+        optimizer = self.fabric.setup_optimizers(optimizer)
+        scheduler = PolynomialLR(optimizer, total_iters=schedule.total_iters, power=1.0) if cfg.algo.anneal_lr else None
 
-    # Get the first environment observation and start the optimization
-    step_data = {}
-    next_obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
-    for k in obs_keys:
-        if k in cfg.algo.cnn_keys.encoder:
-            next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-        step_data[k] = next_obs[k][np.newaxis]
+        state = A2CState(agent=agent, optimizer=optimizer, scheduler=scheduler)
+        buffer = ReplayBuffer(
+            cfg.buffer.size,
+            cfg.env.num_envs,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{self.fabric.global_rank}"),
+            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        )
+        return state, Rollout(buffer)
 
-    for iter_num in range(start_iter, total_iters + 1):
-        with torch.inference_mode():
-            for _ in range(0, cfg.algo.rollout_steps):
-                policy_step += cfg.env.num_envs * world_size
+    def policy(self, state: A2CState) -> PPOPlayer:
+        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
+        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
 
-                # Measure environment interaction time: this considers both the model forward
-                # to get the action given the observation and the time taken into the environment
-                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                    # Sample an action given the observation received by the environment
-                    torch_obs = prepare_obs(
-                        fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
-                    )
-                    actions, logprobs, values = player(torch_obs)
-                    if is_continuous:
-                        real_actions = torch.stack(actions, -1).cpu().numpy()
-                    else:
-                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
-                    actions = torch.cat(actions, -1).cpu().numpy()
+    def player(self, state: A2CState) -> RolloutPlayer:
+        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
-                    # Single environment step
-                    obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-                    truncated_envs = np.nonzero(truncated)[0]
-                    if len(truncated_envs) > 0:
-                        real_next_obs = {
-                            k: np.stack([info["final_obs"][env_idx][k] for env_idx in truncated_envs]) for k in obs_keys
-                        }
-                        real_next_obs = prepare_obs(
-                            fabric, real_next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=len(truncated_envs)
-                        )
-                        vals = player.get_values(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
-                    dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
-                    rewards = rewards.reshape(cfg.env.num_envs, -1)
-
-                # Update the step data
-                step_data["dones"] = dones[np.newaxis]
-                step_data["values"] = values.cpu().numpy()[np.newaxis]
-                step_data["actions"] = actions[np.newaxis]
-                step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
-                step_data["rewards"] = rewards[np.newaxis]
-                if cfg.buffer.memmap:
-                    step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-                    step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-
-                # Append data to buffer
-                rb.add(step_data, validate_args=cfg.buffer.validate_args)
-
-                # Update the observation and dones
-                next_obs = {}
-                for k in obs_keys:
-                    _obs = obs[k]
-                    if k in cfg.algo.cnn_keys.encoder:
-                        _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
-                    step_data[k] = _obs[np.newaxis]
-                    next_obs[k] = _obs
-
-                if cfg.metric.log_level > 0:
-                    for i, ep_rew, ep_len in get_episode_stats(info):
-                        if aggregator and "Rewards/rew_avg" in aggregator:
-                            aggregator.update("Rewards/rew_avg", ep_rew)
-                        if aggregator and "Game/ep_len_avg" in aggregator:
-                            aggregator.update("Game/ep_len_avg", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
-
-        # Transform the data into PyTorch Tensors
-        local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
+    def batches(
+        self, state: A2CState, rollout: Rollout, n_steps: Optional[int], iteration: int
+    ) -> Iterator[List[Dict[str, Tensor]]]:
+        """One batch per iteration: the minibatches of the whole rollout, whose gradients `train_step` accumulates."""
+        cfg = self.cfg
+        data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-            next_values = player.get_values(torch_obs)
+            next_obs = prepare_obs(
+                self.fabric, rollout.next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+            )
+            next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(
-                local_data["rewards"].to(torch.float64),
-                local_data["values"],
-                local_data["dones"],
+                data["rewards"].to(torch.float64),
+                data["values"],
+                data["dones"],
                 next_values,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )
-            # Add returns and advantages to the buffer
-            local_data["returns"] = returns.float()
-            local_data["advantages"] = advantages.float()
+            data["returns"] = returns.float()
+            data["advantages"] = advantages.float()
 
-        if cfg.buffer.share_data and fabric.world_size > 1:
-            # Gather all the tensors from all the world and reshape them
-            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(local_data)
-            # Flatten the first three dimensions: [World_Size, Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=2).float() for k, v in gathered_data.items()}
+        if cfg.buffer.share_data and self.fabric.world_size > 1:
+            # Train on the rollouts of all the processes: flatten [World_Size, Rollout_Steps, Num_Envs]
+            data = self.fabric.all_gather(data)
+            data = {k: v.flatten(start_dim=0, end_dim=2).float() for k, v in data.items()}
         else:
-            # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
+            # Flatten [Rollout_Steps, Num_Envs]
+            data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-            train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
-        train_step += world_size
+        indexes = list(range(next(iter(data.values())).shape[0]))
+        if cfg.buffer.share_data:
+            sampler = DistributedSampler(
+                indexes,
+                num_replicas=self.fabric.world_size,
+                rank=self.fabric.global_rank,
+                shuffle=True,
+                seed=cfg.seed,
+            )
+        else:
+            sampler = RandomSampler(indexes)
+        sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
+        if cfg.buffer.share_data:
+            sampler.sampler.set_epoch(0)
+        yield [{k: v[batch_idxes] for k, v in data.items()} for batch_idxes in sampler]
 
-        # Log metrics
-        if policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters or cfg.dry_run:
-            # Sync distributed metrics
-            if aggregator and not aggregator.disabled:
-                metrics_dict = aggregator.compute()
-                fabric.log_dict(metrics_dict, policy_step)
-                aggregator.reset()
+    def train_step(self, state: A2CState, minibatches: List[Dict[str, Tensor]], step: int) -> Dict[str, Tensor]:
+        cfg = self.cfg.algo
+        params = [p for group in state.optimizer.param_groups for p in group["params"]]
+        # Even though in the Spinning-Up A2C algorithm implementation
+        # (https://spinningup.openai.com/en/latest/algorithms/vpg.html) the policy gradient is estimated
+        # by taking the mean over all the sequences collected
+        # of the sum of the actions log-probabilities gradients' multiplied by the advantages,
+        # we do not do that, instead we take the overall sum (or mean, depending on the loss reduction).
+        # This is achieved by accumulating the gradients and calling the backward method only at the end.
+        state.optimizer.zero_grad(set_to_none=True)
+        policy_losses, value_losses = [], []
+        for batch in minibatches:
+            obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+            with autocast(self.fabric):
+                _, logprobs, entropy, values = state.agent(
+                    obs, torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
+                )
+                advantages = batch["advantages"]
+                if cfg.normalize_advantages:
+                    advantages = normalize_tensor(advantages)
+                pg_loss = policy_loss(logprobs, advantages, cfg.loss_reduction)
+                v_loss = value_loss(values, batch["values"], batch["returns"], 0.0, False, cfg.loss_reduction)
+                ent_loss = entropy_loss(entropy, cfg.loss_reduction)
+                loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
+            self.fabric.backward(loss, inputs=params)
+            policy_losses.append(pg_loss.detach())
+            value_losses.append(v_loss.detach())
 
-            # Sync distributed timers
-            if not timer.disabled:
-                timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
-                    fabric.log(
-                        "Time/sps_train",
-                        (train_step - last_train) / timer_metrics["Time/train_time"],
-                        policy_step,
-                    )
-                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
-                    fabric.log(
-                        "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                        / timer_metrics["Time/env_interaction_time"],
-                        policy_step,
-                    )
-                timer.reset()
+        # One optimizer step with the gradients of all the minibatches, averaged over the processes
+        all_reduce_gradients(self.fabric, params)
+        if cfg.max_grad_norm > 0.0:
+            self.fabric.clip_gradients(None, state.optimizer, max_norm=cfg.max_grad_norm)
+        state.optimizer.step()
+        # The metrics of every minibatch
+        return {"Loss/policy_loss": torch.stack(policy_losses), "Loss/value_loss": torch.stack(value_losses)}
 
-            # Reset counters
-            last_log = policy_step
-            last_train = train_step
 
-        # Checkpoint model
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            iter_num == total_iters and cfg.checkpoint.save_last
-        ):
-            last_checkpoint = policy_step
-            state = {
-                "agent": agent.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
-                "iter_num": iter_num * world_size,
-                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
-                "last_log": last_log,
-                "last_checkpoint": last_checkpoint,
-            }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
+@register_algorithm()
+def main(fabric: Fabric, cfg: Dict[str, Any]):
+    algo = A2C(fabric, cfg)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
-    envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir)
+        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
-        models_to_log = {"agent": agent}
-        register_model(fabric, log_models, cfg, models_to_log)
+        register_model(fabric, log_models, cfg, {"agent": state.agent})

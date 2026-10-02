@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -8,7 +7,6 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import (
@@ -24,7 +22,6 @@ from torch.distributions import (
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ModuleType, cnn_forward
 
 
@@ -163,26 +160,24 @@ class CNNDecoder(nn.Module):
         self.cnn_encoder_output_dim = cnn_encoder_output_dim
         self.image_size = image_size
         self.output_dim = (sum(output_channels), *image_size)
+        # The hidden layers, each one followed by an activation (and a LayerNorm), then the output layer
+        hidden_channels = [4 * channels_multiplier, 2 * channels_multiplier, channels_multiplier]
+        n_hidden = len(hidden_channels)
         self.model = nn.Sequential(
             nn.Linear(latent_state_size, cnn_encoder_output_dim),
             nn.Unflatten(1, (cnn_encoder_output_dim, 1, 1)),
             DeCNN(
                 input_channels=cnn_encoder_output_dim,
-                hidden_channels=(torch.tensor([4, 2, 1]) * channels_multiplier).tolist() + [self.output_dim[0]],
+                hidden_channels=hidden_channels + [self.output_dim[0]],
                 layer_args=[
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                 ],
-                activation=[activation, activation, activation, None],
-                norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                norm_args=(
-                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
-                    + [None]
-                    if layer_norm
-                    else None
-                ),
+                activation=[activation] * n_hidden + [None],
+                norm_layer=[LayerNormChannelLast] * n_hidden + [None] if layer_norm else None,
+                norm_args=[{"normalized_shape": c} for c in hidden_channels] + [None] if layer_norm else None,
             ),
         )
 
@@ -499,7 +494,8 @@ class Actor(nn.Module):
     def _get_expl_amount(self, step: int) -> Tensor:
         amount = self._expl_amount
         if self._expl_decay:
-            amount *= 0.5 ** float(step) / self._expl_decay
+            # Halved every `expl_decay` steps
+            amount *= 0.5 ** (float(step) / self._expl_decay)
         return max(amount, self._expl_min)
 
     def forward(
@@ -530,6 +526,8 @@ class Actor(nn.Module):
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
+                # The std is the output of the network: made positive as the one of `tanh_normal`
+                std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
@@ -539,9 +537,10 @@ class Actor(nn.Module):
             if not greedy:
                 actions = actions_dist.rsample()
             else:
+                # The most likely of 100 samples, for every state
                 sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
+                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
             actions = [actions]
             actions_dist = [actions_dist]
         else:
@@ -568,9 +567,9 @@ class Actor(nn.Module):
             expl_actions = []
             for act in actions:
                 sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
-                )
+                # A random action with probability `expl_amount`, drawn for every environment
+                explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+                expl_actions.append(torch.where(explore, sample, act))
         return tuple(expl_actions)
 
 
@@ -642,7 +641,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -663,6 +662,7 @@ class MinedojoActor(Actor):
     def add_exploration_noise(
         self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         expl_actions = []
         functional_action = actions[0].argmax(dim=-1)
         for i, act in enumerate(actions):
@@ -679,7 +679,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -688,17 +688,18 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-            expl_amount = self._get_expl_amount(step)
-            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-            # to satisfy the constraints of the environment
-            if (
-                i in {1, 2}
-                and actions[0].argmax() != expl_actions[0].argmax()
-                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-            ):
-                expl_amount = 2
-            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
+            sample = OneHotCategorical(logits=logits).sample()
+            # A random action with probability `expl_amount`, drawn for every environment
+            explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+            if i in {1, 2}:
+                # The environments whose functional action was changed into one that takes arguments (craft, equip,
+                # place, destroy) also change its arguments, to satisfy the constraints of the environment
+                changed = actions[0].argmax(dim=-1) != expl_actions[0].argmax(dim=-1)
+                with_arguments = torch.isin(
+                    expl_actions[0].argmax(dim=-1), torch.tensor([15, 16, 17, 18], device=act.device)
+                )
+                explore = explore | (changed & with_arguments).unsqueeze(-1)
+            expl_actions.append(torch.where(explore, sample, act))
             if mask is not None and i == 0:
                 functional_action = expl_actions[0].argmax(dim=-1)
         return tuple(expl_actions)
@@ -832,40 +833,25 @@ class PlayerDV2(nn.Module):
         return actions
 
 
-def build_agent(
-    fabric: Fabric,
+def build_models(
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
-    world_model_state: Optional[Dict[str, Tensor]] = None,
-    actor_state: Optional[Dict[str, Tensor]] = None,
-    critic_state: Optional[Dict[str, Tensor]] = None,
-    target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV2]:
-    """Build the models and wrap them with Fabric.
+) -> Tuple[WorldModel, Actor | MinedojoActor, nn.Module]:
+    """Create the world model, the actor and the critic, with their initial weights. They are not set up with Fabric.
 
     Args:
-        fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
         cfg (DictConfig): the configs.
         obs_space (Dict[str, Any]): the observation space.
-        world_model_state (Dict[str, Tensor], optional): the state of the world model.
-            Default to None.
-        actor_state: (Dict[str, Tensor], optional): the state of the actor.
-            Default to None.
-        critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
-        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
-            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and
         reward models and the continue model.
-        The actor (_FabricModule).
-        The critic (_FabricModule).
-        The target critic (_FabricModule).
+        The actor (Actor | MinedojoActor).
+        The critic (nn.Module).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -1044,61 +1030,4 @@ def build_agent(
     )
     actor.apply(init_weights)
     critic.apply(init_weights)
-
-    # Load models from checkpoint
-    if world_model_state:
-        world_model.load_state_dict(world_model_state)
-    if actor_state:
-        actor.load_state_dict(actor_state)
-    if critic_state:
-        critic.load_state_dict(critic_state)
-
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV2(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm.recurrent_model),
-        copy.deepcopy(world_model.rssm.representation_model),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-        discrete_size=cfg.algo.world_model.discrete_size,
-    )
-
-    # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
-    if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
-
-    # Setup target critic with a SingleDeviceStrategy
-    target_critic = copy.deepcopy(critic.module)
-    if target_critic_state:
-        target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
-
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
-    player.representation_model = fabric_player.setup_module(player.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-        p.data = agent_p.data
-    return world_model, actor, critic, target_critic, player
+    return world_model, actor, critic

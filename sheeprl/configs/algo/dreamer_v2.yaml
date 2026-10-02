@@ -9,6 +9,9 @@ name: dreamer_v2
 gamma: 0.99
 lmbda: 0.95
 horizon: 15
+# The bounded dimensions of continuous actions exposed as [-1, 1] (the range of the actor), rescaled to the bounds of
+# the environment (`sheeprl.envs.wrappers.NormalizeAction`)
+normalize_actions: True
 
 # Training recipe
 replay_ratio: 0.2
@@ -104,7 +107,9 @@ actor:
   ent_coef: 1e-4
   min_std: 0.1
   init_std: 0.0
-  objective_mix: 1.0
+  # The weight of the REINFORCE gradients in the objective, the rest being the dynamics backpropagation. null: the
+  # dynamics for continuous actions, REINFORCE for discrete ones (`actor_grad: auto` of DreamerV2)
+  objective_mix: null
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
   layer_norm: ${algo.layer_norm}

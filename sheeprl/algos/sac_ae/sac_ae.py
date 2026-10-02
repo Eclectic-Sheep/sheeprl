@@ -1,9 +1,11 @@
+"""SAC-AE (https://arxiv.org/abs/1910.01741): SAC from images, whose critics encode the observations with an encoder
+trained also to reconstruct them through a decoder. Written on the shared training loop of `sheeprl.core`."""
+
 from __future__ import annotations
 
-import copy
 import os
-import warnings
-from typing import Any, Dict, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, Tuple
 
 import gymnasium as gym
 import hydra
@@ -11,496 +13,276 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.plugins.collectives.collective import CollectibleGroup
-from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor
+from torch import Tensor, nn
 from torch.optim import Optimizer
-from torch.utils.data.distributed import DistributedSampler
-from torch.utils.data.sampler import BatchSampler
-from torchmetrics import SumMetric
+from torch.utils.data import BatchSampler
 
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
+from sheeprl.algos.sac.sac import sample_batches
+from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_models
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, autocast, run, setup_module, update
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.models.models import MultiDecoder, MultiEncoder
-from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.logger import get_log_dir, get_logger
-from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
 
 
-def train(
-    fabric: Fabric,
-    agent: SACAEAgent,
-    encoder: Union[MultiEncoder, _FabricModule],
-    decoder: Union[MultiDecoder, _FabricModule],
-    actor_optimizer: Optimizer,
-    qf_optimizer: Optimizer,
-    alpha_optimizer: Optimizer,
-    encoder_optimizer: Optimizer,
-    decoder_optimizer: Optimizer,
-    data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
-    cumulative_per_rank_gradient_steps: int,
-    cfg: Dict[str, Any],
-    group: Optional[CollectibleGroup] = None,
-):
-    normalized_next_obs = {}
-    normalized_obs = {}
-    for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
-        if k in cfg.algo.cnn_keys.encoder:
-            normalized_obs[k] = data[k] / 255.0
-            normalized_next_obs[k] = data[f"next_{k}"] / 255.0
+@dataclass
+class SACAEState(TrainState):
+    # Actor, critics (with the encoder), target critics and the entropy coefficient (its logarithm, `log_alpha`)
+    agent: SACAEAgent
+    # The encoder of the critics, whose convolutional and MLP layers the actor shares, and the decoder: trained to
+    # reconstruct the observations
+    encoder: nn.Module
+    decoder: nn.Module
+    qf_optimizer: Optimizer
+    actor_optimizer: Optimizer
+    alpha_optimizer: Optimizer
+    encoder_optimizer: Optimizer
+    decoder_optimizer: Optimizer
+
+
+class ReplayPlayer:
+    """Plays in the environments and writes every step in the replay buffer: random actions until
+    `algo.learning_starts`, then actions sampled from the policy. The stacked frames of an image are stored as its
+    channels."""
+
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: SACAEPlayer, schedule: TrainSchedule) -> None:
+        self.fabric = fabric
+        self.cfg = cfg
+        self.policy = policy
+        self.schedule = schedule
+        self.cnn_keys = cfg.algo.cnn_keys.encoder
+
+    def images_as_channels(self, obs: Dict[str, np.ndarray], num_envs: int) -> Dict[str, np.ndarray]:
+        return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in self.cnn_keys else v for k, v in obs.items()}
+
+    def step(self, env: EnvRunner, buffer: ReplayBuffer) -> None:
+        num_envs = env.num_envs
+        obs = self.images_as_channels(env.obs, num_envs)
+        if self.schedule.warmup(env.policy_step):
+            actions = env.random_actions()
         else:
-            normalized_obs[k] = data[k]
-            normalized_next_obs[k] = data[f"next_{k}"]
+            torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
+            actions = self.policy(torch_obs).cpu().numpy()
 
-    # Update the soft-critic
-    with autocast_cache_scope(fabric):
-        next_target_qf_value = agent.get_next_target_q_values(
-            normalized_next_obs, data["rewards"], data["terminated"], cfg.algo.gamma
-        )
-        qf_values = agent.get_q_values(normalized_obs, data["actions"])
-        qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
-        qf_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(qf_loss)
-    qf_optimizer.step()
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss", qf_loss)
+        step = env.step(actions)
 
-    # Update the target networks with EMA
-    if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
-        agent.critic_target_ema()
-        agent.critic_encoder_target_ema()
+        # The observations that follow the actions: for the episodes that have just ended, their last observation,
+        # not the first one of the next episode
+        next_obs = {k: v.copy() for k, v in step.next_obs.items()}
+        ended_envs = np.nonzero(np.logical_or(step.terminated, step.truncated))[0]
+        if len(ended_envs) > 0:
+            for k, final_obs in step.final_obs(ended_envs, list(next_obs)).items():
+                next_obs[k][ended_envs] = final_obs
+        next_obs = self.images_as_channels(next_obs, num_envs)
 
-    # Update the actor
-    if cumulative_per_rank_gradient_steps % cfg.algo.actor.per_rank_update_freq == 0:
-        with autocast_cache_scope(fabric):
-            actions, logprobs = agent.get_actions_and_log_probs(normalized_obs, detach_encoder_features=True)
-            qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
-            min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
-            actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-            actor_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(actor_loss)
-        actor_optimizer.step()
+        data = {}
+        for k in obs:
+            data[k] = obs[k][np.newaxis]
+            if not self.cfg.buffer.sample_next_obs:
+                data[f"next_{k}"] = next_obs[k][np.newaxis]
+        data["terminated"] = step.terminated.reshape(1, num_envs, -1).astype(np.float32)
+        data["truncated"] = step.truncated.reshape(1, num_envs, -1).astype(np.float32)
+        data["actions"] = actions.reshape(1, num_envs, -1).astype(np.float32)
+        data["rewards"] = step.rewards.reshape(1, num_envs, -1).astype(np.float32)
+        buffer.add(data, validate_args=self.cfg.buffer.validate_args)
 
-        # Update the entropy value
-        alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-        alpha_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(alpha_loss)
-        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
-        alpha_optimizer.step()
 
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/policy_loss", actor_loss)
-            aggregator.update("Loss/alpha_loss", alpha_loss)
+class SACAE(Algorithm):
+    """Every iteration plays one step in every environment and writes it in the replay buffer, then does
+    `algo.replay_ratio` gradient steps per policy step, each on its own batch sampled from the buffer: the critics
+    (and the encoder) at every step, the target networks, the actor and the entropy coefficient, and the encoder and
+    the decoder on the reconstruction of the observations, each every `per_rank_*_freq` gradient steps."""
 
-    # Update the decoder
-    if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
-        with autocast_cache_scope(fabric):
-            hidden = encoder(normalized_obs)
-            reconstruction = decoder(hidden)
-            reconstruction_loss = 0
-            for k in cfg.algo.cnn_keys.decoder + cfg.algo.mlp_keys.decoder:
-                target = preprocess_obs(data[k], bits=5) if k in cfg.algo.cnn_keys.decoder else data[k]
-                reconstruction_loss += (
-                    F.mse_loss(target, reconstruction[k])  # Reconstruction
-                    + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
+    off_policy = True
+
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+        super().__init__(fabric, cfg)
+        if "minedojo" in cfg.env.wrapper._target_.lower():
+            raise ValueError(
+                "MineDojo is not currently supported by SAC-AE agent, since it does not take "
+                "into consideration the action masks provided by the environment, but needed "
+                "in order to play correctly the game. "
+                "As an alternative you can use one of the Dreamers' agents."
+            )
+        # These arguments cannot be changed
+        cfg.env.screen_size = 64
+
+    def build(
+        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
+    ) -> Tuple[SACAEState, ReplayBuffer]:
+        cfg = self.cfg
+        fabric = self.fabric
+        if not isinstance(obs_space, gym.spaces.Dict):
+            raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        if not isinstance(action_space, gym.spaces.Box):
+            raise RuntimeError(
+                f"Unexpected action space, should be of type continuous (of type Box), got: {action_space}"
+            )
+        keys = cfg.algo.cnn_keys, cfg.algo.mlp_keys
+        if all(len(set(k.encoder).intersection(set(k.decoder))) == 0 for k in keys):
+            raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
+        for kind, k in zip(("CNN", "MLP"), keys):
+            if len(set(k.decoder) - set(k.encoder)) > 0:
+                raise RuntimeError(
+                    f"The {kind} keys of the decoder must be contained in the encoder ones. "
+                    f"Those keys are decoded without being encoded: {list(set(k.decoder))}"
                 )
-            encoder_optimizer.zero_grad(set_to_none=True)
-            decoder_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(reconstruction_loss)
-        encoder_optimizer.step()
-        decoder_optimizer.step()
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
+        if cfg.metric.log_level > 0:
+            fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+            fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+            fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
+            fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+
+        agent, encoder, decoder = build_models(cfg, obs_space, action_space, fabric.device)
+        encoder = setup_module(fabric, encoder)
+        decoder = setup_module(fabric, decoder)
+        agent.actor = setup_module(fabric, agent.actor)
+        # Setting the critic also creates the target critic, as a copy of it
+        agent.critic = setup_module(fabric, agent.critic)
+        agent.critic_target = setup_module(fabric, agent.critic_target)
+
+        optimizers = [
+            hydra.utils.instantiate(optimizer_cfg, params=params, _convert_="all")
+            for optimizer_cfg, params in (
+                (cfg.algo.critic.optimizer, agent.critic.parameters()),
+                (cfg.algo.actor.optimizer, agent.actor.parameters()),
+                (cfg.algo.alpha.optimizer, [agent.log_alpha]),
+                (cfg.algo.encoder.optimizer, encoder.parameters()),
+                (cfg.algo.decoder.optimizer, decoder.parameters()),
+            )
+        ]
+        qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
+            *optimizers
+        )
+
+        state = SACAEState(
+            agent=agent,
+            encoder=encoder,
+            decoder=decoder,
+            qf_optimizer=qf_optimizer,
+            actor_optimizer=actor_optimizer,
+            alpha_optimizer=alpha_optimizer,
+            encoder_optimizer=encoder_optimizer,
+            decoder_optimizer=decoder_optimizer,
+        )
+        buffer = ReplayBuffer(
+            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
+            cfg.env.num_envs,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+            seed=cfg.seed + fabric.global_rank,
+        )
+        self.schedule = schedule
+        self.action_space = action_space
+        return state, buffer
+
+    def policy(self, state: SACAEState) -> SACAEPlayer:
+        """The policy to play with: it shares its modules (and so its weights) with the trained actor."""
+        actor = state.agent.actor.module
+        # Its modules run in the precision of the run, as the actor does
+        fabric = get_single_device_fabric(self.fabric)
+        policy = SACAEPlayer(
+            fabric.setup_module(actor.encoder),
+            fabric.setup_module(actor.model),
+            fabric.setup_module(actor.fc_mean),
+            fabric.setup_module(actor.fc_logstd),
+            action_low=self.action_space.low,
+            action_high=self.action_space.high,
+        )
+        policy.action_scale = policy.action_scale.to(fabric.device)
+        policy.action_bias = policy.action_bias.to(fabric.device)
+        return policy
+
+    def player(self, state: SACAEState) -> ReplayPlayer:
+        return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule)
+
+    def batches(
+        self, state: SACAEState, buffer: ReplayBuffer, n_steps: int, iteration: int
+    ) -> Iterator[Dict[str, Tensor]]:
+        cfg = self.cfg
+        # Sample the batches of all the gradient steps at once
+        data, sampler = sample_batches(
+            self.fabric, cfg, buffer, n_steps * cfg.algo.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+        )
+        for batch_idxes in BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
+            yield {k: v[batch_idxes] for k, v in data.items()}
+
+    def train_step(self, state: SACAEState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
+        cfg = self.cfg.algo
+        agent = state.agent
+        cnn_keys = cfg.cnn_keys.encoder
+        obs = {k: batch[k] / 255.0 if k in cnn_keys else batch[k] for k in cnn_keys + cfg.mlp_keys.encoder}
+        next_obs = {
+            k: batch[f"next_{k}"] / 255.0 if k in cnn_keys else batch[f"next_{k}"]
+            for k in cnn_keys + cfg.mlp_keys.encoder
+        }
+
+        # Critics (and the encoder): regress the soft Q-values towards the one-step target of the target critics
+        with autocast(self.fabric):
+            target_qf_values = agent.get_next_target_q_values(
+                next_obs, batch["rewards"], batch["terminated"], cfg.gamma
+            )
+            qf_values = agent.get_q_values(obs, batch["actions"])
+            qf_loss = critic_loss(qf_values, target_qf_values, agent.num_critics)
+        update(self.fabric, qf_loss, state.qf_optimizer)
+        metrics = {"Loss/value_loss": qf_loss.detach()}
+        if step % cfg.critic.per_rank_target_network_update_freq == 0:
+            agent.critic_target_ema()
+            agent.critic_encoder_target_ema()
+
+        # Actor: maximize the smallest Q-value of its actions plus their entropy, on the features of the encoder
+        # (not trained by this loss)
+        if step % cfg.actor.per_rank_update_freq == 0:
+            with autocast(self.fabric):
+                actions, logprobs = agent.get_actions_and_log_probs(obs, detach_encoder_features=True)
+                qf_values = agent.get_q_values(obs, actions, detach_encoder_features=True)
+                min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
+                actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+            update(self.fabric, actor_loss, state.actor_optimizer)
+
+            # Entropy coefficient: towards the target entropy
+            alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
+            update(self.fabric, alpha_loss, state.alpha_optimizer)
+            metrics["Loss/policy_loss"] = actor_loss.detach()
+            metrics["Loss/alpha_loss"] = alpha_loss.detach()
+
+        # Encoder and decoder: reconstruct the observations (the images with 5 bits per channel), with an L2 penalty
+        # on the features, once for every decoded key
+        if step % cfg.decoder.per_rank_update_freq == 0:
+            with autocast(self.fabric):
+                hidden = state.encoder(obs)
+                reconstruction = state.decoder(hidden)
+                reconstruction_loss = 0
+                for k in cfg.cnn_keys.decoder + cfg.mlp_keys.decoder:
+                    target = preprocess_obs(batch[k], bits=5) if k in cfg.cnn_keys.decoder else batch[k]
+                    reconstruction_loss += (
+                        F.mse_loss(target, reconstruction[k])
+                        + cfg.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()
+                    )
+            # One backward pass for both, then the step of the encoder and the one of the decoder
+            state.decoder_optimizer.zero_grad(set_to_none=True)
+            params = [*state.encoder.parameters(), *state.decoder.parameters()]
+            update(self.fabric, reconstruction_loss, state.encoder_optimizer, params=params)
+            state.decoder_optimizer.step()
+            metrics["Loss/reconstruction_loss"] = reconstruction_loss.detach()
+        return metrics
 
 
 @register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
-    if "minedojo" in cfg.env.wrapper._target_.lower():
-        raise ValueError(
-            "MineDojo is not currently supported by SAC-AE agent, since it does not take "
-            "into consideration the action masks provided by the environment, but needed "
-            "in order to play correctly the game. "
-            "As an alternative you can use one of the Dreamers' agents."
-        )
+    algo = SACAE(fabric, cfg)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
-    device = fabric.device
-    rank = fabric.global_rank
-    world_size = fabric.world_size
-
-    # Resume from checkpoint
-    if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
-
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-
-    # Create Logger. This will create the logger only on the
-    # rank-0 process
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-    fabric.print(f"Log dir: {log_dir}")
-
-    # Environment setup
-    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
-    envs = vectorized_env(
-        [
-            make_env(
-                cfg,
-                cfg.seed + rank * cfg.env.num_envs + i,
-                rank * cfg.env.num_envs,
-                log_dir if rank == 0 else None,
-                "train",
-                vector_env_idx=i,
-            )
-            for i in range(cfg.env.num_envs)
-        ]
-    )
-    # Seed the random actions played before the training starts
-    envs.action_space.seed(cfg.seed + rank)
-    observation_space = envs.single_observation_space
-
-    if not isinstance(observation_space, gym.spaces.Dict):
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if not isinstance(envs.single_action_space, gym.spaces.Box):
-        raise RuntimeError(
-            f"Unexpected action space, should be of type continuous (of type Box), got: {observation_space}"
-        )
-
-    if (
-        len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
-        and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
-    ):
-        raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
-    if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
-        raise RuntimeError(
-            "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
-        )
-    if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
-        raise RuntimeError(
-            "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
-        )
-    if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-        fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
-        fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-
-    # Define the agent and the optimizer and setup them with Fabric
-    agent, encoder, decoder, player = build_agent(
-        fabric,
-        cfg,
-        observation_space,
-        envs.single_action_space,
-        state["agent"] if cfg.checkpoint.resume_from else None,
-        state["encoder"] if cfg.checkpoint.resume_from else None,
-        state["decoder"] if cfg.checkpoint.resume_from else None,
-    )
-
-    # Optimizers
-    qf_optimizer = hydra.utils.instantiate(
-        cfg.algo.critic.optimizer,
-        params=agent.critic.parameters(),
-        _convert_="all",
-    )
-    actor_optimizer = hydra.utils.instantiate(
-        cfg.algo.actor.optimizer,
-        params=agent.actor.parameters(),
-        _convert_="all",
-    )
-    alpha_optimizer = hydra.utils.instantiate(
-        cfg.algo.alpha.optimizer,
-        params=[agent.log_alpha],
-        _convert_="all",
-    )
-    encoder_optimizer = hydra.utils.instantiate(
-        cfg.algo.encoder.optimizer,
-        params=encoder.parameters(),
-        _convert_="all",
-    )
-    decoder_optimizer = hydra.utils.instantiate(
-        cfg.algo.decoder.optimizer,
-        params=decoder.parameters(),
-        _convert_="all",
-    )
-
-    if cfg.checkpoint.resume_from:
-        qf_optimizer.load_state_dict(state["qf_optimizer"])
-        actor_optimizer.load_state_dict(state["actor_optimizer"])
-        alpha_optimizer.load_state_dict(state["alpha_optimizer"])
-        encoder_optimizer.load_state_dict(state["encoder_optimizer"])
-        decoder_optimizer.load_state_dict(state["decoder_optimizer"])
-
-    qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer = fabric.setup_optimizers(
-        qf_optimizer, actor_optimizer, alpha_optimizer, encoder_optimizer, decoder_optimizer
-    )
-
-    if fabric.is_global_zero:
-        save_configs(cfg, log_dir)
-
-    # Metrics
-    aggregator = None
-    if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
-
-    # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1
-    rb = ReplayBuffer(
-        buffer_size,
-        cfg.env.num_envs,
-        device=fabric.device if cfg.buffer.memmap else "cpu",
-        memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        seed=cfg.seed + rank,
-    )
-    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
-        if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
-            rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], ReplayBuffer):
-            rb = state["rb"]
-        else:
-            raise RuntimeError(f"Given {len(state['rb'])}, but {fabric.world_size} processes are instantiated")
-
-    # Global variables
-    last_train = 0
-    train_step = 0
-    start_iter = (
-        # + 1 because the checkpoint is at the end of the update step
-        # (when resuming from a checkpoint, the update at the checkpoint
-        # is ended and you have to start with the next one)
-        (state["iter_num"] // fabric.world_size) + 1
-        if cfg.checkpoint.resume_from
-        else 1
-    )
-    policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
-    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
-    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_iter = int(cfg.env.num_envs * fabric.world_size)
-    total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
-    prefill_steps = learning_starts - int(learning_starts > 0)
-    if cfg.checkpoint.resume_from:
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        learning_starts += start_iter
-        prefill_steps += start_iter
-
-    # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-    if cfg.checkpoint.resume_from:
-        ratio.load_state_dict(state["ratio"])
-
-    # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
-        )
-    if cfg.checkpoint.every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
-        )
-
-    # Get the first environment observation and start the optimization
-    step_data = {}
-    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
-    for k in obs_keys:
-        if k in cfg.algo.cnn_keys.encoder:
-            obs[k] = obs[k].reshape(cfg.env.num_envs, -1, *obs[k].shape[-2:])
-
-    per_rank_gradient_steps = 0
-    cumulative_per_rank_gradient_steps = 0
-    for iter_num in range(start_iter, total_iters + 1):
-        policy_step += policy_steps_per_iter
-
-        # Measure environment interaction time: this considers both the model forward
-        # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-            if iter_num <= learning_starts:
-                actions = envs.action_space.sample()
-            else:
-                with torch.inference_mode():
-                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-                    actions = player(torch_obs).cpu().numpy()
-            next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
-
-        if cfg.metric.log_level > 0:
-            for i, ep_rew, ep_len in get_episode_stats(infos):
-                if aggregator and not aggregator.disabled:
-                    aggregator.update("Rewards/rew_avg", ep_rew)
-                    aggregator.update("Game/ep_len_avg", ep_len)
-                fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
-
-        # Save the real next observation
-        real_next_obs = copy.deepcopy(next_obs)
-        if "final_obs" in infos:
-            for idx, final_obs in enumerate(infos["final_obs"]):
-                if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
-
-        for k in real_next_obs.keys():
-            if k in cfg.algo.cnn_keys.encoder:
-                next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            step_data[k] = obs[k][np.newaxis]
-
-            if not cfg.buffer.sample_next_obs:
-                step_data[f"next_{k}"] = real_next_obs[k][np.newaxis]
-                if k in cfg.algo.cnn_keys.encoder:
-                    step_data[f"next_{k}"] = step_data[f"next_{k}"].reshape(
-                        1, cfg.env.num_envs, -1, *step_data[f"next_{k}"].shape[-2:]
-                    )
-
-        step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
-
-        # next_obs becomes the new obs
-        obs = next_obs
-
-        # Train the agent
-        if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
-            per_rank_gradient_steps = ratio(ratio_steps / world_size)
-            if per_rank_gradient_steps > 0:
-                # We sample one time to reduce the communications between processes
-                sample = rb.sample_tensors(
-                    per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
-                    sample_next_obs=cfg.buffer.sample_next_obs,
-                    from_numpy=cfg.buffer.from_numpy,
-                )  # [1, G*B]
-                gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, 1, G*B]
-                for k, v in gathered_data.items():
-                    gathered_data[k] = v.flatten(start_dim=0, end_dim=2).float()  # [G*B*World]
-                len_data = len(gathered_data[next(iter(gathered_data.keys()))])
-                if fabric.world_size > 1:
-                    dist_sampler: DistributedSampler = DistributedSampler(
-                        range(len_data),
-                        num_replicas=fabric.world_size,
-                        rank=fabric.global_rank,
-                        shuffle=True,
-                        seed=cfg.seed,
-                        drop_last=False,
-                    )
-                    sampler: BatchSampler = BatchSampler(
-                        sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                    )
-                else:
-                    sampler = BatchSampler(
-                        sampler=range(len_data), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                    )
-
-                # Start training
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for batch_idxes in sampler:
-                        train(
-                            fabric,
-                            agent,
-                            encoder,
-                            decoder,
-                            actor_optimizer,
-                            qf_optimizer,
-                            alpha_optimizer,
-                            encoder_optimizer,
-                            decoder_optimizer,
-                            {k: v[batch_idxes] for k, v in gathered_data.items()},
-                            aggregator,
-                            cumulative_per_rank_gradient_steps,
-                            cfg,
-                        )
-                        cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
-
-        # Log metrics
-        if cfg.metric.log_level and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
-            # Sync distributed metrics
-            if aggregator and not aggregator.disabled:
-                metrics_dict = aggregator.compute()
-                fabric.log_dict(metrics_dict, policy_step)
-                aggregator.reset()
-
-            # Log replay ratio
-            fabric.log(
-                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
-            )
-
-            # Sync distributed timers
-            if not timer.disabled:
-                timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
-                    fabric.log(
-                        "Time/sps_train",
-                        (train_step - last_train) / timer_metrics["Time/train_time"],
-                        policy_step,
-                    )
-                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
-                    fabric.log(
-                        "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                        / timer_metrics["Time/env_interaction_time"],
-                        policy_step,
-                    )
-                timer.reset()
-
-            # Reset counters
-            last_log = policy_step
-            last_train = train_step
-
-        # Checkpoint model
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            iter_num == total_iters and cfg.checkpoint.save_last
-        ):
-            last_checkpoint = policy_step
-            state = {
-                "agent": agent.state_dict(),
-                "encoder": encoder.state_dict(),
-                "decoder": decoder.state_dict(),
-                "qf_optimizer": qf_optimizer.state_dict(),
-                "actor_optimizer": actor_optimizer.state_dict(),
-                "alpha_optimizer": alpha_optimizer.state_dict(),
-                "encoder_optimizer": encoder_optimizer.state_dict(),
-                "decoder_optimizer": decoder_optimizer.state_dict(),
-                "ratio": ratio.state_dict(),
-                "iter_num": iter_num * fabric.world_size,
-                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
-                "last_log": last_log,
-                "last_checkpoint": last_checkpoint,
-            }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call(
-                "on_checkpoint_coupled",
-                fabric=fabric,
-                ckpt_path=ckpt_path,
-                state=state,
-                replay_buffer=rb if cfg.buffer.checkpoint else None,
-            )
-
-    envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir)
+        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac_ae.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
-        models_to_log = {"agent": agent, "encoder": encoder, "decoder": decoder}
-        register_model(fabric, log_models, cfg, models_to_log)
+        register_model(
+            fabric, log_models, cfg, {"agent": state.agent, "encoder": state.encoder, "decoder": state.decoder}
+        )

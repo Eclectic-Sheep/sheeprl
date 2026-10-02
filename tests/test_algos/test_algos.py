@@ -3,7 +3,6 @@ import shutil
 import sys
 import time
 import warnings
-from contextlib import nullcontext
 from unittest import mock
 
 import pytest
@@ -59,7 +58,7 @@ def remove_test_dir(path: str) -> None:
     """Utility function to cleanup a temporary folder if it still exists."""
     try:
         shutil.rmtree(path, False, None)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -135,12 +134,12 @@ def test_sac_gradient_steps(standard_args, start_time):
     from sheeprl.algos.sac import sac
 
     gradient_steps = []
+    sac_train_step = sac.SAC.train_step
 
-    def train(*args, **kwargs):
+    def train_step(*args, **kwargs):
         gradient_steps.append(1)
-        return sac_train(*args, **kwargs)
+        return sac_train_step(*args, **kwargs)
 
-    sac_train = sac.train
     root_dir = os.path.join(f"pytest_{start_time}", "sac", os.environ["LT_DEVICES"])
     run_name = "test_sac_gradient_steps"
     args = standard_args + [
@@ -153,7 +152,7 @@ def test_sac_gradient_steps(standard_args, start_time):
         f"run_name={run_name}",
     ]
 
-    with mock.patch.object(sac, "train", train), mock.patch.object(sys, "argv", args):
+    with mock.patch.object(sac.SAC, "train_step", train_step), mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     # A single iteration is played with `dry_run=True` and `env.num_envs=2`
@@ -182,49 +181,6 @@ def test_sac_ae(standard_args, start_time):
     ]
 
     with mock.patch.object(sys, "argv", args):
-        run()
-    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
-
-
-def test_sac_decoupled(standard_args, start_time):
-    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
-    run_name = "test_sac_decoupled"
-    args = standard_args + [
-        "exp=sac_decoupled",
-        "algo.per_rank_batch_size=1",
-        "algo.learning_starts=0",
-        "algo.replay_ratio=1",
-        f"fabric.devices={os.environ['LT_DEVICES']}",
-        f"root_dir={root_dir}",
-        f"run_name={run_name}",
-    ]
-
-    with mock.patch.object(sys, "argv", args):
-        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-            run()
-
-    if os.environ["LT_DEVICES"] != "1":
-        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
-
-
-def test_sac_decoupled_multiple_trainers(standard_args, start_time):
-    # One player and two trainers: the player must send a different chunk of data to each trainer
-    if os.environ["LT_DEVICES"] == "1":
-        pytest.skip("The test runs with three devices, it is enough to run it once")
-    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", "3")
-    run_name = "test_sac_decoupled_multiple_trainers"
-    args = standard_args + [
-        "exp=sac_decoupled",
-        "algo.per_rank_batch_size=2",
-        "algo.learning_starts=0",
-        "algo.replay_ratio=1",
-        "fabric.devices=3",
-        f"root_dir={root_dir}",
-        f"run_name={run_name}",
-    ]
-
-    # Fabric reads the number of devices from the `LT_DEVICES` environment variable, which takes precedence
-    with mock.patch.dict(os.environ, {"LT_DEVICES": "3"}), mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
@@ -268,39 +224,40 @@ def test_ppo(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_ppo_decoupled(standard_args, start_time, env_id):
-    root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_decoupled"
-    args = standard_args + [
-        "exp=ppo_decoupled",
+def test_the_test_return_is_logged_at_the_last_policy_step(standard_args, start_time):
+    # It was logged at step 0, at the start of the training curves
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("Only the process of rank 0 logs")
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_test_return")
+    args = [arg for arg in standard_args if not arg.startswith("metric.")] + [
+        "exp=ppo",
         "env=dummy",
-        f"fabric.devices={os.environ['LT_DEVICES']}",
-        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
-        "algo.per_rank_batch_size=1",
-        "algo.update_epochs=1",
+        "env.id=discrete_dummy",
+        "algo.rollout_steps=4",
+        "algo.per_rank_batch_size=4",
+        "algo.run_test=True",
+        "metric.log_level=1",
         f"root_dir={root_dir}",
-        f"run_name={run_name}",
-        f"env.id={env_id}",
-        "algo.cnn_keys.encoder=[rgb]",
+        "run_name=test_return",
         "algo.mlp_keys.encoder=[state]",
     ]
-
     with mock.patch.object(sys, "argv", args):
-        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-            run()
+        run()
+    log_dir = os.path.join("logs", "runs", root_dir, "test_return", "version_0")
+    events = EventAccumulator(log_dir)
+    events.Reload()
+    # 1 iteration (dry run) of 4 steps of 2 environments
+    assert [e.step for e in events.Scalars("Test/cumulative_reward")] == [8]
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
-    if os.environ["LT_DEVICES"] != "1":
-        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
-
-@pytest.mark.parametrize("algo", ["ppo", "ppo_decoupled", "a2c", "ppo_recurrent"])
+@pytest.mark.parametrize("algo", ["ppo", "a2c", "ppo_recurrent"])
 def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     # The time limit truncates the episodes during the rollout, so the value of the final observation
     # of every truncated episode is bootstrapped: the frame-stacked `rgb` is the only selected key,
     # while the `state` key returned by the environment is not used by the agent
-    if algo == "ppo_decoupled" and os.environ["LT_DEVICES"] == "1":
-        pytest.skip("The decoupled algorithms need at least two devices")
     root_dir = os.path.join(f"pytest_{start_time}", algo, os.environ["LT_DEVICES"])
     run_name = f"test_{algo}_truncated_episodes"
     args = standard_args + [
@@ -316,8 +273,6 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
-    if algo == "ppo_decoupled":
-        args.append(f"fabric.devices={os.environ['LT_DEVICES']}")
     if algo == "ppo_recurrent":
         args += ["algo.per_rank_sequence_length=2", "fabric.precision=32"]
 
@@ -326,7 +281,8 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-def test_ppo_recurrent(standard_args, start_time):
+@pytest.mark.parametrize("env_id", [None, "continuous_dummy"])
+def test_ppo_recurrent(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
     args = standard_args + [
@@ -339,6 +295,9 @@ def test_ppo_recurrent(standard_args, start_time):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
+    if env_id is not None:
+        # Continuous actions crashed
+        args += ["env=dummy", f"env.id={env_id}", "algo.cnn_keys.encoder=[]", "algo.mlp_keys.encoder=[state]"]
 
     with mock.patch.object(sys, "argv", args):
         run()
@@ -600,6 +559,32 @@ def test_dreamer_v3(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_dreamer_v3_dry_run_with_longer_sequences(standard_args, start_time):
+    # The dry run trained after one step of every environment, with a buffer of 2 steps: sequences longer than one step
+    # crashed the sampling
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3_sequences", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        "exp=dreamer_v3",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=4",
+        "algo.horizon=4",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_v3_sequences",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     # The second environment crashes during its first step and it is restarted by the `RestartOnException`
     # wrapper: the restart must be handled for that environment only (the environments run in the rank-0 process)
@@ -758,13 +743,17 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
     exploration = importlib.import_module(f"sheeprl.algos.{algo}.{algo}_exploration")
     inputs_require_grad = []
 
-    def build_agent(*args, **kwargs):
-        agent = exploration_build_agent(*args, **kwargs)
-        for ens in agent[1]:
-            ens.register_forward_pre_hook(lambda _, inputs: inputs_require_grad.append(inputs[0].requires_grad))
-        return agent
+    # The algorithms ported to the shared core create their models with `build_models` (the ensembles last), the
+    # others with `build_agent` (the ensembles second)
+    builder_name, ensembles_idx = ("build_models", -1) if hasattr(exploration, "build_models") else ("build_agent", 1)
+    exploration_builder = getattr(exploration, builder_name)
 
-    exploration_build_agent = exploration.build_agent
+    def builder(*args, **kwargs):
+        models = exploration_builder(*args, **kwargs)
+        for ens in models[ensembles_idx]:
+            ens.register_forward_pre_hook(lambda _, inputs: inputs_require_grad.append(inputs[0].requires_grad))
+        return models
+
     root_dir = os.path.join(f"pytest_{start_time}", algo, os.environ["LT_DEVICES"])
     run_name = f"test_{algo}_intrinsic_reward_is_differentiable"
     args = standard_args + [
@@ -790,7 +779,7 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
         "algo.mlp_keys.decoder=[state]",
     ]
 
-    with mock.patch.object(exploration, "build_agent", build_agent), mock.patch.object(sys, "argv", args):
+    with mock.patch.object(exploration, builder_name, builder), mock.patch.object(sys, "argv", args):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert any(inputs_require_grad)

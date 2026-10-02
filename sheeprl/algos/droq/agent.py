@@ -1,17 +1,13 @@
 import copy
-from math import prod
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Sequence, Tuple, Union
 
-import gymnasium
 import torch
 import torch.nn as nn
-from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACActor, SACPlayer
+from sheeprl.algos.sac.agent import SACActor
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -113,11 +109,7 @@ class DROQAgent(nn.Module):
     def critics(self, critics: Sequence[Union[DROQCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
-        # Create target critic unwrapping the DDP module from the critics to prevent
-        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed
-        # process_group argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SAC for example
+        # The target critics are copies of the critics without their wrappers (Fabric, DDP)
         qfs_unwrapped_modules = []
         for critic in critics:
             if hasattr(critic, "module"):
@@ -207,72 +199,3 @@ class DROQAgent(nn.Module):
             self.qfs_unwrapped[critic_idx].parameters(), self.qfs_target[critic_idx].parameters()
         ):
             target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
-
-
-def build_agent(
-    fabric: Fabric,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    action_space: gymnasium.spaces.Box,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[DROQAgent, SACPlayer]:
-    act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
-    actor = SACActor(
-        observation_dim=obs_dim,
-        action_dim=act_dim,
-        distribution_cfg=cfg.distribution,
-        hidden_size=cfg.algo.actor.hidden_size,
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-    critics = [
-        DROQCritic(
-            observation_dim=obs_dim + act_dim,
-            hidden_size=cfg.algo.critic.hidden_size,
-            num_critics=1,
-            dropout=cfg.algo.critic.dropout,
-        )
-        for _ in range(cfg.algo.critic.n)
-    ]
-    target_entropy = -act_dim
-    agent = DROQAgent(
-        actor,
-        critics,
-        target_entropy,
-        alpha=cfg.algo.alpha.alpha,
-        tau=cfg.algo.tau,
-        device=fabric.device,
-    )
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = SACPlayer(
-        copy.deepcopy(agent.actor.model),
-        copy.deepcopy(agent.actor.fc_mean),
-        copy.deepcopy(agent.actor.fc_logstd),
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-
-    # Setup training agent
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
-
-    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
-    # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
-    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
-
-    # Setup player agent
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    return agent, player

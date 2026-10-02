@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import warnings
 from unittest import mock
 
@@ -9,6 +10,11 @@ import pytest
 
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
+
+# For the trainings run inside the pytest process: environments stepped in this process and no videos. An environment
+# worker forked from a process where pygame has already rendered (e.g. in an earlier test) hangs forever when it closes
+# pygame: SDL waits for its timer thread, which exists only in the parent process
+IN_PROCESS_ENV_ARGS = ["env.sync_env=True", "env.capture_video=False"]
 
 
 def test_dp_strategy_str_warning():
@@ -20,6 +26,7 @@ def test_dp_strategy_str_warning():
         "dry_run=True",
         "algo.rollout_steps=1",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -45,10 +52,9 @@ def test_module_not_found():
 def test_dp_strategy_instance_warning():
     args = [
         os.path.join(ROOT_DIR, "__main__.py"),
-        "exp=test_decoupled_strategy_instance",
-        "algo=ppo",
-        "algo.rollout_steps=1",
+        "exp=test_strategy_instance",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -63,17 +69,6 @@ def test_dp_strategy_instance_warning():
         )
 
 
-def test_decoupled_strategy_instance_fail():
-    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_decoupled_strategy_instance", "metric.log_level=0"]
-    with pytest.raises(
-        ValueError,
-        match=r"\w+ is currently not supported for decoupled algorithms. "
-        "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp'",
-    ):
-        with mock.patch.object(sys, "argv", args):
-            run()
-
-
 def test_strategy_warning():
     args = [
         os.path.join(ROOT_DIR, "__main__.py"),
@@ -83,6 +78,7 @@ def test_strategy_warning():
         "dry_run=True",
         "algo.rollout_steps=1",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -94,17 +90,6 @@ def test_strategy_warning():
             "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
             "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
         )
-
-
-def test_run_decoupled_algo():
-    subprocess.run(
-        sys.executable + " sheeprl.py exp=ppo_decoupled fabric.strategy=ddp fabric.devices=2 "
-        "dry_run=True algo.rollout_steps=1 algo.cnn_keys.encoder=[rgb] algo.mlp_keys.encoder=[state] "
-        "env.capture_video=False checkpoint.save_last=False metric.log_level=0 "
-        "metric.disable_timer=True",
-        shell=True,
-        check=True,
-    )
 
 
 def test_run_algo():
@@ -155,12 +140,12 @@ def test_resume_from_checkpoint():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -209,12 +194,12 @@ def test_resume_from_checkpoint_env_error():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -265,12 +250,12 @@ def test_resume_from_checkpoint_algo_error():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -327,7 +312,7 @@ def test_evaluate_without_seed():
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))
 
 
@@ -367,7 +352,7 @@ def test_evaluate():
     try:
         path = os.path.join("logs", "runs", "pytest_test_evaluate")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -437,5 +422,40 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))
+
+
+def test_model_manager_is_disabled_when_no_model_can_be_registered():
+    # The models of `model_manager.models` that the algorithm doesn't list in `MODELS_TO_REGISTER` are dropped: when
+    # none is left, the training must not try to register any model at its end
+    import sheeprl.algos.ppo.utils as ppo_utils
+
+    root_dir = "pytest_model_manager_disabled"
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=ppo",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "dry_run=True",
+        "algo.rollout_steps=1",
+        "metric.log_level=0",
+        "algo.run_test=False",
+        "model_manager.disabled=False",
+        f"root_dir={root_dir}",
+        *IN_PROCESS_ENV_ARGS,
+    ]
+    # A stand-in for `sheeprl.utils.mlflow` (MLflow may be missing), which records the registrations
+    fake_mlflow_utils = types.ModuleType("sheeprl.utils.mlflow")
+    fake_mlflow_utils.register_model = mock.Mock()
+    try:
+        with (
+            mock.patch.object(sys, "argv", args),
+            mock.patch("sheeprl.cli._IS_MLFLOW_AVAILABLE", True),
+            mock.patch.object(ppo_utils, "MODELS_TO_REGISTER", set()),
+            mock.patch.dict(sys.modules, {"sheeprl.utils.mlflow": fake_mlflow_utils}),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    fake_mlflow_utils.register_model.assert_not_called()

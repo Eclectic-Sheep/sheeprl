@@ -7,7 +7,7 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torch.distributions import Bernoulli, Categorical, Distribution, constraints
+from torch.distributions import Bernoulli, Categorical, Distribution, Independent, TransformedDistribution, constraints
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
 from torch.distributions.utils import broadcast_all
 
@@ -19,7 +19,35 @@ CONST_INV_SQRT_2 = 1 / math.sqrt(2)
 CONST_LOG_INV_SQRT_2PI = math.log(CONST_INV_SQRT_2PI)
 CONST_LOG_SQRT_2PI_E = 0.5 * math.log(2 * math.pi * math.e)
 
-__all__ = ["OneHotCategoricalValidateArgs", "OneHotCategoricalStraightThroughValidateArgs"]
+__all__ = ["OneHotCategoricalValidateArgs", "OneHotCategoricalStraightThroughValidateArgs", "entropy"]
+
+
+def entropy(dist: Distribution, n_samples: int = 100) -> Tensor:
+    """The entropy of `dist`. A transformed distribution (e.g. the tanh-normal one) has no analytic entropy: it is
+    estimated from `n_samples` samples, as `SampleDist` of DreamerV2 does, as the entropy of the base distribution plus
+    the mean log-determinant of the Jacobian of the transforms at the samples of the base distribution (the
+    log-probabilities of the transformed samples are infinite where the tanh saturates).
+    """
+    try:
+        return dist.entropy()
+    except NotImplementedError:
+        pass
+    reinterpreted_batch_ndims = 0
+    if isinstance(dist, Independent):
+        reinterpreted_batch_ndims = dist.reinterpreted_batch_ndims
+        dist = dist.base_dist
+    if not isinstance(dist, TransformedDistribution):
+        raise NotImplementedError(f"The entropy of {type(dist).__name__} is not implemented")
+    x = dist.base_dist.rsample((n_samples,))
+    log_det = torch.zeros_like(x)
+    for transform in dist.transforms:
+        y = transform(x)
+        log_det = log_det + transform.log_abs_det_jacobian(x, y)
+        x = y
+    value = dist.base_dist.entropy() + log_det.mean(0)
+    if reinterpreted_batch_ndims > 0:
+        value = value.flatten(-reinterpreted_batch_ndims).sum(-1)
+    return value
 
 
 class TruncatedStandardNormal(Distribution):

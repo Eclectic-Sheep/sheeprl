@@ -193,21 +193,21 @@ The training times of our implementations compared to the ones of Stable Baselin
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm                 | Coupled            | Decoupled          | Recurrent          | Vector obs         | Pixel obs          | Status             |
-| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :construction:     |
-| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Status             |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| A3C                       | :x:                | :heavy_check_mark: | :x:                | :construction:     |
+| PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC                       | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC-AE                    | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ                      | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
@@ -229,8 +229,12 @@ The actions supported by sheeprl agents are:
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
+> [!NOTE]
+>
+> The Dreamers and Plan2Explore play the bounded continuous actions in [-1, 1]: with `algo.normalize_actions=True` (their default), the `sheeprl.envs.wrappers.NormalizeAction` wrapper rescales them to the bounds of the action space of the environment.
+
 The environments supported by sheeprl are:
-| Algorithm          | Installation command         | More info                                       | Status             |
+| Environment        | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
 | Classic Control    | `pip install sheeprl`           |                                                 | :heavy_check_mark: |
 | Box2D              | `pip install sheeprl[box2d]`    | Please install first `swig` with `pip install swig` | :heavy_check_mark: |
@@ -421,21 +425,23 @@ https://github.com/Eclectic-Sheep/sheeprl/assets/7341604/46ad4acd-180d-449d-b46a
 
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
 
-For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
+For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `env.num_envs` argument:
 
 ```bash
 sheeprl exp=ppo env=gym env.id=CartPole-v1 env.num_envs=8
 ```
 
-All the available arguments, with their descriptions, are listed in the `sheeprl/config` directory. You can find more information about the hierarchy of configs [here](./howto/run_experiments.md).
+All the available arguments, with their descriptions, are listed in the `sheeprl/configs` directory. You can find more information about the hierarchy of configs [here](./howto/configs.md).
 
 ### Running with Lightning Fabric
 
-To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
+To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm on 2 processes on the CPU, each with 4 parallel environments, you can run:
 
 ```bash
 sheeprl fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 exp=ppo env=gym env.id=CartPole-v1
 ```
+
+Every process plays in its own environments and trains its own copy of the agent: the processes start from the same weights, and the gradients are averaged over the processes at every optimizer step.
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
@@ -456,58 +462,52 @@ The repository is structured as follows:
 - `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and (possibly) contains the following files:
 
   - `<algorithm>.py`: contains the implementation of the algorithm.
-  - `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm, if present.
   - `agent`: optional, contains the implementation of the agent.
   - `loss.py`: contains the implementation of the loss functions of the algorithm.
   - `utils.py`: contains utility functions for the algorithm.
+  - `evaluate.py`: contains the evaluation function of the algorithm, used by `sheeprl-eval`.
 - `configs`: contains the default configs of the algorithms.
+- `core`: contains the training loop shared by all the algorithms, and the interface that every algorithm implements.
 - `data`: contains the implementation of the data buffers.
 - `envs`: contains the implementation of the environment wrappers.
 - `models`: contains the implementation of some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
 - `utils`: contains utility functions for the framework.
 
-#### Coupled vs Decoupled
+#### Training loop
 
-In the coupled version of an algorithm, the agent interacts with the environment and executes the training loop.
+Every process has its own environments and its own copy of the agent, which interacts with the environments and executes the training loop.
 
 <p align="center">
   <img src="./assets/images/sheeprl_coupled.png">
 </p>
 
-In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [distributed collectives, adopting the abstraction provided by Fabric's TorchCollective](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
+The training loop is the same for every algorithm: `sheeprl.core.loop.run(fabric, cfg, algo)`. Every iteration plays `algo.steps_per_iteration` steps in every environment, then trains the agent, then logs the metrics and saves a checkpoint when it's time to.
 
-<p align="center">
-  <img src="./assets/images/sheeprl_decoupled.png">
-</p>
+The algorithm is implemented in the `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
-#### Coupled
+- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data: a `Rollout` for the on-policy algorithms, a replay buffer for the off-policy ones.
+- `player()`: returns the object that plays the current policy in the environments and writes what happens in the store.
+- `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
+- `train_step()`: executes one gradient step on a batch and returns the metrics to log.
+- `end_iteration()`: optional, updates what changes once per iteration (e.g. annealed coefficients).
 
-The algorithm is implemented in the `<algorithm>.py` file.
+The off-policy algorithms (`off_policy = True`) start training after `algo.learning_starts` policy steps and then do `algo.replay_ratio` gradient steps per policy step. Their replay buffer is saved in the checkpoints when `buffer.checkpoint=True`.
 
-There are 2 functions inside this script:
+The training state is a `TrainState` dataclass: each of its fields (modules, optimizers, annealed coefficients, ...) is saved in the checkpoints and restored when a run is resumed. The evaluation (`sheeprl-eval`) and the registration of the models from a checkpoint (`sheeprl-registration`) restore it in the same way, with `sheeprl.core.load_trained_state`.
 
-- `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-- `train()`: executes the training loop. It samples a batch of data from the buffer, computes the loss, and updates the parameters of the agent.
+A resumed run starts from the iteration after the one of its checkpoint. An off-policy run whose replay buffer is in the checkpoint trains right away, without playing random actions again; without the buffer (`buffer.checkpoint=False`), it first fills a new one, playing its policy for `algo.learning_starts` policy steps.
 
-#### Decoupled
-
-The decoupled version of an algorithm is implemented in the `<algorithm>_decoupled.py` file.
-
-There are 3 functions inside this script:
-
-- `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers, and calls the `player()` and `trainer()` functions.
-- `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of interactions with the environment, the player randomly splits the collected data into almost equal chunks and sends them separately to the trainers. It then waits for the trainers to finish the agent update.
-- `trainer()`: executes the training loop. It receives a chunk of data from the player, computes the loss, and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
+The `main()` function of the file, registered with the `@register_algorithm()` decorator, builds the algorithm and calls `run`. When the training ends, it tests the agent (if `algo.run_test=True`) and registers its models (if `model_manager.disabled=False`).
 
 ## Algorithms implementation
 
 You can check inside the folder of each algorithm the `README.md` file for the details about the implementation.
 
-All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related to the training loop of the algorithm.
+All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related to the algorithm: the environments, the logging, the checkpoints and the resuming of a run are handled by the shared training loop, and the `core` folder also provides the helpers for the device, the precision and the optimizer steps (`setup_module`, `autocast` and `update`).
 
 For example, we decided to create a `models` folder with already-made models that can be composed to create the model of the agent.
 
-For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized for the decoupled or the recurrent version of the algorithm.
+For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized for the recurrent version of the algorithm.
 
 ## :card_index_dividers: Buffer
 
@@ -521,7 +521,7 @@ This flexibility makes it very simple to implement, with the classes `ReplayBuff
 
 The shape of the Numpy arrays in the dictionary is `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
 
-For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` must be specified. For example, for PPO, the `buffer_size` must be `[T, B]`, where `T` is the number of timesteps and `B` is the number of parallel environments.
+The on-policy algorithms (A2C, PPO and PPO Recurrent) store their rollout in a `ReplayBuffer` with `T` equal to `algo.rollout_steps` and `B` equal to `env.num_envs`, wrapped in a `sheeprl.core.Rollout`. For A2C and PPO, `buffer.size` must be equal to `algo.rollout_steps`.
 
 ## :bow: Contributing
 

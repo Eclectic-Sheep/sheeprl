@@ -1,13 +1,17 @@
 """Dreamer-V2 implementation from [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 Adapted from the original implementation from https://github.com/danijar/dreamerv2
+
+Written on the shared training loop of `sheeprl.core`: `DreamerV2` says how to build, play and train;
+`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv2`) reuses the player (`SequencePlayer`) and
+the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 
 from __future__ import annotations
 
 import copy
 import os
-import warnings
-from typing import Any, Dict, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -15,93 +19,169 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor
+from torch import Tensor, nn
 from torch.distributions import Bernoulli, Distribution, Independent, Normal, OneHotCategorical
 from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
-from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
+from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor, PlayerDV2, WorldModel, build_models
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, prepare_obs, test
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, autocast, run, setup_module, update
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
-from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.logger import get_log_dir, get_logger
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
 # os.environ["MUJOCO_GL"] = "osmesa"
 
 
-def train(
-    fabric: Fabric,
-    world_model: WorldModel,
-    actor: _FabricModule,
-    critic: _FabricModule,
-    target_critic: torch.nn.Module,
-    world_optimizer: Optimizer,
-    actor_optimizer: Optimizer,
-    critic_optimizer: Optimizer,
-    data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
-    actions_dim: Sequence[int],
-) -> None:
-    """Runs one-step update of the agent.
+@dataclass
+class DreamerV2State(TrainState):
+    # Encoder, RSSM, decoder, reward and (optional) continue models
+    world_model: WorldModel
+    actor: Actor | MinedojoActor
+    critic: nn.Module
+    # Copy of the critic, which estimates the values of the imagined trajectories
+    target_critic: nn.Module
+    world_optimizer: Optimizer
+    actor_optimizer: Optimizer
+    critic_optimizer: Optimizer
 
-    The follwing designations are used:
-        - recurrent_state: is what is called ht or deterministic state from Figure 2 in .
-        - prior: the stochastic state coming out from the transition model, depicted as z-hat_t in Figure 2.
-        - posterior: the stochastic state coming out from the representation model, depicted as z_t in Figure 2.
-        - latent state: the concatenation of the stochastic (can be both the prior or the posterior one)
-        and recurrent states on the last dimension.
-        - p: the output of the transition model, from Eq. 1.
-        - q: the output of the representation model, from Eq. 1.
-        - po: the output of the observation model (decoder), from Eq. 1.
-        - pr: the output of the reward model, from Eq. 1.
-        - pc: the output of the continue model (discout predictor), from Eq. 1.
-        - pv: the output of the value model (critic), from Eq. 3.
 
-    In particular, the agent is updated as following:
+class SequencePlayer:
+    """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
 
-    1. Dynamic Learning:
-        - Encoder: encode the observations.
-        - Recurrent Model: compute the recurrent state from the previous recurrent state,
-            the previous posterior state, and from the previous actions.
-        - Transition Model: predict the stochastic state from the recurrent state, i.e., the deterministic state or ht.
-        - Representation Model: compute the actual stochastic state from the recurrent state and
-            from the embedded observations provided by the environment.
-        - Observation Model: reconstructs observations from latent states.
-        - Reward Model: estimate rewards from the latent states.
-        - Update the models
-    2. Behaviour Learning:
-        - Imagine trajectories in the latent space from each latent state
-        s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
-        - Predict rewards and values in the imagined trajectories.
-        - Compute lambda targets (Eq. 4 in [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193))
-        - Update the actor and the critic
+    Every row holds an observation, the action that led to it and the reward, `terminated`, `truncated` and `is_first`
+    of that step. The first row of every environment holds its first observation, with a zero action and `is_first`.
+    When an episode ends, its row holds the final observation, and a further row the first observation of the new
+    episode (zero action and reward, `is_first`).
 
-    Args:
-        fabric (Fabric): the fabric instance.
-        world_model (_FabricModule): the world model wrapped with Fabric.
-        actor (_FabricModule): the actor model wrapped with Fabric.
-        critic (_FabricModule): the critic model wrapped with Fabric.
-        target_critic (nn.Module): the target critic model.
-        world_optimizer (Optimizer): the world optimizer.
-        actor_optimizer (Optimizer): the actor optimizer.
-        critic_optimizer (Optimizer): the critic optimizer.
-        data (Dict[str, Tensor]): the batch of data to use for training.
-        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
-        cfg (DictConfig): the configs.
-        actions_dim (Sequence[int]): the actions dimension.
+    With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
+    `policy` (`PlayerDV2`), whose recurrent state is reset at the start of every episode.
     """
 
+    def __init__(
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        policy: PlayerDV2,
+        schedule: TrainSchedule,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
+        random_warmup: bool,
+    ) -> None:
+        self.fabric = fabric
+        self.cfg = cfg
+        self.policy = policy
+        self.schedule = schedule
+        self.actions_dim = actions_dim
+        self.is_continuous = is_continuous
+        self.random_warmup = random_warmup
+        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        # The row written at the last step; created, and written, from the first observations of the environments
+        self.step_data: Optional[Dict[str, np.ndarray]] = None
+
+    def step(self, env: EnvRunner, buffer: EnvIndependentReplayBuffer | EpisodeBuffer) -> None:
+        cfg = self.cfg
+        num_envs = env.num_envs
+        if self.step_data is None:
+            # The first observations start the episodes (in a dry run they also end them, for the episode buffer)
+            self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
+            self.step_data["terminated"] = np.zeros((1, num_envs, 1))
+            self.step_data["truncated"] = np.zeros((1, num_envs, 1))
+            if cfg.dry_run:
+                self.step_data["truncated"] = self.step_data["truncated"] + 1
+                self.step_data["terminated"] = self.step_data["terminated"] + 1
+            self.step_data["actions"] = np.zeros((1, num_envs, sum(self.actions_dim)))
+            self.step_data["rewards"] = np.zeros((1, num_envs, 1))
+            self.step_data["is_first"] = np.ones_like(self.step_data["terminated"])
+            buffer.add(self.step_data, validate_args=cfg.buffer.validate_args)
+            self.policy.init_states()
+        step_data = self.step_data
+
+        # The actions are stored one-hot for discrete actions, while the environments take their indices
+        if self.random_warmup and self.schedule.warmup(env.policy_step):
+            real_actions = actions = np.array(env.random_actions())
+            if not self.is_continuous:
+                # One row per environment, one column per discrete action: one-hot each column
+                per_action = actions.reshape(num_envs, len(self.actions_dim)).T
+                actions = np.concatenate(
+                    [
+                        F.one_hot(torch.as_tensor(act), act_dim).numpy()
+                        for act, act_dim in zip(per_action, self.actions_dim)
+                    ],
+                    axis=-1,
+                )
+        else:
+            torch_obs = prepare_obs(self.fabric, env.obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=num_envs)
+            mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
+            real_actions = actions = self.policy.get_actions(torch_obs, mask=mask if len(mask) > 0 else None)
+            actions = torch.cat(actions, -1).view(num_envs, -1).cpu().numpy()
+            if self.is_continuous:
+                real_actions = torch.stack(real_actions, -1).cpu().numpy()
+            else:
+                real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
+
+        # The row of this step starts an episode when the previous one ended it
+        step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
+        step = env.step(real_actions)
+        dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
+        if cfg.dry_run and cfg.buffer.type.lower() == "episode":
+            dones = np.ones_like(dones)
+
+        # The observations that follow the actions: for the episodes that have just ended, their last observation
+        real_next_obs = copy.deepcopy(step.next_obs)
+        if "final_obs" in step.info:
+            for idx, final_obs in enumerate(step.info["final_obs"]):
+                if final_obs is not None:
+                    for k, v in final_obs.items():
+                        real_next_obs[k][idx] = v
+        for k in self.obs_keys:
+            step_data[k] = real_next_obs[k][np.newaxis]
+        step_data["terminated"] = step.terminated.reshape((1, num_envs, -1))
+        step_data["truncated"] = step.truncated.reshape((1, num_envs, -1))
+        step_data["actions"] = actions.reshape((1, num_envs, -1))
+        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
+        step_data["rewards"] = rewards.reshape((1, num_envs, -1))
+        buffer.add(step_data, validate_args=cfg.buffer.validate_args)
+
+        # The episodes that have just ended get a row with the first observation of the new episode
+        dones_idxes = dones.nonzero()[0].tolist()
+        reset_envs = len(dones_idxes)
+        if reset_envs > 0:
+            reset_data = {k: (step.next_obs[k][dones_idxes])[np.newaxis] for k in self.obs_keys}
+            reset_data["terminated"] = np.zeros((1, reset_envs, 1))
+            reset_data["truncated"] = np.zeros((1, reset_envs, 1))
+            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(self.actions_dim)))
+            reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+            reset_data["is_first"] = np.ones_like(reset_data["terminated"])
+            buffer.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
+            # The next row of those envs doesn't start an episode: the reset row did
+            for d in dones_idxes:
+                step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
+            self.policy.init_states(dones_idxes)
+
+
+def world_model_learning(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    world_model: WorldModel,
+    world_optimizer: Optimizer,
+    data: Dict[str, Tensor],
+    detach_heads: bool = False,
+) -> Tuple[Tensor, Tensor, Dict[str, Tensor]]:
+    """One update of the world model on a batch of sequences (dynamic learning, Eq. 2 in the paper).
+
+    Args:
+        detach_heads: the reward and continue models learn from the latent states without changing them (P2E).
+
+    Returns:
+        The posteriors and the recurrent states of the batch, the starting points of the imagination, and the metrics.
+    """
     # The environment interaction goes like this:
     # Actions:       0   a1       a2       a3
     #                    ^ \      ^ \      ^ \
@@ -111,7 +191,6 @@ def train(
     # Rewards:       0        r1       r2      r3
     # Dones:         0        d1       d2      d3
     # Is-first       1        i1       i2      i3
-
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
@@ -125,27 +204,13 @@ def train(
     # is the first one, as if the environment has been reset
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
 
-    # Dynamic Learning
-    stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
-
-    # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
-    with autocast_cache_scope(fabric):
+    with autocast(fabric):
         # The outputs of every step are concatenated at the end of the unroll: writing them in place into
         # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
-        # Initialize the recurrent_states, which will contain all the recurrent states
-        # computed during the dynamic learning phase
-        recurrent_states = []
-
-        # Initialize all the lists to collect priors and posteriors states with their associated logits
-        priors_logits = []
-        posteriors = []
-        posteriors_logits = []
-
-        # Embed observations from the environment
+        recurrent_states, priors_logits, posteriors, posteriors_logits = [], [], [], []
         embedded_obs = world_model.encoder(batch_obs)
-
         for i in range(0, sequence_length):
             # One step of dynamic learning, which take the posterior state, the recurrent state, the action
             # and the observation and compute the next recurrent, prior and posterior states
@@ -165,23 +230,16 @@ def train(
         posteriors = torch.cat(posteriors, dim=0)
         posteriors_logits = torch.cat(posteriors_logits, dim=0)
 
-        # Concatenate the posteriors with the recurrent states on the last dimension.
-        # Latent_states has dimension
         # (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
         latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
-        # Compute predictions for the observations
+        # The distributions over the reconstructed observations, the rewards and, if required, the terminal steps
         decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-
-        # Compute the distribution over the reconstructed observations
         po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
-
-        # Compute the distribution over the rewards
-        pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
-
-        # Compute the distribution over the terminal steps, if required
+        heads_input = latent_states.detach() if detach_heads else latent_states
+        pr = Independent(Normal(world_model.reward_model(heads_input), 1), 1)
         if cfg.algo.world_model.use_continues and world_model.continue_model:
-            pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states)), 1)
+            pc = Independent(Bernoulli(logits=world_model.continue_model(heads_input)), 1)
             continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
         else:
             pc = continues_targets = None
@@ -191,7 +249,6 @@ def train(
         posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
 
         # World model optimization step
-        world_optimizer.zero_grad(set_to_none=True)
         rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
             po,
             batch_obs,
@@ -207,33 +264,78 @@ def train(
             continues_targets,
             cfg.algo.world_model.discount_scale_factor,
         )
-    fabric.backward(rec_loss)
-    world_model_grads = None
-    if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
-        world_model_grads = fabric.clip_gradients(
-            module=world_model,
-            optimizer=world_optimizer,
-            max_norm=cfg.algo.world_model.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    world_optimizer.step()
+    grads = update(
+        fabric,
+        rec_loss,
+        world_optimizer,
+        max_grad_norm=cfg.algo.world_model.clip_gradients or 0.0,
+        error_if_nonfinite=False,
+    )
 
-    # Behaviour Learning
-    with autocast_cache_scope(fabric):
+    metrics = {
+        "Loss/world_model_loss": rec_loss.detach(),
+        "Loss/observation_loss": observation_loss.detach(),
+        "Loss/reward_loss": reward_loss.detach(),
+        "Loss/state_loss": state_loss.detach(),
+        "Loss/continue_loss": continue_loss.detach(),
+        "State/kl": kl.mean().detach(),
+    }
+    if not MetricAggregator.disabled:
+        metrics["State/post_entropy"] = (
+            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach()
+        )
+        metrics["State/prior_entropy"] = (
+            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach()
+        )
+    if grads is not None:
+        metrics["Grads/world_model"] = grads.mean().detach()
+    return posteriors, recurrent_states, metrics
+
+
+def behaviour_learning(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    world_model: WorldModel,
+    actor: nn.Module,
+    critic: nn.Module,
+    target_critic: nn.Module,
+    actor_optimizer: Optimizer,
+    critic_optimizer: Optimizer,
+    posteriors: Tensor,
+    recurrent_states: Tensor,
+    terminated: Tensor,
+    is_continuous: bool,
+    actions_dim: Sequence[int],
+    objective_mix: Optional[float],
+    reward_fn: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+) -> Dict[str, Optional[Tensor]]:
+    """One update of the actor and one of the critic, on trajectories imagined from the latent states of the batch
+    (behaviour learning, Eq. 5 and 6 in the paper).
+
+    Args:
+        objective_mix: the weight of the REINFORCE gradients in the objective of the actor, the rest being the
+            gradients of the dynamics (`algo.actor.objective_mix`). `None`: the dynamics for continuous actions,
+            REINFORCE for discrete ones, as DreamerV2 does (`actor_grad: auto`).
+        reward_fn: the rewards of the imagined trajectories (from the states and the actions that led to them);
+            default: the ones predicted by the reward model.
+
+    Returns:
+        The losses (`policy_loss`, `value_loss`), the norms of the gradients before clipping (`actor_grads`,
+        `critic_grads`, `None` without clipping), the predicted values (`values`), the lambda-values and the rewards
+        of the imagined trajectories.
+    """
+    batch_size = cfg.algo.per_rank_batch_size
+    sequence_length = cfg.algo.per_rank_sequence_length
+    stoch_state_size = cfg.algo.world_model.stochastic_size * cfg.algo.world_model.discrete_size
+    recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
+    with autocast(fabric):
         # (1, batch_size * sequence_length, stochastic_size * discrete_size)
         imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
-
-        # (1, batch_size * sequence_length, recurrent_state_size).
+        # (1, batch_size * sequence_length, recurrent_state_size)
         recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-
-        # (1, batch_size * sequence_length, recurrent_state_size + stochastic_size * discrete_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-
-        # Initialize the list of the imagined trajectories, concatenated at the end of the imagination
         imagined_trajectories = [imagined_latent_state]
-
-        # Initialize the list of the imagined actions, concatenated at the end of the imagination
-        imagined_actions = [torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1], device=device)]
+        imagined_actions = [torch.zeros(1, batch_size * sequence_length, sum(actions_dim), device=fabric.device)]
 
         # The imagination goes like this, with H=3:
         # Actions:       0   a'1      a'2     a'3
@@ -245,38 +347,31 @@ def train(
         # Values:        v'0     v'1      v'2      v'3
         # Lambda-values: l'0     l'1      l'2
         # Continues:     c0      c'1      c'2      c'3
-        # where z0 comes from the posterior
-        # (is initialized as the concatenation of the posteriors and the recurrent states)
-        # while z'i is the imagined states (prior)
-
-        # Imagine trajectories in the latent space
+        # where z0 comes from the posterior, while z'i is the imagined states (prior)
         for i in range(1, cfg.algo.horizon + 1):
-            # (1, batch_size * sequence_length, sum(actions_dim))
             actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
             imagined_actions.append(actions)
-
-            # Imagination step
             imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-
-            # Update current state
             imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
             imagined_trajectories.append(imagined_latent_state)
         imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
         imagined_actions = torch.cat(imagined_actions, dim=0)
 
-        # Predict values and rewards
+        # Predict values, rewards and continues
         predicted_target_values = target_critic(imagined_trajectories)
-        predicted_rewards = world_model.reward_model(imagined_trajectories)
+        if reward_fn is None:
+            predicted_rewards = world_model.reward_model(imagined_trajectories)
+        else:
+            predicted_rewards = reward_fn(imagined_trajectories, imagined_actions)
         if cfg.algo.world_model.use_continues and world_model.continue_model:
             continues = logits_to_probs(world_model.continue_model(imagined_trajectories), is_binary=True)
-            true_continue = (1 - data["terminated"]).reshape(1, -1, 1) * cfg.algo.gamma
+            true_continue = (1 - terminated).reshape(1, -1, 1) * cfg.algo.gamma
             continues = torch.cat((true_continue, continues[1:]))
         else:
             continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
 
-        # Compute the lambda_values, by passing as last value the value of the last imagined state
-        # (horizon, batch_size * sequence_length, 1)
+        # The lambda-values, bootstrapped by the value of the last imagined state: (horizon, batch * sequence, 1)
         lambda_values = compute_lambda_values(
             predicted_rewards[:-1],
             predicted_target_values[:-1],
@@ -286,7 +381,7 @@ def train(
             lmbda=cfg.algo.lmbda,
         )
 
-        # Compute the discounts to multiply the lambda values
+        # The discounts to multiply the lambda values to
         with torch.no_grad():
             discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
 
@@ -306,140 +401,112 @@ def train(
         #  value prediction and one because the corresponding action does not lead
         #  anywhere anymore. One target is lost at the start of the trajectory
         #  because the initial state comes from the replay buffer.`
-        actor_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
 
-        # Dynamics backpropagation
+        def reinforce(baseline: Tensor) -> Tensor:
+            advantage = (lambda_values[1:] - baseline[:-2]).detach()
+            logprobs = [
+                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+            ]
+            return torch.stack(logprobs, -1).sum(-1) * advantage
+
+        if objective_mix is None:
+            objective_mix = 0.0 if is_continuous else 1.0
+        # Dynamics backpropagation and REINFORCE
         dynamics = lambda_values[1:]
-
-        # Reinforce
-        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
-        reinforce = (
-            torch.stack(
-                [
-                    p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                    for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-                ],
-                -1,
-            ).sum(-1)
-            * advantage
-        )
-        objective = cfg.algo.actor.objective_mix * reinforce + (1 - cfg.algo.actor.objective_mix) * dynamics
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        if objective_mix == 0:
+            objective = dynamics
+        elif objective_mix == 1:
+            objective = reinforce(predicted_target_values)
+        else:
+            objective = objective_mix * reinforce(predicted_target_values) + (1 - objective_mix) * dynamics
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
         policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
-    fabric.backward(policy_loss)
-    actor_grads = None
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_grads = fabric.clip_gradients(
-            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
-        )
-    actor_optimizer.step()
+    actor_grads = update(
+        fabric,
+        policy_loss,
+        actor_optimizer,
+        max_grad_norm=cfg.algo.actor.clip_gradients or 0.0,
+        error_if_nonfinite=False,
+    )
 
-    with autocast_cache_scope(fabric):
-        # Predict the values distribution only for the first H (horizon)
-        # imagined states (to match the dimension with the lambda values),
-        # It removes the last imagined state in the trajectory because it is used for bootstrapping
+    with autocast(fabric):
+        # The values of the first H imagined states, to match the lambda-values: the last one bootstraps them
         qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
         # Critic optimization step. Eq. 5 from the paper.
-        critic_optimizer.zero_grad(set_to_none=True)
         value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
-    fabric.backward(value_loss)
-    critic_grads = None
-    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-        critic_grads = fabric.clip_gradients(
-            module=critic,
-            optimizer=critic_optimizer,
-            max_norm=cfg.algo.critic.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    critic_optimizer.step()
-
-    # Log metrics
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update(
-            "State/post_entropy",
-            Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach(),
-        )
-        aggregator.update(
-            "State/prior_entropy",
-            Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach(),
-        )
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
-        aggregator.update("Loss/value_loss", value_loss.detach())
-        if world_model_grads:
-            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        if actor_grads:
-            aggregator.update("Grads/actor", actor_grads.mean().detach())
-        if critic_grads:
-            aggregator.update("Grads/critic", critic_grads.mean().detach())
-
-    # Reset everything
-    actor_optimizer.zero_grad(set_to_none=True)
-    critic_optimizer.zero_grad(set_to_none=True)
-    world_optimizer.zero_grad(set_to_none=True)
-
-
-@register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
-    device = fabric.device
-    rank = fabric.global_rank
-    world_size = fabric.world_size
-
-    if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
-
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-    cfg.env.frame_stack = 1
-
-    # Create Logger. This will create the logger only on the
-    # rank-0 process
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-    fabric.print(f"Log dir: {log_dir}")
-
-    # Environment setup
-    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
-    envs = vectorized_env(
-        [
-            make_env(
-                cfg,
-                cfg.seed + rank * cfg.env.num_envs + i,
-                rank * cfg.env.num_envs,
-                log_dir if rank == 0 else None,
-                "train",
-                vector_env_idx=i,
-            )
-            for i in range(cfg.env.num_envs)
-        ]
+    critic_grads = update(
+        fabric,
+        value_loss,
+        critic_optimizer,
+        max_grad_norm=cfg.algo.critic.clip_gradients or 0.0,
+        error_if_nonfinite=False,
     )
-    # Seed the random actions played before the training starts
-    envs.action_space.seed(cfg.seed + rank)
-    action_space = envs.single_action_space
-    observation_space = envs.single_observation_space
+    return {
+        "policy_loss": policy_loss.detach(),
+        "value_loss": value_loss.detach(),
+        "actor_grads": None if actor_grads is None else actor_grads.mean().detach(),
+        "critic_grads": None if critic_grads is None else critic_grads.mean().detach(),
+        "values": predicted_target_values.detach(),
+        "lambda_values": lambda_values.detach(),
+        "rewards": predicted_rewards.detach(),
+    }
 
-    is_continuous = isinstance(action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-    )
-    clip_rewards_fn = lambda r: np.tanh(r) if cfg.env.clip_rewards else r
-    if not isinstance(observation_space, gym.spaces.Dict):
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
 
+def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+    """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
+    processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
+    run makes it large enough)."""
+    sequence_length = cfg.algo.per_rank_sequence_length
+    if cfg.dry_run:
+        return max(dry_run_size, sequence_length)
+    size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size)
+    if size < sequence_length:
+        raise ValueError(
+            f"The replay buffer of every environment holds `buffer.size // (env.num_envs * world_size)` = {size} "
+            f"steps, fewer than a sequence (`algo.per_rank_sequence_length={sequence_length}`): increase `buffer.size`"
+        )
+    return size
+
+
+def build_buffer(
+    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
+) -> EnvIndependentReplayBuffer | EpisodeBuffer:
+    """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
+    whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`."""
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+    memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
+    buffer_type = cfg.buffer.type.lower()
+    if buffer_type == "sequential":
+        return EnvIndependentReplayBuffer(
+            env_buffer_size(fabric, cfg, dry_run_size),
+            n_envs=cfg.env.num_envs,
+            obs_keys=obs_keys,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=memmap_dir,
+            buffer_cls=SequentialReplayBuffer,
+            seed=cfg.seed + fabric.global_rank,
+        )
+    elif buffer_type == "episode":
+        # The episodes of all the environments of the process share the buffer
+        return EpisodeBuffer(
+            cfg.buffer.size // fabric.world_size if not cfg.dry_run else dry_run_size,
+            minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
+            n_envs=cfg.env.num_envs,
+            obs_keys=obs_keys,
+            prioritize_ends=cfg.buffer.prioritize_ends,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=memmap_dir,
+        )
+    raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+
+
+def check_keys(fabric: Fabric, cfg: Dict[str, Any], obs_space: gym.spaces.Dict) -> None:
+    """The observations must be a dictionary, and the keys of the decoder must be among the ones of the encoder."""
+    if not isinstance(obs_space, gym.spaces.Dict):
+        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
     if (
         len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
         and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
@@ -460,336 +527,189 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
         fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    world_model, actor, critic, target_critic, player = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        observation_space,
-        state["world_model"] if cfg.checkpoint.resume_from else None,
-        state["actor"] if cfg.checkpoint.resume_from else None,
-        state["critic"] if cfg.checkpoint.resume_from else None,
-        state["target_critic"] if cfg.checkpoint.resume_from else None,
+
+def setup_world_model(fabric: Fabric, world_model: WorldModel) -> WorldModel:
+    """Set up the modules of the world model (device, precision)."""
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
+    if world_model.continue_model:
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    return world_model
+
+
+def actions_dim_of(action_space: gym.Space) -> Tuple[Tuple[int, ...], bool]:
+    """The dimensions of the actions (one per discrete action) and whether they are continuous."""
+    is_continuous = isinstance(action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        action_space.shape if is_continuous else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
     )
+    return actions_dim, is_continuous
 
-    # Optimizers
-    world_optimizer = hydra.utils.instantiate(
-        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
-    )
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
-    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
-    if cfg.checkpoint.resume_from:
-        world_optimizer.load_state_dict(state["world_optimizer"])
-        actor_optimizer.load_state_dict(state["actor_optimizer"])
-        critic_optimizer.load_state_dict(state["critic_optimizer"])
-    world_optimizer, actor_optimizer, critic_optimizer = fabric.setup_optimizers(
-        world_optimizer, actor_optimizer, critic_optimizer
-    )
 
-    if fabric.is_global_zero:
-        save_configs(cfg, log_dir)
+class DreamerV2(Algorithm):
+    """Every iteration plays one step in every environment and writes it in the replay buffer, then does
+    `algo.replay_ratio` gradient steps per policy step, each on its own batch of sequences: the world model, then the
+    actor and the critic on trajectories imagined from the batch."""
 
-    # Metrics
-    aggregator = None
-    if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
+    off_policy = True
 
-    # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 2
-    buffer_type = cfg.buffer.type.lower()
-    if buffer_type == "sequential":
-        rb = EnvIndependentReplayBuffer(
-            buffer_size,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + rank,
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+        super().__init__(fabric, cfg)
+        # These arguments cannot be changed
+        cfg.env.screen_size = 64
+        cfg.env.frame_stack = 1
+
+    def build(
+        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
+    ) -> Tuple[DreamerV2State, EnvIndependentReplayBuffer | EpisodeBuffer]:
+        cfg = self.cfg
+        fabric = self.fabric
+        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        check_keys(fabric, cfg, obs_space)
+
+        world_model, actor, critic = build_models(self.actions_dim, self.is_continuous, cfg, obs_space)
+        world_model = setup_world_model(fabric, world_model)
+        actor = setup_module(fabric, actor)
+        critic = setup_module(fabric, critic)
+        target_critic = setup_module(fabric, copy.deepcopy(critic.module))
+
+        world_optimizer = hydra.utils.instantiate(
+            cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
         )
-    elif buffer_type == "episode":
-        rb = EpisodeBuffer(
-            buffer_size,
-            minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            prioritize_ends=cfg.buffer.prioritize_ends,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
+        critic_optimizer = hydra.utils.instantiate(
+            cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all"
         )
-    else:
-        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
-    if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
-        if isinstance(state["rb"], list) and world_size == len(state["rb"]):
-            rb = state["rb"][fabric.global_rank]
-        elif isinstance(state["rb"], (EnvIndependentReplayBuffer, EpisodeBuffer)):
-            rb = state["rb"]
-        else:
-            raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
-
-    # Global variables
-    train_step = 0
-    last_train = 0
-    start_iter = (
-        # + 1 because the checkpoint is at the end of the update step
-        # (when resuming from a checkpoint, the update at the checkpoint
-        # is ended and you have to start with the next one)
-        (state["iter_num"] // world_size) + 1
-        if cfg.checkpoint.resume_from
-        else 1
-    )
-    policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
-    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
-    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_iter = int(cfg.env.num_envs * world_size)
-    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
-    prefill_steps = learning_starts - int(learning_starts > 0)
-    if cfg.checkpoint.resume_from:
-        cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        learning_starts += start_iter
-        prefill_steps += start_iter
-
-    # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-    if cfg.checkpoint.resume_from:
-        ratio.load_state_dict(state["ratio"])
-
-    # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
+        world_optimizer, actor_optimizer, critic_optimizer = fabric.setup_optimizers(
+            world_optimizer, actor_optimizer, critic_optimizer
         )
-    if cfg.checkpoint.every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
+        state = DreamerV2State(
+            world_model=world_model,
+            actor=actor,
+            critic=critic,
+            target_critic=target_critic,
+            world_optimizer=world_optimizer,
+            actor_optimizer=actor_optimizer,
+            critic_optimizer=critic_optimizer,
+        )
+        self.schedule = schedule
+        return state, build_buffer(fabric, cfg, log_dir, dry_run_size=2)
+
+    def policy(self, state: DreamerV2State) -> PlayerDV2:
+        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
+        cfg = self.cfg
+        return PlayerDV2(
+            state.world_model.encoder,
+            state.world_model.rssm.recurrent_model,
+            state.world_model.rssm.representation_model,
+            state.actor,
+            self.actions_dim,
+            cfg.env.num_envs,
+            cfg.algo.world_model.stochastic_size,
+            cfg.algo.world_model.recurrent_model.recurrent_state_size,
+            self.fabric.device,
+            discrete_size=cfg.algo.world_model.discrete_size,
         )
 
-    # Get the first environment observation and start the optimization
-    step_data = {}
-    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
-    for k in obs_keys:
-        step_data[k] = obs[k][np.newaxis]
-    step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
-    if cfg.dry_run:
-        step_data["truncated"] = step_data["truncated"] + 1
-        step_data["terminated"] = step_data["terminated"] + 1
-    step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
-    step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
-    step_data["is_first"] = np.ones_like(step_data["terminated"])
-    rb.add(step_data, validate_args=cfg.buffer.validate_args)
-    player.init_states()
+    def player(self, state: DreamerV2State) -> SequencePlayer:
+        # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
+        random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
+        return SequencePlayer(
+            self.fabric,
+            self.cfg,
+            self.policy(state),
+            self.schedule,
+            self.actions_dim,
+            self.is_continuous,
+            random_warmup,
+        )
 
-    cumulative_per_rank_gradient_steps = 0
-    for iter_num in range(start_iter, total_iters + 1):
-        policy_step += policy_steps_per_iter
+    def batches(
+        self, state: DreamerV2State, buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int, iteration: int
+    ) -> Iterator[Dict[str, Tensor]]:
+        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
 
-        with torch.inference_mode():
-            # Measure environment interaction time: this considers both the model forward
-            # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
-                # Sample an action given the observation received by the environment
-                if (
-                    iter_num <= learning_starts
-                    and cfg.checkpoint.resume_from is None
-                    and "minedojo" not in cfg.env.wrapper._target_.lower()
-                ):
-                    real_actions = actions = np.array(envs.action_space.sample())
-                    if not is_continuous:
-                        actions = np.concatenate(
-                            [
-                                F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                                for act, act_dim in zip(actions.reshape(len(actions_dim), -1), actions_dim)
-                            ],
-                            axis=-1,
-                        )
-                else:
-                    torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-                    mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-                    if len(mask) == 0:
-                        mask = None
-                    real_actions = actions = player.get_actions(torch_obs, mask=mask)
-                    actions = torch.cat(actions, -1).view(cfg.env.num_envs, -1).cpu().numpy()
-                    if is_continuous:
-                        real_actions = torch.stack(real_actions, -1).cpu().numpy()
-                    else:
-                        real_actions = (
-                            torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
-                        )
+    def train_step(self, state: DreamerV2State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
+        cfg = self.cfg
+        # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps
+        if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
+            for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
+                tcp.data.copy_(cp.data)
 
-                step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
-                next_obs, rewards, terminated, truncated, infos = envs.step(
-                    real_actions.reshape(envs.action_space.shape)
-                )
-                dones = np.logical_or(terminated, truncated).astype(np.uint8)
-                if cfg.dry_run and buffer_type == "episode":
-                    dones = np.ones_like(dones)
+        posteriors, recurrent_states, metrics = world_model_learning(
+            self.fabric, cfg, state.world_model, state.world_optimizer, batch
+        )
+        behaviour = behaviour_learning(
+            self.fabric,
+            cfg,
+            state.world_model,
+            state.actor,
+            state.critic,
+            state.target_critic,
+            state.actor_optimizer,
+            state.critic_optimizer,
+            posteriors,
+            recurrent_states,
+            batch["terminated"],
+            self.is_continuous,
+            self.actions_dim,
+            objective_mix=cfg.algo.actor.objective_mix,
+        )
+        metrics["Loss/policy_loss"] = behaviour["policy_loss"]
+        metrics["Loss/value_loss"] = behaviour["value_loss"]
+        if behaviour["actor_grads"] is not None:
+            metrics["Grads/actor"] = behaviour["actor_grads"]
+        if behaviour["critic_grads"] is not None:
+            metrics["Grads/critic"] = behaviour["critic_grads"]
+        return metrics
 
-            if cfg.metric.log_level > 0:
-                for i, ep_rew, ep_len in get_episode_stats(infos):
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
-            # Save the real next observation
-            real_next_obs = copy.deepcopy(next_obs)
-            if "final_obs" in infos:
-                for idx, final_obs in enumerate(infos["final_obs"]):
-                    if final_obs is not None:
-                        for k, v in final_obs.items():
-                            real_next_obs[k][idx] = v
+# The most batches sampled (and moved to the device) at once: the first training can do many gradient steps
+# (`algo.per_rank_pretrain_steps`)
+MAX_SAMPLED_BATCHES = 16
 
-            for k in obs_keys:  # [N_envs, N_obs]
-                step_data[k] = real_next_obs[k][np.newaxis]
 
-            # Next_obs becomes the new obs
-            obs = next_obs
+def sample_batches(
+    fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
+) -> Iterator[Dict[str, Tensor]]:
+    """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
+    time."""
+    for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
+        n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
+        sample = buffer.sample_tensors(
+            batch_size=cfg.algo.per_rank_batch_size,
+            sequence_length=cfg.algo.per_rank_sequence_length,
+            n_samples=n_samples,
+            dtype=None,
+            device=fabric.device,
+            from_numpy=cfg.buffer.from_numpy,
+        )  # [N_Samples, Sequence_Length, Batch_Size, ...]
+        for i in range(n_samples):
+            yield {k: v[i].float() for k, v in sample.items()}
 
-            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
-            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
-            step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
-            step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
-            rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
-            # Reset and save the observation coming from the automatic reset
-            dones_idxes = dones.nonzero()[0].tolist()
-            reset_envs = len(dones_idxes)
-            if reset_envs > 0:
-                reset_data = {}
-                for k in obs_keys:
-                    reset_data[k] = (next_obs[k][dones_idxes])[np.newaxis]
-                reset_data["terminated"] = np.zeros((1, reset_envs, 1))
-                reset_data["truncated"] = np.zeros((1, reset_envs, 1))
-                reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
-                reset_data["rewards"] = np.zeros((1, reset_envs, 1))
-                reset_data["is_first"] = np.ones_like(reset_data["terminated"])
-                rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-                # Reset dones so that `is_first` is updated
-                for d in dones_idxes:
-                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
-                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
-                # Reset internal agent states
-                player.init_states(dones_idxes)
+@register_algorithm()
+def main(fabric: Fabric, cfg: Dict[str, Any]):
+    algo = DreamerV2(fabric, cfg)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
-        # Train the agent
-        if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
-            per_rank_gradient_steps = ratio(ratio_steps / world_size)
-            if per_rank_gradient_steps > 0:
-                local_data = rb.sample_tensors(
-                    batch_size=cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for i in range(per_rank_gradient_steps):
-                        if (
-                            cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
-                            == 0
-                        ):
-                            for cp, tcp in zip(critic.module.parameters(), target_critic.module.parameters()):
-                                tcp.data.copy_(cp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
-                        train(
-                            fabric,
-                            world_model,
-                            actor,
-                            critic,
-                            target_critic,
-                            world_optimizer,
-                            actor_optimizer,
-                            critic_optimizer,
-                            batch,
-                            aggregator,
-                            cfg,
-                            actions_dim,
-                        )
-                        cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
-
-        # Log metrics
-        if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
-            # Sync distributed metrics
-            if aggregator and not aggregator.disabled:
-                metrics_dict = aggregator.compute()
-                fabric.log_dict(metrics_dict, policy_step)
-                aggregator.reset()
-
-            # Log replay ratio
-            fabric.log(
-                "Params/replay_ratio", cumulative_per_rank_gradient_steps * world_size / policy_step, policy_step
-            )
-
-            # Sync distributed timers
-            if not timer.disabled:
-                timer_metrics = timer.compute()
-                if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
-                    fabric.log(
-                        "Time/sps_train",
-                        (train_step - last_train) / timer_metrics["Time/train_time"],
-                        policy_step,
-                    )
-                if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
-                    fabric.log(
-                        "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
-                        / timer_metrics["Time/env_interaction_time"],
-                        policy_step,
-                    )
-                timer.reset()
-
-            # Reset counters
-            last_log = policy_step
-            last_train = train_step
-
-        # Checkpoint Model
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            iter_num == total_iters and cfg.checkpoint.save_last
-        ):
-            last_checkpoint = policy_step
-            state = {
-                "world_model": world_model.state_dict(),
-                "actor": actor.state_dict(),
-                "critic": critic.state_dict(),
-                "target_critic": target_critic.state_dict(),
-                "world_optimizer": world_optimizer.state_dict(),
-                "actor_optimizer": actor_optimizer.state_dict(),
-                "critic_optimizer": critic_optimizer.state_dict(),
-                "ratio": ratio.state_dict(),
-                "iter_num": iter_num * world_size,
-                "batch_size": cfg.algo.per_rank_batch_size * world_size,
-                "last_log": last_log,
-                "last_checkpoint": last_checkpoint,
-            }
-            ckpt_path = log_dir + f"/checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt"
-            fabric.call(
-                "on_checkpoint_coupled",
-                fabric=fabric,
-                ckpt_path=ckpt_path,
-                state=state,
-                replay_buffer=rb if cfg.buffer.checkpoint else None,
-            )
-
-    envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir)
+        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
-        models_to_log = {"world_model": world_model, "actor": actor, "critic": critic, "target_critic": target_critic}
+        models_to_log = {
+            "world_model": state.world_model,
+            "actor": state.actor,
+            "critic": state.critic,
+            "target_critic": state.target_critic,
+        }
         register_model(fabric, log_models, cfg, models_to_log)

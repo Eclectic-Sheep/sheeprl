@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-import warnings
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -119,10 +118,14 @@ def init_weights(m: nn.Module):
 
 @torch.no_grad()
 def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None) -> Tensor:
+    """Zero mean and unit standard deviation (of the elements selected by `mask`). A single element has no standard
+    deviation: it is returned as it is (as Stable-Baselines3 does with the advantages of a one-element minibatch)."""
     unmasked = mask is None
     if unmasked:
         mask = torch.ones_like(tensor, dtype=torch.bool)
     masked_tensor = tensor[mask]
+    if masked_tensor.numel() < 2:
+        return tensor if unmasked else masked_tensor
     normalized = (masked_tensor - masked_tensor.mean()) / (masked_tensor.std() + eps)
     if unmasked:
         return normalized.reshape_as(mask)
@@ -261,12 +264,9 @@ class Ratio:
     https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/embodied/core/when.py#L26
     """
 
-    def __init__(self, ratio: float, pretrain_steps: int = 0):
-        if pretrain_steps < 0:
-            raise ValueError(f"'pretrain_steps' must be non-negative, got {pretrain_steps}")
+    def __init__(self, ratio: float):
         if ratio < 0:
             raise ValueError(f"'ratio' must be non-negative, got {ratio}")
-        self._pretrain_steps = pretrain_steps
         self._ratio = ratio
         self._prev = None
 
@@ -275,28 +275,18 @@ class Ratio:
             return 0
         if self._prev is None:
             self._prev = step
-            repeats = int(step * self._ratio)
-            if self._pretrain_steps > 0:
-                if step < self._pretrain_steps:
-                    warnings.warn(
-                        "The number of pretrain steps is greater than the number of current steps. This could lead to "
-                        f"a higher ratio than the one specified ({self._ratio}). Setting the 'pretrain_steps' equal to "
-                        "the number of current steps."
-                    )
-                    self._pretrain_steps = step
-                repeats = int(self._pretrain_steps * self._ratio)
-            return repeats
+            return int(step * self._ratio)
         repeats = int((step - self._prev) * self._ratio)
         self._prev += repeats / self._ratio
         return repeats
 
     def state_dict(self) -> Dict[str, Any]:
-        return {"_ratio": self._ratio, "_prev": self._prev, "_pretrain_steps": self._pretrain_steps}
+        return {"_ratio": self._ratio, "_prev": self._prev}
 
     def load_state_dict(self, state_dict: Mapping[str, Any]):
+        # The checkpoints saved before the pretraining moved to `sheeprl.core.TrainSchedule` also have `_pretrain_steps`
         self._ratio = state_dict["_ratio"]
         self._prev = state_dict["_prev"]
-        self._pretrain_steps = state_dict["_pretrain_steps"]
         return self
 
 

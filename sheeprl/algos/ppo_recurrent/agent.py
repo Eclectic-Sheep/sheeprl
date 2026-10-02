@@ -1,18 +1,15 @@
-import copy
-from math import prod
+from math import prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
 import torch
 import torch.nn as nn
-from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor
+from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class RecurrentModel(nn.Module):
@@ -170,6 +167,15 @@ class RecurrentPPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
+        # Orthogonal initialization, as PPO's agent: the encoder with gain 1, the hidden layers of actor and critic with
+        # gain sqrt(2), the actor's heads with 0.01 and the critic's output with 1 (the LSTM keeps its own)
+        if encoder_cfg.ortho_init:
+            ortho_init_linear_layers(self.feature_extractor, gain=1.0)
+        if actor_cfg.ortho_init:
+            ortho_init_linear_layers(actor_backbone, gain=sqrt(2))
+            ortho_init_linear_layers(actor_heads, gain=0.01)
+        if critic_cfg.ortho_init:
+            ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tensor = self.reset_hidden_states()
@@ -202,7 +208,7 @@ class RecurrentPPOAgent(nn.Module):
             else:
                 sampled_actions.append(actions[0])
             entropies.append(dist.entropy())
-            logprobs.append(dist.log_prob(actions))
+            logprobs.append(dist.log_prob(sampled_actions[-1]))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)
@@ -309,7 +315,7 @@ class RecurrentPPOPlayer(nn.Module):
                     sampled_actions.append(dist.sample())
                 else:
                     sampled_actions.append(actions[0])
-            logprobs.append(dist.log_prob(actions))
+            logprobs.append(dist.log_prob(sampled_actions[-1]))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)
@@ -407,64 +413,3 @@ class RecurrentPPOPlayer(nn.Module):
                 else:
                     sampled_actions.append(dist.sample())
         return tuple(sampled_actions), states
-
-
-def build_agent(
-    fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
-    agent = RecurrentPPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
-        rnn_cfg=cfg.algo.rnn,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
-        is_continuous=is_continuous,
-        distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
-        screen_size=cfg.env.screen_size,
-        device=fabric.device,
-    )
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = RecurrentPPOPlayer(
-        copy.deepcopy(agent.feature_extractor),
-        copy.deepcopy(agent.rnn),
-        copy.deepcopy(agent.actor),
-        copy.deepcopy(agent.critic),
-        cfg.algo.rnn.lstm.hidden_size,
-        actions_dim,
-    )
-
-    # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.rnn = fabric.setup_module(agent.rnn)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
-
-    # Setup player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
-    player.rnn = fabric_player.setup_module(player.rnn)
-    player.critic = fabric_player.setup_module(player.critic)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.rnn.parameters(), player.rnn.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
-        player_p.data = agent_p.data
-    return agent, player
