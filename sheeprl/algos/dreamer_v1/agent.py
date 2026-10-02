@@ -99,6 +99,7 @@ class RSSM(nn.Module):
         recurrent_state: Tensor,
         action: Tensor,
         embedded_obs: Tensor,
+        is_first: Tensor,
     ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """
         Perform one step of the dynamic learning:
@@ -115,6 +116,8 @@ class RSSM(nn.Module):
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
+            is_first (Tensor): if this is the first step in the episode: the step starts from the zero state, as the
+                player does at the start of an episode.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
@@ -127,6 +130,9 @@ class RSSM(nn.Module):
             The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of
             the distribution of the prior state.
         """
+        action = (1 - is_first) * action
+        posterior = (1 - is_first) * posterior
+        recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_state_mean_std, prior = self._transition(recurrent_out)
         posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)

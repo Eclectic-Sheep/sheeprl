@@ -19,7 +19,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v1.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
+from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
 from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
@@ -108,6 +108,10 @@ def train(
     batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
     batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
 
+    # Every sequence starts from the zero state, as an episode does: its first step is treated as the first one of an
+    # episode (its action, which comes from before the sequence, is not seen)
+    data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
+
     # Dynamic Learning
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
@@ -150,7 +154,11 @@ def train(
             # and the observation; compute the mean and std of both the posterior and prior state,
             # the new recurrent state and the new posterior state
             recurrent_state, posterior, _, posterior_mean_std, prior_state_mean_std = world_model.rssm.dynamic(
-                posterior, recurrent_state, data["actions"][i : i + 1], embedded_obs[i : i + 1]
+                posterior,
+                recurrent_state,
+                data["actions"][i : i + 1],
+                embedded_obs[i : i + 1],
+                data["is_first"][i : i + 1],
             )
             recurrent_states.append(recurrent_state)
             posteriors.append(posterior)
@@ -511,6 +519,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
+        # A buffer saved before `is_first` was stored
+        rb = add_is_first(rb)
 
     # Global variables
     train_step = 0
@@ -562,6 +572,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["is_first"] = np.ones((1, cfg.env.num_envs, 1))
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
@@ -635,6 +646,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             step_data["truncated"] = truncated[np.newaxis]
             step_data["actions"] = actions[np.newaxis]
             step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
+            step_data["is_first"] = np.zeros((1, cfg.env.num_envs, 1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Reset and save the observation coming from the automatic reset
@@ -648,6 +660,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 reset_data["truncated"] = np.zeros((1, reset_envs, 1))
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+                reset_data["is_first"] = np.ones((1, reset_envs, 1))
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 for d in dones_idxes:
                     step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])

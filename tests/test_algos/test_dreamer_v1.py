@@ -1,5 +1,6 @@
-"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player."""
+"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player, the episode starts."""
 
+import copy
 import os
 import shutil
 import sys
@@ -15,8 +16,9 @@ from torch.distributions import Bernoulli, Independent, Normal
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1, RecurrentModel
+from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
 
 DREAMER_ARGS = [
@@ -182,3 +184,101 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
         assert len(agent_params) == len(player_params) > 0
         for agent_p, player_p in zip(agent_params, player_params):
             assert torch.equal(agent_p, player_p)
+
+
+def test_the_rssm_starts_the_episodes_from_the_zero_state():
+    # The sequences cross the episodes: a step marked `is_first` starts from the zero state and the zero action, as the
+    # player does at the start of an episode; the other steps go on from the previous ones
+    torch.manual_seed(0)
+    rssm = RSSM(RecurrentModel(4 + 2, 8), nn.Linear(8 + 5, 8), nn.Linear(8, 8), {}, min_std=0.1)
+    posterior, recurrent_state, action, embedded_obs = (torch.randn(1, 3, n) for n in (4, 8, 2, 5))
+    is_first = torch.tensor([1.0, 0.0, 1.0]).view(1, 3, 1)
+
+    def dynamic(*args):
+        torch.manual_seed(1)
+        recurrent_state, posterior, _, posterior_mean_std, _ = rssm.dynamic(*args)
+        return recurrent_state, posterior, posterior_mean_std[0]
+
+    marked = dynamic(posterior, recurrent_state, action, embedded_obs, is_first)
+    restarted = dynamic(
+        torch.zeros_like(posterior), torch.zeros_like(recurrent_state), torch.zeros_like(action), embedded_obs, is_first
+    )
+    continued = dynamic(posterior, recurrent_state, action, embedded_obs, torch.zeros_like(is_first))
+    first = is_first.view(-1).bool()
+    for out, start, cont in zip(marked, restarted, continued):
+        torch.testing.assert_close(out[:, first], start[:, first])
+        torch.testing.assert_close(out[:, ~first], cont[:, ~first])
+        assert not torch.allclose(out[:, first], cont[:, first])
+
+
+@pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
+def test_the_rows_mark_the_first_observations_of_the_episodes(exp):
+    # DreamerV1 stored no `is_first`: its sequences crossed the episodes with the recurrent state of the previous one
+    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+
+    rows = []
+    buffer_add = EnvIndependentReplayBuffer.add
+
+    def recording_add(self, data, indices=None, *args, **kwargs):
+        rows.append((copy.deepcopy({k: np.asarray(v) for k, v in data.items()}), indices))
+        return buffer_add(self, data, indices, *args, **kwargs)
+
+    with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+        # Episodes of 3 steps (truncated) in 7 iterations
+        run_dreamer_v1(
+            [
+                f"exp={exp}",
+                "env.id=discrete_dummy",
+                "dry_run=False",
+                "env.max_episode_steps=3",
+                "algo.total_steps=14",
+                "algo.replay_ratio=0",
+            ],
+            f"pytest_{exp}_is_first",
+        )
+    # The rows of every environment: the first one, then the one of every step, and after the step that ends an episode
+    # the row with the first observation of the new one
+    first_row, *other_rows = rows
+    assert first_row[0]["is_first"].tolist() == [[[1.0], [1.0]]]
+    step_rows = [row for row, indices in other_rows if indices is None]
+    reset_rows = [(row, indices) for row, indices in other_rows if indices is not None]
+    assert len(step_rows) == 7 and all(not row["is_first"].any() for row in step_rows)
+    assert len(reset_rows) == 2 and all(row["is_first"].all() and indices == [0, 1] for row, indices in reset_rows)
+
+
+@pytest.mark.parametrize("memmap", [False, True])
+def test_a_buffer_saved_without_is_first_is_completed(memmap, tmp_path):
+    # The buffers of the runs before `is_first` was stored: resumed (or loaded by a finetuning), adding a row with it
+    # failed
+    from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+
+    rb = EnvIndependentReplayBuffer(
+        6, n_envs=2, memmap=memmap, memmap_dir=tmp_path, buffer_cls=SequentialReplayBuffer, obs_keys=["state"]
+    )
+    # Environment 0 ends an episode at its second row, environment 1 at its third (truncated)
+    terminated = np.array([[0, 0], [1, 0], [0, 0], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
+    truncated = np.array([[0, 0], [0, 0], [0, 1], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
+    for t in range(4):
+        rb.add(
+            {
+                "state": np.zeros((1, 2, 3), np.float32),
+                "terminated": terminated[t],
+                "truncated": truncated[t],
+                "actions": np.zeros((1, 2, 1), np.float32),
+                "rewards": np.zeros((1, 2, 1), np.float32),
+            }
+        )
+    add_is_first(rb)
+    is_first = [np.asarray(buffer["is_first"])[:4, 0, 0].tolist() for buffer in rb.buffer]
+    assert is_first == [[1, 0, 1, 0], [1, 0, 0, 1]]
+    # Rows with it can be added
+    rb.add(
+        {
+            "state": np.zeros((1, 2, 3), np.float32),
+            "terminated": np.zeros((1, 2, 1), np.float32),
+            "truncated": np.zeros((1, 2, 1), np.float32),
+            "actions": np.zeros((1, 2, 1), np.float32),
+            "rewards": np.zeros((1, 2, 1), np.float32),
+            "is_first": np.ones((1, 2, 1), np.float32),
+        }
+    )

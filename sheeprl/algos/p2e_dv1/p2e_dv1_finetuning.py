@@ -14,6 +14,7 @@ from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
+from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
@@ -194,6 +195,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             rb = state["rb"]
         else:
             raise RuntimeError(f"Given {len(state['rb'])}, but {world_size} processes are instantiated")
+        # A buffer saved before `is_first` was stored
+        rb = add_is_first(rb)
 
     # Global variables
     train_step = 0
@@ -243,6 +246,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     step_data["truncated"] = np.zeros((1, cfg.env.num_envs, 1))
     step_data["actions"] = np.zeros((1, cfg.env.num_envs, sum(actions_dim)))
     step_data["rewards"] = np.zeros((1, cfg.env.num_envs, 1))
+    step_data["is_first"] = np.ones((1, cfg.env.num_envs, 1))
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
@@ -301,6 +305,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             step_data["truncated"] = truncated[np.newaxis]
             step_data["actions"] = actions[np.newaxis]
             step_data["rewards"] = clip_rewards_fn(rewards)[np.newaxis]
+            step_data["is_first"] = np.zeros((1, cfg.env.num_envs, 1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
 
             # Reset and save the observation coming from the automatic reset
@@ -314,6 +319,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 reset_data["truncated"] = np.zeros((1, reset_envs, 1))
                 reset_data["actions"] = np.zeros((1, reset_envs, np.sum(actions_dim)))
                 reset_data["rewards"] = np.zeros((1, reset_envs, 1))
+                reset_data["is_first"] = np.ones((1, reset_envs, 1))
                 rb.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
                 for d in dones_idxes:
                     step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
