@@ -63,3 +63,48 @@ def test_the_cnn_decoder_is_normalized_as_configured():
     cnn_decoder, mlp_decoder = world_model.observation_model.cnn_decoder, world_model.observation_model.mlp_decoder
     assert {m.eps for m in cnn_decoder.modules() if isinstance(m, nn.LayerNorm)} == {0.123}
     assert {m.eps for m in mlp_decoder.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
+
+
+def test_the_player_resets_the_environments_one_by_one(recwarn):
+    # After a full reset, the recurrent state was the initial one expanded to the environments, whose rows share the
+    # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the player
+    # computes no new state) wrote in the expanded tensor (a deprecated `index_put_`, with a warning)
+    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
+
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[]",
+                "algo.cnn_keys.decoder=[]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.dense_units=8",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
+    world_model, actor, _ = build_models(torch.device("cpu"), [3], False, cfg, obs_space)
+    world_model_cfg = cfg.algo.world_model
+    player = PlayerDV3(
+        world_model.encoder,
+        world_model.rssm,
+        actor,
+        [3],
+        3,
+        world_model_cfg.stochastic_size,
+        world_model_cfg.recurrent_model.recurrent_state_size,
+        torch.device("cpu"),
+        discrete_size=world_model_cfg.discrete_size,
+    )
+    player.init_states()
+    initial = player.recurrent_state.clone()
+    player.recurrent_state[:, 1] += 1.0
+    torch.testing.assert_close(player.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
+    player.init_states([1])
+    torch.testing.assert_close(player.recurrent_state, initial)
+    assert not [w for w in recwarn if "expanded tensors" in str(w.message)]
