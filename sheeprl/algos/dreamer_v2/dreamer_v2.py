@@ -313,9 +313,8 @@ def behaviour_learning(
 
     Args:
         objective_mix: the weight of the REINFORCE gradients in the objective of the actor, the rest being the
-            gradients of the dynamics (`algo.actor.objective_mix` of DreamerV2). `None` for Plan2Explore: the
-            dynamics for continuous actions, REINFORCE for discrete ones, and the values of the critic predicted
-            for the whole trajectories.
+            gradients of the dynamics (`algo.actor.objective_mix`). `None`: the dynamics for continuous actions,
+            REINFORCE for discrete ones, as DreamerV2 does (`actor_grad: auto`).
         reward_fn: the rewards of the imagined trajectories (from the states and the actions that led to them);
             default: the ones predicted by the reward model.
 
@@ -411,14 +410,16 @@ def behaviour_learning(
             ]
             return torch.stack(logprobs, -1).sum(-1) * advantage
 
-        if objective_mix is not None:
-            # Dynamics backpropagation and REINFORCE
-            dynamics = lambda_values[1:]
-            objective = objective_mix * reinforce(predicted_target_values) + (1 - objective_mix) * dynamics
-        elif is_continuous:
-            objective = lambda_values[1:]
+        if objective_mix is None:
+            objective_mix = 0.0 if is_continuous else 1.0
+        # Dynamics backpropagation and REINFORCE
+        dynamics = lambda_values[1:]
+        if objective_mix == 0:
+            objective = dynamics
+        elif objective_mix == 1:
+            objective = reinforce(predicted_target_values)
         else:
-            objective = reinforce(target_critic(imagined_trajectories))
+            objective = objective_mix * reinforce(predicted_target_values) + (1 - objective_mix) * dynamics
         try:
             entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
         except NotImplementedError:
@@ -434,10 +435,7 @@ def behaviour_learning(
 
     with autocast(fabric):
         # The values of the first H imagined states, to match the lambda-values: the last one bootstraps them
-        if objective_mix is not None:
-            qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
-        else:
-            qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
+        qv = Independent(Normal(critic(imagined_trajectories.detach()[:-1]), 1), 1)
 
         # Critic optimization step. Eq. 5 from the paper.
         value_loss = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))

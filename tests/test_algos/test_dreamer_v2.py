@@ -1,15 +1,21 @@
-"""DreamerV2 (and P2E-DV2): the KL loss, the decoder and the sampling of the batches."""
+"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the sampling of the batches and the objective of the actor."""
 
 from types import SimpleNamespace
 
+import gymnasium as gym
+import numpy as np
 import pytest
 import torch
+from hydra import compose, initialize_config_module
+from lightning import Fabric
+from omegaconf import OmegaConf
 from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
-from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2, behaviour_learning, sample_batches
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.core import TrainSchedule
 from sheeprl.utils.utils import dotdict
 
 
@@ -82,3 +88,61 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     assert calls == [16, 16, 8]
     assert len(batches) == 40
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
+
+
+def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
+    # The default objective was REINFORCE for every action space: DreamerV2 backpropagates the lambda-values through the
+    # dynamics for continuous actions (`actor_grad: auto`)
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v2",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[]",
+                "algo.cnn_keys.decoder=[]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.mlp_keys.decoder=[state]",
+                "algo.dense_units=8",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.horizon=4",
+                "algo.per_rank_batch_size=2",
+                "algo.per_rank_sequence_length=3",
+                "algo.actor.ent_coef=0",
+                "metric.log_level=0",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    assert cfg.algo.actor.objective_mix is None and not cfg.algo.world_model.use_continues
+    fabric = Fabric(accelerator="cpu", devices=1)
+    algo = DreamerV2(fabric, cfg)
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
+    schedule = TrainSchedule(cfg, 1, algo.steps_per_iteration, off_policy=True)
+    state, _ = algo.build(obs_space, gym.spaces.Box(-1, 1, shape=(2,)), schedule, "unused")
+    torch.manual_seed(0)
+    T, B = cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size
+    world_model_cfg = cfg.algo.world_model
+    posteriors = torch.randn(T, B, world_model_cfg.stochastic_size, world_model_cfg.discrete_size)
+    recurrent_states = torch.randn(T, B, world_model_cfg.recurrent_model.recurrent_state_size)
+    out = behaviour_learning(
+        fabric,
+        cfg,
+        state.world_model,
+        state.actor,
+        state.critic,
+        state.target_critic,
+        state.actor_optimizer,
+        state.critic_optimizer,
+        posteriors,
+        recurrent_states,
+        torch.zeros(T, B, 1),
+        algo.is_continuous,
+        algo.actions_dim,
+        objective_mix=cfg.algo.actor.objective_mix,
+    )
+    # The objective is the lambda-values of the imagined states, discounted
+    lambda_values = out["lambda_values"]
+    discount = cfg.algo.gamma ** torch.arange(cfg.algo.horizon - 1).view(-1, 1, 1)
+    torch.testing.assert_close(out["policy_loss"], -(discount * lambda_values[1:]).mean())

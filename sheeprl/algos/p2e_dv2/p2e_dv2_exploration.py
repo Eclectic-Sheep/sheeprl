@@ -237,7 +237,7 @@ class P2EDV2Exploration(Algorithm):
             batch["terminated"],
             self.is_continuous,
             self.actions_dim,
-            objective_mix=None,
+            objective_mix=cfg.algo.actor.objective_mix,
             reward_fn=intrinsic_reward,
         )
         metrics["Rewards/intrinsic"] = exploration["rewards"].mean()
@@ -265,7 +265,7 @@ class P2EDV2Exploration(Algorithm):
             batch["terminated"],
             self.is_continuous,
             self.actions_dim,
-            objective_mix=None,
+            objective_mix=cfg.algo.actor.objective_mix,
         )
         metrics["Loss/policy_loss_task"] = task["policy_loss"]
         metrics["Loss/value_loss_task"] = task["value_loss"]

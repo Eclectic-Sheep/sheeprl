@@ -86,7 +86,7 @@ Another difference between Dreamer-V1 and Dreamer-V2 is in the *actor loss*, whi
 \mathcal{L}(\psi) = \text{E}{p_{\phi},p_{\psi}}\left[\sum^{H-1}_{t=1}(-\rho\ln p_{\psi}(\hat{a}_t|\hat{z}_t) \cdot \text{sg}(V^{\lambda}_t - v_{\xi}))-(1-\rho)V^{\lambda}_t-\eta\text{H}[a_t|\hat{z}_t]\right]
 ```
 
-here the `lambda_values` $`V^{\lambda}_t`$ are the discounted lambda targets computed in the latent dynamics by a **target critic**, a copy of the critic updated every `algo.critic.per_rank_target_network_update_freq` gradient steps (100 by default). The mix $`\rho`$ is `algo.actor.objective_mix` and the entropy coefficient $`\eta`$ is `algo.actor.ent_coef`.
+here the `lambda_values` $`V^{\lambda}_t`$ are the discounted lambda targets computed in the latent dynamics by a **target critic**, a copy of the critic updated every `algo.critic.per_rank_target_network_update_freq` gradient steps (100 by default). The mix $`\rho`$ is `algo.actor.objective_mix`: by default (`null`) it is 0 (dynamics backpropagation) for continuous actions and 1 (REINFORCE) for discrete ones, as in the paper. The entropy coefficient $`\eta`$ is `algo.actor.ent_coef`.
 
 Finally, the critic loss is computed as follows:
 ```python
