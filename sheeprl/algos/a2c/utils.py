@@ -8,9 +8,11 @@ from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOPlayer
+from sheeprl.algos.ppo.utils import log_models_from_checkpoint  # noqa: F401 (A2C trains the agent of PPO)
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
+MODELS_TO_REGISTER = {"agent"}
 
 
 def prepare_obs(
