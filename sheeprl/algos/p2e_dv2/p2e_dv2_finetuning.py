@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import pathlib
 import warnings
 from typing import Any, Dict
@@ -14,9 +13,9 @@ from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.dreamer_v2 import train
-from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import build_buffer, prepare_obs, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -175,30 +174,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
-    buffer_type = cfg.buffer.type.lower()
-    if buffer_type == "sequential":
-        rb = EnvIndependentReplayBuffer(
-            buffer_size,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + rank,
-        )
-    elif buffer_type == "episode":
-        rb = EpisodeBuffer(
-            buffer_size,
-            minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            prioritize_ends=cfg.buffer.prioritize_ends,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        )
-    else:
-        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+    rb = build_buffer(fabric, cfg, log_dir, dry_run_size=4)
     if resume_from_checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
@@ -293,7 +269,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     real_actions.reshape(envs.action_space.shape)
                 )
                 dones = np.logical_or(terminated, truncated).astype(np.uint8)
-                if cfg.dry_run and buffer_type == "episode":
+                if cfg.dry_run and isinstance(rb, EpisodeBuffer):
                     dones = np.ones_like(dones)
 
             if cfg.metric.log_level > 0:

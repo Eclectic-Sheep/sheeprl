@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
 import gymnasium as gym
@@ -10,6 +11,7 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -80,6 +82,42 @@ def init_weights(m: nn.Module, mode: str = "normal"):
             raise RuntimeError(f"Unrecognized initialization: {mode}. Choose between: `normal`, `uniform` and `zero`")
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
+
+
+def build_buffer(
+    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
+) -> EnvIndependentReplayBuffer | EpisodeBuffer:
+    """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
+    whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`.
+
+    Every process holds `buffer.size // world_size` steps: in a sequential buffer they are split among the environments
+    of the process, while the episodes of all the environments of the process share the episode buffer. In a dry run
+    the buffers hold `dry_run_size` steps.
+    """
+    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+    memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
+    buffer_type = cfg.buffer.type.lower()
+    if buffer_type == "sequential":
+        return EnvIndependentReplayBuffer(
+            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else dry_run_size,
+            n_envs=cfg.env.num_envs,
+            obs_keys=obs_keys,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=memmap_dir,
+            buffer_cls=SequentialReplayBuffer,
+            seed=cfg.seed + fabric.global_rank,
+        )
+    elif buffer_type == "episode":
+        return EpisodeBuffer(
+            cfg.buffer.size // fabric.world_size if not cfg.dry_run else dry_run_size,
+            minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
+            n_envs=cfg.env.num_envs,
+            obs_keys=obs_keys,
+            prioritize_ends=cfg.buffer.prioritize_ends,
+            memmap=cfg.buffer.memmap,
+            memmap_dir=memmap_dir,
+        )
+    raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
 
 
 def compute_lambda_values(
