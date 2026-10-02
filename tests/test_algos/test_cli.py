@@ -57,7 +57,9 @@ def test_dp_strategy_instance_warning():
         "metric.log_level=0",
         *IN_PROCESS_ENV_ARGS,
     ]
-    with mock.patch.object(sys, "argv", args):
+    # The warning is raised by the checks of the configuration, before the training: the training itself is not run,
+    # since `DataParallel` refuses the CPU when CUDA is available
+    with mock.patch.object(sys, "argv", args), mock.patch("sheeprl.cli.run_algorithm"):
         with pytest.warns(UserWarning) as record:
             run()
         assert len(record) >= 1
