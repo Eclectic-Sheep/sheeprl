@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 import gymnasium as gym
 import hydra
@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.optim import Optimizer
@@ -47,7 +46,6 @@ def train(
     aggregator: MetricAggregator | None,
     cumulative_per_rank_gradient_steps: int,
     cfg: Dict[str, Any],
-    group: Optional[CollectibleGroup] = None,
 ):
     normalized_next_obs = {}
     normalized_obs = {}
@@ -92,7 +90,7 @@ def train(
         alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
         alpha_optimizer.zero_grad(set_to_none=True)
         fabric.backward(alpha_loss)
-        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
+        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
         alpha_optimizer.step()
 
         if aggregator and not aggregator.disabled:

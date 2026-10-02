@@ -193,21 +193,21 @@ The training times of our implementations compared to the ones of Stable Baselin
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm                 | Coupled            | Decoupled          | Recurrent          | Vector obs         | Pixel obs          | Status             |
-| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| A3C                       | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :construction:     |
-| PPO                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC                       | :heavy_check_mark: | :heavy_check_mark: | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| SAC-AE                    | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ                      | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| Dreamer-V1                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V2                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3                | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Status             |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| A3C                       | :x:                | :heavy_check_mark: | :x:                | :construction:     |
+| PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC                       | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| SAC-AE                    | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ                      | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
 
@@ -456,7 +456,6 @@ The repository is structured as follows:
 - `algos`: contains the implementations of the algorithms. Each algorithm is in a separate folder, and (possibly) contains the following files:
 
   - `<algorithm>.py`: contains the implementation of the algorithm.
-  - `<algorithm>_decoupled.py`: contains the implementation of the decoupled version of the algorithm, if present.
   - `agent`: optional, contains the implementation of the agent.
   - `loss.py`: contains the implementation of the loss functions of the algorithm.
   - `utils.py`: contains utility functions for the algorithm.
@@ -466,21 +465,13 @@ The repository is structured as follows:
 - `models`: contains the implementation of some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
 - `utils`: contains utility functions for the framework.
 
-#### Coupled vs Decoupled
+#### Training loop
 
-In the coupled version of an algorithm, the agent interacts with the environment and executes the training loop.
+The agent interacts with the environment and executes the training loop.
 
 <p align="center">
   <img src="./assets/images/sheeprl_coupled.png">
 </p>
-
-In the decoupled version, a process is responsible only for interacting with the environment, and all the other processes are responsible for executing the training loop. The two processes communicate through [distributed collectives, adopting the abstraction provided by Fabric's TorchCollective](https://lightning.ai/docs/fabric/stable/api/generated/lightning.fabric.plugins.collectives.TorchCollective.html#lightning.fabric.plugins.collectives.TorchCollective).
-
-<p align="center">
-  <img src="./assets/images/sheeprl_decoupled.png">
-</p>
-
-#### Coupled
 
 The algorithm is implemented in the `<algorithm>.py` file.
 
@@ -488,16 +479,6 @@ There are 2 functions inside this script:
 
 - `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
 - `train()`: executes the training loop. It samples a batch of data from the buffer, computes the loss, and updates the parameters of the agent.
-
-#### Decoupled
-
-The decoupled version of an algorithm is implemented in the `<algorithm>_decoupled.py` file.
-
-There are 3 functions inside this script:
-
-- `main()`: initializes all the components of the algorithm, the collectives for the communication between the player and the trainers, and calls the `player()` and `trainer()` functions.
-- `player()`: executes the interactions with the environment. It samples an action from the policy network, executes it in the environment, and stores the transition in the buffer. After a predefined number of interactions with the environment, the player randomly splits the collected data into almost equal chunks and sends them separately to the trainers. It then waits for the trainers to finish the agent update.
-- `trainer()`: executes the training loop. It receives a chunk of data from the player, computes the loss, and updates the parameters of the agent. After the agent has been updated, the first of the trainers sends back the updated agent weights to the player, which can interact again with the environment.
 
 ## Algorithms implementation
 
@@ -507,7 +488,7 @@ All algorithms are kept as simple as possible, in a [CleanRL](https://github.com
 
 For example, we decided to create a `models` folder with already-made models that can be composed to create the model of the agent.
 
-For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized for the decoupled or the recurrent version of the algorithm.
+For each algorithm, losses are kept in a separate module, so that their implementation is clear and can be easily utilized for the recurrent version of the algorithm.
 
 ## :card_index_dividers: Buffer
 
