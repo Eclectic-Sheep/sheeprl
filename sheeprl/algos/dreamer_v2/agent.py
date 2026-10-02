@@ -526,6 +526,8 @@ class Actor(nn.Module):
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
             elif self.distribution == "normal":
+                # The std is the output of the network: made positive as the one of `tanh_normal`
+                std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
