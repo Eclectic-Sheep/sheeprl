@@ -18,7 +18,6 @@ def main(cfg: DictConfig) -> None:
         "p2e_dv3",
         "sac_ae",
         "ppo",
-        "ppo_decoupled",
         "sac",
         "sac_decoupled",
         "droq",
