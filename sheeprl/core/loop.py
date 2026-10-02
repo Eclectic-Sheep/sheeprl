@@ -91,6 +91,10 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
                 for batch in algo.batches(state, store, n_steps, iteration):
                     cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
                     schedule.gradient_step += 1
+                if not timer.disabled and fabric.device.type == "cuda":
+                    # The GPU runs the training after the CPU has launched it: the timer waits for it to finish, or
+                    # the training would be timed with the interaction that follows (its first copy to the CPU waits)
+                    torch.cuda.synchronize(fabric.device)
 
         info = algo.end_iteration(state, iteration)
         if cfg.metric.log_level > 0 and info:
