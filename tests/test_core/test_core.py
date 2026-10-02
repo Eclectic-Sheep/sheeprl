@@ -238,6 +238,23 @@ def test_the_training_speed_counts_the_gradient_steps_of_all_the_processes(monke
     assert logged["Time/sps_train"] == 4 * 2 / 2.0
 
 
+def test_the_interaction_speed_of_a_resumed_run_counts_only_its_own_steps(monkeypatch):
+    # The first speed after a resume divided the policy steps since the last log of the resumed run, also the ones
+    # played before its checkpoint, by the time of the steps played after the resume
+    logged = {}
+    fabric = SimpleNamespace(world_size=1, log=lambda name, value, step: logged.__setitem__(name, value))
+    cfg = dotdict({"metric": {"log_level": 1, "log_every": 5000}, "env": {"action_repeat": 2}})
+    # Last log at 0, checkpoint at 3000: the resumed run starts from 3000
+    checkpoint = {"last_log": 0, "last_checkpoint": 3000}
+    cadence = Cadence(fabric, cfg, "unused", aggregator=None, checkpoint=checkpoint, policy_step=3000)
+    monkeypatch.setattr(timer, "disabled", False)
+    monkeypatch.setattr(timer, "compute", classmethod(lambda cls: {"Time/env_interaction_time": 4.0}))
+    monkeypatch.setattr(timer, "reset", classmethod(lambda cls: None))
+    cadence.log(policy_step=5000, iteration=1, schedule=SimpleNamespace(off_policy=False, total_iters=10))
+    # 2000 policy steps of 2 environment steps in 4 seconds
+    assert logged["Time/sps_env_interaction"] == 2000 * 2 / 4.0
+
+
 def test_the_phases_are_timed_per_process(monkeypatch):
     # The training was timed with `metric.sync_on_compute`: with it, the training times of all the processes were
     # summed, and `Time/sps_train` divided by their number

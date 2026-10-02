@@ -25,7 +25,9 @@ class Cadence:
         log_dir: str,
         aggregator: Optional[MetricAggregator],
         checkpoint: Optional[Dict[str, Any]] = None,
+        policy_step: int = 0,
     ) -> None:
+        """`policy_step` is the one the run starts from (the one of the checkpoint of a resumed run)."""
         self.fabric = fabric
         self.cfg = cfg
         self.log_dir = log_dir
@@ -35,6 +37,9 @@ class Cadence:
         # Gradient steps done by all the processes, to measure the training speed
         self.gradient_steps = 0
         self.last_gradient_steps = 0
+        # The policy step since which the time of the interaction is measured, to measure its speed: a resumed run
+        # times only its own steps, not the ones played after the last log of the run it resumes
+        self.last_timed_step = policy_step
 
     def accumulate(self, metrics: Dict[str, Tensor]) -> None:
         """Add the metrics of one gradient step (of every process). Only the metrics listed in
@@ -72,12 +77,13 @@ class Cadence:
             if timer_metrics.get("Time/env_interaction_time", 0) > 0:
                 self.fabric.log(
                     "Time/sps_env_interaction",
-                    ((policy_step - self.last_log) / self.fabric.world_size * cfg.env.action_repeat)
+                    ((policy_step - self.last_timed_step) / self.fabric.world_size * cfg.env.action_repeat)
                     / timer_metrics["Time/env_interaction_time"],
                     policy_step,
                 )
             timer.reset()
         self.last_log = policy_step
+        self.last_timed_step = policy_step
         self.last_gradient_steps = self.gradient_steps
 
     def checkpoint(

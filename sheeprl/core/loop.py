@@ -73,7 +73,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
             store = load_replay_buffer(fabric, checkpoint["rb"], store)
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
-    cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint)
+    cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint, policy_step=schedule.policy_step)
     player = algo.player(state)
 
     env.reset()
