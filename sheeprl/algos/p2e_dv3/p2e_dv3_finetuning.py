@@ -369,7 +369,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                             cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
                             == 0
                         ):
-                            tau = 1 if cumulative_per_rank_gradient_steps == 0 else cfg.algo.critic.tau
+                            # The target critic comes from the exploration (or from the checkpoint of the
+                            # finetuning): it is never copied from the critic
+                            tau = cfg.algo.critic.tau
                             for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
                         batch = {k: v[i].float() for k, v in local_data.items()}

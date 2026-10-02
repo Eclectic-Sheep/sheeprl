@@ -1,4 +1,4 @@
-"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer, the rows of a finetuning."""
+"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer, the finetunings."""
 
 import copy
 import glob
@@ -11,6 +11,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
+import torch
 
 from sheeprl import ROOT_DIR
 from sheeprl.utils.imports import _IS_WINDOWS
@@ -139,3 +140,43 @@ def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():
     # The step that reaches the time limit, in both environments
     assert [row["truncated"].sum() for row in rows if row["truncated"].any()] == [2]
     assert not any(row["terminated"].any() for row in rows)
+
+
+def test_a_p2e_dv3_finetuning_keeps_the_slow_critic_of_the_exploration():
+    # The first gradient step of a finetuning copied its critic into its target critic, as a new DreamerV3 does: the
+    # slow critic learned by the exploration was discarded
+    from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning
+
+    root_dir = "pytest_p2e_dv3_slow_critic"
+    args = ["algo.per_rank_sequence_length=1"]
+    critics = []
+
+    def first_train(*args, **kwargs):
+        # The task critic and target critic at the first gradient step
+        if len(critics) == 0:
+            critics.append({k: v.clone() for k, v in args[3].module.state_dict().items()})
+            critics.append({k: v.clone() for k, v in args[4].state_dict().items()})
+        return finetuning_train(*args, **kwargs)
+
+    finetuning_train = p2e_dv3_finetuning.train
+    try:
+        run_p2e(["exp=p2e_dv3_exploration", *args, "run_name=exploration"], root_dir)
+        (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "exploration", "version_*", "checkpoint", "*"))
+        saved = torch.load(ckpt_path, weights_only=False)
+        with mock.patch.object(p2e_dv3_finetuning, "train", first_train):
+            run_p2e(
+                [
+                    "exp=p2e_dv3_finetuning",
+                    *args,
+                    f"checkpoint.exploration_ckpt_path={ckpt_path}",
+                    "run_name=finetuning",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    critic, target_critic = critics
+    tau = 0.02
+    for k, v in saved["critic_task"].items():
+        torch.testing.assert_close(critic[k], v)
+        torch.testing.assert_close(target_critic[k], tau * v + (1 - tau) * saved["target_critic_task"][k])
