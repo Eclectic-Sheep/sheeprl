@@ -85,7 +85,6 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
                 for batch in algo.batches(state, store, n_steps, iteration):
                     cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
                     schedule.gradient_step += 1
-            cadence.train_step += fabric.world_size
 
         info = algo.end_iteration(state, iteration)
         if cfg.metric.log_level > 0 and info:

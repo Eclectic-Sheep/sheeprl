@@ -1,6 +1,7 @@
 import copy
 import warnings
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,7 +13,9 @@ from torch import Tensor, nn
 from sheeprl import core
 from sheeprl.core import EnvStep, TrainSchedule, TrainState, load_replay_buffer, update
 from sheeprl.core.algorithm import load_module_state_dict
+from sheeprl.core.cadence import Cadence
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict
 
 
@@ -215,6 +218,23 @@ def test_off_policy_schedule_resumed_without_its_buffer_fills_a_new_one_with_its
     # starts as in a new run
     assert not any(resumed.warmup(policy_step=2 * (i - 1)) for i in range(9, 15))
     assert [resumed.gradient_steps(i) for i in range(9, 16)] == [0, 0, 0, 0, 2, 2, 2]
+
+
+def test_the_training_speed_counts_the_gradient_steps_of_all_the_processes(monkeypatch):
+    # It counted the iterations that trained, whatever their gradient steps: with 4 gradient steps per iteration it
+    # was a quarter of the gradient steps per second
+    logged = {}
+    fabric = SimpleNamespace(world_size=2, log=lambda name, value, step: logged.__setitem__(name, value))
+    cfg = dotdict({"metric": {"log_level": 1, "log_every": 1}})
+    cadence = Cadence(fabric, cfg, "unused", aggregator=None)
+    # One iteration of 4 gradient steps in every process
+    for _ in range(4):
+        cadence.accumulate({})
+    monkeypatch.setattr(timer, "disabled", False)
+    monkeypatch.setattr(timer, "compute", classmethod(lambda cls: {"Time/train_time": 2.0}))
+    monkeypatch.setattr(timer, "reset", classmethod(lambda cls: None))
+    cadence.log(policy_step=8, iteration=1, schedule=SimpleNamespace(off_policy=False, total_iters=10))
+    assert logged["Time/sps_train"] == 4 * 2 / 2.0
 
 
 def test_load_replay_buffer_takes_the_buffer_of_the_process(fabric):

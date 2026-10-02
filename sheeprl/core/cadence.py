@@ -32,12 +32,14 @@ class Cadence:
         self.aggregator = aggregator
         self.last_log = checkpoint["last_log"] if checkpoint is not None else 0
         self.last_checkpoint = checkpoint["last_checkpoint"] if checkpoint is not None else 0
-        # Training phases done by all the processes, to measure the training speed
-        self.train_step = 0
-        self.last_train = 0
+        # Gradient steps done by all the processes, to measure the training speed
+        self.gradient_steps = 0
+        self.last_gradient_steps = 0
 
     def accumulate(self, metrics: Dict[str, Tensor]) -> None:
-        """Add the metrics of one training step. Only the metrics listed in `metric.aggregator.metrics` are kept."""
+        """Add the metrics of one gradient step (of every process). Only the metrics listed in
+        `metric.aggregator.metrics` are kept."""
+        self.gradient_steps += self.fabric.world_size
         if self.aggregator is not None and not self.aggregator.disabled:
             for name, value in metrics.items():
                 if name in self.aggregator:
@@ -61,9 +63,10 @@ class Cadence:
         if not timer.disabled:
             timer_metrics = timer.compute()
             if timer_metrics.get("Time/train_time", 0) > 0:
+                # Gradient steps of all the processes per second
                 self.fabric.log(
                     "Time/sps_train",
-                    (self.train_step - self.last_train) / timer_metrics["Time/train_time"],
+                    (self.gradient_steps - self.last_gradient_steps) / timer_metrics["Time/train_time"],
                     policy_step,
                 )
             if timer_metrics.get("Time/env_interaction_time", 0) > 0:
@@ -75,7 +78,7 @@ class Cadence:
                 )
             timer.reset()
         self.last_log = policy_step
-        self.last_train = self.train_step
+        self.last_gradient_steps = self.gradient_steps
 
     def checkpoint(
         self,
