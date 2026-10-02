@@ -230,9 +230,10 @@ class P2EDV3Finetuning(Algorithm):
     def train_step(self, state: P2EDV3FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg
         # The target critic follows the critic: every `critic.per_rank_target_network_update_freq` gradient steps, an
-        # exponential moving average with `critic.tau`; at the first gradient step, a copy
+        # exponential moving average with `critic.tau`. Unlike Dreamer-V3, the first gradient step doesn't copy the
+        # critic: the target critic is the one of the exploration, which has followed the critic since then
         if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
-            tau = 1 if step == 0 else cfg.algo.critic.tau
+            tau = cfg.algo.critic.tau
             for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
 
