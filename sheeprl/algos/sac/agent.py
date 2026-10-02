@@ -182,11 +182,7 @@ class SACAgent(nn.Module):
     def critics(self, critics: Sequence[Union[SACCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
-        # Create target critic unwrapping the DDP module from the critics to prevent
-        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group
-        # argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SAC for example
+        # The target critics are copies of the critics without their wrappers (Fabric, DDP)
         qfs_unwrapped_modules = []
         for critic in critics:
             if hasattr(critic, "module"):

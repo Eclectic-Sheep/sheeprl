@@ -455,7 +455,7 @@ def train(
         aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
