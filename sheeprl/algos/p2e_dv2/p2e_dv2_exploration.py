@@ -222,7 +222,7 @@ def train(
             loss -= next_obs_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
             ).mean()
-    loss.backward()
+    fabric.backward(loss)
     ensemble_grad = None
     if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
         ensemble_grad = fabric.clip_gradients(
