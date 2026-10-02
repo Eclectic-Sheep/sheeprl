@@ -107,9 +107,7 @@ class P2EDV1Exploration(Algorithm):
             world_optimizer=optimizer(cfg.algo.world_model.optimizer, world_model),
             actor_task_optimizer=optimizer(cfg.algo.actor.optimizer, actor_task),
             critic_task_optimizer=optimizer(cfg.algo.critic.optimizer, critic_task),
-            # The optimizer of the ensembles is configured by `algo.world_model.optimizer`, not by
-            # `algo.ensembles.optimizer`
-            ensemble_optimizer=optimizer(cfg.algo.world_model.optimizer, ensembles),
+            ensemble_optimizer=optimizer(cfg.algo.ensembles.optimizer, ensembles),
             actor_exploration_optimizer=optimizer(cfg.algo.actor.optimizer, actor_exploration),
             critic_exploration_optimizer=optimizer(cfg.algo.critic.optimizer, critic_exploration),
         )
