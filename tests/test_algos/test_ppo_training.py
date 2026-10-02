@@ -1,9 +1,15 @@
 """PPO and A2C: the rewards of the rollout, the losses, the advantages."""
 
+import os
+import shutil
+import sys
+from unittest import mock
+
 import numpy as np
 import pytest
 import torch
 
+from sheeprl import ROOT_DIR
 from sheeprl.algos.ppo.loss import value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated
 from sheeprl.utils.utils import normalize_tensor
@@ -53,3 +59,34 @@ def test_only_the_truncated_episodes_are_bootstrapped(clip_rewards):
     assert asked == [[0]]
     # The rewards given are left as they are
     np.testing.assert_allclose(rewards, np.full(3, reward))
+
+
+@pytest.mark.parametrize("exp", ["ppo", "a2c"])
+def test_the_buffer_holds_one_rollout(exp):
+    # A larger buffer was accepted: the training read its rows never written, and from the second rollout computed the
+    # returns over rows of different rollouts
+    from sheeprl.cli import run
+
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        f"exp={exp}",
+        "dry_run=True",
+        "algo.rollout_steps=4",
+        "buffer.size=8",
+        "env.num_envs=1",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "root_dir=pytest_ppo_buffer_size",
+    ]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", args),
+            pytest.raises(ValueError, match=r"The size of the buffer \(8\) must be equal to the rollout steps \(4\)"),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", "pytest_ppo_buffer_size"), ignore_errors=True)
