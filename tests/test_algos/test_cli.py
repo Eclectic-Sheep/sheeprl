@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import warnings
 from unittest import mock
 
@@ -425,3 +426,38 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
         shutil.rmtree(os.path.join("logs", "runs", root_dir))
     except OSError:
         warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))
+
+
+def test_model_manager_is_disabled_when_no_model_can_be_registered():
+    # The models of `model_manager.models` that the algorithm doesn't list in `MODELS_TO_REGISTER` are dropped: when
+    # none is left, the training must not try to register any model at its end
+    import sheeprl.algos.ppo.utils as ppo_utils
+
+    root_dir = "pytest_model_manager_disabled"
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=ppo",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "dry_run=True",
+        "algo.rollout_steps=1",
+        "metric.log_level=0",
+        "algo.run_test=False",
+        "model_manager.disabled=False",
+        f"root_dir={root_dir}",
+        *IN_PROCESS_ENV_ARGS,
+    ]
+    # A stand-in for `sheeprl.utils.mlflow` (MLflow may be missing), which records the registrations
+    fake_mlflow_utils = types.ModuleType("sheeprl.utils.mlflow")
+    fake_mlflow_utils.register_model = mock.Mock()
+    try:
+        with (
+            mock.patch.object(sys, "argv", args),
+            mock.patch("sheeprl.cli._IS_MLFLOW_AVAILABLE", True),
+            mock.patch.object(ppo_utils, "MODELS_TO_REGISTER", set()),
+            mock.patch.dict(sys.modules, {"sheeprl.utils.mlflow": fake_mlflow_utils}),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    fake_mlflow_utils.register_model.assert_not_called()
