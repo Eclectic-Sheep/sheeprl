@@ -40,7 +40,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
@@ -61,7 +61,7 @@ def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
