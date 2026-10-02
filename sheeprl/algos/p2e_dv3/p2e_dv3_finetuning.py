@@ -11,7 +11,7 @@ import torch
 from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.utils import sample_batches
+from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.dreamer_v3 import train
 from sheeprl.algos.dreamer_v3.utils import Moments, prepare_obs, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -180,7 +180,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
+    # The buffer of every environment holds a sequence
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size=4)
     rb = EnvIndependentReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
@@ -220,8 +221,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Training from `train_starts` (the finetuning plays no random actions)
-    _, train_starts, pretrain_steps, ratio = off_policy_schedule(
-        cfg, state, start_iter, policy_steps_per_iter, fabric.world_size
+    _, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg, state, start_iter, total_iters, policy_steps_per_iter, fabric.world_size
     )
 
     # Warning for log and checkpoint every

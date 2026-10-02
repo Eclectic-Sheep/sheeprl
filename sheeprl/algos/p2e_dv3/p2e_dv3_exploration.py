@@ -15,7 +15,7 @@ from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torchmetrics import SumMetric
 
-from sheeprl.algos.dreamer_v2.utils import sample_batches
+from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import (
@@ -732,7 +732,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         save_configs(cfg, log_dir)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
+    # The buffer of every environment holds a sequence
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size=4)
     rb = EnvIndependentReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
@@ -768,8 +769,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
-    learning_starts, train_starts, pretrain_steps, ratio = off_policy_schedule(
-        cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
+    learning_starts, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg,
+        state if cfg.checkpoint.resume_from else None,
+        start_iter,
+        total_iters,
+        policy_steps_per_iter,
+        fabric.world_size,
     )
 
     # Warning for log and checkpoint every

@@ -208,8 +208,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Training from `train_starts` (the finetuning plays no random actions)
-    _, train_starts, pretrain_steps, ratio = off_policy_schedule(
-        cfg, state, start_iter, policy_steps_per_iter, fabric.world_size
+    _, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg, state, start_iter, total_iters, policy_steps_per_iter, fabric.world_size
     )
 
     # Warning for log and checkpoint every

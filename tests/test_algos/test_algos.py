@@ -296,6 +296,37 @@ def test_ppo_recurrent_processes_with_different_numbers_of_minibatches(standard_
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+@pytest.mark.parametrize(
+    "exp", ["dreamer_v1", "dreamer_v2", "dreamer_v3", "p2e_dv1_exploration", "p2e_dv3_exploration"]
+)
+def test_dreamer_dry_run_with_longer_sequences(standard_args, start_time, exp):
+    # The dry run trained after one step of every environment, with a buffer of 2 steps: sequences longer than one step
+    # crashed the sampling
+    root_dir = os.path.join(f"pytest_{start_time}", f"{exp}_sequences", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        f"exp={exp}",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=4",
+        # Every algorithm trains in the dry run
+        "algo.replay_ratio=1",
+        "algo.horizon=4",
+        f"root_dir={root_dir}",
+        f"run_name=test_{exp}_sequences",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_dreamer_v1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])

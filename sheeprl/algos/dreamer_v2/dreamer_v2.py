@@ -524,8 +524,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
-    learning_starts, train_starts, pretrain_steps, ratio = off_policy_schedule(
-        cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
+    learning_starts, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg,
+        state if cfg.checkpoint.resume_from else None,
+        start_iter,
+        total_iters,
+        policy_steps_per_iter,
+        fabric.world_size,
     )
 
     # Warning for log and checkpoint every
