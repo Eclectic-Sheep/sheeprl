@@ -31,7 +31,7 @@ from lightning.fabric.wrappers import _FabricModule
 import torch
 from torch import Tensor
 
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class SOTAAgent(torch.nn.Module):
@@ -71,8 +71,8 @@ def build_agent(
     # Setup player agent
     player = copy.deepcopy(agent)
 
-    # Setup the agent with Fabric
-    agent = fabric.setup_model(agent)
+    # Setup the agent on the device of the process, in the precision of Fabric
+    agent = setup_module(fabric, agent)
 
     # Setup the player agent with a single-device Fabric
     fabric_player = get_single_device_fabric(fabric)
@@ -84,9 +84,11 @@ def build_agent(
     return agent, player
 ```
 
+`setup_module` (from `sheeprl.utils.fabric`) sets up the agent like `fabric.setup_module`, but without the `DistributedDataParallel` wrapper: with several processes, the weights of rank 0 are copied to the others, and the gradients are averaged over the processes by `update` (see [the training function](#algorithm-implementation)).
+
 The player agent is wrapped with a **single-device Fabric**, in this way we maintain the same precision and device of the main Fabric object, but with the player agent being able to interct with the environment skipping possible distributed synchronization points.  
 
-If the agent is composed of multiple models, each one with its own forward method, it is advisable to wrap each one of them with the main Fabric object; the same happens for the player agent, where each of the models has to be consequently wrapped with the single-device Fabric obejct. Here we have the example of the **PPOAgent**:
+If the agent is composed of multiple models, each one with its own forward method, it is advisable to set up each one of them with `setup_module`; the same happens for the player agent, where each of the models has to be consequently wrapped with the single-device Fabric obejct. Here we have the example of the **PPOAgent**:
 
 ```python
 from __future__ import annotations
@@ -104,7 +106,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class CNNEncoder(nn.Module):
@@ -369,9 +371,9 @@ def build_agent(
     player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
     # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
+    agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
+    agent.critic = setup_module(fabric, agent.critic)
+    agent.actor = setup_module(fabric, agent.actor)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)
@@ -423,6 +425,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import update
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
@@ -445,9 +448,9 @@ def train(
     l2 = loss2(...)
     loss = 0.5 * (l1 + l2)
 
-    optimizer.zero_grad(set_to_none=True)
-    fabric.backward(loss)
-    optimizer.step()
+    # The backward pass, the gradients averaged over the processes, clipped to `max_grad_norm` and the step of the
+    # optimizer
+    update(fabric, loss, optimizer, cfg.algo.max_grad_norm)
 
     # Update metrics
     if aggregator and not aggregator.disabled:
