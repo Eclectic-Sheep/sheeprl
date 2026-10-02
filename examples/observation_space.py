@@ -19,7 +19,6 @@ def main(cfg: DictConfig) -> None:
         "sac_ae",
         "ppo",
         "sac",
-        "sac_decoupled",
         "droq",
         "ppo_recurrent",
     }:
