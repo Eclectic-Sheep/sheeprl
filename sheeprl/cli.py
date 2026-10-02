@@ -168,7 +168,7 @@ def run_algorithm(cfg: Dict[str, Any]):
         keys_to_remove = set(cfg.model_manager.models.keys()) - predefined_models_keys
         for k in keys_to_remove:
             cfg.model_manager.models.pop(k, None)
-        cfg.model_manager.disabled == cfg.model_manager.disabled or len(cfg.model_manager.models) == 0
+        cfg.model_manager.disabled = cfg.model_manager.disabled or len(cfg.model_manager.models) == 0
 
     # This function is used to make the algorithm reproducible.
     # It can be an overkill since Fabric already captures everything we're setting here

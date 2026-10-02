@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
+MODELS_TO_REGISTER = {"agent"}
 
 
 def log_models_from_checkpoint(
