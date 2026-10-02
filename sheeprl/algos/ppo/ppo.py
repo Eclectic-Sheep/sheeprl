@@ -201,10 +201,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    if cfg.buffer.size < cfg.algo.rollout_steps:
+    # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+    if cfg.buffer.size != cfg.algo.rollout_steps:
         raise ValueError(
-            f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
-            f"than the rollout steps ({cfg.algo.rollout_steps})"
+            f"The size of the buffer ({cfg.buffer.size}) must be equal "
+            f"to the rollout steps ({cfg.algo.rollout_steps})"
         )
     rb = ReplayBuffer(
         cfg.buffer.size,
