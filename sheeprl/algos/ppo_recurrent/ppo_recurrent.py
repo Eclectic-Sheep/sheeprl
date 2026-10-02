@@ -14,7 +14,6 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
@@ -26,7 +25,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, timer
 from sheeprl.utils.utils import gae, normalize_tensor, save_configs
 
 
@@ -295,7 +294,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                 # Measure environment interaction time: this considers both the model forward
                 # to get the action given the observation and the time taken into the environment
-                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                with phase_timer("Time/env_interaction_time"):
                     # Sample an action given the observation received by the environment
                     # [Seq_len, Batch_size, D] --> [1, num_envs, D]
                     torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
@@ -435,7 +434,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         mask = (torch.arange(max_len).expand(len(lengths), max_len) < lengths.unsqueeze(1)).T
         padded_sequences["mask"] = mask.to(device).bool()
 
-        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+        with phase_timer("Time/train_time"):
             train(fabric, agent, optimizer, padded_sequences, aggregator, cfg)
         train_step += world_size
 

@@ -8,7 +8,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, build_agent
@@ -20,7 +19,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, timer
 from sheeprl.utils.utils import gae, normalize_tensor, save_configs
 
 
@@ -283,7 +282,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                 # Measure environment interaction time: this considers both the model forward
                 # to get the action given the observation and the time taken into the environment
-                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                with phase_timer("Time/env_interaction_time"):
                     # Sample an action given the observation received by the environment
                     torch_obs = prepare_obs(
                         fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
@@ -366,7 +365,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
-        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+        with phase_timer("Time/train_time"):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
         train_step += world_size
 
