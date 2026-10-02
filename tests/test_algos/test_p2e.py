@@ -180,3 +180,15 @@ def test_a_p2e_dv3_finetuning_keeps_the_slow_critic_of_the_exploration():
     for k, v in saved["critic_task"].items():
         torch.testing.assert_close(critic[k], v)
         torch.testing.assert_close(target_critic[k], tau * v + (1 - tau) * saved["target_critic_task"][k])
+
+
+def test_the_p2e_dv3_exploration_trains_the_decoupled_rssm():
+    # Its world model unrolled the RSSM with the arguments of the coupled one: with the decoupled RSSM it crashed
+    root_dir = "pytest_p2e_dv3_decoupled"
+    try:
+        run_p2e(
+            ["exp=p2e_dv3_exploration", "algo.per_rank_sequence_length=1", "algo.world_model.decoupled_rssm=True"],
+            root_dir,
+        )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)

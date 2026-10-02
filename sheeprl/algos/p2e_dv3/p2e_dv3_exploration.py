@@ -130,36 +130,51 @@ def train(
     # Dynamic Learning
     stoch_state_size = stochastic_size * discrete_size
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-    posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
 
     # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
     with autocast_cache_scope(fabric):
         # The outputs of every step are concatenated at the end of the unroll: writing them in place into
         # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
-        recurrent_states = []
-        priors_logits = []
-        posteriors = []
-        posteriors_logits = []
+        recurrent_states, priors_logits = [], []
 
         # embedded observations from the environment
         embedded_obs = world_model.encoder(batch_obs)
 
-        for i in range(0, sequence_length):
-            recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                batch_actions[i : i + 1],
-                embedded_obs[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states.append(recurrent_state)
-            priors_logits.append(prior_logits)
-            posteriors.append(posterior)
-            posteriors_logits.append(posterior_logits)
+        if cfg.algo.world_model.decoupled_rssm:
+            # The posteriors depend only on the observations (`DecoupledRSSM`), as in DreamerV3
+            posteriors_logits, posteriors = world_model.rssm._representation(embedded_obs)
+            for i in range(0, sequence_length):
+                if i == 0:
+                    posterior = torch.zeros_like(posteriors[:1])
+                else:
+                    posterior = posteriors[i - 1 : i]
+                recurrent_state, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                    posterior,
+                    recurrent_state,
+                    batch_actions[i : i + 1],
+                    data["is_first"][i : i + 1],
+                )
+                recurrent_states.append(recurrent_state)
+                priors_logits.append(prior_logits)
+        else:
+            posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+            posteriors, posteriors_logits = [], []
+            for i in range(0, sequence_length):
+                recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+                    posterior,
+                    recurrent_state,
+                    batch_actions[i : i + 1],
+                    embedded_obs[i : i + 1],
+                    data["is_first"][i : i + 1],
+                )
+                recurrent_states.append(recurrent_state)
+                priors_logits.append(prior_logits)
+                posteriors.append(posterior)
+                posteriors_logits.append(posterior_logits)
+            posteriors = torch.cat(posteriors, dim=0)
+            posteriors_logits = torch.cat(posteriors_logits, dim=0)
         recurrent_states = torch.cat(recurrent_states, dim=0)
         priors_logits = torch.cat(priors_logits, dim=0)
-        posteriors = torch.cat(posteriors, dim=0)
-        posteriors_logits = torch.cat(posteriors_logits, dim=0)
         latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
         # compute predictions for the observations
