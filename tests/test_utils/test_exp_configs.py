@@ -4,7 +4,7 @@ import os
 
 import pytest
 from hydra import compose, initialize_config_module
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from sheeprl import ROOT_DIR
 
@@ -24,10 +24,21 @@ def root_keys():
     return (set(config) - {"defaults"}) | groups | {"run_benchmarks"}
 
 
+def experiment(exp: str) -> DictConfig:
+    """The configuration of `exp=<exp>`."""
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        return compose(config_name="config", overrides=[f"exp={exp}"])
+
+
 @pytest.mark.parametrize("exp", EXPERIMENTS)
 def test_the_experiments_set_no_unknown_root_key(exp):
     # Some set `total_steps` (or the keys of the observations) at the root, where nothing reads them: the runs lasted
     # the steps of the algorithm, 5M instead of 1M for Crafter
-    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
-        cfg = compose(config_name="config", overrides=[f"exp={exp}"])
-    assert set(cfg) - root_keys() == set()
+    assert set(experiment(exp)) - root_keys() == set()
+
+
+@pytest.mark.parametrize("exp", [exp for exp in EXPERIMENTS if "crafter" in exp])
+def test_the_crafter_experiments_choose_a_crafter_task(exp):
+    # `exp=dreamer_v2_crafter` set `env.id=reward`: the Crafter environment (`sheeprl.envs.crafter.CrafterWrapper`)
+    # takes only these two ids
+    assert experiment(exp).env.id in {"crafter_reward", "crafter_nonreward"}
