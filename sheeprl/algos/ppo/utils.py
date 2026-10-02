@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -20,6 +20,39 @@ if TYPE_CHECKING:
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
 MODELS_TO_REGISTER = {"agent"}
+
+
+def bootstrap_truncated(
+    rewards: np.ndarray,
+    terminated: np.ndarray,
+    truncated: np.ndarray,
+    final_values: Callable[[np.ndarray], np.ndarray],
+    gamma: float,
+) -> np.ndarray:
+    """The rewards of a step of the environments, with the discounted value of the final observation added to the
+    reward of every episode truncated by the time limit.
+
+    An episode both truncated and terminated in the same step (gymnasium's `TimeLimit` truncates also when the
+    termination falls on the last allowed step) ended: it isn't bootstrapped. The rewards are expected already clipped,
+    if they are: the value of the final observation is not a reward to clip.
+
+    Args:
+        rewards (np.ndarray): the rewards of the environments, one per environment.
+        terminated (np.ndarray): whether the episode of every environment terminated.
+        truncated (np.ndarray): whether the episode of every environment was truncated.
+        final_values (Callable[[np.ndarray], np.ndarray]): the values of the final observations of the environments
+            whose indices it receives.
+        gamma (float): the discount factor.
+
+    Returns:
+        The bootstrapped rewards (a new array).
+    """
+    # A copy, in floating point (of the precision of the rewards, at least float32)
+    rewards = np.array(rewards, dtype=np.result_type(np.asarray(rewards).dtype, np.float32))
+    truncated_envs = np.nonzero(np.logical_and(truncated, np.logical_not(terminated)))[0]
+    if len(truncated_envs) > 0:
+        rewards[truncated_envs] += gamma * np.asarray(final_values(truncated_envs)).reshape(len(truncated_envs))
+    return rewards
 
 
 def prepare_obs(
