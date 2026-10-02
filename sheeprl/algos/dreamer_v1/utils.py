@@ -148,7 +148,7 @@ def log_models_from_checkpoint(
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    world_model, actor, critic = build_agent(
+    world_model, actor, critic, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,

@@ -91,7 +91,7 @@ def log_models_from_checkpoint(
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    agent = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
+    agent, _ = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}

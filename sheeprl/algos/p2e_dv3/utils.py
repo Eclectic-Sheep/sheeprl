@@ -82,6 +82,7 @@ def log_models_from_checkpoint(
         target_critic_task,
         actor_exploration,
         critics_exploration,
+        _,
     ) = build_agent(
         fabric,
         actions_dim,
@@ -97,7 +98,6 @@ def log_models_from_checkpoint(
         state["critics_exploration"] if "exploration" in cfg.algo.name else None,
     )
     moments_task = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -108,7 +108,6 @@ def log_models_from_checkpoint(
     if "exploration" in cfg.algo.name:
         moments_exploration = {
             k: Moments(
-                fabric,
                 cfg.algo.actor.moments.decay,
                 cfg.algo.actor.moments.max,
                 cfg.algo.actor.moments.percentile.low,
@@ -132,7 +131,7 @@ def log_models_from_checkpoint(
             unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
         )
         model_info["target_critic_task"] = mlflow.pytorch.log_model(
-            target_critic_task, name="target_critic_task", serialization_format="pickle"
+            unwrap_fabric(target_critic_task), name="target_critic_task", serialization_format="pickle"
         )
         model_info["moments_task"] = mlflow.pytorch.log_model(
             moments_task, name="moments_task", serialization_format="pickle"
@@ -146,10 +145,12 @@ def log_models_from_checkpoint(
             )
             for k in critics_exploration.keys():
                 model_info[f"critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    critics_exploration[k]["module"], name=f"critic_exploration_{k}", serialization_format="pickle"
+                    unwrap_fabric(critics_exploration[k]["module"]),
+                    name=f"critic_exploration_{k}",
+                    serialization_format="pickle",
                 )
                 model_info[f"target_critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    critics_exploration[k]["target_module"],
+                    unwrap_fabric(critics_exploration[k]["target_module"]),
                     name=f"target_critic_exploration_{k}",
                     serialization_format="pickle",
                 )
