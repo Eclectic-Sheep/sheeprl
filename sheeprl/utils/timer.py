@@ -81,3 +81,10 @@ class timer(ContextDecorator):
         """Stop the context manager timer"""
         if not timer.disabled:
             self.stop()
+
+
+def phase_timer(name: str) -> timer:
+    """The timer of a phase of the iterations (`Time/env_interaction_time`, `Time/train_time`), timed by every process
+    on its own: the processes play and train at the same time, and summing their times (`metric.sync_on_compute`)
+    would divide the speeds of the run (`Time/sps_*`) by their number."""
+    return timer(name, SumMetric, sync_on_compute=False)

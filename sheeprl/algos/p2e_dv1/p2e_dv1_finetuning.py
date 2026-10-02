@@ -11,7 +11,6 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v1.utils import add_is_first
@@ -23,7 +22,7 @@ from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
@@ -262,7 +261,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+            with phase_timer("Time/env_interaction_time"):
                 torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                 mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
                 if len(mask) == 0:
@@ -343,7 +342,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
                     for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
                         p.data = agent_p.data
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                with phase_timer("Time/train_time"):
                     # Sampled a few batches at a time
                     batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                     for batch in batches:

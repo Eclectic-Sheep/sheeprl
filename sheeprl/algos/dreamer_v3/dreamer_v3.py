@@ -20,7 +20,6 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
-from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent
@@ -46,7 +45,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
@@ -565,7 +564,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+            with phase_timer("Time/env_interaction_time"):
                 # Sample an action given the observation received by the environment
                 if iter_num <= learning_starts and "minedojo" not in cfg.env.wrapper._target_.lower():
                     real_actions = actions = np.array(envs.action_space.sample())
@@ -677,7 +676,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             if per_rank_gradient_steps > 0:
                 # Sampled a few batches at a time
                 batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+                with phase_timer("Time/train_time"):
                     for batch in batches:
                         if (
                             cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq

@@ -14,7 +14,6 @@ from lightning.fabric import Fabric
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
@@ -25,7 +24,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
 
 
@@ -92,7 +91,7 @@ def train(
         actor_idxes = list(actor_sampler)
         actor_data = {k: actor_data[k][actor_idxes] for k in actor_data.keys()}
 
-    with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+    with phase_timer("Time/train_time"):
         # Update the soft-critic
         for batch_idxes in critic_sampler:
             critic_batch_data = {k: critic_data[k][batch_idxes] for k in critic_data.keys()}
@@ -309,7 +308,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+        with phase_timer("Time/env_interaction_time"):
             if iter_num <= learning_starts:
                 actions = envs.action_space.sample()
             else:
