@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium
@@ -231,6 +230,9 @@ class PlayerDV1(nn.Module):
         device (str | torch.device): the device where the model is stored.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
+        min_std (float): the minimum standard deviation of the posterior, as in the world model
+            (`algo.world_model.min_std`).
+            Default to 0.1.
     """
 
     def __init__(
@@ -245,6 +247,7 @@ class PlayerDV1(nn.Module):
         recurrent_state_size: int,
         device: str | torch.device,
         actor_type: str | None = None,
+        min_std: float = 0.1,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -257,6 +260,7 @@ class PlayerDV1(nn.Module):
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.actor_type = actor_type
+        self.min_std = min_std
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -319,7 +323,7 @@ class PlayerDV1(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         _, self.stochastic_state = compute_stochastic_state(
-            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
+            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)), min_std=self.min_std
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
@@ -503,20 +507,6 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV1(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm.recurrent_model),
-        copy.deepcopy(world_model.rssm.representation_model),
-        copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
-        cfg.algo.world_model.stochastic_size,
-        cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
-    )
-
     # Setup models with Fabric
     world_model.encoder = fabric.setup_module(world_model.encoder)
     world_model.observation_model = fabric.setup_module(world_model.observation_model)
@@ -529,19 +519,20 @@ def build_agent(
     actor = fabric.setup_module(actor)
     critic = fabric.setup_module(critic)
 
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
-    player.representation_model = fabric_player.setup_module(player.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-        p.data = agent_p.data
+    # The player plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
+    # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
+    # (`flatten_parameters`): the player played with the initial recurrent model for the whole training
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV1(
+        fabric_player.setup_module(world_model.encoder.module),
+        fabric_player.setup_module(world_model.rssm.recurrent_model.module),
+        fabric_player.setup_module(world_model.rssm.representation_model.module),
+        fabric_player.setup_module(actor.module),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        min_std=cfg.algo.world_model.min_std,
+    )
     return world_model, actor, critic, player
