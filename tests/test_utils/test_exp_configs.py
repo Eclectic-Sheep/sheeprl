@@ -48,3 +48,8 @@ def test_dreamer_v2_on_atari_scales_the_discount_loss_as_the_paper():
     # It was 0.5: DreamerV2 scales the discount loss by 5 on Atari (`loss_scales.discount: 5.0` in the Atari config of
     # `danijar/dreamerv2`), as the command in the README of DreamerV2 does
     assert experiment("dreamer_v2_ms_pacman").algo.world_model.discount_scale_factor == 5.0
+
+
+def test_dreamer_v1_pretrains_as_the_reference_implementation():
+    # It did no pretraining: `danijar/dreamer` does 100 gradient steps after the `prefill` (`pretrain=100`)
+    assert experiment("dreamer_v1").algo.per_rank_pretrain_steps == 100
