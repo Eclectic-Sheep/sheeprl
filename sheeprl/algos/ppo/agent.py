@@ -14,7 +14,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
 from sheeprl.utils.utils import safetanh
 
@@ -375,9 +375,9 @@ def build_agent(
     player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
     # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
+    agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
+    agent.critic = setup_module(fabric, agent.critic)
+    agent.actor = setup_module(fabric, agent.actor)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)

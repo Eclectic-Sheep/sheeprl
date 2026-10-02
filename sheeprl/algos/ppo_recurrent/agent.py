@@ -11,7 +11,7 @@ from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class RecurrentModel(nn.Module):
@@ -444,10 +444,10 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.rnn = fabric.setup_module(agent.rnn)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
+    agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
+    agent.rnn = setup_module(fabric, agent.rnn)
+    agent.critic = setup_module(fabric, agent.critic)
+    agent.actor = setup_module(fabric, agent.actor)
 
     # Setup player agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
     # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
