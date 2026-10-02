@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
@@ -14,7 +15,6 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import PolynomialLR
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
@@ -31,9 +31,8 @@ class PPOState(TrainState):
     # Feature extractor, actor and critic
     agent: PPOAgent
     optimizer: Optimizer
-    # Anneals the learning rate (`algo.anneal_lr`)
-    scheduler: Optional[PolynomialLR]
-    # Annealed values are tensors, so that changing them never recompiles a compiled training step
+    # Annealed values are tensors, so that changing them never recompiles a compiled training step (the annealed
+    # learning rate is the one of the optimizer)
     clip_coef: Tensor
     ent_coef: Tensor
 
@@ -56,17 +55,15 @@ class RolloutPlayer:
         obs = {k: env.obs[k] for k in self.obs_keys}
         obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
         actions, logprobs, values = self.policy(obs)
-        if self.policy.actor.is_continuous:
-            env_actions = torch.stack(actions, dim=-1).cpu().numpy()
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+        env_actions = self.policy.env_actions(actions).cpu().numpy()
         actions = torch.cat(actions, dim=-1).cpu().numpy()
 
         step = env.step(env_actions)
 
-        # The episodes truncated by the time limit don't end in the MDP: bootstrap the value of their final observation
-        rewards = step.rewards
-        truncated_envs = np.nonzero(step.truncated)[0]
+        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
+        # bootstrap the value of their final observation, in the scale of the clipped rewards the critic learns
+        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
         if len(truncated_envs) > 0:
             final_obs = prepare_obs(
                 self.fabric,
@@ -77,8 +74,6 @@ class RolloutPlayer:
             final_values = self.policy.get_values(final_obs).cpu().numpy()
             rewards[truncated_envs] += cfg.algo.gamma * final_values.reshape(rewards[truncated_envs].shape)
         dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
-        if cfg.env.clip_rewards:
-            rewards = np.tanh(rewards)
         rewards = rewards.reshape(num_envs, -1).astype(np.float32)
 
         # The stacked frames of an image are stored as its channels
@@ -117,10 +112,11 @@ class PPO(Algorithm):
                 "You should specify at least one CNN keys or MLP keys from the cli: "
                 "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
             )
-        if cfg.buffer.size < cfg.algo.rollout_steps:
+        # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+        if cfg.buffer.size != cfg.algo.rollout_steps:
             raise ValueError(
-                f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
-                f"than the rollout steps ({cfg.algo.rollout_steps})"
+                f"The size of the buffer ({cfg.buffer.size}) must be equal "
+                f"to the rollout steps ({cfg.algo.rollout_steps})"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
 
@@ -159,14 +155,11 @@ class PPO(Algorithm):
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
-        # Linear decay of the learning rate to 0 at the end of the training
-        scheduler = PolynomialLR(optimizer, total_iters=schedule.total_iters, power=1.0) if cfg.algo.anneal_lr else None
         self.total_iters = schedule.total_iters
 
         state = PPOState(
             agent=agent,
             optimizer=optimizer,
-            scheduler=scheduler,
             clip_coef=torch.tensor(cfg.algo.clip_coef, device=self.fabric.device),
             ent_coef=torch.tensor(cfg.algo.ent_coef, device=self.fabric.device),
         )
@@ -190,6 +183,7 @@ class PPO(Algorithm):
         self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
+        self.anneal(state, iteration)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -259,26 +253,28 @@ class PPO(Algorithm):
             "Loss/entropy_loss": ent_loss.detach(),
         }
 
-    def end_iteration(self, state: PPOState, iteration: int) -> Dict[str, float]:
+    def anneal(self, state: PPOState, iteration: int) -> None:
+        """Set the learning rate and the coefficients that `algo.anneal_*` anneal to their values for the iteration
+        `iteration`: a linear decay from the configured values, to 0 at the end of the training. They depend only on
+        the iteration, so a resumed run follows the schedule of its own `algo.total_steps`."""
         cfg = self.cfg.algo
+        # The iterations are numbered from 1: the first one uses the configured values
+        decay = partial(polynomial_decay, iteration - 1, final=0.0, max_decay_steps=self.total_iters)
+        if cfg.anneal_lr:
+            for group in state.optimizer.param_groups:
+                group["lr"] = decay(initial=cfg.optimizer.lr)
+        if cfg.anneal_clip_coef:
+            state.clip_coef.fill_(decay(initial=cfg.clip_coef))
+        if cfg.anneal_ent_coef:
+            state.ent_coef.fill_(decay(initial=cfg.ent_coef))
+
+    def end_iteration(self, state: PPOState, iteration: int) -> Dict[str, float]:
         # The values used in this iteration
-        info = {
+        return {
             "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
             "Info/clip_coef": state.clip_coef.item(),
             "Info/ent_coef": state.ent_coef.item(),
         }
-        # The values for the next iteration: linear decay to 0 at the end of the training
-        if state.scheduler is not None:
-            state.scheduler.step()
-        if cfg.anneal_clip_coef:
-            state.clip_coef.fill_(
-                polynomial_decay(iteration, initial=cfg.clip_coef, final=0.0, max_decay_steps=self.total_iters)
-            )
-        if cfg.anneal_ent_coef:
-            state.ent_coef.fill_(
-                polynomial_decay(iteration, initial=cfg.ent_coef, final=0.0, max_decay_steps=self.total_iters)
-            )
-        return info
 
 
 @register_algorithm()

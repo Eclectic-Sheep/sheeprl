@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 from unittest import mock
 
 import pytest
+import torch
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3
@@ -102,7 +103,10 @@ def test_resumed_run_plays_no_random_actions_after_learning_starts(name, buffer_
 
 
 def test_on_policy_run_resumes():
-    # The on-policy configs have no `algo.learning_starts`: the resume warning about it used to raise a `TypeError`
+    # The on-policy configs have no `algo.learning_starts`: the resume warning about it used to raise a `TypeError`.
+    # The annealed values follow the `algo.total_steps` of the resumed run (#35): the first run has 2 iterations, the
+    # resumed one 4, so its last iteration uses 1/4 of the initial values (the restored scheduler kept the learning
+    # rate at 0 after the 2 iterations of the first run)
     from sheeprl.cli import run
 
     root_dir = "pytest_resume_ppo"
@@ -112,6 +116,10 @@ def test_on_policy_run_resumes():
         "exp=ppo",
         "algo.rollout_steps=4",
         "algo.per_rank_batch_size=4",
+        "algo.anneal_lr=True",
+        "algo.optimizer.lr=0.001",
+        "algo.anneal_clip_coef=True",
+        "algo.clip_coef=0.2",
         f"root_dir={root_dir}",
     ]
     try:
@@ -126,6 +134,9 @@ def test_on_policy_run_resumes():
             ):
                 run()
         resumed = glob.glob(os.path.join("logs", "runs", root_dir, "resumed", "version_*", "checkpoint", "*.ckpt"))
+        assert [os.path.basename(p) for p in resumed] == ["ckpt_32_0.ckpt"]
+        state = torch.load(resumed[0], weights_only=False)
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
-    assert [os.path.basename(p) for p in resumed] == ["ckpt_32_0.ckpt"]
+    assert state["optimizer"]["param_groups"][0]["lr"] == pytest.approx(0.001 / 4)
+    assert state["clip_coef"].item() == pytest.approx(0.2 / 4)

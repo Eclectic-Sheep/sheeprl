@@ -1,5 +1,5 @@
 from math import sqrt
-from typing import List
+from typing import List, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -7,11 +7,13 @@ import pytest
 import torch
 from torch import nn
 
-from sheeprl.algos.ppo.agent import PPOAgent
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.utils.utils import dotdict
 
 
-def build_agent(ortho_init: bool, encoder_layers: int = 0) -> PPOAgent:
+def build_agent(
+    ortho_init: bool, encoder_layers: int = 0, is_continuous: bool = False, distribution: str = "auto"
+) -> PPOAgent:
     torch.manual_seed(0)
     networks = {"dense_units": 64, "mlp_layers": 2, "dense_act": "torch.nn.Tanh", "layer_norm": False}
     return PPOAgent(
@@ -31,8 +33,8 @@ def build_agent(ortho_init: bool, encoder_layers: int = 0) -> PPOAgent:
         cnn_keys=[],
         mlp_keys=["state"],
         screen_size=64,
-        distribution_cfg=dotdict({"type": "auto"}),
-        is_continuous=False,
+        distribution_cfg=dotdict({"type": distribution}),
+        is_continuous=is_continuous,
     )
 
 
@@ -72,3 +74,42 @@ def test_ppo_default_init_is_not_orthogonal(encoder_layers):
     for layer in [layer for layer in linear_layers(agent) if min(layer.weight.shape) > 1]:
         singular_values = torch.linalg.svdvals(layer.weight.detach())
         assert not torch.allclose(singular_values, singular_values[0].expand_as(singular_values))
+
+
+def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPlayer, PPOAgent]:
+    """A tanh-normal policy whose normal, before the tanh, has mean `mean` and standard deviation `std` everywhere."""
+    agent = build_agent(ortho_init=False, is_continuous=True, distribution="tanh_normal")
+    head = agent.actor.actor_heads[0]
+    with torch.no_grad():
+        head.weight.zero_()
+        head.bias.copy_(torch.tensor([mean] * 4 + [np.log(std)] * 4))
+    return PPOPlayer(agent.feature_extractor, agent.actor, agent.critic), agent
+
+
+def test_ppo_tanh_normal_greedy_actions_are_squashed():
+    # The greedy action is the tanh of the mean (it was its atanh, out of the action bounds)
+    player, _ = tanh_normal_player(mean=2.0, std=0.5)
+    (actions,) = player.get_actions({"state": torch.zeros(3, 8)}, greedy=True)
+    torch.testing.assert_close(actions, torch.full((3, 4), np.tanh(2.0), dtype=torch.float32))
+
+
+@pytest.mark.parametrize("mean", [0.5, 8.0])
+def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
+    torch.manual_seed(1)
+    player, agent = tanh_normal_player(mean=mean, std=0.5)
+    obs = {"state": torch.zeros(1000, 8)}
+    actions, logprobs, _ = player(obs)
+    # The environments play the tanh of the stored actions
+    torch.testing.assert_close(player.env_actions(actions).squeeze(-1), actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
+    # The agent computes the log-probabilities the player computed, also where the tanh saturates (mean 8: the stored
+    # tanh lost the action, and the ratio of PPO started far from 1)
+    _, new_logprobs, _, _ = agent(obs, actions)
+    torch.testing.assert_close(new_logprobs, logprobs)
+    # They are the log-probabilities of the tanh-normal distribution (in float64, where the tanh doesn't saturate)
+    if mean < 1:
+        u = actions[0].double()
+        dist = torch.distributions.TransformedDistribution(
+            torch.distributions.Normal(torch.full_like(u, mean), torch.full_like(u, 0.5)),
+            [torch.distributions.TanhTransform()],
+        )
+        torch.testing.assert_close(logprobs.double(), dist.log_prob(u.tanh()).sum(-1, keepdim=True), atol=1e-4, rtol=0)

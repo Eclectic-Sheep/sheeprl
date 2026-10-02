@@ -4,6 +4,12 @@
 for each configuration below it holds the actions, log-probs and values played at every environment step, the three
 losses of every minibatch and a checksum of the final weights. The test runs the same configurations and compares.
 
+Two configurations were recorded again after fixes that change them on purpose (#33, #38), checked against the old
+reference first: `cartpole_all_options` (the clipped value loss lost its factor ½: with `algo.vf_coef` halved the run
+is identical to the old one, with the value losses doubled) and `continuous_tanh_normal` (the actions are stored
+before the tanh, with their exact log-probabilities: their tanh is the old actions, the losses and weights differ by
+less than 1e-6).
+
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
 

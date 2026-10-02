@@ -65,17 +65,15 @@ class RolloutPlayer:
         obs = {k: env.obs[k] for k in self.obs_keys}
         obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
         actions, logprobs, values = self.policy(obs)
-        if self.policy.actor.is_continuous:
-            env_actions = torch.stack(actions, dim=-1).cpu().numpy()
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+        env_actions = self.policy.env_actions(actions).cpu().numpy()
         actions = torch.cat(actions, dim=-1).cpu().numpy()
 
         step = env.step(env_actions)
 
-        # The episodes truncated by the time limit don't end in the MDP: bootstrap the value of their final observation
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
+        # bootstrap the value of their final observation
         rewards = step.rewards
-        truncated_envs = np.nonzero(step.truncated)[0]
+        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
         if len(truncated_envs) > 0:
             final_obs = prepare_obs(
                 self.fabric,
@@ -124,10 +122,11 @@ class A2C(Algorithm):
                 "You should specify at least one CNN keys or MLP keys from the cli: "
                 "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
             )
-        if cfg.buffer.size < cfg.algo.rollout_steps:
+        # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+        if cfg.buffer.size != cfg.algo.rollout_steps:
             raise ValueError(
-                f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
-                f"than the rollout steps ({cfg.algo.rollout_steps})"
+                f"The size of the buffer ({cfg.buffer.size}) must be equal "
+                f"to the rollout steps ({cfg.algo.rollout_steps})"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
 
