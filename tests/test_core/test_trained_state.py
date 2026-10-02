@@ -70,6 +70,18 @@ def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torc
     }
 
 
+def dreamer_v2_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
+    """The weights of a DreamerV2 player: the encoder, the recurrent and representation models of the world model,
+    and the actor `actor`."""
+    world_model = saved["world_model"]
+    return {
+        **{k: v for k, v in world_model.items() if k.startswith("encoder.")},
+        **{k[len("rssm.") :]: v for k, v in world_model.items() if k.startswith("rssm.recurrent_model.")},
+        **{k[len("rssm.") :]: v for k, v in world_model.items() if k.startswith("rssm.representation_model.")},
+        **{"actor." + k: v for k, v in saved[actor].items()},
+    }
+
+
 def p2e_saved_model(saved: Dict[str, Any], name: str) -> Dict[str, torch.Tensor]:
     """The saved weights of the P2E model `name`: the exploration critics are saved together, by critic."""
     for prefix, key in (("critic_exploration_", "module"), ("target_critic_exploration_", "target_module")):
@@ -135,6 +147,34 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "args": ["exp=dreamer_v3", *DREAMER_ARGS],
         "policy": lambda saved: dreamer_policy(saved, "actor"),
         "models": ["world_model", "actor", "critic", "target_critic", "moments"],
+    },
+    "dreamer_v2": {
+        "args": ["exp=dreamer_v2", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor"),
+        "models": ["world_model", "actor", "critic", "target_critic"],
+    },
+    "p2e_dv2_exploration": {
+        "module": "p2e_dv2",
+        "args": ["exp=p2e_dv2_exploration", *DREAMER_ARGS, "algo.ensembles.n=2"],
+        # The evaluation plays the task actor
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor_task"),
+        "models": [
+            "world_model",
+            "actor_task",
+            "critic_task",
+            "target_critic_task",
+            "ensembles",
+            "actor_exploration",
+            "critic_exploration",
+            "target_critic_exploration",
+        ],
+    },
+    "p2e_dv2_finetuning": {
+        "module": "p2e_dv2",
+        "exploration": "p2e_dv2_exploration",
+        "args": ["exp=p2e_dv2_finetuning", *DREAMER_ARGS],
+        "policy": lambda saved: dreamer_v2_policy(saved, "actor_task"),
+        "models": ["world_model", "actor_task", "critic_task", "target_critic_task"],
     },
     "p2e_dv3_exploration": {
         "module": "p2e_dv3",
