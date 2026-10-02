@@ -1,6 +1,6 @@
 """
 The following snippet is a template for the architecture of a distributed RL algorithm.
-The main function is responsible for spawning the processes for the buffer, players, and trainers. There processes are
+The main function is responsible for spawning the processes for the buffer, players, and trainers. These processes are
 defined in the functions buffer, player, and trainer, respectively.
 The buffer process is responsible for collecting the data from the players, sampling batches and sending each batch to
  the trainers.
@@ -13,11 +13,11 @@ variables. The number of buffers is always 1.
 In total there are `num_players` + `num_trainers` + 1 processes.
 
 Processes communicate through collectives. The collectives are defined in the main function and passed to the processes
-as arguments. A schema of the collectives can be found is the `assets/images/architecture_template.png` file.
+as arguments. A schema of the collectives can be found in the `assets/images/architecture_template.png` file.
 
 To run this script, execute the following command:
-`lightning run model --devices=<num_processes> examples/architecture_template.py`
-where num_processes is computed as descrbed above.
+`fabric run --devices=<num_processes> examples/architecture_template.py`
+where num_processes is computed as described above (5 with the default 2 players and 2 trainers).
 """
 
 import os
@@ -136,10 +136,11 @@ def main():
     num_trainers = 2
 
     devices = os.environ.get("LT_DEVICES", None)
-    if devices is None or devices in ("1", "2"):
+    num_processes = num_players + num_trainers + 1
+    if devices is None or int(devices) != num_processes:
         raise RuntimeError(
-            "Please run the script with the number of devices greater than 2: "
-            "`lightning run model --devices=3 examples/architecture_template.py ...`"
+            "Please run the script with one process for the buffer, every player and every trainer: "
+            f"`fabric run --devices={num_processes} examples/architecture_template.py`"
         )
 
     world_collective = TorchCollective()

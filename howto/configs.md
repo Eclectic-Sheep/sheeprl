@@ -57,7 +57,9 @@ sheeprl/configs
 ├── env_config.yaml
 ├── eval_config.yaml
 ├── exp
+│   ├── a2c_atari.yaml
 │   ├── a2c_benchmarks.yaml
+│   ├── a2c_mujoco.yaml
 │   ├── a2c.yaml
 │   ├── default.yaml
 │   ├── dreamer_v1_benchmarks.yaml
@@ -74,6 +76,7 @@ sheeprl/configs
 │   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_doapp.yaml
 │   ├── dreamer_v3_L_navigate.yaml
+│   ├── dreamer_v3_minedojo.yaml
 │   ├── dreamer_v3_super_mario_bros.yaml
 │   ├── dreamer_v3_XL_crafter.yaml
 │   ├── dreamer_v3.yaml
@@ -86,7 +89,10 @@ sheeprl/configs
 │   ├── p2e_dv3_exploration.yaml
 │   ├── p2e_dv3_finetuning.yaml
 │   ├── p2e_dv3_fntn_L_doapp_64px_gray_combo_discrete_5Mstps.yaml
+│   ├── ppo_atari.yaml
 │   ├── ppo_benchmarks.yaml
+│   ├── ppo_lunar_lander.yaml
+│   ├── ppo_mujoco.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo_super_mario_bros.yaml
 │   ├── ppo.yaml
@@ -199,7 +205,7 @@ run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
 root_dir: ${algo.name}/${env.id}
 ```
 
-By default we want the user to specify the experiment config, represented by `- exp: ???` in the above example. The three-question-marks symbol tells hydra to expect that an `exp` config is specified at runtime by the user (e.g. `sheeprl.py exp=dreamer_v3`: one can look at every exp configs in `sheeprl/config/exp/` folder).
+By default we want the user to specify the experiment config, represented by `- exp: ???` in the above example. The three-question-marks symbol tells hydra to expect that an `exp` config is specified at runtime by the user (e.g. `sheeprl.py exp=dreamer_v3`: one can look at every exp configs in `sheeprl/configs/exp/` folder).
 
 ### Algorithms
 
@@ -220,10 +226,14 @@ name: dreamer_v3
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
+# The bounded dimensions of continuous actions exposed as [-1, 1] (the range of the actor), rescaled to the bounds of
+# the environment, as DreamerV3 does (`sheeprl.envs.wrappers.NormalizeAction`)
+normalize_actions: True
 
 # Training recipe
 replay_ratio: 1
 learning_starts: 1024
+per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
 # Encoder and decoder keys
@@ -233,14 +243,20 @@ mlp_keys:
   decoder: ${algo.mlp_keys.encoder}
 
 # Model related parameters
-layer_norm: True
+cnn_layer_norm:
+  cls: sheeprl.models.models.LayerNormChannelLast
+  kw: 
+    eps: 1e-3
+mlp_layer_norm:
+  cls: sheeprl.models.models.LayerNorm
+  kw: 
+    eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
 dense_act: torch.nn.SiLU
 cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
-decoupled_rssm: False
 
 # World model
 world_model:
@@ -252,6 +268,8 @@ world_model:
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
   clip_gradients: 1000.0
+  decoupled_rssm: False
+  learnable_initial_recurrent_state: True
 
   # Encoder
   encoder:
@@ -259,26 +277,27 @@ world_model:
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    cnn_layer_norm: ${algo.cnn_layer_norm}
+    mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
-    layer_norm: True
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Prior
   transition_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Posterior
   representation_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Decoder
   observation_model:
@@ -286,14 +305,15 @@ world_model:
     cnn_act: ${algo.cnn_act}
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    cnn_layer_norm: ${algo.cnn_layer_norm}
+    mlp_layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Reward model
   reward_model:
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
     bins: 255
 
@@ -302,7 +322,7 @@ world_model:
     learnable: True
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # World model optimizer
@@ -316,13 +336,15 @@ actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
   min_std: 0.1
-  init_std: 0.0
-  objective_mix: 1.0
+  max_std: 1.0
+  init_std: 2.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  unimix: ${algo.unimix}
+  action_clip: 1.0
 
   # Disttributed percentile model (used to scale the values)
   moments:
@@ -342,7 +364,7 @@ actor:
 critic:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
   per_rank_target_network_update_freq: 1
   tau: 0.02
@@ -382,6 +404,7 @@ The default configuration for all the algorithms is the following:
 name: ???
 total_steps: ???
 per_rank_batch_size: ???
+run_test: True
 
 # Encoder and decoder keys
 cnn_keys:
@@ -394,6 +417,26 @@ mlp_keys:
 >
 > Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
 
+The `run_test` field specifies whether to test the trained agent at the end of the training.
+
+The DreamerV1, DreamerV2, DreamerV3 and P2E configs set `normalize_actions: True`: the bounded dimensions of a continuous (`Box`) action space are exposed to the agent in $[-1, 1]$ and rescaled to the bounds of the environment by the `sheeprl.envs.wrappers.NormalizeAction` wrapper.
+
+### Buffer
+
+The buffer config contains the parameters of the buffer where the agent stores the data collected in the environments:
+
+```yaml
+# sheeprl/configs/buffer/default.yaml
+
+size: ???
+memmap: True
+validate_args: False
+from_numpy: False
+checkpoint: True  # Used only for off-policy algorithms
+```
+
+The `size` is set by the experiment configs. For the off-policy algorithms it is the capacity of the replay buffer. The buffer of PPO and A2C holds one rollout, so its size must be equal to `algo.rollout_steps` (their experiment configs set `size: ${algo.rollout_steps}`); the buffer of PPO-recurrent always holds one rollout of `algo.rollout_steps` steps. For more information about the `memmap` and `checkpoint` parameters, check the [logs and checkpoints howto](./logs_and_checkpoints.md#buffer-checkpoint).
+
 ### Environment
 
 The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers for the following environments:
@@ -401,9 +444,11 @@ The environment configs can be found under the `sheeprl/configs/env` folders. Sh
 * [Atari](https://ale.farama.org/environments/)
 * [Diambra](https://docs.diambra.ai/)
 * [Deepmind Control Suite (DMC)](https://github.com/deepmind/dm_control/)
-* [Gymnasium](https://www.gymlibrary.dev/)
+* [Gymnasium](https://gymnasium.farama.org/)
 * [MineRL (v0.4.4)](https://minerl.readthedocs.io/en/v0.4.4/)
 * [MineDojo (v0.1.0)](https://docs.minedojo.org/)
+* [Crafter](https://github.com/danijar/crafter)
+* [Super Mario Bros](https://github.com/Kautenja/gym-super-mario-bros)
 
 In this way, one can easily try out the overall framework with standard RL environments. The `default.yaml` config contains all the environment parameters shared by (possibly) all the environments:
 
@@ -445,7 +490,7 @@ max_episode_steps: 27000
 
 # Wrapper to be instantiated
 wrapper:
-  _target_: gymnasium.wrappers.AtariPreprocessing  # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
+  _target_: gymnasium.wrappers.AtariPreprocessing # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
   env:
     _target_: gymnasium.make
     id: ${env.id}
@@ -472,6 +517,7 @@ The `experiment` configs are the main entrypoint for an experiment: it gathers a
 
 defaults:
   - dreamer_v3
+  - override /algo: dreamer_v3_S
   - override /env: atari
   - _self_
 
@@ -495,20 +541,8 @@ buffer:
 
 # Algorithm
 algo:
-  learning_starts: 1024
   total_steps: 100000
-  
-  dense_units: 512
-  mlp_layers: 2
-  world_model:
-    encoder:
-      cnn_channels_multiplier: 32
-    recurrent_model:
-      recurrent_state_size: 512
-    transition_model:
-      hidden_size: 512
-    representation_model:
-      hidden_size: 512
+  learning_starts: 1024
 ```
 
 Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
@@ -519,7 +553,7 @@ python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 
 > [!WARNING]
 >
-> The default hyperparameters specified in the configs gathered by the experiment config (in this example the hyperparameters specified by the `sheeprl/configs/exp/dreamer_v3.yaml`, `sheeprl/configs/env/atari.yaml` and all the configs coming with them) will be overwritten by the values in the current config whenever a naming collision happens, for example when the same field is defined in both configurations. Those naming collisions will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list.
+> The default hyperparameters specified in the configs gathered by the experiment config (in this example the hyperparameters specified by the `sheeprl/configs/exp/dreamer_v3.yaml`, `sheeprl/configs/algo/dreamer_v3_S.yaml`, `sheeprl/configs/env/atari.yaml` and all the configs coming with them) will be overwritten by the values in the current config whenever a naming collision happens, for example when the same field is defined in both configurations. Those naming collisions will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list.
 
 ### Fabric
 
@@ -532,6 +566,8 @@ This configuration file manages where and how to create folders or subfolders fo
 ```yaml
 run:
   dir: logs/runs/${root_dir}/${run_name}
+job:
+  chdir: False
 ```
 
 ### Metric
@@ -546,6 +582,8 @@ log_every: 5000
 # for more information
 sync_on_compute: False
 ```
+
+For more information about the metric config, check the [logs and checkpoints howto](./logs_and_checkpoints.md).
 
 ### Optimizer
 
