@@ -995,7 +995,6 @@ from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
 from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
-from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
 from sheeprl.algos.sac import sac as sac
 from sheeprl.algos.sac import sac_decoupled as sac_decoupled
@@ -1026,7 +1025,6 @@ SheepRL Agents
 │ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
 │ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
 │ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
 │ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
 │ sheeprl.algos.sac_ae        │ sac_ae        │ main       │ False     │
 │ sheeprl.algos.sota          │ sota          │ sota_main  │ False     │
