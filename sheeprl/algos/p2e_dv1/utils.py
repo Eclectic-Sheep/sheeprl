@@ -91,16 +91,24 @@ def log_models_from_checkpoint(
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
-        model_info["actor_task"] = mlflow.pytorch.log_model(unwrap_fabric(actor_task), artifact_path="actor_task")
-        model_info["critic_task"] = mlflow.pytorch.log_model(unwrap_fabric(critic_task), artifact_path="critic_task")
+        model_info["world_model"] = mlflow.pytorch.log_model(
+            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
+        )
+        model_info["actor_task"] = mlflow.pytorch.log_model(
+            unwrap_fabric(actor_task), name="actor_task", serialization_format="pickle"
+        )
+        model_info["critic_task"] = mlflow.pytorch.log_model(
+            unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
+        )
         if "exploration" in cfg.algo.name:
-            model_info["ensembles"] = mlflow.pytorch.log_model(unwrap_fabric(ensembles), artifact_path="ensembles")
+            model_info["ensembles"] = mlflow.pytorch.log_model(
+                unwrap_fabric(ensembles), name="ensembles", serialization_format="pickle"
+            )
             model_info["actor_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(actor_exploration), artifact_path="actor_exploration"
+                unwrap_fabric(actor_exploration), name="actor_exploration", serialization_format="pickle"
             )
             model_info["critic_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(critic_exploration), artifact_path="critic_exploration"
+                unwrap_fabric(critic_exploration), name="critic_exploration", serialization_format="pickle"
             )
         mlflow.log_dict(cfg.to_log, "config.json")
 
