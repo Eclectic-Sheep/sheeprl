@@ -17,25 +17,31 @@ def schedule(
     learning_starts: int = 10,
     buffer_checkpoint: bool = True,
     pretrain_steps: int = 0,
+    sequence_length: Optional[int] = None,
+    dry_run: bool = False,
 ) -> Tuple[List[int], List[int], Ratio]:
     """The iterations that play random actions and the gradient steps of every iteration, computed as the training
     loops do, of a run that starts from the first of `iterations` (resuming from `state` if given)."""
     cfg = dotdict(
         {
-            "dry_run": False,
+            "dry_run": dry_run,
             "algo": {
                 "learning_starts": learning_starts,
                 "replay_ratio": 1.0,
                 "per_rank_pretrain_steps": pretrain_steps,
+                # Read only by the algorithms that sample sequences (Dreamer)
+                "per_rank_sequence_length": sequence_length,
             },
             "buffer": {"checkpoint": buffer_checkpoint},
             "checkpoint": {"resume_from": "checkpoint.ckpt" if state is not None else None},
         }
     )
     iterations = list(iterations)
-    learning_starts, train_starts, pretrain, ratio = off_policy_schedule(
-        cfg, state, iterations[0], POLICY_STEPS_PER_ITER, world_size=1
+    learning_starts, train_starts, pretrain, total_iters, ratio = off_policy_schedule(
+        cfg, state, iterations[0], iterations[-1] if not dry_run else 1, POLICY_STEPS_PER_ITER, world_size=1
     )
+    # A dry run lasts until its first training
+    iterations = range(iterations[0], total_iters + 1)
     random = [i for i in iterations if i <= learning_starts]
     # The replay ratio counts the policy steps from the start of the first iteration that trains, which also pretrains
     steps = [
@@ -120,3 +126,21 @@ def test_the_ratio_of_a_checkpoint_with_its_old_pretraining_steps_is_loaded():
     ratio = Ratio(0.5)
     ratio.load_state_dict({"_ratio": 0.5, "_prev": 10.0, "_pretrain_steps": 100})
     assert ratio.state_dict() == {"_ratio": 0.5, "_prev": 10.0}
+
+
+def test_the_training_waits_for_a_sequence_of_every_environment():
+    # The training started after `learning_starts` policy steps also when the environments had played fewer steps than
+    # the sequences it samples: the sampling crashed. `learning_starts=4` gives 2 iterations of random actions
+    with pytest.warns(UserWarning, match="sequences of `algo.per_rank_sequence_length=5`"):
+        random, steps, _ = schedule(range(1, 8), learning_starts=4, sequence_length=5)
+    assert random == [1, 2]
+    assert steps == [0, 0, 0, 0, 2, 2, 2]
+    # When `learning_starts` comes later, nothing changes
+    _, steps, _ = schedule(range(1, 7), learning_starts=10, sequence_length=5)
+    assert steps == [0, 0, 0, 0, 2, 2]
+
+
+def test_a_dry_run_plays_until_its_first_training():
+    # A dry run played one iteration: with sequences longer than one step, the sampling crashed
+    random, steps, _ = schedule(range(1, 2), dry_run=True, sequence_length=3)
+    assert random == [] and steps == [0, 0, 2]

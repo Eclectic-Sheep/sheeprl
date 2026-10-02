@@ -14,7 +14,7 @@ from torch.distributions import Independent, Normal
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, sample_batches
+from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, env_buffer_size, sample_batches
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.utils import dotdict
 
@@ -292,3 +292,19 @@ def test_the_first_training_pretrains(module, exp):
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     # The replay ratio gives 0, 1, 0 gradient steps (2 policy steps per iteration); the first training also pretrains
     assert len(steps) == 5 + 1
+
+
+def test_the_buffer_of_every_environment_holds_a_sequence():
+    # A buffer smaller than a sequence crashed at the first training, after the random actions; a dry run had a buffer
+    # of 2 steps, whatever the length of the sequences
+    cfg = dotdict(
+        {"dry_run": False, "buffer": {"size": 40}, "env": {"num_envs": 4}, "algo": {"per_rank_sequence_length": 5}}
+    )
+    fabric = SimpleNamespace(world_size=2)
+    assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
+    cfg.buffer.size = 39
+    with pytest.raises(ValueError, match="increase `buffer.size`"):
+        env_buffer_size(fabric, cfg, dry_run_size=2)
+    cfg.dry_run = True
+    assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
+    assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8

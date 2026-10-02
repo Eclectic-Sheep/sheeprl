@@ -108,6 +108,22 @@ def sample_batches(
             yield {k: v[i].float() for k, v in sample.items()}
 
 
+def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+    """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
+    processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
+    run makes it large enough)."""
+    sequence_length = cfg.algo.per_rank_sequence_length
+    if cfg.dry_run:
+        return max(dry_run_size, sequence_length)
+    size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size)
+    if size < sequence_length:
+        raise ValueError(
+            f"The replay buffer of every environment holds `buffer.size // (env.num_envs * world_size)` = {size} "
+            f"steps, fewer than a sequence (`algo.per_rank_sequence_length={sequence_length}`): increase `buffer.size`"
+        )
+    return size
+
+
 def build_buffer(
     fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
 ) -> EnvIndependentReplayBuffer | EpisodeBuffer:
@@ -123,7 +139,7 @@ def build_buffer(
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
         return EnvIndependentReplayBuffer(
-            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else dry_run_size,
+            env_buffer_size(fabric, cfg, dry_run_size),
             n_envs=cfg.env.num_envs,
             obs_keys=obs_keys,
             memmap=cfg.buffer.memmap,
