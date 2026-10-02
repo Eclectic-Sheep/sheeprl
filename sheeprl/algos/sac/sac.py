@@ -7,7 +7,7 @@ import os
 import warnings
 from dataclasses import dataclass
 from math import prod
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -29,7 +29,7 @@ from sheeprl.utils.registry import register_algorithm
 
 @dataclass
 class SACState(TrainState):
-    # Actor, critics, target critics and the entropy coefficient (its logarithm, `log_alpha`)
+    # Actor, critics, target critics and the entropy coefficient (its logarithm, `log_alpha`); a `DROQAgent` for DroQ
     agent: SACAgent
     qf_optimizer: Optimizer
     actor_optimizer: Optimizer
@@ -38,14 +38,29 @@ class SACState(TrainState):
 
 class ReplayPlayer:
     """Plays in the environments and writes every step in the replay buffer: random actions until
-    `algo.learning_starts`, then actions sampled from the policy."""
+    `algo.learning_starts`, then actions sampled from the policy.
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: SACPlayer, schedule: TrainSchedule) -> None:
+    With `dtype`, the observations, rewards and episode flags are written with that dtype; otherwise the observations
+    and rewards keep the dtype of the environments and the flags are `uint8`.
+    """
+
+    def __init__(
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        policy: SACPlayer,
+        schedule: TrainSchedule,
+        dtype: Optional[np.dtype] = None,
+    ) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
         self.schedule = schedule
+        self.dtype = dtype
         self.mlp_keys = cfg.algo.mlp_keys.encoder
+
+    def cast(self, value: np.ndarray) -> np.ndarray:
+        return value if self.dtype is None else value.astype(self.dtype)
 
     def step(self, env: EnvRunner, buffer: ReplayBuffer) -> None:
         num_envs = env.num_envs
@@ -65,17 +80,46 @@ class ReplayPlayer:
             for k, final_obs in step.final_obs(ended_envs, self.mlp_keys).items():
                 next_obs[k][ended_envs] = final_obs
 
+        flags_dtype = np.uint8 if self.dtype is None else self.dtype
         data = {
-            "terminated": step.terminated.reshape(1, num_envs, -1).astype(np.uint8),
-            "truncated": step.truncated.reshape(1, num_envs, -1).astype(np.uint8),
+            "terminated": step.terminated.reshape(1, num_envs, -1).astype(flags_dtype),
+            "truncated": step.truncated.reshape(1, num_envs, -1).astype(flags_dtype),
             "actions": actions.reshape(1, num_envs, -1),
-            "observations": np.concatenate([step.obs[k] for k in self.mlp_keys], axis=-1)[np.newaxis],
+            "observations": self.cast(np.concatenate([step.obs[k] for k in self.mlp_keys], axis=-1))[np.newaxis],
         }
         if not self.cfg.buffer.sample_next_obs:
             next_obs = np.concatenate([next_obs[k] for k in self.mlp_keys], axis=-1).astype(np.float32)
             data["next_observations"] = next_obs[np.newaxis]
-        data["rewards"] = step.rewards.reshape(num_envs, -1)[np.newaxis]
+        data["rewards"] = self.cast(step.rewards.reshape(num_envs, -1))[np.newaxis]
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
+
+
+def sample_batches(
+    fabric: Fabric, cfg: Dict[str, Any], buffer: ReplayBuffer, n_samples: int, sample_next_obs: bool = False
+) -> Tuple[Dict[str, Tensor], Iterable[int]]:
+    """Sample `n_samples` rows from the buffer of every process and return them with the indices this process trains
+    on: all of them with one process; with several, its share of the rows of all the processes."""
+    sample = buffer.sample_tensors(
+        batch_size=n_samples,
+        sample_next_obs=sample_next_obs,
+        dtype=None,
+        device=fabric.device,
+        from_numpy=cfg.buffer.from_numpy,
+    )  # [1, N_Samples, ...]
+    if fabric.world_size == 1:
+        data = {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
+        return data, range(len(data["observations"]))
+    data = fabric.all_gather(sample)  # [World_Size, 1, N_Samples, ...]
+    data = {k: v.float().reshape(-1, *sample[k].shape[2:]) for k, v in data.items()}
+    sampler = DistributedSampler(
+        list(range(len(data["observations"]))),
+        num_replicas=fabric.world_size,
+        rank=fabric.global_rank,
+        shuffle=True,
+        seed=cfg.seed,
+        drop_last=False,
+    )
+    return data, sampler
 
 
 class SAC(Algorithm):
@@ -84,44 +128,29 @@ class SAC(Algorithm):
     then the actor, then the entropy coefficient."""
 
     off_policy = True
+    # The name of the algorithm in the error messages
+    name = "SAC"
+    # The dtype of the values written in the replay buffer (`ReplayPlayer`)
+    buffer_dtype: Optional[np.dtype] = None
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
-                "MineDojo is not currently supported by SAC agent, since it does not take "
+                f"MineDojo is not currently supported by {self.name} agent, since it does not take "
                 "into consideration the action masks provided by the environment, but needed "
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
         if len(cfg.algo.cnn_keys.encoder) > 0:
-            warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
+            warnings.warn(
+                f"{self.name} algorithm cannot allow to use images as observations, the CNN keys will be ignored"
+            )
             cfg.algo.cnn_keys.encoder = []
 
-    def build(
-        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[SACState, ReplayBuffer]:
+    def make_agent(self, obs_dim: int, act_dim: int, action_space: gym.spaces.Box) -> SACAgent:
+        """The actor, the critics and the entropy coefficient, before they are set up on the device."""
         cfg = self.cfg
-        fabric = self.fabric
-        mlp_keys = cfg.algo.mlp_keys.encoder
-        if not isinstance(action_space, gym.spaces.Box):
-            raise ValueError("Only continuous action space is supported for the SAC agent")
-        if not isinstance(obs_space, gym.spaces.Dict):
-            raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-        if len(mlp_keys) == 0:
-            raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
-        for k in mlp_keys:
-            if len(obs_space[k].shape) > 1:
-                raise ValueError(
-                    "Only environments with vector-only observations are supported by the SAC agent. "
-                    f"The observation with key '{k}' has shape {obs_space[k].shape}. "
-                    f"Provided environment: {cfg.env.id}"
-                )
-        if cfg.metric.log_level > 0:
-            fabric.print("Encoder MLP keys:", mlp_keys)
-
-        act_dim = prod(action_space.shape)
-        obs_dim = sum(prod(obs_space[k].shape) for k in mlp_keys)
         actor = SACActor(
             observation_dim=obs_dim,
             action_dim=act_dim,
@@ -134,9 +163,40 @@ class SAC(Algorithm):
             SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
             for _ in range(cfg.algo.critic.n)
         ]
-        agent = SACAgent(
-            actor, critics, target_entropy=-act_dim, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device
+        return SACAgent(
+            actor,
+            critics,
+            target_entropy=-act_dim,
+            alpha=cfg.algo.alpha.alpha,
+            tau=cfg.algo.tau,
+            device=self.fabric.device,
         )
+
+    def build(
+        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
+    ) -> Tuple[SACState, ReplayBuffer]:
+        cfg = self.cfg
+        fabric = self.fabric
+        mlp_keys = cfg.algo.mlp_keys.encoder
+        if not isinstance(action_space, gym.spaces.Box):
+            raise ValueError(f"Only continuous action space is supported for the {self.name} agent")
+        if not isinstance(obs_space, gym.spaces.Dict):
+            raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        if len(mlp_keys) == 0:
+            raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
+        for k in mlp_keys:
+            if len(obs_space[k].shape) > 1:
+                raise ValueError(
+                    f"Only environments with vector-only observations are supported by the {self.name} agent. "
+                    f"The observation with key '{k}' has shape {obs_space[k].shape}. "
+                    f"Provided environment: {cfg.env.id}"
+                )
+        if cfg.metric.log_level > 0:
+            fabric.print("Encoder MLP keys:", mlp_keys)
+
+        act_dim = prod(action_space.shape)
+        obs_dim = sum(prod(obs_space[k].shape) for k in mlp_keys)
+        agent = self.make_agent(obs_dim, act_dim, action_space)
         agent.actor = setup_module(fabric, agent.actor)
         # Setting the critics also creates the target critics, as copies of them
         agent.critics = [setup_module(fabric, critic) for critic in agent.critics]
@@ -184,7 +244,7 @@ class SAC(Algorithm):
         return policy
 
     def player(self, state: SACState) -> ReplayPlayer:
-        return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule)
+        return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule, dtype=self.buffer_dtype)
 
     def batches(
         self, state: SACState, buffer: ReplayBuffer, n_steps: int, iteration: int
@@ -198,28 +258,9 @@ class SAC(Algorithm):
         self.update_targets = iteration % period == 0
 
         # Sample the batches of all the gradient steps at once
-        sample = buffer.sample_tensors(
-            batch_size=n_steps * cfg.algo.per_rank_batch_size,
-            sample_next_obs=cfg.buffer.sample_next_obs,
-            dtype=None,
-            device=fabric.device,
-            from_numpy=cfg.buffer.from_numpy,
-        )  # [1, N_Steps * Batch_Size, ...]
-        if fabric.world_size > 1:
-            # Every process trains on its share of the samples of all the processes
-            data = fabric.all_gather(sample)  # [World_Size, 1, N_Steps * Batch_Size, ...]
-            data = {k: v.float().reshape(-1, *sample[k].shape[2:]) for k, v in data.items()}
-            sampler = DistributedSampler(
-                list(range(len(data["actions"]))),
-                num_replicas=fabric.world_size,
-                rank=fabric.global_rank,
-                shuffle=True,
-                seed=cfg.seed,
-                drop_last=False,
-            )
-        else:
-            data = {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
-            sampler = range(len(data["actions"]))
+        data, sampler = sample_batches(
+            fabric, cfg, buffer, n_steps * cfg.algo.per_rank_batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+        )
         for batch_idxes in BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
             yield {k: v[batch_idxes] for k, v in data.items()}
 

@@ -101,6 +101,12 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "policy": lambda saved: entries(saved["agent"], "_actor."),
         "models": ["agent"],
     },
+    "droq": {
+        "args": ["exp=droq", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "algo.learning_starts=0"],
+        # The policy is made of the modules of the actor, as for SAC
+        "policy": lambda saved: entries(saved["agent"], "_actor."),
+        "models": ["agent"],
+    },
     "dreamer_v3": {
         "args": ["exp=dreamer_v3", *DREAMER_ARGS],
         "policy": lambda saved: dreamer_policy(saved, "actor"),
