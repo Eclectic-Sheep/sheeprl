@@ -883,7 +883,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, greedy: bool = True, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -892,7 +892,7 @@ class MinedojoActor(Actor):
         Args:
             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
             greedy (bool): whether or not to sample the actions.
-                Default to True.
+                Default to False.
             mask (Dict[str, Tensor], optional): the mask to apply to the actions.
                 Default to None.
 
