@@ -25,6 +25,7 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -318,10 +319,8 @@ def train(
 
         # Dynamics backpropagation (the lambda-values) and REINFORCE
         objective = actor_objective(cfg.algo.actor.objective_mix, actor.is_continuous, lambda_values[1:], reinforce)
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        # The tanh-normal policies have no analytic entropy: it is estimated from samples
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
         policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss)
     actor_grads = None

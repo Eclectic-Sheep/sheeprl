@@ -39,6 +39,7 @@ from sheeprl.utils.distribution import (
     SymlogDistribution,
     TwoHotEncodingDistribution,
 )
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -295,10 +296,8 @@ def train(
                 ).sum(dim=-1)
                 * advantage.detach()
             )
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        # The tanh-normal policies have no analytic entropy: it is estimated from samples
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
         policy_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
     fabric.backward(policy_loss)
     actor_grads = None

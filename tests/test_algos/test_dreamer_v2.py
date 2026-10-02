@@ -182,3 +182,53 @@ def test_the_actors_are_trained_with_the_configured_objective(module, args, expe
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert objectives == expected
+
+
+@pytest.mark.parametrize(
+    "exp,module",
+    [
+        ("dreamer_v2", "sheeprl.algos.dreamer_v2.dreamer_v2"),
+        ("p2e_dv2_exploration", "sheeprl.algos.p2e_dv2.p2e_dv2_exploration"),
+        ("dreamer_v3", "sheeprl.algos.dreamer_v3.dreamer_v3"),
+        ("p2e_dv3_exploration", "sheeprl.algos.p2e_dv3.p2e_dv3_exploration"),
+    ],
+)
+def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
+    # The tanh-normal distribution has no analytic entropy: the fallback of the actor losses had the wrong shape. The
+    # losses of DreamerV2 crashed, the ones of DreamerV3 broadcast it: their entropy was always 0
+    import importlib
+
+    from sheeprl.cli import run
+    from sheeprl.utils.distribution import entropy
+
+    algo_module = importlib.import_module(module)
+    entropies = []
+
+    def recording_entropy(dist):
+        entropies.append(entropy(dist))
+        return entropies[-1]
+
+    root_dir = f"pytest_{exp}_tanh_normal"
+    argv = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        *DREAMER_ARGS,
+        f"exp={exp}",
+        "distribution.type=tanh_normal",
+        "algo.actor.ent_coef=1e-4",
+        f"root_dir={root_dir}",
+    ]
+    if "v3" in exp:
+        # A dry run of DreamerV3 plays one step before training
+        argv.append("algo.per_rank_sequence_length=1")
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(algo_module, "policy_entropy", recording_entropy),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # Every actor loss (two for Plan2Explore, at every gradient step) estimates the entropy of its policies
+    assert len(entropies) == (4 if "p2e" in exp else 2)
+    assert all(torch.isfinite(e).all() for e in entropies)
