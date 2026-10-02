@@ -530,6 +530,32 @@ def test_dreamer_v3(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_dreamer_v3_dry_run_with_longer_sequences(standard_args, start_time):
+    # The dry run trained after one step of every environment, with a buffer of 2 steps: sequences longer than one step
+    # crashed the sampling
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3_sequences", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        "exp=dreamer_v3",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=4",
+        "algo.horizon=4",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_v3_sequences",
+        "algo.dense_units=8",
+        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.world_model.recurrent_model.recurrent_state_size=8",
+        "algo.world_model.representation_model.hidden_size=8",
+        "algo.world_model.transition_model.hidden_size=8",
+        "algo.cnn_keys.encoder=[rgb]",
+        "algo.mlp_keys.encoder=[state]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     # The second environment crashes during its first step and it is restarted by the `RestartOnException`
     # wrapper: the restart must be handled for that environment only (the environments run in the rank-0 process)

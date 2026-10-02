@@ -27,7 +27,13 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v1.agent import Actor, MinedojoActor, PlayerDV1, WorldModel, build_models
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
-from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys, sample_batches, setup_world_model
+from sheeprl.algos.dreamer_v2.dreamer_v2 import (
+    actions_dim_of,
+    check_keys,
+    env_buffer_size,
+    sample_batches,
+    setup_world_model,
+)
 from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, autocast, run, setup_module, update
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
@@ -396,7 +402,7 @@ def behaviour_learning(
 def build_buffer(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> EnvIndependentReplayBuffer:
     """One buffer of sequences per environment."""
     return EnvIndependentReplayBuffer(
-        cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else dry_run_size,
+        env_buffer_size(fabric, cfg, dry_run_size),
         n_envs=cfg.env.num_envs,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         memmap=cfg.buffer.memmap,

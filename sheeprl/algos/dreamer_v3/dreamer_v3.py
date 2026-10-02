@@ -24,7 +24,7 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
+from sheeprl.algos.dreamer_v2.dreamer_v2 import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, build_models
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
@@ -565,7 +565,7 @@ class DreamerV3(Algorithm):
         )
         # One buffer of sequences per environment, sampled independently
         buffer = EnvIndependentReplayBuffer(
-            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 2,
+            env_buffer_size(fabric, cfg, dry_run_size=2),
             n_envs=cfg.env.num_envs,
             memmap=cfg.buffer.memmap,
             memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),

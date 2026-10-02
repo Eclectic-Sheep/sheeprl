@@ -19,7 +19,9 @@ class TrainSchedule:
     Off-policy algorithms (`off_policy=True`) play random actions for the first `algo.learning_starts` policy steps
     (rounded down to whole iterations), to fill their replay buffer, then do `algo.replay_ratio` gradient steps per
     policy step (`Ratio`). Their first training also does `algo.per_rank_pretrain_steps` more gradient steps, on the
-    filled buffer (the `pretrain` of DreamerV1 and DreamerV2).
+    filled buffer (the `pretrain` of DreamerV1 and DreamerV2). The ones that train on sequences of
+    `algo.per_rank_sequence_length` steps of every environment (Dreamer) start training only when every environment has
+    played that many steps, also when `algo.learning_starts` comes earlier; a dry run plays until then.
 
     A resumed run continues as the run it resumes, without random actions after `algo.learning_starts`. When its
     replay buffer wasn't saved in the checkpoint (`buffer.checkpoint=False`), it fills a new one first: it plays its
@@ -61,9 +63,21 @@ class TrainSchedule:
             if self.pretrain_steps < 0:
                 raise ValueError(f"`algo.per_rank_pretrain_steps` must be non-negative, got {self.pretrain_steps}")
             # The buffer is filled for `learning_starts` iterations, training at the end of the last one: from the
-            # start of the run, or, when a resumed run doesn't find its buffer in the checkpoint, from where it resumes
+            # start of the run, or, when a resumed run doesn't find its buffer in the checkpoint, from where it resumes.
+            # The algorithms that sample sequences of steps of every environment wait for the first ones to be played
+            sequence_length = cfg.algo.get("per_rank_sequence_length") or 0
+            fill_iters = max(self.learning_starts, -(-sequence_length // steps_per_iteration), 1)
+            if fill_iters > max(self.learning_starts, 1) and not cfg.dry_run:
+                warnings.warn(
+                    f"The training starts after {fill_iters * self.policy_steps_per_iter} policy steps, not after "
+                    f"`algo.learning_starts={cfg.algo.learning_starts}`: it samples sequences of "
+                    f"`algo.per_rank_sequence_length={sequence_length}` steps of every environment"
+                )
             refill = checkpoint is not None and not cfg.buffer.checkpoint
-            self.train_starts = (self.start_iter - 1 if refill else 0) + max(self.learning_starts, 1)
+            self.train_starts = (self.start_iter - 1 if refill else 0) + fill_iters
+            if cfg.dry_run:
+                # A dry run lasts until its first training
+                self.total_iters = max(self.total_iters, self.train_starts)
             if checkpoint is not None and not refill:
                 self.ratio.load_state_dict(checkpoint["ratio"])
             # The replay ratio counts the policy steps from the start of the first training iteration

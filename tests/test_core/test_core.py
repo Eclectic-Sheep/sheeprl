@@ -29,6 +29,7 @@ def schedule_cfg(
     run_benchmarks=False,
     buffer_checkpoint=True,
     pretrain_steps=0,
+    sequence_length=None,
 ):
     return dotdict(
         {
@@ -40,6 +41,8 @@ def schedule_cfg(
                 "learning_starts": learning_starts,
                 "replay_ratio": replay_ratio,
                 "per_rank_pretrain_steps": pretrain_steps,
+                # Read only by the off-policy algorithms that sample sequences (Dreamer)
+                "per_rank_sequence_length": sequence_length,
             },
             "dry_run": dry_run,
             "run_benchmarks": run_benchmarks,
@@ -144,6 +147,31 @@ def test_off_policy_schedule_resumed_after_the_first_training_does_not_pretrain_
         off_policy=True,
     )
     assert [resumed.gradient_steps(i) for i in range(9, 16)] == [0, 0, 0, 0, 102, 2, 2]
+
+
+def test_off_policy_schedule_waits_for_a_sequence_of_every_environment():
+    # The training started after `learning_starts` policy steps also when the environments had played fewer steps than
+    # the sequences it samples: the sampling crashed. 2 envs: `learning_starts=4` gives 2 iterations of random actions
+    with pytest.warns(UserWarning, match="sequences of `algo.per_rank_sequence_length=5`"):
+        schedule = TrainSchedule(
+            schedule_cfg(learning_starts=4, sequence_length=5), world_size=1, steps_per_iteration=1, off_policy=True
+        )
+    assert [schedule.warmup(policy_step=2 * (i - 1)) for i in range(1, 6)] == [True, True, False, False, False]
+    assert [schedule.gradient_steps(i) for i in range(1, 8)] == [0, 0, 0, 0, 2, 2, 2]
+    # When `learning_starts` comes later, nothing changes
+    schedule = TrainSchedule(
+        schedule_cfg(learning_starts=10, sequence_length=5), world_size=1, steps_per_iteration=1, off_policy=True
+    )
+    assert [schedule.gradient_steps(i) for i in range(1, 7)] == [0, 0, 0, 0, 2, 2]
+
+
+def test_off_policy_dry_run_plays_until_its_first_training():
+    # A dry run played one iteration: with sequences longer than one step, the sampling crashed
+    schedule = TrainSchedule(
+        schedule_cfg(dry_run=True, sequence_length=3), world_size=1, steps_per_iteration=1, off_policy=True
+    )
+    assert list(schedule.iterations()) == [1, 2, 3]
+    assert [schedule.gradient_steps(i) for i in range(1, 4)] == [0, 0, 2]
 
 
 def checkpoint_of_iteration(iteration, **cfg):

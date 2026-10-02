@@ -455,12 +455,28 @@ def behaviour_learning(
     }
 
 
+def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+    """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
+    processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
+    run makes it large enough)."""
+    sequence_length = cfg.algo.per_rank_sequence_length
+    if cfg.dry_run:
+        return max(dry_run_size, sequence_length)
+    size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size)
+    if size < sequence_length:
+        raise ValueError(
+            f"The replay buffer of every environment holds `buffer.size // (env.num_envs * world_size)` = {size} "
+            f"steps, fewer than a sequence (`algo.per_rank_sequence_length={sequence_length}`): increase `buffer.size`"
+        )
+    return size
+
+
 def build_buffer(
     fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
 ) -> EnvIndependentReplayBuffer | EpisodeBuffer:
     """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
     whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`."""
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else dry_run_size
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
     memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
     buffer_type = cfg.buffer.type.lower()

@@ -13,7 +13,7 @@ from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
-from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2, behaviour_learning, sample_batches
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2, behaviour_learning, env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.core import TrainSchedule
 from sheeprl.utils.utils import dotdict
@@ -88,6 +88,22 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     assert calls == [16, 16, 8]
     assert len(batches) == 40
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
+
+
+def test_the_buffer_of_every_environment_holds_a_sequence():
+    # A buffer smaller than a sequence crashed at the first training, after the random actions; a dry run had a buffer
+    # of 2 steps, whatever the length of the sequences
+    cfg = dotdict(
+        {"dry_run": False, "buffer": {"size": 40}, "env": {"num_envs": 4}, "algo": {"per_rank_sequence_length": 5}}
+    )
+    fabric = SimpleNamespace(world_size=2)
+    assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
+    cfg.buffer.size = 39
+    with pytest.raises(ValueError, match="increase `buffer.size`"):
+        env_buffer_size(fabric, cfg, dry_run_size=2)
+    cfg.dry_run = True
+    assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
+    assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8
 
 
 def behaviour_on_continuous_actions(overrides):
