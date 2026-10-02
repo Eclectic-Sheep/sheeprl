@@ -1,4 +1,3 @@
-import copy
 from math import prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -444,36 +443,22 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(agent_state)
 
-    # Setup player agent
-    player = RecurrentPPOPlayer(
-        copy.deepcopy(agent.feature_extractor),
-        copy.deepcopy(agent.rnn),
-        copy.deepcopy(agent.actor),
-        copy.deepcopy(agent.critic),
-        cfg.algo.rnn.lstm.hidden_size,
-        actions_dim,
-    )
-
     # Setup training agent
     agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
     agent.rnn = fabric.setup_module(agent.rnn)
     agent.critic = fabric.setup_module(agent.critic)
     agent.actor = fabric.setup_module(agent.actor)
 
-    # Setup player agent
+    # Setup player agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
+    # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
+    # (`flatten_parameters`): the player played with the initial weights for the whole training
     fabric_player = get_single_device_fabric(fabric)
-    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
-    player.rnn = fabric_player.setup_module(player.rnn)
-    player.critic = fabric_player.setup_module(player.critic)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.rnn.parameters(), player.rnn.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
-        player_p.data = agent_p.data
+    player = RecurrentPPOPlayer(
+        fabric_player.setup_module(agent.feature_extractor.module),
+        fabric_player.setup_module(agent.rnn.module),
+        fabric_player.setup_module(agent.actor.module),
+        fabric_player.setup_module(agent.critic.module),
+        cfg.algo.rnn.lstm.hidden_size,
+        actions_dim,
+    )
     return agent, player
