@@ -105,13 +105,15 @@ def build_agent(
         is_continuous=is_continuous,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
+        max_std=actor_cfg.max_std,
         dense_units=actor_cfg.dense_units,
         activation=hydra.utils.get_class(actor_cfg.dense_act),
         mlp_layers=actor_cfg.mlp_layers,
         distribution_cfg=cfg.distribution,
         layer_norm_cls=hydra.utils.get_class(actor_cfg.layer_norm.cls),
         layer_norm_kw=actor_cfg.layer_norm.kw,
-        unimix=cfg.algo.unimix,
+        unimix=actor_cfg.unimix,
+        action_clip=actor_cfg.action_clip,
     )
 
     single_device_fabric = get_single_device_fabric(fabric)

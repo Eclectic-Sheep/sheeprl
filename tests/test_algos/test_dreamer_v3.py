@@ -157,3 +157,43 @@ def test_the_processes_learn_the_same_initial_recurrent_state():
     # processes, and each one trained its own
     fabric = Fabric(accelerator="cpu", devices=2, strategy="ddp_spawn")
     assert fabric.launch(initial_states_after_a_gradient_step)
+
+
+@pytest.mark.parametrize(
+    "actor_cls", ["sheeprl.algos.dreamer_v3.agent.Actor", "sheeprl.algos.dreamer_v3.agent.MinedojoActor"]
+)
+def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_actor(actor_cls):
+    # The actors ignored `algo.actor.max_std` and `algo.actor.unimix` (the one of the world model, `algo.unimix`, was
+    # used), and the exploration actor of P2E-DV3 `algo.actor.action_clip`. The task actor is built as the actor of
+    # DreamerV3
+    from sheeprl.algos.p2e_dv3.agent import build_agent as build_p2e_agent
+
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=p2e_dv3_exploration",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[]",
+                "algo.cnn_keys.decoder=[]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.mlp_keys.decoder=[state]",
+                "algo.dense_units=8",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                f"algo.actor.cls={actor_cls}",
+                "algo.actor.max_std=0.7",
+                "algo.actor.unimix=0.2",
+                "algo.actor.action_clip=0.3",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
+    _, _, actor_task, _, _, actor_exploration, *_ = build_p2e_agent(
+        Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space
+    )
+    for actor in (actor_task.module, actor_exploration.module):
+        assert actor.max_std == 0.7
+        assert actor._unimix == 0.2
+        assert actor._action_clip == 0.3
