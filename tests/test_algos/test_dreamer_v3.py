@@ -96,3 +96,64 @@ def test_the_player_resets_the_environments_one_by_one(recwarn):
     player.init_states([1])
     torch.testing.assert_close(player.recurrent_state, initial)
     assert not [w for w in recwarn if "expanded tensors" in str(w.message)]
+
+
+def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
+    """One gradient step of DreamerV3 in every process, each on its own batch: whether the processes then have the same
+    learnable initial recurrent state."""
+    from sheeprl.algos.dreamer_v3.dreamer_v3 import train
+    from sheeprl.algos.dreamer_v3.utils import Moments
+
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[]",
+                "algo.cnn_keys.decoder=[]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.mlp_keys.decoder=[state]",
+                "algo.dense_units=8",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.horizon=3",
+                "algo.per_rank_batch_size=2",
+                "algo.per_rank_sequence_length=4",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
+    fabric.seed_everything(0)
+    world_model, actor, critic, target_critic, _ = build_agent(fabric, [3], False, cfg, obs_space)
+    optimizers = fabric.setup_optimizers(
+        *[torch.optim.Adam(m.parameters(), lr=1e-2) for m in (world_model, actor, critic)]
+    )
+    moments = Moments(
+        cfg.algo.actor.moments.decay,
+        cfg.algo.actor.moments.max,
+        cfg.algo.actor.moments.percentile.low,
+        cfg.algo.actor.moments.percentile.high,
+    )
+    # A different batch in every process
+    generator = torch.Generator().manual_seed(fabric.global_rank)
+    T, B = 4, 2
+    data = {
+        "state": torch.randn(T, B, 5, generator=generator),
+        "actions": torch.nn.functional.one_hot(torch.randint(3, (T, B), generator=generator), 3).float(),
+        "rewards": torch.randn(T, B, 1, generator=generator),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": torch.zeros(T, B, 1),
+    }
+    train(fabric, world_model, actor, critic, target_critic, *optimizers, data, None, cfg, False, [3], moments)
+    initial_states = fabric.all_gather(world_model.rssm.initial_recurrent_state.detach())
+    return torch.equal(initial_states[0], initial_states[1])
+
+
+def test_the_processes_learn_the_same_initial_recurrent_state():
+    # The learnable initial recurrent state is in no module wrapped by DDP: its gradient wasn't averaged over the
+    # processes, and each one trained its own
+    fabric = Fabric(accelerator="cpu", devices=2, strategy="ddp_spawn")
+    assert fabric.launch(initial_states_after_a_gradient_step)
