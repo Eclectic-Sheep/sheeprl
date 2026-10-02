@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import copy
-from math import prod, sqrt
+from math import log, prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
@@ -15,7 +16,13 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import per_layer_ortho_init_weights
-from sheeprl.utils.utils import safeatanh, safetanh
+from sheeprl.utils.utils import safetanh
+
+
+def tanh_log_abs_det_jacobian(x: Tensor) -> Tensor:
+    """log |d tanh(x) / dx| = log(1 - tanh(x)²), summed over the last dimension, from the values `x` before the tanh;
+    the form of `torch.distributions.TanhTransform`, finite where the tanh saturates."""
+    return (2.0 * (log(2.0) - x - F.softplus(-2.0 * x))).sum(-1)
 
 
 def ortho_init_linear_layers(module: nn.Module, gain: float, output_gain: Optional[float] = None) -> None:
@@ -213,15 +220,11 @@ class PPOAgent(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
-        tanh_actions = actions[0].float()
-        actions = safeatanh(tanh_actions, eps=torch.finfo(tanh_actions.dtype).resolution)
-        log_prob = normal.log_prob(actions)
-        log_prob -= 2.0 * (
-            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
-            - tanh_actions
-            - torch.nn.functional.softplus(-2.0 * tanh_actions)
-        ).sum(-1, keepdim=False)
-        return tanh_actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
+        # The actions played are stored before the tanh (`PPOPlayer.env_actions`): their log-probability is computed
+        # from them, as the player did, also where the tanh saturates
+        actions = actions[0].float()
+        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
+        return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
 
     def forward(
         self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
@@ -276,15 +279,10 @@ class PPOPlayer(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
+        # Returned before the tanh, which `env_actions` applies: the agent computes the same log-probability from them
         actions = normal.sample().float()
-        tanh_actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
-        log_prob = normal.log_prob(actions)
-        log_prob -= 2.0 * (
-            torch.log(torch.tensor([2.0], dtype=actions.dtype, device=actions.device))
-            - tanh_actions
-            - torch.nn.functional.softplus(-2.0 * tanh_actions)
-        ).sum(-1, keepdim=False)
-        return tanh_actions, log_prob.unsqueeze(dim=-1)
+        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
+        return actions, log_prob.unsqueeze(dim=-1)
 
     def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
         feat = self.feature_extractor(obs)
@@ -314,6 +312,16 @@ class PPOPlayer(nn.Module):
         feat = self.feature_extractor(obs)
         return self.critic(feat)
 
+    def env_actions(self, actions: Sequence[Tensor]) -> Tensor:
+        """The actions to play in the environments, from the ones returned by `forward`: the indices of the discrete
+        actions; the continuous actions, squashed by the tanh with `tanh_normal`."""
+        if self.actor.is_continuous:
+            env_actions = torch.stack(actions, dim=-1)
+            if self.actor.distribution == "tanh_normal":
+                env_actions = safetanh(env_actions, eps=torch.finfo(env_actions.dtype).resolution)
+            return env_actions
+        return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
+
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs)
         actor_out: List[Tensor] = self.actor(feat)
@@ -326,7 +334,7 @@ class PPOPlayer(nn.Module):
                 normal = Independent(Normal(mean, std), 1)
                 actions = normal.sample()
             if self.actor.distribution == "tanh_normal":
-                actions = safeatanh(actions, eps=torch.finfo(actions.dtype).resolution)
+                actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
             return tuple([actions])
         else:
             actions: List[Tensor] = []
