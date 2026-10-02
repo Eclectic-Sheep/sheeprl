@@ -56,7 +56,10 @@ def played_actions(cfg: dotdict, actions: List[np.ndarray]) -> List[np.ndarray]:
 def test_dreamers_play_normalized_actions(exp):
     # The actors of the Dreamers act in [-1, 1]: Pendulum (±2) gets twice their actions, and the random ones are
     # sampled in [-1, 1] too (they were sampled in ±2, and the policy could never reach the bounds)
-    cfg = config([f"exp={exp}", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"])
+    # Vector observations only: rendering Pendulum needs the PNG support of pygame, which some installations miss
+    cfg = config(
+        [f"exp={exp}", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]", "algo.cnn_keys.encoder=[]"]
+    )
     env = make_env(cfg, seed=0, rank=0)()
     assert env.action_space == gym.spaces.Box(-1, 1, (1,), np.float32)
     env.close()
@@ -68,7 +71,9 @@ def test_other_algorithms_and_old_configs_play_the_actions_as_they_are():
     sac = config(["exp=sac", "env.id=Pendulum-v1"])
     assert "normalize_actions" not in sac.algo
     # A DreamerV3 configuration saved before the option: its checkpoints play as they were trained
-    dreamer = config(["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"])
+    dreamer = config(
+        ["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]", "algo.cnn_keys.encoder=[]"]
+    )
     del dreamer.algo["normalize_actions"]
     for cfg in (sac, dreamer):
         env = make_env(cfg, seed=0, rank=0)()

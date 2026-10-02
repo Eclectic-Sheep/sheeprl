@@ -127,8 +127,9 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "sac_ae": {
         "args": [
             "exp=sac_ae",
-            # Pendulum rendered: the actions of the dummy environments are unbounded
-            "env.id=Pendulum-v1",
+            # A rendered environment with bounded continuous actions (those of the dummy environments are unbounded)
+            # whose renderer draws only shapes: Pendulum loads an image, which needs the PNG support of pygame
+            "env.id=MountainCarContinuous-v0",
             "env.frame_stack=1",
             "algo.cnn_keys.encoder=[rgb]",
             "algo.mlp_keys.encoder=[state]",
