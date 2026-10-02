@@ -13,7 +13,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
+from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.data import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope
@@ -294,16 +294,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                     # Single environment step
                     obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-                    truncated_envs = np.nonzero(truncated)[0]
-                    if len(truncated_envs) > 0:
-                        real_next_obs = {
-                            k: np.stack([info["final_obs"][env_idx][k] for env_idx in truncated_envs]) for k in obs_keys
-                        }
-                        real_next_obs = prepare_obs(
-                            fabric, real_next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=len(truncated_envs)
+
+                    def final_values(env_idxes: np.ndarray) -> np.ndarray:
+                        final_obs = {k: np.stack([info["final_obs"][i][k] for i in env_idxes]) for k in obs_keys}
+                        final_obs = prepare_obs(
+                            fabric, final_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=len(env_idxes)
                         )
-                        vals = player.get_values(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+                        return player.get_values(final_obs).cpu().numpy()
+
+                    rewards = bootstrap_truncated(rewards, terminated, truncated, final_values, cfg.algo.gamma)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
 
