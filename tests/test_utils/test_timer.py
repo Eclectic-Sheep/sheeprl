@@ -67,7 +67,7 @@ def test_the_training_timer_waits_for_the_gpu(device, disabled, synchronized, mo
     assert synchronize.call_count == int(synchronized)
 
 
-def logged_speeds(exp, args, root_dir, run_name="run", keep=False):
+def logged_speeds(exp, args, root_dir, run_name="run", keep=False, devices=1):
     """The speeds logged by a run of `exp` (a dry run, unless `args` says otherwise), with every phase timed 1
     second."""
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
@@ -77,6 +77,7 @@ def logged_speeds(exp, args, root_dir, run_name="run", keep=False):
     argv = [
         os.path.join(ROOT_DIR, "__main__.py"),
         *RUN_ARGS,
+        f"fabric.devices={devices}",
         f"exp={exp}",
         *args,
         f"root_dir={root_dir}",
@@ -84,7 +85,7 @@ def logged_speeds(exp, args, root_dir, run_name="run", keep=False):
     ]
     try:
         with (
-            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.dict(os.environ, {"LT_DEVICES": str(devices)}),
             mock.patch.object(sys, "argv", argv),
             mock.patch.object(
                 timer, "compute", return_value={"Time/train_time": 1.0, "Time/env_interaction_time": 1.0}
@@ -143,4 +144,13 @@ def test_a_resumed_run_times_the_interaction_of_its_own_steps():
         speeds = logged_speeds("ppo", [*args, f"checkpoint.resume_from={ckpt_path}"], root_dir, run_name="resumed")
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert speeds["Time/sps_env_interaction"] == [16]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="2 processes")
+def test_the_interaction_speed_counts_the_steps_of_all_the_processes():
+    # It was the speed of a process (the policy steps divided by the number of processes), while the training speed
+    # counts all of them. 2 processes, 2 environments each, 4 steps: 16 policy steps, timed 1 second
+    args = ["algo.rollout_steps=4", "algo.per_rank_batch_size=4"]
+    speeds = logged_speeds("ppo", args, "pytest_speed_processes", devices=2)
     assert speeds["Time/sps_env_interaction"] == [16]
