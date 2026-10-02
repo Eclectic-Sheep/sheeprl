@@ -192,7 +192,7 @@ def train(
             out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
             loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
-    loss.backward()
+    fabric.backward(loss)
     ensemble_grad = None
     if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
         ensemble_grad = fabric.clip_gradients(
