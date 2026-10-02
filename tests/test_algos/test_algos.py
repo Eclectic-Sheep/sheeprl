@@ -274,6 +274,60 @@ def test_ppo_recurrent(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+@pytest.mark.parametrize("exp", ["ppo", "sac", "dreamer_v3"])
+def test_the_test_return_is_logged_at_the_last_policy_step(standard_args, start_time, exp):
+    # It was logged at step 0, at the start of the training curves
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("Only the process of rank 0 logs")
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    root_dir = os.path.join(f"pytest_{start_time}", f"{exp}_test_return")
+    args = [arg for arg in standard_args if not arg.startswith("metric.")] + [
+        f"exp={exp}",
+        "algo.run_test=True",
+        "metric.log_level=1",
+        f"root_dir={root_dir}",
+        "run_name=test_return",
+    ]
+    if exp == "ppo":
+        args += [
+            "env=dummy",
+            "env.id=discrete_dummy",
+            "algo.rollout_steps=4",
+            "algo.per_rank_batch_size=4",
+            "algo.mlp_keys.encoder=[state]",
+        ]
+        last_step = 4 * 2
+    elif exp == "sac":
+        args += ["env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "algo.learning_starts=0"]
+        last_step = 2
+    else:
+        args += [
+            "env=dummy",
+            "env.id=discrete_dummy",
+            "algo.cnn_keys.encoder=[]",
+            "algo.mlp_keys.encoder=[state]",
+            "algo.cnn_keys.decoder=[]",
+            "algo.mlp_keys.decoder=[state]",
+            "algo.dense_units=8",
+            "algo.world_model.recurrent_model.recurrent_state_size=8",
+            "algo.world_model.representation_model.hidden_size=8",
+            "algo.world_model.transition_model.hidden_size=8",
+            "algo.per_rank_batch_size=1",
+            "algo.per_rank_sequence_length=1",
+            "algo.horizon=4",
+        ]
+        last_step = 2
+    with mock.patch.object(sys, "argv", args):
+        run()
+    log_dir = os.path.join("logs", "runs", root_dir, "test_return", "version_0")
+    events = EventAccumulator(log_dir)
+    events.Reload()
+    # 1 iteration (dry run) of the 2 environments
+    assert [e.step for e in events.Scalars("Test/cumulative_reward")] == [last_step]
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_ppo_recurrent_processes_with_different_numbers_of_minibatches(standard_args, start_time):
     # Every process splits its rollout at the ends of its episodes: with this seed the 2 processes have different
     # numbers of minibatches, and the training crashed (gloo: "Received data size doesn't match expected size")

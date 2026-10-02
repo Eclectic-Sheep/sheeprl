@@ -699,7 +699,7 @@ def ext_sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.module, fabric, cfg, log_dir)
+        test(agent.module, fabric, cfg, log_dir, policy_step=policy_step)
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
@@ -749,7 +749,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: SOTAAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: SOTAAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -775,7 +775,7 @@ def test(agent: SOTAAgent, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 

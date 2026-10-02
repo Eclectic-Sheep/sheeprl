@@ -218,6 +218,7 @@ def test(
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
+    policy_step: int = 0,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -254,7 +255,7 @@ def test(
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
-        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
