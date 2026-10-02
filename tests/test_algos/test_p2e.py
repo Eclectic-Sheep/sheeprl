@@ -1,5 +1,7 @@
-"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer."""
+"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer, the rows of a finetuning."""
 
+import copy
+import glob
 import importlib
 import inspect
 import os
@@ -7,6 +9,7 @@ import shutil
 import sys
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from sheeprl import ROOT_DIR
@@ -101,3 +104,38 @@ def test_the_ensembles_are_trained_with_their_optimizer(version):
     for optimizer in optimizers:
         (group,) = optimizer.param_groups
         assert group["lr"] == 0.0123 and group["weight_decay"] == 0.0456
+
+
+def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():
+    # It wrote `terminated` twice and never `truncated`: the episode buffer never closed the truncated episodes
+    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+
+    root_dir = "pytest_p2e_dv2_truncated"
+    # Episodes of 3 steps in 4 iterations, played and not trained
+    args = ["dry_run=False", "algo.total_steps=8", "env.max_episode_steps=3", "algo.replay_ratio=0"]
+    rows = []
+    buffer_add = EnvIndependentReplayBuffer.add
+
+    def recording_add(self, data, *args, **kwargs):
+        rows.append(copy.deepcopy({k: np.asarray(v) for k, v in data.items()}))
+        return buffer_add(self, data, *args, **kwargs)
+
+    try:
+        run_p2e(["exp=p2e_dv2_exploration", "algo.per_rank_sequence_length=2", *args, "run_name=exploration"], root_dir)
+        (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "exploration", "version_*", "checkpoint", "*"))
+        with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+            run_p2e(
+                [
+                    "exp=p2e_dv2_finetuning",
+                    "algo.per_rank_sequence_length=2",
+                    *args,
+                    f"checkpoint.exploration_ckpt_path={ckpt_path}",
+                    "run_name=finetuning",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The step that reaches the time limit, in both environments
+    assert [row["truncated"].sum() for row in rows if row["truncated"].any()] == [2]
+    assert not any(row["terminated"].any() for row in rows)
