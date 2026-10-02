@@ -22,7 +22,7 @@ from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import phase_timer, timer
+from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
@@ -342,7 +342,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
                     for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
                         p.data = agent_p.data
-                with phase_timer("Time/train_time"):
+                with training_timer(fabric.device):
                     # Sampled a few batches at a time
                     batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                     for batch in batches:

@@ -26,7 +26,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import phase_timer, timer
+from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
@@ -681,7 +681,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
                 per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
-                with phase_timer("Time/train_time"):
+                with training_timer(fabric.device):
                     # Sampled a few batches at a time
                     batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                     for batch in batches:
