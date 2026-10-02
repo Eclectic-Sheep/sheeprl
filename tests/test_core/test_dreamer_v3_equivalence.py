@@ -12,6 +12,10 @@ The images in the buffer are recorded as checksums. The test runs the same confi
 `algo.normalize_actions=False` the run is identical, with it the stored random actions are exactly half the old ones
 (Pendulum's bounds are ±2) and the environment plays twice the stored actions.
 
+`dummy_multidiscrete` was recorded again when the random multi-discrete actions of several envs were stored as
+played (#10); checked first: every stored action is now the one the env played (2 of the 16 steps were not),
+and the rows before the first wrong one are otherwise identical.
+
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
 

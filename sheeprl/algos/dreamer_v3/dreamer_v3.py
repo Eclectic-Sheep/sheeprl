@@ -107,10 +107,12 @@ class SequencePlayer:
         if self.random_warmup and self.schedule.warmup(env.policy_step):
             real_actions = actions = np.array(env.random_actions())
             if not self.is_continuous:
+                # One row per environment, one column per discrete action: one-hot each column
+                per_action = actions.reshape(num_envs, len(self.actions_dim)).T
                 actions = np.concatenate(
                     [
                         F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(actions.reshape(len(self.actions_dim), -1), self.actions_dim)
+                        for act, act_dim in zip(per_action, self.actions_dim)
                     ],
                     axis=-1,
                 )

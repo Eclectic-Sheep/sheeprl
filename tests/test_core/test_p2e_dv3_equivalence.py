@@ -11,6 +11,10 @@ compares.
 the run is identical, with it the stored random actions are exactly half the old ones (Pendulum's bounds are ±2)
 and the environment plays twice the stored actions.
 
+`dummy_pixels` was recorded again when the random multi-discrete actions of several envs were stored as
+played (#10): its exploration plays random actions (the finetuning doesn't). The fix was checked on the
+DreamerV3 configuration `dummy_multidiscrete` (see `test_dreamer_v3_equivalence.py`).
+
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
 
