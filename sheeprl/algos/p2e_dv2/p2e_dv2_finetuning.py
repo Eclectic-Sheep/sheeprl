@@ -295,7 +295,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             obs = next_obs
 
             step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
-            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
             step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
             step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -316,7 +316,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 # Reset dones so that `is_first` is updated
                 for d in dones_idxes:
                     step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
-                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(dones_idxes)
 
