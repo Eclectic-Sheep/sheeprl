@@ -36,7 +36,7 @@ algo:
     use_continues: True
     kl_free_nats: 0.0
     kl_regularizer: 0.1
-    discount_scale_factor: 0.5
+    discount_scale_factor: 5.0
     optimizer:
       lr: 0.0002
   actor:
