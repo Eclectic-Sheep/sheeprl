@@ -1,4 +1,4 @@
-from math import prod
+from math import prod, sqrt
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor
+from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
 
 
@@ -167,6 +167,15 @@ class RecurrentPPOAgent(nn.Module):
         else:
             actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
+        # Orthogonal initialization, as PPO's agent: the encoder with gain 1, the hidden layers of actor and critic with
+        # gain sqrt(2), the actor's heads with 0.01 and the critic's output with 1 (the LSTM keeps its own)
+        if encoder_cfg.ortho_init:
+            ortho_init_linear_layers(self.feature_extractor, gain=1.0)
+        if actor_cfg.ortho_init:
+            ortho_init_linear_layers(actor_backbone, gain=sqrt(2))
+            ortho_init_linear_layers(actor_heads, gain=0.01)
+        if critic_cfg.ortho_init:
+            ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
         # Initial recurrent states for both the actor and critic rnn
         self._initial_states: Tensor = self.reset_hidden_states()
@@ -199,7 +208,7 @@ class RecurrentPPOAgent(nn.Module):
             else:
                 sampled_actions.append(actions[0])
             entropies.append(dist.entropy())
-            logprobs.append(dist.log_prob(actions))
+            logprobs.append(dist.log_prob(sampled_actions[-1]))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)
@@ -306,7 +315,7 @@ class RecurrentPPOPlayer(nn.Module):
                     sampled_actions.append(dist.sample())
                 else:
                     sampled_actions.append(actions[0])
-            logprobs.append(dist.log_prob(actions))
+            logprobs.append(dist.log_prob(sampled_actions[-1]))
         else:
             for i, logits in enumerate(pre_dist):
                 dist = OneHotCategorical(logits=logits)

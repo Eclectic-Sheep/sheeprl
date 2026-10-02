@@ -183,7 +183,7 @@ class PPO(Algorithm):
         self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
-        self.anneal(state, iteration)
+        anneal(cfg.algo, state, iteration, self.total_iters)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -253,28 +253,33 @@ class PPO(Algorithm):
             "Loss/entropy_loss": ent_loss.detach(),
         }
 
-    def anneal(self, state: PPOState, iteration: int) -> None:
-        """Set the learning rate and the coefficients that `algo.anneal_*` anneal to their values for the iteration
-        `iteration`: a linear decay from the configured values, to 0 at the end of the training. They depend only on
-        the iteration, so a resumed run follows the schedule of its own `algo.total_steps`."""
-        cfg = self.cfg.algo
-        # The iterations are numbered from 1: the first one uses the configured values
-        decay = partial(polynomial_decay, iteration - 1, final=0.0, max_decay_steps=self.total_iters)
-        if cfg.anneal_lr:
-            for group in state.optimizer.param_groups:
-                group["lr"] = decay(initial=cfg.optimizer.lr)
-        if cfg.anneal_clip_coef:
-            state.clip_coef.fill_(decay(initial=cfg.clip_coef))
-        if cfg.anneal_ent_coef:
-            state.ent_coef.fill_(decay(initial=cfg.ent_coef))
-
     def end_iteration(self, state: PPOState, iteration: int) -> Dict[str, float]:
-        # The values used in this iteration
-        return {
-            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
-            "Info/clip_coef": state.clip_coef.item(),
-            "Info/ent_coef": state.ent_coef.item(),
-        }
+        return annealed_values(state)
+
+
+def anneal(cfg: Dict[str, Any], state: PPOState, iteration: int, total_iters: int) -> None:
+    """Set the learning rate and the coefficients that `algo.anneal_*` anneal (`cfg` is `algo`) to their values for
+    the iteration `iteration` of `total_iters`: a linear decay from the configured values, to 0 at the end of the
+    training. They depend only on the iteration, so a resumed run follows the schedule of its own `algo.total_steps`.
+    Used by PPO and PPO-recurrent, whose states have the same `optimizer`, `clip_coef` and `ent_coef`."""
+    # The iterations are numbered from 1: the first one uses the configured values
+    decay = partial(polynomial_decay, iteration - 1, final=0.0, max_decay_steps=total_iters)
+    if cfg.anneal_lr:
+        for group in state.optimizer.param_groups:
+            group["lr"] = decay(initial=cfg.optimizer.lr)
+    if cfg.anneal_clip_coef:
+        state.clip_coef.fill_(decay(initial=cfg.clip_coef))
+    if cfg.anneal_ent_coef:
+        state.ent_coef.fill_(decay(initial=cfg.ent_coef))
+
+
+def annealed_values(state: PPOState) -> Dict[str, float]:
+    """The learning rate and the coefficients used in an iteration, to log."""
+    return {
+        "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
+        "Info/clip_coef": state.clip_coef.item(),
+        "Info/ent_coef": state.ent_coef.item(),
+    }
 
 
 @register_algorithm()

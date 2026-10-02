@@ -3,8 +3,9 @@
 `references/ppo_recurrent.json` was recorded with the PPO-recurrent training loop before the port (`main` at
 `118d6fb`), on CPU in fp32: for each configuration below it holds the actions, log-probs and values played at every
 environment step, the three losses of every minibatch and checksums of the final checkpoint (weights, optimizer
-state). The test runs the same configurations and compares. The continuous actions are not covered: they crash on
-`main` (known issue #29). Neither is `algo.clip_vloss`: its value loss lost its factor ½ (#33) after `118d6fb`.
+state). The test runs the same configurations and compares. The continuous actions crash on `main` (known issue
+#29): `continuous` was recorded after their fix, as a regression reference. `algo.clip_vloss` is not covered: its value
+loss lost its factor ½ (#33) after `118d6fb`.
 
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
@@ -91,6 +92,17 @@ CONFIGS: Dict[str, List[str]] = {
         "algo.encoder.cnn_features_dim=16",
         "algo.rollout_steps=8",
         "algo.per_rank_sequence_length=2",
+        "algo.per_rank_num_batches=2",
+        "algo.total_steps=32",
+    ],
+    # Recorded after the fix of the continuous actions (#29), which crashed on `main`
+    "continuous": [
+        "env=dummy",
+        "env.id=continuous_dummy",
+        "algo.cnn_keys.encoder=[]",
+        "algo.mlp_keys.encoder=[state]",
+        "algo.rollout_steps=8",
+        "algo.per_rank_sequence_length=3",
         "algo.per_rank_num_batches=2",
         "algo.total_steps=32",
     ],

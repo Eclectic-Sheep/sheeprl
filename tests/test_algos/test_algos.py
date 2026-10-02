@@ -252,7 +252,8 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-def test_ppo_recurrent(standard_args, start_time):
+@pytest.mark.parametrize("env_id", [None, "continuous_dummy"])
+def test_ppo_recurrent(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
     args = standard_args + [
@@ -265,6 +266,9 @@ def test_ppo_recurrent(standard_args, start_time):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
+    if env_id is not None:
+        # Continuous actions crashed (#29)
+        args += ["env=dummy", f"env.id={env_id}", "algo.cnn_keys.encoder=[]", "algo.mlp_keys.encoder=[state]"]
 
     with mock.patch.object(sys, "argv", args):
         run()

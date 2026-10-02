@@ -15,16 +15,16 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import PolynomialLR
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
+from sheeprl.algos.ppo.ppo import anneal, annealed_values
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, setup_module, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor
 
 
 @dataclass
@@ -32,9 +32,8 @@ class PPORecurrentState(TrainState):
     # Feature extractor, LSTM, actor and critic
     agent: RecurrentPPOAgent
     optimizer: Optimizer
-    # Anneals the learning rate (`algo.anneal_lr`)
-    scheduler: Optional[PolynomialLR]
-    # Annealed values are tensors, so that changing them never recompiles a compiled training step
+    # Annealed values are tensors, so that changing them never recompiles a compiled training step (the annealed
+    # learning rate is the one of the optimizer)
     clip_coef: Tensor
     ent_coef: Tensor
 
@@ -96,9 +95,10 @@ class RecurrentRolloutPlayer:
 
         step = env.step(env_actions)
 
-        # The episodes truncated by the time limit don't end in the MDP: bootstrap the value of their final observation
-        rewards = step.rewards
-        truncated_envs = np.nonzero(step.truncated)[0]
+        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
+        # bootstrap the value of their final observation, in the scale of the clipped rewards the critic learns
+        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
         if len(truncated_envs) > 0:
             final_obs = prepare_obs(
                 self.fabric,
@@ -238,14 +238,11 @@ class PPORecurrent(Algorithm):
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
-        # Linear decay of the learning rate to 0 at the end of the training
-        scheduler = PolynomialLR(optimizer, total_iters=schedule.total_iters, power=1.0) if cfg.algo.anneal_lr else None
         self.total_iters = schedule.total_iters
 
         state = PPORecurrentState(
             agent=agent,
             optimizer=optimizer,
-            scheduler=scheduler,
             clip_coef=torch.tensor(cfg.algo.clip_coef, device=self.fabric.device),
             ent_coef=torch.tensor(cfg.algo.ent_coef, device=self.fabric.device),
         )
@@ -278,6 +275,7 @@ class PPORecurrent(Algorithm):
         self, state: PPORecurrentState, rollout: RecurrentRollout, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
+        anneal(cfg.algo, state, iteration, self.total_iters)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -365,25 +363,7 @@ class PPORecurrent(Algorithm):
         }
 
     def end_iteration(self, state: PPORecurrentState, iteration: int) -> Dict[str, float]:
-        cfg = self.cfg.algo
-        # The values used in this iteration
-        info = {
-            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
-            "Info/clip_coef": state.clip_coef.item(),
-            "Info/ent_coef": state.ent_coef.item(),
-        }
-        # The values for the next iteration: linear decay to 0 at the end of the training
-        if state.scheduler is not None:
-            state.scheduler.step()
-        if cfg.anneal_clip_coef:
-            state.clip_coef.fill_(
-                polynomial_decay(iteration, initial=cfg.clip_coef, final=0.0, max_decay_steps=self.total_iters)
-            )
-        if cfg.anneal_ent_coef:
-            state.ent_coef.fill_(
-                polynomial_decay(iteration, initial=cfg.ent_coef, final=0.0, max_decay_steps=self.total_iters)
-            )
-        return info
+        return annealed_values(state)
 
 
 @register_algorithm()
