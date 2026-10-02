@@ -20,7 +20,7 @@ from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -110,9 +110,7 @@ def train(
                         ),
                         next_target_qf_value,
                     )
-                    qf_optimizer.zero_grad(set_to_none=True)
-                fabric.backward(qf_loss)
-                qf_optimizer.step()
+                update(fabric, qf_loss, qf_optimizer, params=agent.qfs[qf_value_idx].parameters())
                 if aggregator and not aggregator.disabled:
                     aggregator.update("Loss/value_loss", qf_loss)
 
@@ -125,16 +123,11 @@ def train(
             qf_values = agent.get_q_values(actor_data["observations"], actions)
             min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
             actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-            actor_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(actor_loss)
-        actor_optimizer.step()
+        update(fabric, actor_loss, actor_optimizer)
 
         # Update the entropy value
         alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-        alpha_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(alpha_loss)
-        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-        alpha_optimizer.step()
+        update(fabric, alpha_loss, alpha_optimizer)
 
         if aggregator and not aggregator.disabled:
             aggregator.update("Loss/policy_loss", actor_loss)

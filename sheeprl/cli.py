@@ -100,16 +100,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     command = task.__dict__[entrypoint]
     kwargs = {}
     strategy = cfg.fabric.get("strategy", "auto")
-    if "sac_ae" in module:
-        if strategy is not None:
-            warnings.warn(
-                "You are running the SAC-AE algorithm you have specified a strategy different than 'ddp': "
-                f"'python sheeprl.py fabric.strategy={strategy}'. This algorithm is run with the "
-                "'lightning.fabric.strategies.DDPStrategy' strategy."
-            )
-        cfg.fabric.pop("strategy", "auto")
-        strategy = DDPStrategy(find_unused_parameters=True)
-    elif "finetuning" in algo_name and "p2e" in module:
+    if "finetuning" in algo_name and "p2e" in module:
         # Load exploration configurations
         ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
         exploration_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
