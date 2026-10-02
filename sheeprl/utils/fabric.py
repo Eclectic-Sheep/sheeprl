@@ -1,9 +1,12 @@
+from typing import Any
 from unittest import mock
 
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import XLAAccelerator
+from lightning.fabric.plugins.precision.amp import MixedPrecision
 from lightning.fabric.strategies import SingleDeviceStrategy, SingleDeviceXLAStrategy
+from lightning.fabric.wrappers import _FabricModule
 
 
 def get_single_device_fabric(fabric: Fabric) -> Fabric:
@@ -53,3 +56,31 @@ def autocast_cache_scope(fabric: Fabric) -> torch.autocast:
         The context manager.
     """
     return torch.autocast(device_type=fabric.device.type, enabled=False)
+
+
+class _CompilableFabricModule(_FabricModule):
+    """A `_FabricModule` that can be compiled with `torch.compile` in mixed precision.
+
+    In mixed precision, `_FabricModule` registers a hook on the outputs that checks, during the backward pass, that it
+    goes through `fabric.backward`: traced by `torch.compile`, the hook breaks the graph at every call of the module.
+    While compiling, this module does the conversions of the mixed precision (the inputs to the precision, the outputs
+    to the default type) without the hook: the algorithms that compile always back-propagate with `fabric.backward`.
+    Otherwise it is a `_FabricModule`.
+    """
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        precision = self._strategy.precision
+        if not torch.compiler.is_compiling() or not isinstance(precision, MixedPrecision):
+            return super().forward(*args, **kwargs)
+        args, kwargs = precision.convert_input((args, kwargs))
+        with precision.forward_context():
+            output = self._forward_module(*args, **kwargs)
+        return precision.convert_output(output)
+
+
+def compilable(module: _FabricModule) -> _CompilableFabricModule:
+    """The module set up by Fabric, which `torch.compile` can compile also in mixed precision
+    (`_CompilableFabricModule`): the same object, with the forward of `_CompilableFabricModule`
+    (`_FabricModule.__setattr__` would change the class of the wrapped module)."""
+    object.__setattr__(module, "__class__", _CompilableFabricModule)
+    return module
