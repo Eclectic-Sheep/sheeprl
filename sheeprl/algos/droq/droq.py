@@ -271,7 +271,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
-    learning_starts, train_starts, ratio = off_policy_schedule(
+    learning_starts, train_starts, pretrain_steps, ratio = off_policy_schedule(
         cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
     )
 
@@ -351,6 +351,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 train(
                     fabric,

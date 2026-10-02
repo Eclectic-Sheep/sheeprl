@@ -15,7 +15,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v1.dreamer_v1 import train
 from sheeprl.algos.dreamer_v1.utils import add_is_first
-from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import prepare_obs, sample_batches, test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
@@ -217,7 +217,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Training from `train_starts` (the finetuning plays no random actions)
-    _, train_starts, ratio = off_policy_schedule(cfg, state, start_iter, policy_steps_per_iter, fabric.world_size)
+    _, train_starts, pretrain_steps, ratio = off_policy_schedule(
+        cfg, state, start_iter, policy_steps_per_iter, fabric.world_size
+    )
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
@@ -331,6 +333,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"
@@ -338,16 +343,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
                         p.data = agent_p.data
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    sample = rb.sample_tensors(
-                        batch_size=cfg.algo.per_rank_batch_size,
-                        sequence_length=cfg.algo.per_rank_sequence_length,
-                        n_samples=per_rank_gradient_steps,
-                        dtype=None,
-                        device=device,
-                        from_numpy=cfg.buffer.from_numpy,
-                    )  # [N_samples, Seq_len, Batch_size, ...]
-                    for i in range(per_rank_gradient_steps):
-                        batch = {k: v[i].float() for k, v in sample.items()}
+                    # Sampled a few batches at a time
+                    batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
+                    for batch in batches:
                         train(
                             fabric,
                             world_model,

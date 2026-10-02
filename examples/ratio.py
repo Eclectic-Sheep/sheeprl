@@ -10,7 +10,7 @@ if __name__ == "__main__":
     train_steps = 0
     gradient_steps = 0
     total_policy_steps = 2**10
-    r = Ratio(ratio=replay_ratio, pretrain_steps=0)
+    r = Ratio(ratio=replay_ratio)
     policy_steps = num_envs * world_size
     printed = False
     for i in range(0, total_policy_steps, policy_steps):

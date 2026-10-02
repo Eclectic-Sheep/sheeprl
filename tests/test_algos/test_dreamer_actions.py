@@ -45,6 +45,7 @@ ARGS = [
     "algo.per_rank_sequence_length=1",
     # Played, not trained: 6 iterations of the 4 environments
     "algo.replay_ratio=0",
+    "algo.per_rank_pretrain_steps=0",
     "algo.total_steps=24",
     "buffer.size=100",
 ]
