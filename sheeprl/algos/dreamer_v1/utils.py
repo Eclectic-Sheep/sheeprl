@@ -4,6 +4,7 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence, Tuple
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning import Fabric
@@ -11,7 +12,9 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
+from sheeprl.data.buffers import EnvIndependentReplayBuffer
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
@@ -37,6 +40,28 @@ AGGREGATOR_KEYS = {
     "Params/exploration_amount",
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
+
+
+def add_is_first(rb: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+    """Complete a replay buffer saved before DreamerV1 stored `is_first` (a resumed run, or a finetuning that loads the
+    buffer of its exploration, would fail to add rows with it).
+
+    A row is the first of an episode when the row before it, in the buffer of the same environment, ends one
+    (`terminated` or `truncated`: the next row holds the first observation of the new episode), or when it is the first
+    row of a buffer not filled yet.
+    """
+    for buffer in rb.buffer:
+        if buffer.empty or "is_first" in buffer.buffer:
+            continue
+        terminated, truncated = (
+            value.array if isinstance(value, MemmapArray) else value
+            for value in (buffer["terminated"], buffer["truncated"])
+        )
+        is_first = np.roll(np.logical_or(terminated, truncated), 1, axis=0)
+        if not buffer.full:
+            is_first[0] = True
+        buffer["is_first"] = is_first.astype(terminated.dtype)
+    return rb
 
 
 def compute_lambda_values(
