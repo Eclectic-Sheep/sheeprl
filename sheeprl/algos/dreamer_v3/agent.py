@@ -1272,6 +1272,13 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
+    if fabric.device.type == "cuda":
+        # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
+        # activations from and to it (the values of the weights don't change). Before the copy of the player and the
+        # setup, which keep the layout: changing it later would replace the weights the player shares
+        world_model.encoder.to(memory_format=torch.channels_last)
+        world_model.observation_model.to(memory_format=torch.channels_last)
+
     # Create the player agent
     fabric_player = get_single_device_fabric(fabric)
     player = PlayerDV3(

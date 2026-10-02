@@ -252,7 +252,8 @@ class RecordingAggregator:
 
 
 def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
-    """A small DreamerV3 on images and vectors, with 3 discrete actions, a batch for it, and its gradient step."""
+    """A small DreamerV3 on images and vectors, with 3 discrete actions, its player, a batch for it, and its gradient
+    step."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
@@ -281,7 +282,7 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
         }
     )
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, _ = build_agent(fabric, [3], False, cfg, obs_space)
+    world_model, actor, critic, target_critic, player = build_agent(fabric, [3], False, cfg, obs_space)
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
     )
@@ -312,13 +313,13 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
         )
         return aggregator.values
 
-    return cfg, world_model, train_step
+    return cfg, world_model, player, train_step
 
 
 @pytest.mark.parametrize("decoupled_rssm", [False, True])
 def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
     # Both RSSMs: the priors are computed after the unroll, the initial states once per sequence
-    _, world_model, train_step = small_dreamer_v3([f"algo.world_model.decoupled_rssm={decoupled_rssm}"])
+    _, world_model, _, train_step = small_dreamer_v3([f"algo.world_model.decoupled_rssm={decoupled_rssm}"])
     before = [p.detach().clone() for p in world_model.parameters()]
     metrics = train_step()
     assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
@@ -371,7 +372,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
     monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
     losses = []
     for enabled in (False, True):
-        _, _, train_step = small_dreamer_v3(
+        _, _, _, train_step = small_dreamer_v3(
             [f"algo.compile.enabled={enabled}", f"fabric.precision={precision}"],
             accelerator="cuda",
             precision=precision,
@@ -379,3 +380,22 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
         losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step().items()})
     for name in ("Loss/world_model_loss", "Loss/observation_loss", "Loss/state_loss", "Loss/value_loss"):
         torch.testing.assert_close(losses[1][name], losses[0][name], rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The weights are channels-last only on CUDA")
+def test_the_player_shares_the_channels_last_weights_of_the_world_model():
+    # The weights of the convolutions are stored channels-last, also the ones the player shares with the world model:
+    # the player still plays with the weights of the last update
+    _, world_model, player, train_step = small_dreamer_v3([], accelerator="cuda")
+    convolutions = [
+        m.weight
+        for model in (world_model.encoder, world_model.observation_model)
+        for m in model.modules()
+        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d))
+    ]
+    assert convolutions and all(w.is_contiguous(memory_format=torch.channels_last) for w in convolutions)
+    before = [p.detach().clone() for p in player.encoder.parameters()]
+    train_step()
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        assert p.data_ptr() == agent_p.data_ptr()
+    assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
