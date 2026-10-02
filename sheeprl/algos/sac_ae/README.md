@@ -69,8 +69,10 @@ mlp_decoder = (
     else None
 )
 decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-encoder = fabric.setup_module(encoder)
-decoder = fabric.setup_module(decoder)
+# Set up on the device of the process, without the `DistributedDataParallel` wrapper: `update` averages the
+# gradients over the processes (`sheeprl.utils.fabric`)
+encoder = setup_module(fabric, encoder)
+decoder = setup_module(fabric, decoder)
 
 # Setup actor and critic. Those will initialize with orthogonal weights
 # both the actor and critic
@@ -89,8 +91,8 @@ qfs = [
 ]
 # Unwrapping the encoder module. This is already tied to the wrapped encoder
 critic = SACAEAgent(encoder=encoder.module, qfs=qfs)
-actor = fabric.setup_module(actor)
-critic = fabric.setup_module(critic)
+actor = setup_module(fabric, actor)
+critic = setup_module(fabric, critic)
 
 # The agent will tied convolutional and linear weights between the encoder actor and critic
 agent = SACPixelAgent(
@@ -135,9 +137,7 @@ next_target_qf_value = agent.get_next_target_q_values(
 )
 qf_values = agent.get_q_values(normalized_obs, data["actions"])
 qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
-qf_optimizer.zero_grad(set_to_none=True)
-fabric.backward(qf_loss)
-qf_optimizer.step()
+update(fabric, qf_loss, qf_optimizer)
 aggregator.update("Loss/value_loss", qf_loss)
 
 # Update the target networks with EMA. `args.target_network_frequency` is set to 2 by default
@@ -153,17 +153,12 @@ if global_step % args.actor_network_frequency == 0:
     qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
     min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
     actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-    actor_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(actor_loss)
-    actor_optimizer.step()
+    update(fabric, actor_loss, actor_optimizer)
     aggregator.update("Loss/policy_loss", actor_loss)
 
     # Update the entropy value
     alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-    alpha_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
-    alpha_optimizer.step()
+    update(fabric, alpha_loss, alpha_optimizer)
     aggregator.update("Loss/alpha_loss", alpha_loss)
 
 # Update the encoder/decoder. This should reflect the update also to the `agent.critic.encoder` module.
@@ -174,10 +169,9 @@ if global_step % args.decoder_update_freq == 0:
         F.mse_loss(preprocess_obs(data["observations"], bits=5), reconstruction)  # Reconstruction
         + args.decoder_l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
     )
-    encoder_optimizer.zero_grad(set_to_none=True)
+    # One backward pass for both, then the step of the encoder and the one of the decoder
     decoder_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(reconstruction_loss)
-    encoder_optimizer.step()
+    update(fabric, reconstruction_loss, encoder_optimizer, params=[*encoder.parameters(), *decoder.parameters()])
     decoder_optimizer.step()
     aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
 ```
