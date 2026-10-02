@@ -161,7 +161,7 @@ AGGREGATOR_KEYS = {"key0", "key2", "key5"}
 Then, the metrics that will be logged are the `key0` and the `key2`. The `key5` is not logged because it is not in the configs; instead, the `key1`, `key3`, and `key4` are not logged because they are not in the `AGGREGATOR_KEYS` set of the algorithm.
 
 Besides the aggregated metrics, the training loop logs:
-* `Time/sps_train` and `Time/sps_env_interaction`, the speed of the training and of the interaction with the environments, if the timer is enabled: the gradient steps of all the processes per second of training, and the environment steps (policy steps times `env.action_repeat`) of a process per second of interaction.
+* `Time/sps_train` and `Time/sps_env_interaction`, the speed of the training and of the interaction with the environments, if the timer is enabled: the gradient steps per second of training and the environment steps (policy steps times `env.action_repeat`) per second of interaction, both of all the processes (they play and train at the same time), like the policy steps.
 * `Params/replay_ratio`, the gradient steps (of all the processes) per policy step, for the off-policy algorithms.
 * The values returned by the `end_iteration` method of the algorithm, at every iteration (e.g. `Info/learning_rate`, `Info/clip_coef` and `Info/ent_coef` for PPO and PPO Recurrent).
 

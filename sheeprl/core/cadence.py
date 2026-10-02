@@ -68,16 +68,18 @@ class Cadence:
         if not timer.disabled:
             timer_metrics = timer.compute()
             if timer_metrics.get("Time/train_time", 0) > 0:
-                # Gradient steps of all the processes per second
+                # Gradient steps of all the processes per second (the processes train at the same time)
                 self.fabric.log(
                     "Time/sps_train",
                     (self.gradient_steps - self.last_gradient_steps) / timer_metrics["Time/train_time"],
                     policy_step,
                 )
             if timer_metrics.get("Time/env_interaction_time", 0) > 0:
+                # Environment steps of all the processes per second (the processes play at the same time)
                 self.fabric.log(
                     "Time/sps_env_interaction",
-                    ((policy_step - self.last_timed_step) / self.fabric.world_size * cfg.env.action_repeat)
+                    (policy_step - self.last_timed_step)
+                    * cfg.env.action_repeat
                     / timer_metrics["Time/env_interaction_time"],
                     policy_step,
                 )

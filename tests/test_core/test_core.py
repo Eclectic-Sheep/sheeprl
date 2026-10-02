@@ -242,7 +242,7 @@ def test_the_interaction_speed_of_a_resumed_run_counts_only_its_own_steps(monkey
     # The first speed after a resume divided the policy steps since the last log of the resumed run, also the ones
     # played before its checkpoint, by the time of the steps played after the resume
     logged = {}
-    fabric = SimpleNamespace(world_size=1, log=lambda name, value, step: logged.__setitem__(name, value))
+    fabric = SimpleNamespace(world_size=2, log=lambda name, value, step: logged.__setitem__(name, value))
     cfg = dotdict({"metric": {"log_level": 1, "log_every": 5000}, "env": {"action_repeat": 2}})
     # Last log at 0, checkpoint at 3000: the resumed run starts from 3000
     checkpoint = {"last_log": 0, "last_checkpoint": 3000}
@@ -251,7 +251,8 @@ def test_the_interaction_speed_of_a_resumed_run_counts_only_its_own_steps(monkey
     monkeypatch.setattr(timer, "compute", classmethod(lambda cls: {"Time/env_interaction_time": 4.0}))
     monkeypatch.setattr(timer, "reset", classmethod(lambda cls: None))
     cadence.log(policy_step=5000, iteration=1, schedule=SimpleNamespace(off_policy=False, total_iters=10))
-    # 2000 policy steps of 2 environment steps in 4 seconds
+    # 2000 policy steps (of the 2 processes) of 2 environment steps in 4 seconds: the speed of the run, as
+    # `Time/sps_train` (it was divided by the number of processes)
     assert logged["Time/sps_env_interaction"] == 2000 * 2 / 4.0
 
 
