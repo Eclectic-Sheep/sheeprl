@@ -1,4 +1,5 @@
-"""DreamerV3 (and P2E-DV3): the initialization of the weights, the normalization layers of the decoder."""
+"""DreamerV3 (and P2E-DV3): the initialization of the weights, the normalization layers of the decoder, the gradient
+steps (the representation model, the KL loss)."""
 
 import math
 
@@ -10,8 +11,12 @@ from hydra import compose, initialize_config_module
 from lightning import Fabric
 from omegaconf import OmegaConf
 from torch import nn
+from torch.distributions import Independent, OneHotCategoricalStraightThrough
+from torch.distributions.kl import kl_divergence
 
-from sheeprl.algos.dreamer_v3.agent import build_agent
+from sheeprl.algos.dreamer_v3 import dreamer_v3
+from sheeprl.algos.dreamer_v3.agent import RepresentationModel, build_agent
+from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3.utils import init_weights
 from sheeprl.utils.utils import dotdict
 
@@ -197,3 +202,123 @@ def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_ac
         assert actor.max_std == 0.7
         assert actor._unimix == 0.2
         assert actor._action_clip == 0.3
+
+
+def test_the_representation_model_computes_the_part_of_the_observations_once():
+    # The first layer of the representation model takes the recurrent state and the embedded observation: the part of
+    # the observations can be computed for a whole sequence at once
+    torch.manual_seed(0)
+    model = RepresentationModel(
+        4,
+        input_dims=4 + 6,
+        output_dim=5,
+        hidden_sizes=[8],
+        activation=nn.SiLU,
+        layer_args={"bias": False},
+        flatten_dim=None,
+        norm_layer=[nn.LayerNorm],
+        norm_args=[{"normalized_shape": 8}],
+    ).double()
+    recurrent_states, observations = torch.randn(3, 2, 4).double(), torch.randn(3, 2, 6).double()
+    projection = model(observations=observations)
+    torch.testing.assert_close(
+        model(recurrent_state=recurrent_states, observation_projection=projection),
+        model(torch.cat((recurrent_states, observations), -1)),
+    )
+
+
+def test_the_kl_of_the_latents_is_the_one_of_pytorch():
+    torch.manual_seed(0)
+    p, q = torch.randn(5, 4, 8, 16), torch.randn(5, 4, 8, 16)
+    expected = kl_divergence(
+        Independent(OneHotCategoricalStraightThrough(logits=p), 1),
+        Independent(OneHotCategoricalStraightThrough(logits=q), 1),
+    )
+    torch.testing.assert_close(categorical_kl(p, q), expected, rtol=0, atol=0)
+
+
+class RecordingAggregator:
+    """A stand-in for the metric aggregator, which keeps the values of the last gradient step."""
+
+    disabled = False
+
+    def __init__(self):
+        self.values = {}
+
+    def update(self, name, value):
+        self.values[name] = value
+
+
+def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
+    """A small DreamerV3 on images and vectors, with 3 discrete actions, a batch for it, and its gradient step."""
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[rgb]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.dense_units=8",
+                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.horizon=3",
+                "algo.per_rank_batch_size=2",
+                "algo.per_rank_sequence_length=4",
+                *overrides,
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    fabric = Fabric(accelerator=accelerator, devices=1, precision=precision)
+    obs_space = gym.spaces.Dict(
+        {
+            "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
+            "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
+        }
+    )
+    torch.manual_seed(0)
+    world_model, actor, critic, target_critic, _ = build_agent(fabric, [3], False, cfg, obs_space)
+    optimizers = fabric.setup_optimizers(
+        *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
+    )
+    moments = dreamer_v3.Moments(
+        cfg.algo.actor.moments.decay,
+        cfg.algo.actor.moments.max,
+        cfg.algo.actor.moments.percentile.low,
+        cfg.algo.actor.moments.percentile.high,
+    )
+    T, B = cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size
+    generator = torch.Generator().manual_seed(1)
+    batch = {
+        "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=generator).float(),
+        "state": torch.randn(T, B, 5, generator=generator),
+        "actions": nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=generator), 3).float(),
+        "rewards": torch.randn(T, B, 1, generator=generator),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": (torch.rand(T, B, 1, generator=generator) < 0.3).float(),
+    }
+    batch = {k: v.to(fabric.device) for k, v in batch.items()}
+
+    def train_step():
+        aggregator = RecordingAggregator()
+        data = {k: v.clone() for k, v in batch.items()}
+        dreamer_v3.train(
+            fabric, world_model, actor, critic, target_critic, *optimizers, data, aggregator, cfg, False, [3], moments
+        )
+        return aggregator.values
+
+    return cfg, world_model, train_step
+
+
+@pytest.mark.parametrize("decoupled_rssm", [False, True])
+def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
+    # Both RSSMs: the priors are computed after the unroll, the initial states once per sequence
+    _, world_model, train_step = small_dreamer_v3([f"algo.world_model.decoupled_rssm={decoupled_rssm}"])
+    before = [p.detach().clone() for p in world_model.parameters()]
+    metrics = train_step()
+    assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
+    assert {"Loss/world_model_loss", "Loss/policy_loss", "Loss/value_loss", "State/kl"} <= set(metrics)
+    assert any(not torch.equal(b, a) for b, a in zip(before, world_model.parameters()))

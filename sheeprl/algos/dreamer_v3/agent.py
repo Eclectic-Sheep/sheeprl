@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -339,6 +340,46 @@ class RecurrentModel(nn.Module):
         return out
 
 
+class RepresentationModel(MLP):
+    """The representation model of the RSSM: an MLP of the recurrent state and of the embedded observation,
+    concatenated (in this order).
+
+    The part of its first layer that depends on the observations can be computed for a whole sequence at once, with
+    one matrix product (`forward(observations=...)`), and then added to the part of the recurrent state at every step
+    of the unroll (`forward(recurrent_state=..., observation_projection=...)`), instead of one product of the whole
+    input per step. The weights are the ones of the `MLP`.
+
+    Args:
+        recurrent_state_size (int): the size of the recurrent state, the first part of the input.
+        **kwargs: the arguments of the `MLP`.
+    """
+
+    def __init__(self, recurrent_state_size: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.recurrent_state_size = recurrent_state_size
+
+    def forward(
+        self,
+        x: Optional[Tensor] = None,
+        *,
+        observations: Optional[Tensor] = None,
+        recurrent_state: Optional[Tensor] = None,
+        observation_projection: Optional[Tensor] = None,
+    ) -> Tensor:
+        """With `x` (the concatenated input), the output of the MLP. With `observations`, the part of the first layer
+        that depends on them. With `recurrent_state` and `observation_projection` (the part of the observations), the
+        output of the MLP."""
+        if x is not None:
+            return super().forward(x)
+        first = self.model[0]
+        if observations is not None:
+            return F.linear(observations, first.weight[:, self.recurrent_state_size :])
+        x = F.linear(recurrent_state, first.weight[:, : self.recurrent_state_size], first.bias) + observation_projection
+        for layer in list(self.model)[1:]:
+            x = layer(x)
+        return x
+
+
 class RSSM(nn.Module):
     """RSSM model for the model-base Dreamer agent.
 
@@ -392,8 +433,15 @@ class RSSM(nn.Module):
         return initial_recurrent_state, initial_posterior
 
     def dynamic(
-        self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        self,
+        posterior: Tensor,
+        recurrent_state: Tensor,
+        action: Tensor,
+        embedded_obs: Tensor,
+        is_first: Tensor,
+        initial_states: Optional[Tuple[Tensor, Tensor]] = None,
+        projected: bool = False,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -411,26 +459,36 @@ class RSSM(nn.Module):
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode.
+            initial_states (Tuple[Tensor, Tensor], optional): the initial recurrent state and posterior of the batch
+                (`get_initial_states`), to compute them once for a whole sequence. Default: computed here.
+            projected (bool): whether `embedded_obs` is the projection of the embedded observations
+                (`project_observations`), computed once for a whole sequence.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
             The posterior stochastic state (Tensor): computed by the representation model
-            The prior stochastic state (Tensor): computed by the transition model
-            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
-            from the recurrent state and the embbedded observation.
+            The logits of the posterior state (Tensor): computed by the representation model from the recurrent state
+                and the embedded observation.
+            The logits of the prior are not computed: the recurrence doesn't use them, and `prior_logits` computes them
+            for the recurrent states of a whole sequence at once.
         """
         action = (1 - is_first) * action
 
-        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        if initial_states is None:
+            initial_states = self.get_initial_states(recurrent_state.shape[:2])
+        initial_recurrent_state, initial_posterior = initial_states
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
 
         recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_state)
-        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, prior, posterior_logits, prior_logits
+        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs, projected)
+        return recurrent_state, posterior, posterior_logits
+
+    def prior_logits(self, recurrent_states: Tensor) -> Tensor:
+        """The logits of the priors of the transition model, for any number of recurrent states at once (e.g. the ones
+        of a whole sequence, after the unroll of `dynamic`)."""
+        return self._uniform_mix(self.transition_model(recurrent_states))
 
     def _uniform_mix(self, logits: Tensor) -> Tensor:
         dim = logits.dim()
@@ -446,19 +504,34 @@ class RSSM(nn.Module):
         logits = logits.view(*logits.shape[:-2], -1)
         return logits
 
-    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
+    def project_observations(self, embedded_obs: Tensor) -> Tensor:
+        """The part of the first layer of the representation model that depends on the embedded observations, for a
+        whole sequence at once (`RepresentationModel`): `dynamic(..., projected=True)` takes it in place of the
+        embedded observations."""
+        return self.representation_model(observations=embedded_obs)
+
+    def _representation(
+        self, recurrent_state: Tensor, embedded_obs: Tensor, projected: bool = False
+    ) -> Tuple[Tensor, Tensor]:
         """
         Args:
             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
                 what is called h or deterministic state in
                 [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-            embedded_obs (Tensor): the embedded real observations provided by the environment.
+            embedded_obs (Tensor): the embedded real observations provided by the environment, or their projection
+                (`project_observations`) if `projected`.
+            projected (bool): whether `embedded_obs` is the projection of the embedded observations.
 
         Returns:
             logits (Tensor): the logits of the distribution of the posterior state.
             posterior (Tensor): the sampled posterior stochastic state.
         """
-        logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
+        if projected:
+            logits: Tensor = self.representation_model(
+                recurrent_state=recurrent_state, observation_projection=embedded_obs
+            )
+        else:
+            logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
         logits = self._uniform_mix(logits)
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
@@ -538,8 +611,13 @@ class DecoupledRSSM(RSSM):
         )
 
     def dynamic(
-        self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        self,
+        posterior: Tensor,
+        recurrent_state: Tensor,
+        action: Tensor,
+        is_first: Tensor,
+        initial_states: Optional[Tuple[Tensor, Tensor]] = None,
+    ) -> Tensor:
         """
         Perform one step of the dynamic learning:
             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
@@ -555,27 +633,24 @@ class DecoupledRSSM(RSSM):
                 to be of dimension `[stoch_size, self.discrete]`, which by default is `[32, 32]`.
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
-            embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode.
+            initial_states (Tuple[Tensor, Tensor], optional): the initial recurrent state and posterior of the batch
+                (`get_initial_states`), to compute them once for a whole sequence. Default: computed here.
 
         Returns:
-            The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The posterior stochastic state (Tensor): computed by the representation model
-            The prior stochastic state (Tensor): computed by the transition model
-            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
-            from the recurrent state and the embbedded observation.
+            The recurrent state (Tensor): the recurrent state of the recurrent model. The logits of the prior are not
+            computed: `prior_logits` computes them for the recurrent states of a whole sequence at once.
         """
         action = (1 - is_first) * action
 
-        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+        if initial_states is None:
+            initial_states = self.get_initial_states(recurrent_state.shape[:2])
+        initial_recurrent_state, initial_posterior = initial_states
         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
 
-        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
-        prior_logits, prior = self._transition(recurrent_state)
-        return recurrent_state, prior, prior_logits
+        return self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
 
     def _representation(self, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -1024,7 +1099,10 @@ def build_agent(
     if not cfg.algo.world_model.decoupled_rssm:
         represention_model_input_size += recurrent_state_size
     representation_ln_cls = hydra.utils.get_class(world_model_cfg.representation_model.layer_norm.cls)
-    representation_model = MLP(
+    representation_cls = (
+        MLP if cfg.algo.world_model.decoupled_rssm else partial(RepresentationModel, recurrent_state_size)
+    )
+    representation_model = representation_cls(
         input_dims=represention_model_input_size,
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
