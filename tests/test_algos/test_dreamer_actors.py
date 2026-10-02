@@ -1,13 +1,15 @@
 """The actors of DreamerV2 and DreamerV3 (DreamerV1 and the Plan2Explore variants use them too): their distributions
-over continuous actions, and the actors of MineDojo."""
+over continuous actions and their entropy, and the actors of MineDojo."""
 
 import pytest
 import torch
 from torch import nn
+from torch.distributions import Independent, Normal, TanhTransform, TransformedDistribution
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
 from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
+from sheeprl.utils.distribution import entropy
 
 LATENT, UNITS = 6, 8
 
@@ -83,3 +85,33 @@ def test_the_minedojo_actor_of_dreamer_v3_samples_its_actions():
     for action, greedy_action, dist in zip(actions, greedy_actions, dists):
         torch.testing.assert_close(greedy_action, dist.mode)
         assert (action != greedy_action).any(-1).float().mean() > 0.2
+
+
+@pytest.mark.parametrize("actor_cls", [DV2Actor, DV3Actor])
+def test_the_entropy_of_the_tanh_normal_distribution_is_estimated_from_samples(actor_cls):
+    # It has no analytic entropy: the actor losses used 0 instead, so `algo.actor.ent_coef` did nothing
+    actor = make_actor(actor_cls, "tanh_normal")
+    _, (dist,) = actor(torch.randn(1, 4, LATENT))
+    torch.manual_seed(0)
+    estimate = entropy(dist, n_samples=20000)
+    assert estimate.shape == (1, 4)
+    # The mean negative log-probability of many samples, in double precision
+    base = dist.base_dist.base_dist
+    reference_dist = Independent(
+        TransformedDistribution(Normal(base.loc.double(), base.scale.double()), TanhTransform()), 1
+    )
+    samples = reference_dist.sample((200000,))
+    reference = -reference_dist.log_prob(samples).mean(0)
+    torch.testing.assert_close(estimate.detach().double(), reference.detach(), atol=0.03, rtol=0)
+    # It trains the actor
+    estimate.sum().backward()
+    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in actor.mlp_heads.parameters())
+
+
+def test_the_entropy_estimate_is_finite_where_the_tanh_saturates():
+    dist = Independent(TransformedDistribution(Normal(torch.full((3, 2), 5.0), 4.0), TanhTransform()), 1)
+    torch.manual_seed(0)
+    assert torch.isfinite(entropy(dist)).all()
+    # The analytic entropy of the other distributions
+    normal = Independent(Normal(torch.zeros(3, 2), 2.0), 1)
+    torch.testing.assert_close(entropy(normal), normal.entropy())

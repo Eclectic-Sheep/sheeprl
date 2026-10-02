@@ -90,9 +90,9 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
 
 
-def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
-    # The default objective was REINFORCE for every action space: DreamerV2 backpropagates the lambda-values through the
-    # dynamics for continuous actions (`actor_grad: auto`)
+def behaviour_on_continuous_actions(overrides):
+    """The configuration of a small DreamerV2 on continuous actions and the output of its behaviour learning on random
+    latent states (the models initialized with seed 0)."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
@@ -110,18 +110,17 @@ def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
                 "algo.horizon=4",
                 "algo.per_rank_batch_size=2",
                 "algo.per_rank_sequence_length=3",
-                "algo.actor.ent_coef=0",
                 "metric.log_level=0",
-            ],
+            ]
+            + overrides,
         )
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
-    assert cfg.algo.actor.objective_mix is None and not cfg.algo.world_model.use_continues
     fabric = Fabric(accelerator="cpu", devices=1)
     algo = DreamerV2(fabric, cfg)
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     schedule = TrainSchedule(cfg, 1, algo.steps_per_iteration, off_policy=True)
-    state, _ = algo.build(obs_space, gym.spaces.Box(-1, 1, shape=(2,)), schedule, "unused")
     torch.manual_seed(0)
+    state, _ = algo.build(obs_space, gym.spaces.Box(-1, 1, shape=(2,)), schedule, "unused")
     T, B = cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size
     world_model_cfg = cfg.algo.world_model
     posteriors = torch.randn(T, B, world_model_cfg.stochastic_size, world_model_cfg.discrete_size)
@@ -142,7 +141,24 @@ def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
         algo.actions_dim,
         objective_mix=cfg.algo.actor.objective_mix,
     )
+    return cfg, out
+
+
+def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
+    # The default objective was REINFORCE for every action space: DreamerV2 backpropagates the lambda-values through the
+    # dynamics for continuous actions (`actor_grad: auto`)
+    cfg, out = behaviour_on_continuous_actions(["algo.actor.ent_coef=0"])
+    assert cfg.algo.actor.objective_mix is None and not cfg.algo.world_model.use_continues
     # The objective is the lambda-values of the imagined states, discounted
     lambda_values = out["lambda_values"]
     discount = cfg.algo.gamma ** torch.arange(cfg.algo.horizon - 1).view(-1, 1, 1)
     torch.testing.assert_close(out["policy_loss"], -(discount * lambda_values[1:]).mean())
+
+
+def test_the_entropy_of_the_tanh_normal_actor_is_in_its_loss():
+    # The entropy of the tanh-normal distribution, which has no analytic one, was 0: `ent_coef` did nothing
+    args = ["distribution.type=tanh_normal", "algo.actor.objective_mix=0"]
+    _, without_entropy = behaviour_on_continuous_actions(args + ["algo.actor.ent_coef=0"])
+    _, with_entropy = behaviour_on_continuous_actions(args + ["algo.actor.ent_coef=1"])
+    torch.testing.assert_close(with_entropy["lambda_values"], without_entropy["lambda_values"])
+    assert not torch.allclose(with_entropy["policy_loss"], without_entropy["policy_loss"])

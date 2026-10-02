@@ -29,6 +29,7 @@ from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import compute_lambda_values, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, autocast, run, setup_module, update
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 
@@ -420,10 +421,7 @@ def behaviour_learning(
             objective = reinforce(predicted_target_values)
         else:
             objective = objective_mix * reinforce(predicted_target_values) + (1 - objective_mix) * dynamics
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
         policy_loss = -torch.mean(discount[:-2].detach() * (objective + entropy.unsqueeze(-1)))
     actor_grads = update(
         fabric,

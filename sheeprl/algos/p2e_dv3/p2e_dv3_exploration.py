@@ -31,6 +31,7 @@ from sheeprl.core import Algorithm, TrainSchedule, TrainState, autocast, run, se
 from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.distribution import BernoulliSafeMode, MSEDistribution, TwoHotEncodingDistribution
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.registry import register_algorithm
 
 # Decomment the following line if you are using MineDojo on an headless machine
@@ -413,10 +414,7 @@ class P2EDV3Exploration(Algorithm):
                     ).sum(dim=-1)
                     * advantage.detach()
                 )
-            try:
-                entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
-            except NotImplementedError:
-                entropy = torch.zeros_like(objective)
+            entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
             policy_loss_exploration = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
         actor_grads = update(
             fabric,
