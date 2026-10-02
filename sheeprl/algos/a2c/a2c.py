@@ -288,10 +288,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                         fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
                     )
                     actions, logprobs, values = player(torch_obs)
-                    if is_continuous:
-                        real_actions = torch.stack(actions, -1).cpu().numpy()
-                    else:
-                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                    # The continuous tanh-normal actions are stored before the tanh, and played after it
+                    real_actions = player.env_actions(actions).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                     # Single environment step
