@@ -29,14 +29,14 @@ def phase_timer(name: str) -> timer:
     return timer(name, SumMetric, sync_on_compute=False)
 
 
-def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str]:
+def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str, int]:
     """Train `algo` as configured by `cfg`, resuming from `cfg.checkpoint.resume_from` if set.
 
     Every iteration plays `algo.steps_per_iteration` steps in every environment, then trains on the batches of
     `algo.batches`, then logs and saves a checkpoint when it's time to.
 
     Returns:
-        The trained state and the log directory of the run.
+        The trained state, the log directory of the run and its last policy step.
     """
     checkpoint = None
     if cfg.checkpoint.resume_from:
@@ -99,7 +99,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         cadence.checkpoint(state, schedule, env.policy_step, iteration, store if save_buffer else None)
 
     env.close()
-    return state, log_dir
+    return state, log_dir, env.policy_step
 
 
 def load_trained_state(

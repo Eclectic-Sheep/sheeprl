@@ -99,6 +99,7 @@ def test(
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
+    policy_step: int = 0,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -111,6 +112,9 @@ def test(
             Default to "".
         greedy (bool): whether or not to sample the actions.
             Default to True.
+        policy_step (int): the step of the logged return: the last policy step of the training (0 for an
+            evaluation).
+            Default to 0.
     """
     env: gym.Env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name != "" else ""))()
     done = False
@@ -135,7 +139,7 @@ def test(
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
-        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 

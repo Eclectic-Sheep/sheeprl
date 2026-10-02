@@ -260,11 +260,19 @@ class P2EDV3Finetuning(Algorithm):
 @register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     algo = P2EDV3Finetuning(fabric, cfg, exploration_cfg)
-    state, log_dir = run(fabric, cfg, algo)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state, state.actor_task, "task"), fabric, cfg, log_dir, "few-shot", greedy=False)
+        test(
+            algo.policy(state, state.actor_task, "task"),
+            fabric,
+            cfg,
+            log_dir,
+            "few-shot",
+            greedy=False,
+            policy_step=policy_step,
+        )
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

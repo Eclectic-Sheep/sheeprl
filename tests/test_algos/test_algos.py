@@ -224,6 +224,35 @@ def test_ppo(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_the_test_return_is_logged_at_the_last_policy_step(standard_args, start_time):
+    # It was logged at step 0, at the start of the training curves
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("Only the process of rank 0 logs")
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_test_return")
+    args = [arg for arg in standard_args if not arg.startswith("metric.")] + [
+        "exp=ppo",
+        "env=dummy",
+        "env.id=discrete_dummy",
+        "algo.rollout_steps=4",
+        "algo.per_rank_batch_size=4",
+        "algo.run_test=True",
+        "metric.log_level=1",
+        f"root_dir={root_dir}",
+        "run_name=test_return",
+        "algo.mlp_keys.encoder=[state]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    log_dir = os.path.join("logs", "runs", root_dir, "test_return", "version_0")
+    events = EventAccumulator(log_dir)
+    events.Reload()
+    # 1 iteration (dry run) of 4 steps of 2 environments
+    assert [e.step for e in events.Scalars("Test/cumulative_reward")] == [8]
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 @pytest.mark.parametrize("algo", ["ppo", "a2c", "ppo_recurrent"])
 def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     # The time limit truncates the episodes during the rollout, so the value of the final observation

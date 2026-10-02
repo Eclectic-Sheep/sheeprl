@@ -273,10 +273,10 @@ class A2C(Algorithm):
 @register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
     algo = A2C(fabric, cfg)
-    state, log_dir = run(fabric, cfg, algo)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir)
+        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models
