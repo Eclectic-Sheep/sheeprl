@@ -1,4 +1,6 @@
-"""DreamerV2 (and P2E-DV2): the KL loss and the decoder."""
+"""DreamerV2 (and P2E-DV2): the KL loss, the decoder and the sampling of the batches."""
+
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -6,7 +8,9 @@ from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
+from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.utils.utils import dotdict
 
 
 def kl_loss_of(posteriors_logits, priors_logits, kl_free_nats, kl_free_avg):
@@ -61,3 +65,20 @@ def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
     assert [reconstructed[f"rgb{i}"].shape for i in range(len(output_channels))] == [
         (2, 3, c, 64, 64) for c in output_channels
     ]
+
+
+def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
+    # They were sampled, and moved to the device, all at once: the 100 gradient steps of the first training of
+    # DreamerV2 (`algo.per_rank_pretrain_steps`) took 100 batches on the device
+    calls = []
+
+    class Buffer:
+        def sample_tensors(self, batch_size, sequence_length, n_samples, **kwargs):
+            calls.append(n_samples)
+            return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
+
+    cfg = dotdict({"algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2}, "buffer": {"from_numpy": False}})
+    batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
+    assert calls == [16, 16, 8]
+    assert len(batches) == 40
+    assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)

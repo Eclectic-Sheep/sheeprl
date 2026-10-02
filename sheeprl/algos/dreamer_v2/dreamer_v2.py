@@ -658,20 +658,28 @@ class DreamerV2(Algorithm):
         return metrics
 
 
+# The most batches sampled (and moved to the device) at once: the first training can do many gradient steps
+# (`algo.per_rank_pretrain_steps`)
+MAX_SAMPLED_BATCHES = 16
+
+
 def sample_batches(
     fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
 ) -> Iterator[Dict[str, Tensor]]:
-    """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled at once."""
-    sample = buffer.sample_tensors(
-        batch_size=cfg.algo.per_rank_batch_size,
-        sequence_length=cfg.algo.per_rank_sequence_length,
-        n_samples=n_steps,
-        dtype=None,
-        device=fabric.device,
-        from_numpy=cfg.buffer.from_numpy,
-    )  # [N_Steps, Sequence_Length, Batch_Size, ...]
-    for i in range(n_steps):
-        yield {k: v[i].float() for k, v in sample.items()}
+    """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
+    time."""
+    for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
+        n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
+        sample = buffer.sample_tensors(
+            batch_size=cfg.algo.per_rank_batch_size,
+            sequence_length=cfg.algo.per_rank_sequence_length,
+            n_samples=n_samples,
+            dtype=None,
+            device=fabric.device,
+            from_numpy=cfg.buffer.from_numpy,
+        )  # [N_Samples, Sequence_Length, Batch_Size, ...]
+        for i in range(n_samples):
+            yield {k: v[i].float() for k, v in sample.items()}
 
 
 @register_algorithm()

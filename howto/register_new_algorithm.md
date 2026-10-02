@@ -326,7 +326,7 @@ With several processes, every process plays its own environments and trains on i
 ### Off-policy algorithms
 An off-policy algorithm sets `off_policy = True` and returns a replay buffer (from `sheeprl.data.buffers`) as its store. Then:
 
-- its configuration must have `algo.learning_starts` (the policy steps played with random actions before the training starts), `algo.replay_ratio` (the gradient steps per policy step) and `algo.per_rank_pretrain_steps` (the gradient steps of the first training);
+- its configuration must have `algo.learning_starts` (the policy steps played with random actions before the training starts), `algo.replay_ratio` (the gradient steps per policy step) and `algo.per_rank_pretrain_steps` (the gradient steps the first training does besides the ones of the replay ratio);
 - the player plays random actions while `schedule.warmup(env.policy_step)` is true, as SAC does (`sheeprl/algos/sac/sac.py`):
 
   ```python

@@ -24,6 +24,7 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, build_models
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
@@ -607,17 +608,7 @@ class DreamerV3(Algorithm):
     def batches(
         self, state: DreamerV3State, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        cfg = self.cfg
-        sample = buffer.sample_tensors(
-            cfg.algo.per_rank_batch_size,
-            sequence_length=cfg.algo.per_rank_sequence_length,
-            n_samples=n_steps,
-            dtype=None,
-            device=self.fabric.device,
-            from_numpy=cfg.buffer.from_numpy,
-        )  # [N_Steps, Sequence_Length, Batch_Size, ...]
-        for i in range(n_steps):
-            yield {k: v[i].float() for k, v in sample.items()}
+        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
 
     def train_step(self, state: DreamerV3State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg

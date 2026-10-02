@@ -22,6 +22,7 @@ from torch.distributions import Distribution, Independent
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, behaviour_learning, world_model_learning
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
@@ -273,17 +274,7 @@ class P2EDV3Exploration(Algorithm):
     def batches(
         self, state: P2EDV3ExplorationState, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        cfg = self.cfg
-        sample = buffer.sample_tensors(
-            cfg.algo.per_rank_batch_size,
-            sequence_length=cfg.algo.per_rank_sequence_length,
-            n_samples=n_steps,
-            dtype=None,
-            device=self.fabric.device,
-            from_numpy=cfg.buffer.from_numpy,
-        )  # [N_Steps, Sequence_Length, Batch_Size, ...]
-        for i in range(n_steps):
-            yield {k: v[i].float() for k, v in sample.items()}
+        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
 
     def train_step(self, state: P2EDV3ExplorationState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         """One gradient step, as in Algorithm 1 of the paper: the world model, the ensembles, the exploration actor and

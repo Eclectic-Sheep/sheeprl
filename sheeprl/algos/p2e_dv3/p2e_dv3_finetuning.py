@@ -19,6 +19,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.dreamer_v2 import sample_batches
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, behaviour_learning, world_model_learning
 from sheeprl.algos.dreamer_v3.utils import Moments, test
@@ -216,16 +217,7 @@ class P2EDV3Finetuning(Algorithm):
         if self.acting_policy.actor_type != "task":
             self.acting_policy.actor_type = "task"
             self.acting_policy.actor = state.actor_task
-        sample = buffer.sample_tensors(
-            cfg.algo.per_rank_batch_size,
-            sequence_length=cfg.algo.per_rank_sequence_length,
-            n_samples=n_steps,
-            dtype=None,
-            device=self.fabric.device,
-            from_numpy=cfg.buffer.from_numpy,
-        )  # [N_Steps, Sequence_Length, Batch_Size, ...]
-        for i in range(n_steps):
-            yield {k: v[i].float() for k, v in sample.items()}
+        yield from sample_batches(self.fabric, cfg, buffer, n_steps)
 
     def train_step(self, state: P2EDV3FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg

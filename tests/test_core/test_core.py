@@ -22,7 +22,13 @@ def fabric():
 
 
 def schedule_cfg(
-    total_steps=100, dry_run=False, learning_starts=10, replay_ratio=1.0, run_benchmarks=False, buffer_checkpoint=True
+    total_steps=100,
+    dry_run=False,
+    learning_starts=10,
+    replay_ratio=1.0,
+    run_benchmarks=False,
+    buffer_checkpoint=True,
+    pretrain_steps=0,
 ):
     return dotdict(
         {
@@ -33,7 +39,7 @@ def schedule_cfg(
                 # Read only by the off-policy algorithms
                 "learning_starts": learning_starts,
                 "replay_ratio": replay_ratio,
-                "per_rank_pretrain_steps": 0,
+                "per_rank_pretrain_steps": pretrain_steps,
             },
             "dry_run": dry_run,
             "run_benchmarks": run_benchmarks,
@@ -104,6 +110,40 @@ def test_off_policy_schedule_benchmarks_and_dry_run():
     assert list(schedule.iterations()) == [1]
     assert not schedule.warmup(policy_step=0)
     assert schedule.gradient_steps(1) == 2
+
+
+def test_off_policy_schedule_pretrains_at_the_first_training():
+    # The first training did `pretrain_steps * replay_ratio` gradient steps, with `pretrain_steps` capped to the policy
+    # steps of an iteration: never more than the replay ratio asks (0 with the defaults of DreamerV2)
+    schedule = TrainSchedule(
+        schedule_cfg(learning_starts=10, replay_ratio=0.25, pretrain_steps=100),
+        world_size=1,
+        steps_per_iteration=1,
+        off_policy=True,
+    )
+    assert [schedule.gradient_steps(i) for i in range(1, 10)] == [0, 0, 0, 0, 100, 0, 1, 0, 1]
+    # Not in a dry run, which does one gradient step
+    dry_run = schedule_cfg(dry_run=True, replay_ratio=0.5, pretrain_steps=100)
+    schedule = TrainSchedule(dry_run, world_size=1, steps_per_iteration=1, off_policy=True)
+    assert schedule.gradient_steps(1) == 1
+
+
+def test_off_policy_schedule_resumed_after_the_first_training_does_not_pretrain_again():
+    _, checkpoint = checkpoint_of_iteration(8, pretrain_steps=100)
+    resumed = TrainSchedule(
+        schedule_cfg(pretrain_steps=100), world_size=1, steps_per_iteration=1, checkpoint=checkpoint, off_policy=True
+    )
+    assert [resumed.gradient_steps(i) for i in range(9, 12)] == [2, 2, 2]
+    # Without its buffer, it trains as a new run once it has filled a new one: it pretrains on it
+    _, checkpoint = checkpoint_of_iteration(8, pretrain_steps=100, buffer_checkpoint=False)
+    resumed = TrainSchedule(
+        schedule_cfg(pretrain_steps=100, buffer_checkpoint=False),
+        world_size=1,
+        steps_per_iteration=1,
+        checkpoint=checkpoint,
+        off_policy=True,
+    )
+    assert [resumed.gradient_steps(i) for i in range(9, 16)] == [0, 0, 0, 0, 102, 2, 2]
 
 
 def checkpoint_of_iteration(iteration, **cfg):

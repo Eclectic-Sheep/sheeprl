@@ -18,7 +18,8 @@ class TrainSchedule:
 
     Off-policy algorithms (`off_policy=True`) play random actions for the first `algo.learning_starts` policy steps
     (rounded down to whole iterations), to fill their replay buffer, then do `algo.replay_ratio` gradient steps per
-    policy step (`Ratio`).
+    policy step (`Ratio`). Their first training also does `algo.per_rank_pretrain_steps` more gradient steps, on the
+    filled buffer (the `pretrain` of DreamerV1 and DreamerV2).
 
     A resumed run continues as the run it resumes, without random actions after `algo.learning_starts`. When its
     replay buffer wasn't saved in the checkpoint (`buffer.checkpoint=False`), it fills a new one first: it plays its
@@ -54,7 +55,11 @@ class TrainSchedule:
         self.learning_starts = 0
         if off_policy:
             self.learning_starts = cfg.algo.learning_starts // self.policy_steps_per_iter if not cfg.dry_run else 0
-            self.ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+            self.ratio = Ratio(cfg.algo.replay_ratio)
+            # The gradient steps the first training does besides the ones of the replay ratio (none in a dry run)
+            self.pretrain_steps = cfg.algo.per_rank_pretrain_steps if not cfg.dry_run else 0
+            if self.pretrain_steps < 0:
+                raise ValueError(f"`algo.per_rank_pretrain_steps` must be non-negative, got {self.pretrain_steps}")
             # The buffer is filled for `learning_starts` iterations, training at the end of the last one: from the
             # start of the run, or, when a resumed run doesn't find its buffer in the checkpoint, from where it resumes
             refill = checkpoint is not None and not cfg.buffer.checkpoint
@@ -98,7 +103,8 @@ class TrainSchedule:
         """The gradient steps every process does at the end of `iteration`.
 
         `None` for on-policy algorithms, which decide it from the rollout. For off-policy algorithms, 0 until the buffer
-        is filled (`train_starts`), then `algo.replay_ratio` gradient steps per policy step of the process.
+        is filled (`train_starts`), then `algo.replay_ratio` gradient steps per policy step of the process, plus
+        `algo.per_rank_pretrain_steps` at the first training.
         """
         if self.ratio is None:
             return None
@@ -108,4 +114,7 @@ class TrainSchedule:
             return 1
         # The policy steps played from the start of the first training iteration, by all processes
         policy_steps = (iteration - self.prefill_steps) * self.policy_steps_per_iter
-        return max(0, self.ratio(policy_steps / self.world_size))
+        steps = max(0, self.ratio(policy_steps / self.world_size))
+        if iteration == self.train_starts:
+            steps += self.pretrain_steps
+        return steps
