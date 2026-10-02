@@ -1072,7 +1072,7 @@ def build_agent(
             image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
             activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
+            layer_norm_kw=world_model_cfg.observation_model.cnn_layer_norm.kw,
             stages=cnn_stages,
         )
         if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
