@@ -20,7 +20,7 @@ from torchmetrics import SumMetric
 from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
-from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import prepare_obs, sample_batches, test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
@@ -568,7 +568,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
-    learning_starts, train_starts, ratio = off_policy_schedule(
+    learning_starts, train_starts, pretrain_steps, ratio = off_policy_schedule(
         cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
     )
 
@@ -699,18 +699,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    sample = rb.sample_tensors(
-                        batch_size=cfg.algo.per_rank_batch_size,
-                        sequence_length=cfg.algo.per_rank_sequence_length,
-                        n_samples=per_rank_gradient_steps,
-                        dtype=None,
-                        device=device,
-                        from_numpy=cfg.buffer.from_numpy,
-                    )  # [N_samples, Seq_len, Batch_size, ...]
-                    for i in range(per_rank_gradient_steps):
-                        batch = {k: v[i].float() for k, v in sample.items()}
+                    # Sampled a few batches at a time
+                    batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
+                    for batch in batches:
                         train(
                             fabric,
                             world_model,

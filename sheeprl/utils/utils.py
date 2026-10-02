@@ -265,12 +265,9 @@ class Ratio:
     https://github.com/danijar/dreamerv3/blob/8fa35f83eee1ce7e10f3dee0b766587d0a713a60/dreamerv3/embodied/core/when.py#L26
     """
 
-    def __init__(self, ratio: float, pretrain_steps: int = 0):
-        if pretrain_steps < 0:
-            raise ValueError(f"'pretrain_steps' must be non-negative, got {pretrain_steps}")
+    def __init__(self, ratio: float):
         if ratio < 0:
             raise ValueError(f"'ratio' must be non-negative, got {ratio}")
-        self._pretrain_steps = pretrain_steps
         self._ratio = ratio
         self._prev = None
 
@@ -279,17 +276,7 @@ class Ratio:
             return 0
         if self._prev is None:
             self._prev = step
-            repeats = int(step * self._ratio)
-            if self._pretrain_steps > 0:
-                if step < self._pretrain_steps:
-                    warnings.warn(
-                        "The number of pretrain steps is greater than the number of current steps. This could lead to "
-                        f"a higher ratio than the one specified ({self._ratio}). Setting the 'pretrain_steps' equal to "
-                        "the number of current steps."
-                    )
-                    self._pretrain_steps = step
-                repeats = int(self._pretrain_steps * self._ratio)
-            return repeats
+            return int(step * self._ratio)
         repeats = int((step - self._prev) * self._ratio)
         self._prev += repeats / self._ratio
         return repeats
@@ -314,23 +301,25 @@ class Ratio:
         self._prev = step
 
     def state_dict(self) -> Dict[str, Any]:
-        return {"_ratio": self._ratio, "_prev": self._prev, "_pretrain_steps": self._pretrain_steps}
+        return {"_ratio": self._ratio, "_prev": self._prev}
 
     def load_state_dict(self, state_dict: Mapping[str, Any]):
+        # The checkpoints saved when the ratio did the pretraining also have `_pretrain_steps`
         self._ratio = state_dict["_ratio"]
         self._prev = state_dict["_prev"]
-        self._pretrain_steps = state_dict["_pretrain_steps"]
         return self
 
 
 def off_policy_schedule(
     cfg: Dict[str, Any], state: Dict[str, Any], start_iter: int, policy_steps_per_iter: int, world_size: int
-) -> Tuple[int, int, Ratio]:
+) -> Tuple[int, int, int, Ratio]:
     """When an off-policy run plays random actions and trains, and its replay ratio.
 
     The run plays random actions in its first `algo.learning_starts` policy steps (rounded down to whole iterations),
     filling its replay buffer, and trains from the end of the last of them (from the first iteration without them),
-    `algo.replay_ratio` gradient steps per policy step played from the start of that iteration.
+    `algo.replay_ratio` gradient steps per policy step played from the start of that iteration. Its first training
+    also does `algo.per_rank_pretrain_steps` more gradient steps on the filled buffer (the `pretrain` of DreamerV1 and
+    DreamerV2), but in a dry run.
 
     A resumed run continues as the run it resumes: it doesn't play random actions again, and with the replay buffer
     of the checkpoint it trains from its first iteration, with the ratio of the checkpoint. Without it
@@ -345,19 +334,23 @@ def off_policy_schedule(
         world_size (int): the number of processes.
 
     Returns:
-        The last iteration that plays random actions (the ones from 1 to it do), the first iteration that trains,
-        and the replay ratio, which gives the gradient steps of every process from the policy steps played from the
-        start of the first iteration that trains, divided by the number of processes.
+        The last iteration that plays random actions (the ones from 1 to it do), the first iteration that trains, the
+        gradient steps its training adds to the ones of the ratio, and the replay ratio, which gives the gradient steps
+        of every process from the policy steps played from the start of the first iteration that trains, divided by
+        the number of processes.
     """
     learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    pretrain_steps = cfg.algo.per_rank_pretrain_steps if not cfg.dry_run else 0
+    if pretrain_steps < 0:
+        raise ValueError(f"`algo.per_rank_pretrain_steps` must be non-negative, got {pretrain_steps}")
     refill = bool(cfg.checkpoint.resume_from) and not cfg.buffer.checkpoint
     train_starts = (start_iter - 1 if refill else 0) + max(learning_starts, 1)
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+    ratio = Ratio(cfg.algo.replay_ratio)
     if cfg.checkpoint.resume_from and not refill:
         ratio.load_state_dict(state["ratio"])
         # The policy steps of every process counted by the ratio at the end of the iteration of the checkpoint
         ratio.realign((start_iter - train_starts) * policy_steps_per_iter / world_size)
-    return learning_starts, train_starts, ratio
+    return learning_starts, train_starts, pretrain_steps, ratio
 
 
 # https://github.com/pytorch/rl/blob/824f6d192e88c115790cf046e4df416ce2d7aaf6/torchrl/modules/distributions/utils.py#L156

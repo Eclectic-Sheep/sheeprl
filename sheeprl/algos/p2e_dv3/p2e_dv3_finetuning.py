@@ -11,6 +11,7 @@ import torch
 from lightning.fabric import Fabric
 from torchmetrics import SumMetric
 
+from sheeprl.algos.dreamer_v2.utils import sample_batches
 from sheeprl.algos.dreamer_v3.dreamer_v3 import train
 from sheeprl.algos.dreamer_v3.utils import Moments, prepare_obs, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -219,7 +220,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Training from `train_starts` (the finetuning plays no random actions)
-    _, train_starts, ratio = off_policy_schedule(cfg, state, start_iter, policy_steps_per_iter, fabric.world_size)
+    _, train_starts, pretrain_steps, ratio = off_policy_schedule(
+        cfg, state, start_iter, policy_steps_per_iter, fabric.world_size
+    )
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
@@ -348,23 +351,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"
                     player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
                     for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
                         p.data = agent_p.data
-                local_data = rb.sample_tensors(
-                    cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
+                # Sampled a few batches at a time
+                batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                 # Start training
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for i in range(per_rank_gradient_steps):
+                    for batch in batches:
                         if (
                             cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
                             == 0
@@ -374,7 +374,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                             tau = cfg.algo.critic.tau
                             for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
                         train(
                             fabric,
                             world_model,

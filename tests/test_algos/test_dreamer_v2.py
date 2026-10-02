@@ -14,7 +14,7 @@ from torch.distributions import Independent, Normal
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer
+from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, sample_batches
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.utils import dotdict
 
@@ -232,3 +232,63 @@ def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
     # Every actor loss (two for Plan2Explore, at every gradient step) estimates the entropy of its policies
     assert len(entropies) == (4 if "p2e" in exp else 2)
     assert all(torch.isfinite(e).all() for e in entropies)
+
+
+def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
+    # They were sampled, and moved to the device, all at once: the 100 gradient steps of the first training of
+    # DreamerV2 (`algo.per_rank_pretrain_steps`) would take 100 batches on the device
+    calls = []
+
+    class Buffer:
+        def sample_tensors(self, batch_size, sequence_length, n_samples, **kwargs):
+            calls.append(n_samples)
+            return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
+
+    cfg = dotdict({"algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2}, "buffer": {"from_numpy": False}})
+    batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
+    assert calls == [16, 16, 8]
+    assert len(batches) == 40
+    assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
+
+
+@pytest.mark.parametrize("module,exp", [("dreamer_v2", "dreamer_v2"), ("dreamer_v1", "dreamer_v1")])
+def test_the_first_training_pretrains(module, exp):
+    # The ratio took the pretraining steps as the policy steps of the first training, capped to the ones of the
+    # iteration: with the replay ratio of DreamerV2 (0.2) the first training did no gradient step instead of 100
+    import importlib
+
+    from sheeprl.cli import run
+
+    algo_module = importlib.import_module(f"sheeprl.algos.{module}.{module}")
+    steps = []
+
+    def counting_train(*args, **kwargs):
+        steps.append(1)
+        return module_train(*args, **kwargs)
+
+    module_train = algo_module.train
+    root_dir = f"pytest_{exp}_pretrain"
+    argv = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        *DREAMER_ARGS,
+        f"exp={exp}",
+        "env.id=discrete_dummy",
+        "dry_run=False",
+        # 4 iterations of 2 environments, random actions in the first 2, training from the second one
+        "algo.total_steps=8",
+        "algo.learning_starts=4",
+        "algo.replay_ratio=0.25",
+        "algo.per_rank_pretrain_steps=5",
+        f"root_dir={root_dir}",
+    ]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(algo_module, "train", counting_train),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The replay ratio gives 0, 1, 0 gradient steps (2 policy steps per iteration); the first training also pretrains
+    assert len(steps) == 5 + 1

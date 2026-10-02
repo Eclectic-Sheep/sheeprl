@@ -18,7 +18,14 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, compute_lambda_values, prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import (
+    actor_objective,
+    build_buffer,
+    compute_lambda_values,
+    prepare_obs,
+    sample_batches,
+    test,
+)
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -642,7 +649,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
-    learning_starts, train_starts, ratio = off_policy_schedule(
+    learning_starts, train_starts, pretrain_steps, ratio = off_policy_schedule(
         cfg, state if cfg.checkpoint.resume_from else None, start_iter, policy_steps_per_iter, fabric.world_size
     )
 
@@ -775,18 +782,15 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
-                local_data = rb.sample_tensors(
-                    batch_size=cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
+                # Sampled a few batches at a time
+                batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                 # Start training
                 with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for i in range(per_rank_gradient_steps):
+                    for batch in batches:
                         if (
                             cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
                             == 0
@@ -797,7 +801,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                                 critic_exploration.module.parameters(), target_critic_exploration.parameters()
                             ):
                                 tcp.data.copy_(cp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
                         train(
                             fabric,
                             world_model,

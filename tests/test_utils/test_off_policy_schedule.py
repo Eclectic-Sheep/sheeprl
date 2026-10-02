@@ -16,24 +16,36 @@ def schedule(
     state: Optional[Dict[str, Any]] = None,
     learning_starts: int = 10,
     buffer_checkpoint: bool = True,
+    pretrain_steps: int = 0,
 ) -> Tuple[List[int], List[int], Ratio]:
     """The iterations that play random actions and the gradient steps of every iteration, computed as the training
     loops do, of a run that starts from the first of `iterations` (resuming from `state` if given)."""
     cfg = dotdict(
         {
             "dry_run": False,
-            "algo": {"learning_starts": learning_starts, "replay_ratio": 1.0, "per_rank_pretrain_steps": 0},
+            "algo": {
+                "learning_starts": learning_starts,
+                "replay_ratio": 1.0,
+                "per_rank_pretrain_steps": pretrain_steps,
+            },
             "buffer": {"checkpoint": buffer_checkpoint},
             "checkpoint": {"resume_from": "checkpoint.ckpt" if state is not None else None},
         }
     )
     iterations = list(iterations)
-    learning_starts, train_starts, ratio = off_policy_schedule(
+    learning_starts, train_starts, pretrain, ratio = off_policy_schedule(
         cfg, state, iterations[0], POLICY_STEPS_PER_ITER, world_size=1
     )
     random = [i for i in iterations if i <= learning_starts]
-    # The replay ratio counts the policy steps from the start of the first iteration that trains
-    steps = [ratio((i - (train_starts - 1)) * POLICY_STEPS_PER_ITER) if i >= train_starts else 0 for i in iterations]
+    # The replay ratio counts the policy steps from the start of the first iteration that trains, which also pretrains
+    steps = [
+        (
+            ratio((i - (train_starts - 1)) * POLICY_STEPS_PER_ITER) + (pretrain if i == train_starts else 0)
+            if i >= train_starts
+            else 0
+        )
+        for i in iterations
+    ]
     return random, steps, ratio
 
 
@@ -89,3 +101,22 @@ def test_a_consistent_ratio_is_not_realigned(replay_ratio):
         warnings.simplefilter("error")
         ratio.realign(19)
     assert ratio.state_dict() == state
+
+
+def test_the_first_training_pretrains_also_after_a_resume_that_refills_the_buffer():
+    random, steps, ratio = schedule(range(1, 9), pretrain_steps=100)
+    assert steps == [0, 0, 0, 0, 102, 2, 2, 2]
+    # Resumed with its buffer, it doesn't pretrain again
+    _, resumed, _ = schedule(range(9, 12), state={"ratio": ratio.state_dict()}, pretrain_steps=100)
+    assert resumed == [2, 2, 2]
+    # Without it, it trains as a new run once it has filled a new one: it pretrains on it
+    _, resumed, _ = schedule(
+        range(9, 16), state={"ratio": ratio.state_dict()}, pretrain_steps=100, buffer_checkpoint=False
+    )
+    assert resumed == [0, 0, 0, 0, 102, 2, 2]
+
+
+def test_the_ratio_of_a_checkpoint_with_its_old_pretraining_steps_is_loaded():
+    ratio = Ratio(0.5)
+    ratio.load_state_dict({"_ratio": 0.5, "_prev": 10.0, "_pretrain_steps": 100})
+    assert ratio.state_dict() == {"_ratio": 0.5, "_prev": 10.0}

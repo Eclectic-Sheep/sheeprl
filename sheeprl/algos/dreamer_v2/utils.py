@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -82,6 +82,30 @@ def init_weights(m: nn.Module, mode: str = "normal"):
             raise RuntimeError(f"Unrecognized initialization: {mode}. Choose between: `normal`, `uniform` and `zero`")
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
+
+
+# The most batches sampled (and moved to the device) at once: the first training can do many gradient steps
+# (`algo.per_rank_pretrain_steps`)
+MAX_SAMPLED_BATCHES = 16
+
+
+def sample_batches(
+    fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
+) -> Iterator[Dict[str, Tensor]]:
+    """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
+    time."""
+    for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
+        n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
+        sample = buffer.sample_tensors(
+            batch_size=cfg.algo.per_rank_batch_size,
+            sequence_length=cfg.algo.per_rank_sequence_length,
+            n_samples=n_samples,
+            dtype=None,
+            device=fabric.device,
+            from_numpy=cfg.buffer.from_numpy,
+        )  # [N_Samples, Sequence_Length, Batch_Size, ...]
+        for i in range(n_samples):
+            yield {k: v[i].float() for k, v in sample.items()}
 
 
 def build_buffer(
