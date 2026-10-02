@@ -1,11 +1,13 @@
-"""DreamerV2 (and P2E-DV2): the KL loss, the replay buffer."""
+"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the replay buffer."""
 
 from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 from torch.distributions import Independent, Normal
 
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import build_buffer
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
@@ -63,3 +65,23 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
         assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
     else:
         assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
+
+
+@pytest.mark.parametrize("output_channels", [[1], [3], [3, 3]])
+def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
+    # The LayerNorms were one per output channel: only 3 channels (one RGB image) built a decoder
+    decoder = CNNDecoder(
+        keys=[f"rgb{i}" for i in range(len(output_channels))],
+        output_channels=output_channels,
+        channels_multiplier=2,
+        latent_state_size=10,
+        cnn_encoder_output_dim=16,
+        image_size=(64, 64),
+        layer_norm=True,
+    )
+    norms = [m for m in decoder.modules() if isinstance(m, nn.LayerNorm)]
+    assert [n.normalized_shape for n in norms] == [(8,), (4,), (2,)]
+    reconstructed = decoder(torch.randn(2, 3, 10))
+    assert [reconstructed[f"rgb{i}"].shape for i in range(len(output_channels))] == [
+        (2, 3, c, 64, 64) for c in output_channels
+    ]

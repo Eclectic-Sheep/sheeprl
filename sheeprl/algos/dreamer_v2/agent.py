@@ -163,26 +163,24 @@ class CNNDecoder(nn.Module):
         self.cnn_encoder_output_dim = cnn_encoder_output_dim
         self.image_size = image_size
         self.output_dim = (sum(output_channels), *image_size)
+        # The hidden layers, each one followed by an activation (and a LayerNorm), then the output layer
+        hidden_channels = [4 * channels_multiplier, 2 * channels_multiplier, channels_multiplier]
+        n_hidden = len(hidden_channels)
         self.model = nn.Sequential(
             nn.Linear(latent_state_size, cnn_encoder_output_dim),
             nn.Unflatten(1, (cnn_encoder_output_dim, 1, 1)),
             DeCNN(
                 input_channels=cnn_encoder_output_dim,
-                hidden_channels=(torch.tensor([4, 2, 1]) * channels_multiplier).tolist() + [self.output_dim[0]],
+                hidden_channels=hidden_channels + [self.output_dim[0]],
                 layer_args=[
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                 ],
-                activation=[activation, activation, activation, None],
-                norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
-                norm_args=(
-                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
-                    + [None]
-                    if layer_norm
-                    else None
-                ),
+                activation=[activation] * n_hidden + [None],
+                norm_layer=[LayerNormChannelLast] * n_hidden + [None] if layer_norm else None,
+                norm_args=[{"normalized_shape": c} for c in hidden_channels] + [None] if layer_norm else None,
             ),
         )
 
