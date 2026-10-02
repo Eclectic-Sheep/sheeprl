@@ -23,6 +23,12 @@ from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import save_configs
 
 
+def phase_timer(name: str) -> timer:
+    """The timer of a phase of the iterations (playing, training): the time of the process. Summed over the processes,
+    it would divide the speeds of the run (`Time/sps_*`) by their number."""
+    return timer(name, SumMetric, sync_on_compute=False)
+
+
 def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str]:
     """Train `algo` as configured by `cfg`, resuming from `cfg.checkpoint.resume_from` if set.
 
@@ -73,7 +79,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     env.reset()
     for iteration in schedule.iterations():
         # Play: the time includes the forward pass of the player
-        with torch.inference_mode(), timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+        with torch.inference_mode(), phase_timer("Time/env_interaction_time"):
             for _ in range(algo.steps_per_iteration):
                 player.step(env, store)
 
@@ -81,7 +87,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         # off-policy algorithms before `algo.learning_starts`
         n_steps = schedule.gradient_steps(iteration)
         if n_steps != 0:
-            with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+            with phase_timer("Time/train_time"):
                 for batch in algo.batches(state, store, n_steps, iteration):
                     cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
                     schedule.gradient_step += 1

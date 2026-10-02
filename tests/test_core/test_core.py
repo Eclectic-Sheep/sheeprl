@@ -14,6 +14,7 @@ from sheeprl import core
 from sheeprl.core import EnvStep, TrainSchedule, TrainState, load_replay_buffer, update
 from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.core.cadence import Cadence
+from sheeprl.core.loop import phase_timer
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict
@@ -235,6 +236,17 @@ def test_the_training_speed_counts_the_gradient_steps_of_all_the_processes(monke
     monkeypatch.setattr(timer, "reset", classmethod(lambda cls: None))
     cadence.log(policy_step=8, iteration=1, schedule=SimpleNamespace(off_policy=False, total_iters=10))
     assert logged["Time/sps_train"] == 4 * 2 / 2.0
+
+
+def test_the_phases_are_timed_per_process(monkeypatch):
+    # The training was timed with `metric.sync_on_compute`: with it, the training times of all the processes were
+    # summed, and `Time/sps_train` divided by their number
+    monkeypatch.setattr(timer, "timers", {})
+    monkeypatch.setattr(timer, "disabled", False)
+    for name in ("Time/train_time", "Time/env_interaction_time"):
+        with phase_timer(name):
+            pass
+        assert timer.timers[name].sync_on_compute is False
 
 
 def test_load_replay_buffer_takes_the_buffer_of_the_process(fabric):
