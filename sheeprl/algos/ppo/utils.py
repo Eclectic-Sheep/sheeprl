@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Dict, Sequence
 
 import gymnasium as gym
@@ -9,17 +10,42 @@ import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
+from torch.optim import Optimizer
 
 from sheeprl.algos.ppo.agent import PPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
 MODELS_TO_REGISTER = {"agent"}
+
+
+def anneal(
+    cfg: Dict[str, Any],
+    optimizer: Optimizer,
+    iteration: int,
+    total_iters: int,
+    initial_clip_coef: float,
+    initial_ent_coef: float,
+) -> None:
+    """Set the learning rate of `optimizer` and the coefficients `cfg.algo.clip_coef` and `cfg.algo.ent_coef` that
+    `algo.anneal_lr`, `algo.anneal_clip_coef` and `algo.anneal_ent_coef` anneal to their values for the iteration
+    `iteration` (numbered from 1) of `total_iters`: a linear decay from the configured values, to 0 at the end of the
+    training. They depend only on the iteration, so a resumed run follows the schedule of its own `algo.total_steps`
+    (and starts from the values of the iteration it resumes from)."""
+    # The first iteration uses the configured values
+    decay = partial(polynomial_decay, iteration - 1, final=0.0, max_decay_steps=total_iters)
+    if cfg.algo.anneal_lr:
+        for group in optimizer.param_groups:
+            group["lr"] = decay(initial=cfg.algo.optimizer.lr)
+    if cfg.algo.anneal_clip_coef:
+        cfg.algo.clip_coef = decay(initial=initial_clip_coef)
+    if cfg.algo.anneal_ent_coef:
+        cfg.algo.ent_coef = decay(initial=initial_ent_coef)
 
 
 def bootstrap_truncated(

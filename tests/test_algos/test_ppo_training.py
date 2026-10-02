@@ -1,5 +1,6 @@
 """PPO and A2C: the rewards of the rollout, the losses, the advantages."""
 
+import glob
 import os
 import shutil
 import sys
@@ -90,3 +91,51 @@ def test_the_buffer_holds_one_rollout(exp):
             run()
     finally:
         shutil.rmtree(os.path.join("logs", "runs", "pytest_ppo_buffer_size"), ignore_errors=True)
+
+
+def test_a_resumed_run_anneals_with_its_own_total_steps():
+    # A run of 2 iterations resumed for 4: the learning rate and the clip coefficient of iterations 3 and 4 are the ones
+    # of a run of 4 iterations. The scheduler of the checkpoint kept the horizon of 2 (learning rate 0 after it), and
+    # the coefficients restarted from the configured ones
+    from sheeprl.algos.ppo import ppo
+    from sheeprl.cli import run
+
+    root_dir = "pytest_ppo_anneal"
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        "exp=ppo",
+        "env.num_envs=2",
+        "algo.rollout_steps=4",
+        "algo.per_rank_batch_size=4",
+        "algo.anneal_lr=True",
+        "algo.anneal_clip_coef=True",
+        "algo.optimizer.lr=1e-3",
+        "algo.clip_coef=0.2",
+        "algo.run_test=False",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "checkpoint.save_last=True",
+        f"root_dir={root_dir}",
+    ]
+    schedule = []
+
+    def recording_train(fabric, agent, optimizer, data, aggregator, cfg):
+        schedule.append((optimizer.param_groups[0]["lr"], cfg.algo.clip_coef))
+        return ppo_train(fabric, agent, optimizer, data, aggregator, cfg)
+
+    ppo_train = ppo.train
+    try:
+        with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(ppo, "train", recording_train):
+            with mock.patch.object(sys, "argv", [*args, "algo.total_steps=16", "run_name=first"]):
+                run()
+            (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "first", "version_*", "checkpoint", "*"))
+            with mock.patch.object(
+                sys, "argv", [*args, "algo.total_steps=32", "run_name=resumed", f"checkpoint.resume_from={ckpt_path}"]
+            ):
+                run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    np.testing.assert_allclose(schedule, [(1e-3, 0.2), (5e-4, 0.1), (5e-4, 0.1), (2.5e-4, 0.05)])

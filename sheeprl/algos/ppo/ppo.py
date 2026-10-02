@@ -17,7 +17,7 @@ from torchmetrics import SumMetric
 
 from sheeprl.algos.ppo.agent import build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
+from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope
@@ -25,7 +25,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay, save_configs
+from sheeprl.utils.utils import gae, normalize_tensor, save_configs
 
 
 def train(
@@ -250,14 +250,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "policy_steps_per_iter value."
         )
 
-    # Linear learning rate scheduler
-    if cfg.algo.anneal_lr:
-        from torch.optim.lr_scheduler import PolynomialLR
-
-        scheduler = PolynomialLR(optimizer=optimizer, total_iters=total_iters, power=1.0)
-        if cfg.checkpoint.resume_from:
-            scheduler.load_state_dict(state["scheduler"])
-
     # Get the first environment observation and start the optimization
     step_data = {}
     next_obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
@@ -267,6 +259,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data[k] = next_obs[k][np.newaxis]
 
     for iter_num in range(start_iter, total_iters + 1):
+        # The learning rate and the coefficients of the iteration
+        anneal(cfg, optimizer, iter_num, total_iters, initial_clip_coef, initial_ent_coef)
+
         with torch.inference_mode():
             for _ in range(0, cfg.algo.rollout_steps):
                 policy_step += cfg.env.num_envs * world_size
@@ -366,10 +361,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
         if cfg.metric.log_level > 0:
             # Log lr and coefficients
-            if cfg.algo.anneal_lr:
-                fabric.log("Info/learning_rate", scheduler.get_last_lr()[0], policy_step)
-            else:
-                fabric.log("Info/learning_rate", cfg.algo.optimizer.lr, policy_step)
+            fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], policy_step)
             fabric.log("Info/clip_coef", cfg.algo.clip_coef, policy_step)
             fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
 
@@ -403,18 +395,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 last_log = policy_step
                 last_train = train_step
 
-        # Update lr and coefficients
-        if cfg.algo.anneal_lr:
-            scheduler.step()
-        if cfg.algo.anneal_clip_coef:
-            cfg.algo.clip_coef = polynomial_decay(
-                iter_num, initial=initial_clip_coef, final=0.0, max_decay_steps=total_iters, power=1.0
-            )
-        if cfg.algo.anneal_ent_coef:
-            cfg.algo.ent_coef = polynomial_decay(
-                iter_num, initial=initial_ent_coef, final=0.0, max_decay_steps=total_iters, power=1.0
-            )
-
         # Checkpoint model
         if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
             iter_num == total_iters and cfg.checkpoint.save_last
@@ -423,7 +403,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             state = {
                 "agent": agent.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict() if cfg.algo.anneal_lr else None,
                 "iter_num": iter_num * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
