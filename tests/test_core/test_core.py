@@ -21,10 +21,13 @@ def fabric():
     return Fabric(accelerator="cpu", devices=1, precision="32-true")
 
 
-def schedule_cfg(total_steps=100, dry_run=False, learning_starts=10, replay_ratio=1.0, run_benchmarks=False):
+def schedule_cfg(
+    total_steps=100, dry_run=False, learning_starts=10, replay_ratio=1.0, run_benchmarks=False, buffer_checkpoint=True
+):
     return dotdict(
         {
             "env": {"num_envs": 2},
+            "buffer": {"checkpoint": buffer_checkpoint},
             "algo": {
                 "total_steps": total_steps,
                 # Read only by the off-policy algorithms
@@ -103,22 +106,47 @@ def test_off_policy_schedule_benchmarks_and_dry_run():
     assert schedule.gradient_steps(1) == 2
 
 
-def test_off_policy_schedule_resumes_the_replay_ratio():
+def checkpoint_of_iteration(iteration, **cfg):
+    """The schedule of an off-policy run (2 envs, 1 process, `learning_starts=10`, ratio 1) up to `iteration`, and the
+    checkpoint saved at its end."""
+    schedule = TrainSchedule(schedule_cfg(**cfg), world_size=1, steps_per_iteration=1, off_policy=True)
+    steps = [schedule.gradient_steps(i) for i in range(1, iteration + 1)]
+    checkpoint = {"iter_num": iteration, "per_rank_gradient_steps": sum(steps), "ratio": schedule.ratio.state_dict()}
+    return schedule, checkpoint
+
+
+def test_off_policy_schedule_resumes_as_the_run_it_resumes():
     # The checkpoint of iteration 8 of the first test: the ratio counted 8 policy steps (iterations 5 to 8)
-    schedule = TrainSchedule(schedule_cfg(learning_starts=10), world_size=1, steps_per_iteration=1, off_policy=True)
-    for i in range(1, 9):
-        schedule.gradient_steps(i)
-    checkpoint = {"iter_num": 8, "per_rank_gradient_steps": 8, "ratio": schedule.ratio.state_dict()}
-    resumed = TrainSchedule(
-        schedule_cfg(learning_starts=10), world_size=1, steps_per_iteration=1, checkpoint=checkpoint, off_policy=True
-    )
+    schedule, checkpoint = checkpoint_of_iteration(8)
+    resumed = TrainSchedule(schedule_cfg(), world_size=1, steps_per_iteration=1, checkpoint=checkpoint, off_policy=True)
     assert resumed.ratio.state_dict() == schedule.ratio.state_dict()
     assert resumed.gradient_step == 8
-    # As before the port, a resumed run plays random actions again for `learning_starts` steps, and doesn't train
-    # until its ratio catches up (known issue #42)
     assert list(resumed.iterations())[:2] == [9, 10]
-    assert resumed.warmup(policy_step=16)
-    assert resumed.gradient_steps(9) == 0
+    # With its replay buffer, it neither plays random actions nor waits to train: it goes on as the run would have
+    assert not resumed.warmup(policy_step=16)
+    assert [resumed.gradient_steps(i) for i in range(9, 16)] == [schedule.gradient_steps(i) for i in range(9, 16)]
+
+
+def test_off_policy_schedule_resumed_during_the_random_actions_plays_the_rest_of_them():
+    schedule, checkpoint = checkpoint_of_iteration(3)
+    resumed = TrainSchedule(schedule_cfg(), world_size=1, steps_per_iteration=1, checkpoint=checkpoint, off_policy=True)
+    assert [resumed.warmup(policy_step=2 * (i - 1)) for i in range(4, 8)] == [True, True, False, False]
+    assert [resumed.gradient_steps(i) for i in range(4, 10)] == [schedule.gradient_steps(i) for i in range(4, 10)]
+
+
+def test_off_policy_schedule_resumed_without_its_buffer_fills_a_new_one_with_its_policy():
+    _, checkpoint = checkpoint_of_iteration(8, buffer_checkpoint=False)
+    resumed = TrainSchedule(
+        schedule_cfg(buffer_checkpoint=False),
+        world_size=1,
+        steps_per_iteration=1,
+        checkpoint=checkpoint,
+        off_policy=True,
+    )
+    # No random actions: the policy fills the new buffer for `learning_starts` steps (5 iterations), then the training
+    # starts as in a new run
+    assert not any(resumed.warmup(policy_step=2 * (i - 1)) for i in range(9, 15))
+    assert [resumed.gradient_steps(i) for i in range(9, 16)] == [0, 0, 0, 0, 2, 2, 2]
 
 
 def test_load_replay_buffer_takes_the_buffer_of_the_process(fabric):

@@ -259,8 +259,8 @@ class P2EDV3Exploration(Algorithm):
         )
 
     def player(self, state: P2EDV3ExplorationState) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except when resuming and with the MineDojo actor
-        random_warmup = self.cfg.checkpoint.resume_from is None and "minedojo" not in self.cfg.algo.actor.cls.lower()
+        # Random actions until `algo.learning_starts`, except with the MineDojo actor
+        random_warmup = "minedojo" not in self.cfg.algo.actor.cls.lower()
         return SequencePlayer(
             self.fabric,
             self.cfg,

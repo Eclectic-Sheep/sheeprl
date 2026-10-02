@@ -590,10 +590,8 @@ class DreamerV3(Algorithm):
         )
 
     def player(self, state: DreamerV3State) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except when resuming and with MineDojo (its action masks)
-        random_warmup = (
-            self.cfg.checkpoint.resume_from is None and "minedojo" not in self.cfg.env.wrapper._target_.lower()
-        )
+        # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
+        random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
         return SequencePlayer(
             self.fabric,
             self.cfg,

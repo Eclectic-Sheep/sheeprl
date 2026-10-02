@@ -19,6 +19,10 @@ class TrainSchedule:
     Off-policy algorithms (`off_policy=True`) play random actions for the first `algo.learning_starts` policy steps
     (rounded down to whole iterations), to fill their replay buffer, then do `algo.replay_ratio` gradient steps per
     policy step (`Ratio`).
+
+    A resumed run continues as the run it resumes, without random actions after `algo.learning_starts`. When its
+    replay buffer wasn't saved in the checkpoint (`buffer.checkpoint=False`), it fills a new one first: it plays its
+    policy for `algo.learning_starts` policy steps, then trains as a new run does.
     """
 
     def __init__(
@@ -50,16 +54,15 @@ class TrainSchedule:
         self.learning_starts = 0
         if off_policy:
             self.learning_starts = cfg.algo.learning_starts // self.policy_steps_per_iter if not cfg.dry_run else 0
-            # The replay ratio counts the policy steps from the start of the last iteration of random actions
-            self.prefill_steps = self.learning_starts - int(self.learning_starts > 0)
-            if checkpoint is not None:
-                # A resumed run plays random actions again, even when the replay buffer was saved in the
-                # checkpoint (known issue #42)
-                self.learning_starts += self.start_iter
-                self.prefill_steps += self.start_iter
             self.ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-            if checkpoint is not None:
+            # The buffer is filled for `learning_starts` iterations, training at the end of the last one: from the
+            # start of the run, or, when a resumed run doesn't find its buffer in the checkpoint, from where it resumes
+            refill = checkpoint is not None and not cfg.buffer.checkpoint
+            self.train_starts = (self.start_iter - 1 if refill else 0) + max(self.learning_starts, 1)
+            if checkpoint is not None and not refill:
                 self.ratio.load_state_dict(checkpoint["ratio"])
+            # The replay ratio counts the policy steps from the start of the first training iteration
+            self.prefill_steps = self.train_starts - 1
             # One gradient step per iteration, whatever the replay ratio (`exp=sac_benchmarks`)
             self.run_benchmarks = bool(cfg.get("run_benchmarks", False))
 
@@ -88,22 +91,21 @@ class TrainSchedule:
 
     def warmup(self, policy_step: int) -> bool:
         """Whether the environments play random actions after `policy_step` policy steps: in the iterations from 1 to
-        `learning_starts` of the off-policy algorithms."""
+        `learning_starts` of the off-policy algorithms (never in the ones of a resumed run after them)."""
         return policy_step < self.learning_starts * self.policy_steps_per_iter
 
     def gradient_steps(self, iteration: int) -> Optional[int]:
         """The gradient steps every process does at the end of `iteration`.
 
-        `None` for on-policy algorithms, which decide it from the rollout. For off-policy algorithms, 0 until the
-        iteration `learning_starts`, then `algo.replay_ratio` gradient steps per policy step of the process.
+        `None` for on-policy algorithms, which decide it from the rollout. For off-policy algorithms, 0 until the buffer
+        is filled (`train_starts`), then `algo.replay_ratio` gradient steps per policy step of the process.
         """
         if self.ratio is None:
             return None
-        if iteration < self.learning_starts:
+        if iteration < self.train_starts:
             return 0
         if self.run_benchmarks:
             return 1
-        # The policy steps played from the start of the last iteration of random actions, by all processes
+        # The policy steps played from the start of the first training iteration, by all processes
         policy_steps = (iteration - self.prefill_steps) * self.policy_steps_per_iter
-        # `Ratio` can return a negative number, e.g. after resuming
         return max(0, self.ratio(policy_steps / self.world_size))
