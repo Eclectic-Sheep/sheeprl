@@ -1,4 +1,3 @@
-import copy
 from math import prod
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -6,13 +5,11 @@ import gymnasium
 import hydra
 import torch
 import torch.nn as nn
-from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
 
 
 class RecurrentModel(nn.Module):
@@ -407,64 +404,3 @@ class RecurrentPPOPlayer(nn.Module):
                 else:
                     sampled_actions.append(dist.sample())
         return tuple(sampled_actions), states
-
-
-def build_agent(
-    fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
-    cfg: Dict[str, Any],
-    obs_space: gymnasium.spaces.Dict,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
-    agent = RecurrentPPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
-        rnn_cfg=cfg.algo.rnn,
-        actor_cfg=cfg.algo.actor,
-        critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
-        is_continuous=is_continuous,
-        distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
-        screen_size=cfg.env.screen_size,
-        device=fabric.device,
-    )
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = RecurrentPPOPlayer(
-        copy.deepcopy(agent.feature_extractor),
-        copy.deepcopy(agent.rnn),
-        copy.deepcopy(agent.actor),
-        copy.deepcopy(agent.critic),
-        cfg.algo.rnn.lstm.hidden_size,
-        actions_dim,
-    )
-
-    # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.rnn = fabric.setup_module(agent.rnn)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
-
-    # Setup player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
-    player.rnn = fabric_player.setup_module(player.rnn)
-    player.critic = fabric_player.setup_module(player.critic)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.rnn.parameters(), player.rnn.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
-        player_p.data = agent_p.data
-    return agent, player

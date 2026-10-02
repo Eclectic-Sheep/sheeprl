@@ -95,6 +95,11 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "policy": lambda saved: saved["agent"],
         "models": ["agent"],
     },
+    "ppo_recurrent": {
+        "args": ["exp=ppo_recurrent", "algo.rollout_steps=4", "algo.per_rank_sequence_length=2"],
+        "policy": lambda saved: saved["agent"],
+        "models": ["agent"],
+    },
     "sac": {
         "args": ["exp=sac", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "algo.learning_starts=0"],
         # The policy is made of the modules of the actor
