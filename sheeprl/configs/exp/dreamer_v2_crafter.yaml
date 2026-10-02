@@ -10,7 +10,7 @@ seed: 0
 
 # Environment
 env:
-  id: reward
+  id: crafter_reward
   num_envs: 1
   reward_as_observation: True
 
