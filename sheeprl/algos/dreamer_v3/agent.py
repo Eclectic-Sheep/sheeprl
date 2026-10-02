@@ -35,7 +35,7 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import compilable, get_single_device_fabric
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -1287,22 +1287,22 @@ def build_agent(
     )
 
     # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
+    world_model.encoder = compilable(fabric.setup_module(world_model.encoder))
+    world_model.observation_model = compilable(fabric.setup_module(world_model.observation_model))
+    world_model.reward_model = compilable(fabric.setup_module(world_model.reward_model))
+    world_model.rssm.recurrent_model = compilable(fabric.setup_module(world_model.rssm.recurrent_model))
+    world_model.rssm.representation_model = compilable(fabric.setup_module(world_model.rssm.representation_model))
+    world_model.rssm.transition_model = compilable(fabric.setup_module(world_model.rssm.transition_model))
     if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+        world_model.continue_model = compilable(fabric.setup_module(world_model.continue_model))
+    actor = compilable(fabric.setup_module(actor))
+    critic = compilable(fabric.setup_module(critic))
 
     # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
+    target_critic = compilable(fabric_player.setup_module(target_critic))
 
     # Setup the player agent with a single-device Fabric
     player.encoder = fabric_player.setup_module(player.encoder)
