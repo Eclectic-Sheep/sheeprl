@@ -14,7 +14,7 @@ from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import init_weights, unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
@@ -143,8 +143,8 @@ def build_agent(
         critic_task.load_state_dict(critic_task_state)
 
     # Setup task models with Fabric
-    actor_task = fabric.setup_module(actor_task)
-    critic_task = fabric.setup_module(critic_task)
+    actor_task = setup_module(fabric, actor_task)
+    critic_task = setup_module(fabric, critic_task)
     target_critic_task = copy.deepcopy(critic_task.module)
     if target_critic_task_state:
         target_critic_task.load_state_dict(target_critic_task_state)
@@ -186,7 +186,7 @@ def build_agent(
     if ensembles_state:
         ensembles.load_state_dict(ensembles_state)
     for i in range(len(ensembles)):
-        ensembles[i] = fabric.setup_module(ensembles[i])
+        ensembles[i] = setup_module(fabric, ensembles[i])
 
     # Setup player agent
     if cfg.algo.player.actor_type != "exploration":

@@ -23,7 +23,7 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuf
 from sheeprl.utils.distribution import BernoulliSafeMode, MSEDistribution, TwoHotEncodingDistribution
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric
+from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -117,7 +117,6 @@ def train(
     # Ensemble Learning
     with autocast_cache_scope(fabric):
         loss = 0.0
-        ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
             out = ens(
                 torch.cat(
@@ -133,16 +132,9 @@ def train(
             loss -= next_state_embedding_dist.log_prob(
                 posteriors.view(sequence_length, batch_size, -1).detach()[1:]
             ).mean()
-    fabric.backward(loss)
-    ensemble_grad = None
-    if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
-        ensemble_grad = fabric.clip_gradients(
-            module=ens,
-            optimizer=ensemble_optimizer,
-            max_norm=cfg.algo.ensembles.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    ensemble_optimizer.step()
+    ensemble_grad = update(
+        fabric, loss, ensemble_optimizer, cfg.algo.ensembles.clip_gradients, error_if_nonfinite=False
+    )
 
     # Behaviour Learning Exploration
     with autocast_cache_scope(fabric):
@@ -211,7 +203,6 @@ def train(
         with torch.no_grad():
             discount = torch.cumprod(continues * cfg.algo.gamma, dim=0) / cfg.algo.gamma
 
-        actor_exploration_optimizer.zero_grad(set_to_none=True)
         policies: Sequence[Distribution] = actor_exploration(imagined_trajectories.detach())[1]
         if is_continuous:
             objective = advantage
@@ -230,16 +221,13 @@ def train(
         entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
 
         policy_loss_exploration = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
-    fabric.backward(policy_loss_exploration)
-    actor_grads_exploration = None
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_grads_exploration = fabric.clip_gradients(
-            module=actor_exploration,
-            optimizer=actor_exploration_optimizer,
-            max_norm=cfg.algo.actor.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    actor_exploration_optimizer.step()
+    actor_grads_exploration = update(
+        fabric,
+        policy_loss_exploration,
+        actor_exploration_optimizer,
+        cfg.algo.actor.clip_gradients,
+        error_if_nonfinite=False,
+    )
 
     for k, critic in critics_exploration.items():
         with autocast_cache_scope(fabric):
@@ -249,21 +237,13 @@ def train(
                     critic["target_module"](imagined_trajectories.detach()[:-1]), dims=1
                 ).mean
             # Critic optimization. Eq. 10 in the paper
-            critic["optimizer"].zero_grad(set_to_none=True)
             value_loss = -qv.log_prob(critic["lambda_values"].detach())
             value_loss = value_loss - qv.log_prob(predicted_target_values_expl.detach())
             value_loss = torch.mean(value_loss * discount[:-1].squeeze(-1))
 
-        fabric.backward(value_loss)
-        critic_grads_exploration = None
-        if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-            critic_grads_exploration = fabric.clip_gradients(
-                module=critic["module"],
-                optimizer=critic["optimizer"],
-                max_norm=cfg.algo.critic.clip_gradients,
-                error_if_nonfinite=False,
-            )
-        critic["optimizer"].step()
+        critic_grads_exploration = update(
+            fabric, value_loss, critic["optimizer"], cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+        )
         if aggregator and not aggregator.disabled:
             if critic_grads_exploration:
                 aggregator.update(f"Grads/critic_exploration_{k}", critic_grads_exploration.mean().detach())

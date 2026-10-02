@@ -24,7 +24,7 @@ from torch.distributions import (
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
 
@@ -1073,16 +1073,16 @@ def build_agent(
     )
 
     # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
     if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    actor = setup_module(fabric, actor)
+    critic = setup_module(fabric, critic)
 
     # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)

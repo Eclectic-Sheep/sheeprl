@@ -23,7 +23,7 @@ from sheeprl.algos.dreamer_v2.utils import env_buffer_size, prepare_obs, sample_
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric
+from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -158,7 +158,6 @@ def train(
         posteriors_dist = Independent(Normal(posteriors_mean, posteriors_std), 1)
         priors_dist = Independent(Normal(priors_mean, priors_std), 1)
 
-        world_optimizer.zero_grad(set_to_none=True)
         rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
             qo,
             batch_obs,
@@ -172,35 +171,20 @@ def train(
             continues_targets,
             cfg.algo.world_model.continue_scale_factor,
         )
-    fabric.backward(rec_loss)
-    world_grad = None
-    if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
-        world_grad = fabric.clip_gradients(
-            module=world_model,
-            optimizer=world_optimizer,
-            max_norm=cfg.algo.world_model.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    world_optimizer.step()
+    world_grad = update(
+        fabric, rec_loss, world_optimizer, cfg.algo.world_model.clip_gradients, error_if_nonfinite=False
+    )
 
     # Ensemble Learning
     with autocast_cache_scope(fabric):
         loss = 0.0
-        ensemble_optimizer.zero_grad(set_to_none=True)
         for ens in ensembles:
             out = ens(torch.cat((posteriors.detach(), recurrent_states.detach(), data["actions"].detach()), -1))[:-1]
             next_obs_embedding_dist = Independent(Normal(out, 1), 1)
             loss -= next_obs_embedding_dist.log_prob(embedded_obs.detach()[1:]).mean()
-    fabric.backward(loss)
-    ensemble_grad = None
-    if cfg.algo.ensembles.clip_gradients is not None and cfg.algo.ensembles.clip_gradients > 0:
-        ensemble_grad = fabric.clip_gradients(
-            module=ens,
-            optimizer=ensemble_optimizer,
-            max_norm=cfg.algo.ensembles.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    ensemble_optimizer.step()
+    ensemble_grad = update(
+        fabric, loss, ensemble_optimizer, cfg.algo.ensembles.clip_gradients, error_if_nonfinite=False
+    )
 
     # Behaviour Learning Exploration
     with autocast_cache_scope(fabric):
@@ -255,33 +239,25 @@ def train(
                 torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0
             )
 
-        actor_exploration_optimizer.zero_grad(set_to_none=True)
         policy_loss_exploration = actor_loss(discount * lambda_values_exploration)
-    fabric.backward(policy_loss_exploration)
-    actor_exploration_grad = None
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_exploration_grad = fabric.clip_gradients(
-            module=actor_exploration,
-            optimizer=actor_exploration_optimizer,
-            max_norm=cfg.algo.actor.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    actor_exploration_optimizer.step()
+    actor_exploration_grad = update(
+        fabric,
+        policy_loss_exploration,
+        actor_exploration_optimizer,
+        cfg.algo.actor.clip_gradients,
+        error_if_nonfinite=False,
+    )
 
     with autocast_cache_scope(fabric):
         qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
-        critic_exploration_optimizer.zero_grad(set_to_none=True)
         value_loss_exploration = critic_loss(qv, lambda_values_exploration.detach(), discount[..., 0])
-    fabric.backward(value_loss_exploration)
-    critic_exploration_grad = None
-    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-        critic_exploration_grad = fabric.clip_gradients(
-            module=critic_exploration,
-            optimizer=critic_exploration_optimizer,
-            max_norm=cfg.algo.critic.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    critic_exploration_optimizer.step()
+    critic_exploration_grad = update(
+        fabric,
+        value_loss_exploration,
+        critic_exploration_optimizer,
+        cfg.algo.critic.clip_gradients,
+        error_if_nonfinite=False,
+    )
 
     # reset the world_model gradients, to avoid interferences with task learning
     world_optimizer.zero_grad(set_to_none=True)
@@ -322,33 +298,17 @@ def train(
                 torch.cat((torch.ones_like(predicted_continues[:1]), predicted_continues[:-2]), 0), 0
             )
 
-        actor_task_optimizer.zero_grad(set_to_none=True)
         policy_loss_task = actor_loss(discount * lambda_values_task)
-    fabric.backward(policy_loss_task)
-    actor_task_grad = None
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_task_grad = fabric.clip_gradients(
-            module=actor_task,
-            optimizer=actor_task_optimizer,
-            max_norm=cfg.algo.actor.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    actor_task_optimizer.step()
+    actor_task_grad = update(
+        fabric, policy_loss_task, actor_task_optimizer, cfg.algo.actor.clip_gradients, error_if_nonfinite=False
+    )
 
     with autocast_cache_scope(fabric):
         qv = Independent(Normal(critic_task(imagined_trajectories.detach())[:-1], 1), 1)
-        critic_task_optimizer.zero_grad(set_to_none=True)
         value_loss_task = critic_loss(qv, lambda_values_task.detach(), discount[..., 0])
-    fabric.backward(value_loss_task)
-    critic_task_grad = None
-    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-        critic_task_grad = fabric.clip_gradients(
-            module=critic_task,
-            optimizer=critic_task_optimizer,
-            max_norm=cfg.algo.critic.clip_gradients,
-            error_if_nonfinite=False,
-        )
-    critic_task_optimizer.step()
+    critic_task_grad = update(
+        fabric, value_loss_task, critic_task_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+    )
     if aggregator and not aggregator.disabled:
         aggregator.update("Loss/world_model_loss", rec_loss.detach())
         aggregator.update("Loss/observation_loss", observation_loss.detach())

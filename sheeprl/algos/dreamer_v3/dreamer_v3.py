@@ -16,7 +16,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
-from lightning.fabric.strategies import SingleDeviceStrategy
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
@@ -25,13 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import (
-    Moments,
-    average_initial_state_gradient,
-    compute_lambda_values,
-    prepare_obs,
-    test,
-)
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.distribution import (
@@ -42,7 +35,7 @@ from sheeprl.utils.distribution import (
 )
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -245,20 +238,10 @@ def compile_mode(cfg: Dict[str, Any]) -> Optional[str]:
 
 
 def compile_enabled(fabric: Fabric, cfg: Dict[str, Any]) -> bool:
-    """Whether the losses are compiled (`algo.compile.enabled`): only on a single device. With several processes the
-    modules are wrapped by `DistributedDataParallel`, whose forward `torch.compile` doesn't trace: every call of a
-    module would split the compiled graph."""
-    if not (cfg.algo.get("compile") or {}).get("enabled", False):
-        return False
-    if not isinstance(fabric.strategy, SingleDeviceStrategy):
-        if not _WARNED.get("strategy"):
-            warnings.warn(
-                f"`algo.compile.enabled=True` is ignored with the `{type(fabric.strategy).__name__}` strategy: the "
-                "losses are compiled only on a single device"
-            )
-            _WARNED["strategy"] = True
-        return False
-    return True
+    """Whether the losses are compiled (`algo.compile.enabled`), also with several processes: the modules are not
+    wrapped by `DistributedDataParallel` (`sheeprl.utils.fabric.setup_module`), whose forward `torch.compile` doesn't
+    trace, and the gradients are averaged after the backward pass (`sheeprl.utils.fabric.update`)."""
+    return bool((cfg.algo.get("compile") or {}).get("enabled", False))
 
 
 def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any]) -> Callable:
@@ -294,7 +277,6 @@ def world_model_learning(
     """
     # Every sequence starts an episode: the world model starts from its initial state
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
-    world_optimizer.zero_grad(set_to_none=True)
     if compile_enabled(fabric, cfg) and compile_mode(cfg) == "reduce-overhead":
         # A new gradient step: the outputs of the CUDA graphs of the previous one, already used, can be overwritten
         torch.compiler.cudagraph_mark_step_begin()
@@ -307,18 +289,13 @@ def world_model_learning(
             detach_heads=detach_heads,
             entropies=not MetricAggregator.disabled,
         )
-    fabric.backward(rec_loss)
-    average_initial_state_gradient(fabric, world_model.rssm)
-    if cfg.algo.world_model.clip_gradients is not None and cfg.algo.world_model.clip_gradients > 0:
-        world_model_grads = fabric.clip_gradients(
-            module=world_model,
-            optimizer=world_optimizer,
-            max_norm=cfg.algo.world_model.clip_gradients,
-            error_if_nonfinite=False,
-        )
-        if world_model_grads:
-            metrics["Grads/world_model"] = world_model_grads.mean().detach()
-    world_optimizer.step()
+    # The gradients of all the weights of the world model are averaged over the processes, also the ones of the
+    # learnable initial recurrent state, which is in no module
+    world_model_grads = update(
+        fabric, rec_loss, world_optimizer, cfg.algo.world_model.clip_gradients, error_if_nonfinite=False
+    )
+    if world_model_grads:
+        metrics["Grads/world_model"] = world_model_grads.mean().detach()
     return posteriors, recurrent_states, metrics
 
 
@@ -495,7 +472,6 @@ def behaviour_learning(
             lmbda=cfg.algo.lmbda,
         )
     with autocast_cache_scope(fabric):
-        actor_optimizer.zero_grad(set_to_none=True)
         # The normalization of the returns, from their percentiles (not compiled: it updates its state in place)
         offset, invscale = moments(lambda_values, fabric)
         policy_loss = compiled(actor_loss, fabric, cfg)(
@@ -511,31 +487,19 @@ def behaviour_learning(
             actions_dim=tuple(int(dim) for dim in actions_dim),
             ent_coef=cfg.algo.actor.ent_coef,
         )
-    fabric.backward(policy_loss)
-    if cfg.algo.actor.clip_gradients is not None and cfg.algo.actor.clip_gradients > 0:
-        actor_grads = fabric.clip_gradients(
-            module=actor, optimizer=actor_optimizer, max_norm=cfg.algo.actor.clip_gradients, error_if_nonfinite=False
-        )
-        if actor_grads:
-            metrics["actor_grads"] = actor_grads.mean().detach()
-    actor_optimizer.step()
+    actor_grads = update(fabric, policy_loss, actor_optimizer, cfg.algo.actor.clip_gradients, error_if_nonfinite=False)
+    if actor_grads:
+        metrics["actor_grads"] = actor_grads.mean().detach()
 
     with autocast_cache_scope(fabric):
-        critic_optimizer.zero_grad(set_to_none=True)
         value_loss = compiled(critic_loss, fabric, cfg)(
             critic, target_critic, imagined_trajectories, lambda_values, discount
         )
-    fabric.backward(value_loss)
-    if cfg.algo.critic.clip_gradients is not None and cfg.algo.critic.clip_gradients > 0:
-        critic_grads = fabric.clip_gradients(
-            module=critic,
-            optimizer=critic_optimizer,
-            max_norm=cfg.algo.critic.clip_gradients,
-            error_if_nonfinite=False,
-        )
-        if critic_grads:
-            metrics["critic_grads"] = critic_grads.mean().detach()
-    critic_optimizer.step()
+    critic_grads = update(
+        fabric, value_loss, critic_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+    )
+    if critic_grads:
+        metrics["critic_grads"] = critic_grads.mean().detach()
     metrics["policy_loss"] = policy_loss.detach()
     metrics["value_loss"] = value_loss.detach()
     return metrics
