@@ -641,7 +641,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -662,6 +662,7 @@ class MinedojoActor(Actor):
     def add_exploration_noise(
         self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         expl_actions = []
         functional_action = actions[0].argmax(dim=-1)
         for i, act in enumerate(actions):
@@ -678,7 +679,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -687,17 +688,18 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-            expl_amount = self._get_expl_amount(step)
-            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-            # to satisfy the constraints of the environment
-            if (
-                i in {1, 2}
-                and actions[0].argmax() != expl_actions[0].argmax()
-                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-            ):
-                expl_amount = 2
-            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
+            sample = OneHotCategorical(logits=logits).sample()
+            # A random action with probability `expl_amount`, drawn for every environment
+            explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+            if i in {1, 2}:
+                # The environments whose functional action was changed into one that takes arguments (craft, equip,
+                # place, destroy) also change its arguments, to satisfy the constraints of the environment
+                changed = actions[0].argmax(dim=-1) != expl_actions[0].argmax(dim=-1)
+                with_arguments = torch.isin(
+                    expl_actions[0].argmax(dim=-1), torch.tensor([15, 16, 17, 18], device=act.device)
+                )
+                explore = explore | (changed & with_arguments).unsqueeze(-1)
+            expl_actions.append(torch.where(explore, sample, act))
             if mask is not None and i == 0:
                 functional_action = expl_actions[0].argmax(dim=-1)
         return tuple(expl_actions)
