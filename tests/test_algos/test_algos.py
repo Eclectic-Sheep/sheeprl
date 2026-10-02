@@ -274,6 +274,28 @@ def test_ppo_recurrent(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_ppo_recurrent_processes_with_different_numbers_of_minibatches(standard_args, start_time):
+    # Every process splits its rollout at the ends of its episodes: with this seed the 2 processes have different
+    # numbers of minibatches, and the training crashed (gloo: "Received data size doesn't match expected size")
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
+    run_name = "test_ppo_recurrent_minibatches"
+    args = standard_args + [
+        "exp=ppo_recurrent",
+        "seed=1",
+        "env.num_envs=3",
+        "algo.rollout_steps=32",
+        "algo.per_rank_sequence_length=6",
+        "algo.per_rank_num_batches=5",
+        "fabric.precision=32",
+        f"root_dir={root_dir}",
+        f"run_name={run_name}",
+    ]
+
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_dreamer_v1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])

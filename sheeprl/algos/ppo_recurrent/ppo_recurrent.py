@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+import itertools
+import math
 import os
 import warnings
-from contextlib import nullcontext
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 import gymnasium as gym
 import hydra
@@ -12,7 +13,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from torch import Tensor
-from torch.distributed.algorithms.join import Join
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torchmetrics import SumMetric
 
@@ -44,79 +44,84 @@ def train(
         batch_size = batch_size if batch_size > 0 else num_sequences
     else:
         batch_size = 1
-    with (
-        Join(
-            [
-                agent.feature_extractor._forward_module,
-                agent.rnn._forward_module,
-                agent.actor._forward_module,
-                agent.critic._forward_module,
-            ]
-        )
-        if fabric.world_size > 1
-        else nullcontext()
-    ):
+
+    def minibatches() -> Iterator[List[int]]:
         for _ in range(cfg.algo.update_epochs):
-            sampler = BatchSampler(
-                RandomSampler(range(num_sequences)),
-                batch_size=batch_size,
-                drop_last=False,
-            )  # Random sampling sequences
-            for idxes in sampler:
-                batch = {k: v[:, idxes] for k, v in data.items()}
-                mask = batch["mask"].unsqueeze(-1)
-                for k in cfg.algo.cnn_keys.encoder:
-                    batch[k] = batch[k] / 255.0 - 0.5
+            # Random sampling sequences
+            yield from BatchSampler(RandomSampler(range(num_sequences)), batch_size=batch_size, drop_last=False)
 
-                with autocast_cache_scope(fabric):
-                    _, logprobs, entropies, values, _ = agent(
-                        {k: batch[k] for k in set(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)},
-                        prev_actions=batch["prev_actions"],
-                        prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
-                        actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
-                        mask=mask,
-                    )
+    # Every process splits its own rollout in sequences, so the processes can have different numbers of minibatches,
+    # while the gradients of every step are averaged over all of them. Each process does as many steps as the one
+    # with the most: the missing ones with a zero loss on its last minibatch, which averages zero gradients in. All the
+    # processes then take the same optimizer steps (`Join` over the 4 modules mismatched their collectives)
+    gradient_steps = cfg.algo.update_epochs * math.ceil(num_sequences / batch_size)
+    if fabric.world_size > 1:
+        gradient_steps = int(
+            fabric.all_reduce(torch.tensor(gradient_steps, device=fabric.device), reduce_op="max").item()
+        )
+    steps = itertools.chain(((idxes, False) for idxes in minibatches()), itertools.repeat(([], True)))
+    last_idxes: List[int] = []
+    for idxes, padding in itertools.islice(steps, gradient_steps):
+        if padding:
+            # The last minibatch again, with a zero loss
+            idxes = last_idxes
+        last_idxes = idxes
+        batch = {k: v[:, idxes] for k, v in data.items()}
+        mask = batch["mask"].unsqueeze(-1)
+        for k in cfg.algo.cnn_keys.encoder:
+            batch[k] = batch[k] / 255.0 - 0.5
 
-                    normalized_advantages = batch["advantages"][mask]
-                    if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
-                        normalized_advantages = normalize_tensor(normalized_advantages)
+        with autocast_cache_scope(fabric):
+            _, logprobs, entropies, values, _ = agent(
+                {k: batch[k] for k in set(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)},
+                prev_actions=batch["prev_actions"],
+                prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
+                actions=torch.split(batch["actions"], agent.actions_dim, dim=-1),
+                mask=mask,
+            )
 
-                    # Policy loss
-                    pg_loss = policy_loss(
-                        logprobs[mask],
-                        batch["logprobs"][mask],
-                        normalized_advantages,
-                        cfg.algo.clip_coef,
-                        "mean",
-                    )
+            normalized_advantages = batch["advantages"][mask]
+            if cfg.algo.normalize_advantages and len(normalized_advantages) > 1:
+                normalized_advantages = normalize_tensor(normalized_advantages)
 
-                    # Value loss
-                    v_loss = value_loss(
-                        values[mask],
-                        batch["values"][mask],
-                        batch["returns"][mask],
-                        cfg.algo.clip_coef,
-                        cfg.algo.clip_vloss,
-                        "mean",
-                    )
+            # Policy loss
+            pg_loss = policy_loss(
+                logprobs[mask],
+                batch["logprobs"][mask],
+                normalized_advantages,
+                cfg.algo.clip_coef,
+                "mean",
+            )
 
-                    # Entropy loss
-                    ent_loss = entropy_loss(entropies[mask], cfg.algo.loss_reduction)
+            # Value loss
+            v_loss = value_loss(
+                values[mask],
+                batch["values"][mask],
+                batch["returns"][mask],
+                cfg.algo.clip_coef,
+                cfg.algo.clip_vloss,
+                "mean",
+            )
 
-                    # Equation (9) in the paper
-                    loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+            # Entropy loss
+            ent_loss = entropy_loss(entropies[mask], cfg.algo.loss_reduction)
 
-                    optimizer.zero_grad(set_to_none=True)
-                fabric.backward(loss)
-                if cfg.algo.max_grad_norm > 0.0:
-                    fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-                optimizer.step()
+            # Equation (9) in the paper
+            loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
+            if padding:
+                loss = loss * 0
 
-                # Update metrics
-                if aggregator and not aggregator.disabled:
-                    aggregator.update("Loss/policy_loss", pg_loss.detach())
-                    aggregator.update("Loss/value_loss", v_loss.detach())
-                    aggregator.update("Loss/entropy_loss", ent_loss.detach())
+            optimizer.zero_grad(set_to_none=True)
+        fabric.backward(loss)
+        if cfg.algo.max_grad_norm > 0.0:
+            fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
+        optimizer.step()
+
+        # Update metrics
+        if aggregator and not aggregator.disabled and not padding:
+            aggregator.update("Loss/policy_loss", pg_loss.detach())
+            aggregator.update("Loss/value_loss", v_loss.detach())
+            aggregator.update("Loss/entropy_loss", ent_loss.detach())
 
 
 @register_algorithm()
