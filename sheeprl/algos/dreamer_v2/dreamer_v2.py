@@ -476,13 +476,12 @@ def build_buffer(
 ) -> EnvIndependentReplayBuffer | EpisodeBuffer:
     """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
     whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`."""
-    buffer_size = env_buffer_size(fabric, cfg, dry_run_size)
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
     memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
         return EnvIndependentReplayBuffer(
-            buffer_size,
+            env_buffer_size(fabric, cfg, dry_run_size),
             n_envs=cfg.env.num_envs,
             obs_keys=obs_keys,
             memmap=cfg.buffer.memmap,
@@ -491,8 +490,9 @@ def build_buffer(
             seed=cfg.seed + fabric.global_rank,
         )
     elif buffer_type == "episode":
+        # The episodes of all the environments of the process share the buffer
         return EpisodeBuffer(
-            buffer_size,
+            cfg.buffer.size // fabric.world_size if not cfg.dry_run else dry_run_size,
             minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
             n_envs=cfg.env.num_envs,
             obs_keys=obs_keys,

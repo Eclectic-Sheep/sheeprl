@@ -13,9 +13,16 @@ from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder
-from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2, behaviour_learning, env_buffer_size, sample_batches
+from sheeprl.algos.dreamer_v2.dreamer_v2 import (
+    DreamerV2,
+    behaviour_learning,
+    build_buffer,
+    env_buffer_size,
+    sample_batches,
+)
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.core import TrainSchedule
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.utils import dotdict
 
 
@@ -104,6 +111,25 @@ def test_the_buffer_of_every_environment_holds_a_sequence():
     cfg.dry_run = True
     assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
     assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8
+
+
+@pytest.mark.parametrize("buffer_type", ["sequential", "episode"])
+def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path):
+    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number
+    cfg = dotdict(
+        {
+            "dry_run": False,
+            "seed": 0,
+            "buffer": {"size": 1000, "type": buffer_type, "memmap": False, "prioritize_ends": False},
+            "env": {"num_envs": 4},
+            "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+        }
+    )
+    buffer = build_buffer(SimpleNamespace(world_size=2, global_rank=0), cfg, str(tmp_path), dry_run_size=2)
+    if buffer_type == "episode":
+        assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
+    else:
+        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
 
 
 def behaviour_on_continuous_actions(overrides):
