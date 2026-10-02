@@ -5,6 +5,7 @@ import os
 import shutil
 import typing
 import uuid
+import warnings
 from itertools import compress
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Type
@@ -755,8 +756,8 @@ class EpisodeBuffer:
 
     Args:
         buffer_size (int): The capacity of the buffer.
-        sequence_length (int): The length of the sequences of the samples
-            (an episode cannot be shorter than the episode length).
+        minimum_episode_length (int): The length of the sequences of the samples: the shorter episodes, and the ones
+            longer than the buffer, are skipped with a warning.
         n_envs (int): The number of environments.
             Default to 1.
         obs_keys (Sequence[str]): The observations keys to store in the buffer.
@@ -990,12 +991,14 @@ class EpisodeBuffer:
         ep_len = ends.shape[0]
         if len(ends.nonzero()[0]) != 1 or ends[-1] != 1:
             raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(ends))}")
-        if ep_len < self._minimum_episode_length:
-            raise RuntimeError(
-                f"Episode too short (at least {self._minimum_episode_length} steps), got: {ep_len} steps"
+        # As DreamerV2 does, the episodes shorter than the sampled sequences (they cannot be sampled) are skipped, and
+        # so are the ones longer than the buffer (they cannot be stored)
+        if ep_len < self._minimum_episode_length or ep_len > self._buffer_size:
+            warnings.warn(
+                f"Skipping the episodes shorter than {self._minimum_episode_length} steps "
+                f"or longer than {self._buffer_size} steps (the buffer size)"
             )
-        if ep_len > self._buffer_size:
-            raise RuntimeError(f"Episode too long (at most {self._buffer_size} steps), got: {ep_len} steps")
+            return
 
         # If the buffer is full, then remove the oldest episodes
         if self.full or len(self) + ep_len > self._buffer_size:
