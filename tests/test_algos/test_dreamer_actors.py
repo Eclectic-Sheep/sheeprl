@@ -1,5 +1,5 @@
 """The actors of DreamerV2 and DreamerV3 (DreamerV1 and the Plan2Explore variants use them too): their distributions
-over continuous actions."""
+over continuous actions, and the actors of MineDojo."""
 
 import pytest
 import torch
@@ -7,6 +7,7 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v3.agent import Actor as DV3Actor
+from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
 
 LATENT, UNITS = 6, 8
 
@@ -70,3 +71,15 @@ def test_greedy_continuous_actions_are_the_most_likely_sample_of_every_environme
     log_prob = dist.log_prob(sample)
     for env in range(num_envs):
         torch.testing.assert_close(actions[0, env], sample[log_prob[:, 0, env].argmax(), 0, env])
+
+
+def test_the_minedojo_actor_of_dreamer_v3_samples_its_actions():
+    # It took the most likely actions unless asked otherwise: the imagination, which doesn't ask, learned from the
+    # greedy actions only
+    actor = make_actor(DV3MinedojoActor, "discrete", actions_dim=(4, 3, 3), is_continuous=False)
+    state = torch.randn(1, 200, LATENT)
+    actions, dists = actor(state)
+    greedy_actions, _ = actor(state, greedy=True)
+    for action, greedy_action, dist in zip(actions, greedy_actions, dists):
+        torch.testing.assert_close(greedy_action, dist.mode)
+        assert (action != greedy_action).any(-1).float().mean() > 0.2
