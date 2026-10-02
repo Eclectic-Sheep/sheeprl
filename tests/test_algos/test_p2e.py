@@ -1,4 +1,5 @@
-"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the optimizer of the ensembles, the slow critic of a finetuning."""
+"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the optimizer of the ensembles, the slow critic of a finetuning, the
+configuration of the actors."""
 
 from typing import List
 
@@ -97,3 +98,18 @@ def test_a_finetuning_keeps_the_slow_critic_of_the_exploration(tmp_path, monkeyp
     assert 0 < tau < 1
     for c, t, updated in zip(critic, target, state.target_critic_task.parameters()):
         torch.testing.assert_close(updated.detach(), tau * c + (1 - tau) * t)
+
+
+def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_actor(tmp_path):
+    # The actors ignored `algo.actor.max_std` and `algo.actor.unimix` (the one of the world model, `algo.unimix`, was
+    # used), and the exploration actor of P2E-DV3 `algo.actor.action_clip`. The task actor is built as the actor of
+    # DreamerV3
+    _, state = build(
+        P2EDV3Exploration,
+        ["exp=p2e_dv3_exploration", "algo.actor.max_std=0.7", "algo.actor.unimix=0.2", "algo.actor.action_clip=0.3"],
+        str(tmp_path),
+    )
+    for actor in (state.actor_task.module, state.actor_exploration.module):
+        assert actor.max_std == 0.7
+        assert actor._unimix == 0.2
+        assert actor._action_clip == 0.3
