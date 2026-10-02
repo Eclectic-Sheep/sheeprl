@@ -679,21 +679,30 @@ class EnvIndependentReplayBuffer:
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
 
-        bs_per_buf = np.bincount(self._rng.integers(0, self._n_envs, (batch_size,)))
-        per_buf_samples = [
-            b.sample(
-                batch_size=bs,
+        # The environment of every element of every batch, drawn independently: the batches of one call don't take the
+        # same number of elements from each environment
+        env_idxes = self._rng.integers(0, self._n_envs, (n_samples, batch_size))
+        axis = self._concat_along_axis
+        samples: Dict[str, np.ndarray] = {}
+        for env, buf in enumerate(self._buf):
+            sample_idxes, element_idxes = np.nonzero(env_idxes == env)
+            if len(sample_idxes) == 0:
+                continue
+            # All the elements of this environment at once, along the batch axis of a single sample
+            env_samples = buf.sample(
+                batch_size=len(sample_idxes),
                 sample_next_obs=sample_next_obs,
                 clone=clone,
-                n_samples=n_samples,
+                n_samples=1,
                 **kwargs,
             )
-            for b, bs in zip(self._buf, bs_per_buf)
-            if bs > 0
-        ]
-        samples = {}
-        for k in per_buf_samples[0].keys():
-            samples[k] = np.concatenate([s[k] for s in per_buf_samples], axis=self._concat_along_axis)
+            for k, v in env_samples.items():
+                if k not in samples:
+                    shape = list(v.shape)
+                    shape[0], shape[axis] = n_samples, batch_size
+                    samples[k] = np.empty(shape, dtype=v.dtype)
+                # Write them where they were drawn: index the samples and the batch axis together
+                np.moveaxis(samples[k], axis, 1)[sample_idxes, element_idxes] = np.moveaxis(v[0], axis - 1, 0)
         return samples
 
     @torch.no_grad()
