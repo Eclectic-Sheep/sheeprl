@@ -14,6 +14,7 @@ from sheeprl.envs.wrappers import (
     FrameStack,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
+    NormalizeAction,
     RewardAsObservationWrapper,
 )
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
@@ -112,6 +113,11 @@ def make_env(
         if "rank" in cfg.env.wrapper:
             instantiate_kwargs["rank"] = rank + vector_env_idx
         env = hydra.utils.instantiate(cfg.env.wrapper, **instantiate_kwargs, _convert_="all")
+
+        # The bounded continuous actions exposed as [-1, 1], the range of the actor (the Dreamers). Read with a
+        # default: the configurations saved before the option don't have it, and their checkpoints play as trained
+        if cfg.algo.get("normalize_actions", False) and isinstance(env.action_space, gym.spaces.Box):
+            env = NormalizeAction(env)
 
         # action repeat: the Atari environments repeat the action through the `frame_skip`
         # argument of the `AtariPreprocessing` wrapper

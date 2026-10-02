@@ -44,6 +44,10 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
             "or through the CLI."
         )
 
+    # A run saved before `algo.normalize_actions` existed played the actions of the policy as they were: it goes on so
+    if "normalize_actions" in cfg.algo and "normalize_actions" not in old_cfg.algo:
+        old_cfg.algo["normalize_actions"] = False
+
     # Remove keys from the `old_cfg` that must not be overridden
     old_cfg.pop("root_dir", None)
     old_cfg.pop("run_name", None)
