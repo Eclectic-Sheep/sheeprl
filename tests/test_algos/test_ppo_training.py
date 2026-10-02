@@ -1,6 +1,7 @@
 """PPO and A2C: the rewards of the rollout, the losses, the advantages."""
 
 import glob
+import importlib
 import os
 import shutil
 import sys
@@ -93,17 +94,18 @@ def test_the_buffer_holds_one_rollout(exp):
         shutil.rmtree(os.path.join("logs", "runs", "pytest_ppo_buffer_size"), ignore_errors=True)
 
 
-def test_a_resumed_run_anneals_with_its_own_total_steps():
+@pytest.mark.parametrize("exp", ["ppo", "ppo_recurrent"])
+def test_a_resumed_run_anneals_with_its_own_total_steps(exp):
     # A run of 2 iterations resumed for 4: the learning rate and the clip coefficient of iterations 3 and 4 are the ones
     # of a run of 4 iterations. The scheduler of the checkpoint kept the horizon of 2 (learning rate 0 after it), and
     # the coefficients restarted from the configured ones
-    from sheeprl.algos.ppo import ppo
     from sheeprl.cli import run
 
-    root_dir = "pytest_ppo_anneal"
+    module = importlib.import_module(f"sheeprl.algos.{exp}.{exp}")
+    root_dir = f"pytest_{exp}_anneal"
     args = [
         os.path.join(ROOT_DIR, "__main__.py"),
-        "exp=ppo",
+        f"exp={exp}",
         "env.num_envs=2",
         "algo.rollout_steps=4",
         "algo.per_rank_batch_size=4",
@@ -120,15 +122,17 @@ def test_a_resumed_run_anneals_with_its_own_total_steps():
         "checkpoint.save_last=True",
         f"root_dir={root_dir}",
     ]
+    if exp == "ppo_recurrent":
+        args.append("algo.per_rank_sequence_length=2")
     schedule = []
 
     def recording_train(fabric, agent, optimizer, data, aggregator, cfg):
         schedule.append((optimizer.param_groups[0]["lr"], cfg.algo.clip_coef))
-        return ppo_train(fabric, agent, optimizer, data, aggregator, cfg)
+        return module_train(fabric, agent, optimizer, data, aggregator, cfg)
 
-    ppo_train = ppo.train
+    module_train = module.train
     try:
-        with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(ppo, "train", recording_train):
+        with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(module, "train", recording_train):
             with mock.patch.object(sys, "argv", [*args, "algo.total_steps=16", "run_name=first"]):
                 run()
             (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "first", "version_*", "checkpoint", "*"))
