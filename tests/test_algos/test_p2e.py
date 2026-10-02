@@ -1,5 +1,7 @@
-"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles."""
+"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer."""
 
+import importlib
+import inspect
 import os
 import shutil
 import sys
@@ -67,3 +69,35 @@ def test_the_ensembles_are_trained_in_mixed_precision(version):
         )
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+
+
+@pytest.mark.parametrize("version", ["1", "2", "3"])
+def test_the_ensembles_are_trained_with_their_optimizer(version):
+    # Their optimizer was the one of the critic (P2E-DV2, P2E-DV3) or of the world model (P2E-DV1), not
+    # `algo.ensembles.optimizer`
+    module = importlib.import_module(f"sheeprl.algos.p2e_dv{version}.p2e_dv{version}_exploration")
+    optimizers = []
+
+    def recording_train(*args, **kwargs):
+        optimizers.append(inspect.signature(module_train).bind(*args, **kwargs).arguments["ensemble_optimizer"])
+        return module_train(*args, **kwargs)
+
+    module_train = module.train
+    root_dir = f"pytest_p2e_dv{version}_ensemble_optimizer"
+    try:
+        with mock.patch.object(module, "train", recording_train):
+            run_p2e(
+                [
+                    f"exp=p2e_dv{version}_exploration",
+                    f"algo.per_rank_sequence_length={'1' if version == '3' else '2'}",
+                    "algo.ensembles.optimizer.lr=0.0123",
+                    "algo.ensembles.optimizer.weight_decay=0.0456",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert len(optimizers) > 0
+    for optimizer in optimizers:
+        (group,) = optimizer.param_groups
+        assert group["lr"] == 0.0123 and group["weight_decay"] == 0.0456

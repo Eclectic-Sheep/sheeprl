@@ -634,7 +634,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.algo.critic.optimizer, params=critic_task.parameters(), _convert_="all"
     )
     ensemble_optimizer = hydra.utils.instantiate(
-        cfg.algo.critic.optimizer, params=ensembles.parameters(), _convert_="all"
+        cfg.algo.ensembles.optimizer, params=ensembles.parameters(), _convert_="all"
     )
     if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
