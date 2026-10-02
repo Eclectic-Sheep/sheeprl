@@ -8,15 +8,35 @@ from __future__ import annotations
 
 import itertools
 from contextlib import AbstractContextManager
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 import torch
 from lightning import Fabric
+from lightning.fabric.plugins.precision.amp import MixedPrecision
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric
+
+
+class _CompilableFabricModule(_FabricModule):
+    """The module of `setup_module`: a `_FabricModule` that can be compiled with `torch.compile` in mixed precision.
+
+    In mixed precision, `_FabricModule` registers a hook on the outputs that checks, during the backward pass, that it
+    goes through `fabric.backward` (as `update` does): traced by `torch.compile`, the hook breaks the graph at every
+    call of the module. While compiling, this module does the conversions of the mixed precision (the inputs to the
+    precision, the outputs to the default type) without the hook. Otherwise it is a `_FabricModule`.
+    """
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        precision = self._strategy.precision
+        if not torch.compiler.is_compiling() or not isinstance(precision, MixedPrecision):
+            return super().forward(*args, **kwargs)
+        args, kwargs = precision.convert_input((args, kwargs))
+        with precision.forward_context():
+            output = self._forward_module(*args, **kwargs)
+        return precision.convert_output(output)
 
 
 def setup_module(fabric: Fabric, module: nn.Module) -> _FabricModule:
@@ -27,6 +47,9 @@ def setup_module(fabric: Fabric, module: nn.Module) -> _FabricModule:
     The returned module runs every call in the precision of `fabric` (`fabric.precision`).
     """
     module = get_single_device_fabric(fabric).setup_module(module)
+    # The same object, with the forward of `_CompilableFabricModule` (`_FabricModule.__setattr__` would also change the
+    # class of the wrapped module)
+    object.__setattr__(module, "__class__", _CompilableFabricModule)
     if fabric.world_size > 1:
         for tensor in itertools.chain(module.parameters(), module.buffers()):
             torch.distributed.broadcast(tensor.data, src=0)

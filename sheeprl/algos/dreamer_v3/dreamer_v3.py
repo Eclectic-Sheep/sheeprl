@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import copy
 import os
+import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -182,7 +183,7 @@ class SequencePlayer:
 
 
 def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """The configuration of `world_model_loss`, as plain values."""
+    """The configuration of `world_model_loss`, as plain values (a compiled function guards on them)."""
     world_model_cfg = cfg.algo.world_model
     return {
         "cnn_keys": tuple(cfg.algo.cnn_keys.encoder),
@@ -219,8 +220,8 @@ def world_model_loss(
     detach_heads: bool = False,
     entropies: bool = True,
 ) -> Tuple[Tensor, Tensor, Tensor, Dict[str, Tensor]]:
-    """The loss of the world model on a batch of sequences (Eq. 4 in the paper), without the optimization step. The
-    configuration is given by `world_model_loss_kwargs`.
+    """The loss of the world model on a batch of sequences (Eq. 4 in the paper), without the optimization step: it
+    can be compiled (`algo.compile`). The configuration is given by `world_model_loss_kwargs`.
 
     Args:
         detach_heads: the reward and continue models learn from the latent states without changing them (P2E).
@@ -352,6 +353,39 @@ def world_model_loss(
     return rec_loss, posteriors, recurrent_states, metrics
 
 
+# The precisions in which the losses are compiled with CUDA graphs (`algo.compile.mode=reduce-overhead`)
+CUDA_GRAPHS_PRECISIONS = ("32-true", "32", 32, "bf16-mixed")
+
+
+def compile_mode(cfg: Dict[str, Any]) -> Optional[str]:
+    """The mode of `torch.compile` for the losses (`algo.compile.mode`), `None` for the default one. CUDA graphs
+    (`reduce-overhead`) are used only in the precisions where they have been tested (`CUDA_GRAPHS_PRECISIONS`)."""
+    mode = (cfg.algo.get("compile") or {}).get("mode", None)
+    if mode == "reduce-overhead" and cfg.fabric.precision not in CUDA_GRAPHS_PRECISIONS:
+        if not _WARNED.get("reduce-overhead"):
+            warnings.warn(
+                f"`algo.compile.mode=reduce-overhead` (CUDA graphs) is not used with `fabric.precision="
+                f"{cfg.fabric.precision}`: the losses are compiled with the default mode"
+            )
+            _WARNED["reduce-overhead"] = True
+        return None
+    return mode
+
+
+def compiled(fn: Callable, cfg: Dict[str, Any]) -> Callable:
+    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call)."""
+    if not (cfg.algo.get("compile") or {}).get("enabled", False):
+        return fn
+    mode = compile_mode(cfg)
+    if (fn, mode) not in _COMPILED:
+        _COMPILED[fn, mode] = torch.compile(fn, mode=mode)
+    return _COMPILED[fn, mode]
+
+
+_COMPILED: Dict[Tuple[Callable, Optional[str]], Callable] = {}
+_WARNED: Dict[str, bool] = {}
+
+
 def world_model_learning(
     fabric: Fabric,
     cfg: Dict[str, Any],
@@ -370,8 +404,11 @@ def world_model_learning(
     """
     # Every sequence starts an episode: the world model starts from its initial state
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
+    if (cfg.algo.get("compile") or {}).get("enabled", False) and compile_mode(cfg) == "reduce-overhead":
+        # A new gradient step: the outputs of the CUDA graphs of the previous one, already used, can be overwritten
+        torch.compiler.cudagraph_mark_step_begin()
     with autocast(fabric):
-        rec_loss, posteriors, recurrent_states, metrics = world_model_loss(
+        rec_loss, posteriors, recurrent_states, metrics = compiled(world_model_loss, cfg)(
             world_model,
             data,
             **world_model_loss_kwargs(cfg),
@@ -403,7 +440,7 @@ def imagine(
     lmbda: float,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor, and estimate
-    their lambda-values.
+    their lambda-values. Can be compiled (`algo.compile`).
 
     Returns:
         The imagined latent states and actions, the values predicted by the critic, the lambda-values and the
@@ -473,7 +510,7 @@ def actor_loss(
     ent_coef: float,
 ) -> Tensor:
     """The loss of the actor (Eq. 11 in the paper), from the imagined trajectories and the normalization of the
-    returns (`offset`, `invscale`)."""
+    returns (`offset`, `invscale`). Can be compiled (`algo.compile`)."""
     # Given the following diagram, with H=3
     # Actions:          [a'0]    [a'1]    [a'2]    a'3
     #                    ^ \      ^ \      ^ \     ^
@@ -509,8 +546,8 @@ def actor_loss(
 def critic_loss(
     critic: nn.Module, target_critic: nn.Module, imagined_trajectories: Tensor, lambda_values: Tensor, discount: Tensor
 ) -> Tensor:
-    """The loss of the critic (Eq. 10 in the paper): the lambda-values and the values of the target critic as
-    targets."""
+    """The loss of the critic (Eq. 10 in the paper): the lambda-values and the values of the target critic as targets.
+    Can be compiled (`algo.compile`)."""
     qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
     predicted_target_values = TwoHotEncodingDistribution(
         target_critic(imagined_trajectories.detach()[:-1]), dims=1
@@ -547,7 +584,7 @@ def behaviour_learning(
     # their gradients: the imagination needs a computational graph only for the continuous actions (dynamics
     # backpropagation)
     with autocast(fabric), torch.set_grad_enabled(is_continuous):
-        imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = imagine(
+        imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = compiled(imagine, cfg)(
             world_model,
             actor,
             critic,
@@ -559,9 +596,9 @@ def behaviour_learning(
             lmbda=cfg.algo.lmbda,
         )
     with autocast(fabric):
-        # The normalization of the returns, from their percentiles
+        # The normalization of the returns, from their percentiles (not compiled: it updates its state in place)
         offset, invscale = moments(lambda_values, fabric)
-        policy_loss = actor_loss(
+        policy_loss = compiled(actor_loss, cfg)(
             actor,
             imagined_trajectories,
             imagined_actions,
@@ -583,7 +620,7 @@ def behaviour_learning(
     )
 
     with autocast(fabric):
-        value_loss = critic_loss(critic, target_critic, imagined_trajectories, lambda_values, discount)
+        value_loss = compiled(critic_loss, cfg)(critic, target_critic, imagined_trajectories, lambda_values, discount)
     critic_grads = update(
         fabric,
         value_loss,

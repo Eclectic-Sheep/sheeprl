@@ -1,8 +1,9 @@
 """DreamerV3 (and P2E-DV3): the initialization of the weights, the normalization layers of the decoder, the gradient
-steps (the representation model, the KL loss)."""
+steps (the representation model, the KL loss, the compiled losses)."""
 
 import math
 import tempfile
+import warnings
 
 import gymnasium as gym
 import numpy as np
@@ -15,6 +16,7 @@ from torch import nn
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 from torch.distributions.kl import kl_divergence
 
+from sheeprl.algos.dreamer_v3 import agent as dv3_agent
 from sheeprl.algos.dreamer_v3 import dreamer_v3
 from sheeprl.algos.dreamer_v3.agent import RepresentationModel, build_models
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
@@ -208,3 +210,44 @@ def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
     assert all(torch.isfinite(v).all() for v in metrics.values())
     assert {"Loss/world_model_loss", "Loss/policy_loss", "Loss/value_loss", "State/kl"} <= set(metrics)
     assert any(not torch.equal(b, a) for b, a in zip(before, state.world_model.parameters()))
+
+
+def test_cuda_graphs_are_used_only_in_the_tested_precisions():
+    cfg = dotdict(
+        {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
+    )
+    assert dreamer_v3.compile_mode(cfg) == "reduce-overhead"
+    cfg.fabric.precision = "bf16-mixed"
+    assert dreamer_v3.compile_mode(cfg) == "reduce-overhead"
+    cfg.fabric.precision = "16-mixed"
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        assert dreamer_v3.compile_mode(cfg) is None
+    # Not compiled unless enabled
+    cfg.algo.compile.enabled = False
+    assert dreamer_v3.compiled(dreamer_v3.world_model_loss, cfg) is dreamer_v3.world_model_loss
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("precision,tolerance", [("32-true", 1e-4), ("bf16-mixed", 2e-2)])
+def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, precision, tolerance):
+    # The same weights, the same batch and the latents taken as the most likely ones (the compiled code draws other
+    # random numbers): the same losses, with and without `torch.compile` (and its CUDA graphs). In mixed precision the
+    # modules are compiled without the hook of Lightning on their outputs (`sheeprl.core.update.setup_module`)
+    original = dv3_agent.compute_stochastic_state
+    monkeypatch.setattr(
+        dv3_agent,
+        "compute_stochastic_state",
+        lambda logits, discrete=32, sample=True: original(logits, discrete=discrete, sample=False),
+    )
+    monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
+    losses = []
+    for enabled in (False, True):
+        _, algo, state, batch = small_dreamer_v3(
+            [f"algo.compile.enabled={enabled}", f"fabric.precision={precision}"],
+            accelerator="cuda",
+            precision=precision,
+        )
+        losses.append(algo.train_step(state, batch, 0))
+    for name in ("Loss/world_model_loss", "Loss/observation_loss", "Loss/state_loss", "Loss/value_loss"):
+        torch.testing.assert_close(losses[1][name], losses[0][name], rtol=tolerance, atol=tolerance)
