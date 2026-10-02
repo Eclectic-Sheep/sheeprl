@@ -2,21 +2,19 @@ from __future__ import annotations
 
 import copy
 from math import prod
-from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import hydra
 import numpy as np
 import torch
 import torch.nn as nn
-from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
@@ -498,21 +496,20 @@ class SACAEPlayer(nn.Module):
         return self(obs, greedy)
 
 
-def build_agent(
-    fabric: Fabric,
+def build_models(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
-    agent_state: Optional[Dict[str, Tensor]] = None,
-    encoder_state: Optional[Dict[str, Tensor]] = None,
-    decoder_sate: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPlayer]:
+    device: torch.device,
+) -> Tuple[SACAEAgent, MultiEncoder, MultiDecoder]:
+    """Create the models of SAC-AE with their initial weights: the agent (actor, critics, target critics and entropy
+    coefficient), the encoder of the critics and the decoder. The actor's encoder shares its convolutional and MLP
+    layers with the critics' one. They are not set up with Fabric.
+    """
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
-    # Define the encoder and decoder and setup them with fabric.
-    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
-    # we do not need it wrapped with the strategy inside actor and critic
+    # The encoder and the decoder
     cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
     mlp_dims = [obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
     cnn_encoder = (
@@ -565,10 +562,6 @@ def build_agent(
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
-    if encoder_state:
-        encoder.load_state_dict(encoder_state)
-    if decoder_sate:
-        decoder.load_state_dict(decoder_sate)
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
@@ -596,48 +589,6 @@ def build_agent(
         alpha=cfg.algo.alpha.alpha,
         tau=cfg.algo.tau,
         encoder_tau=cfg.algo.encoder.tau,
-        device=fabric.device,
+        device=device,
     )
-
-    if agent_state:
-        agent.load_state_dict(agent_state)
-
-    # Setup player agent
-    player = SACAEPlayer(
-        copy.deepcopy(agent.actor.encoder),
-        copy.deepcopy(agent.actor.model),
-        copy.deepcopy(agent.actor.fc_mean),
-        copy.deepcopy(agent.actor.fc_logstd),
-        action_low=action_space.low,
-        action_high=action_space.high,
-    )
-
-    # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`) and they are
-    # trained only through the critic and decoder losses: they must be ignored by the actor DDP reducer,
-    # otherwise the same parameters would be synchronized by multiple DDP reducers
-    critic_params = {id(p) for p in agent.critic.parameters()}
-    torch.nn.parallel.DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(
-        agent.actor, [name for name, p in agent.actor.named_parameters() if id(p) in critic_params]
-    )
-    encoder = fabric.setup_module(encoder)
-    decoder = fabric.setup_module(decoder)
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critic = fabric.setup_module(agent.critic)
-
-    # Wrap the target critic with a single-device fabric. This lets the target critic
-    # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
-    agent.critic_target = fabric_player.setup_module(agent.critic_target)
-
-    # Setup player agent
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
-
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    return agent, encoder, decoder, player
+    return agent, encoder, decoder

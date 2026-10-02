@@ -122,18 +122,17 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.sac_ae.agent import build_agent
+    from sheeprl.algos.sac_ae.sac_ae import SACAE
+    from sheeprl.core import load_trained_state
 
-    # Create the models
-    agent, encoder, decoder = build_agent(
-        fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]
-    )
+    # The models are built as by the training, with its configuration
+    algo = SACAE(fabric, cfg.to_log)
+    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
-        model_info["encoder"] = mlflow.pytorch.log_model(unwrap_fabric(encoder), artifact_path="encoder")
-        model_info["decoder"] = mlflow.pytorch.log_model(unwrap_fabric(decoder), artifact_path="decoder")
+        for name in ("agent", "encoder", "decoder"):
+            model_info[name] = mlflow.pytorch.log_model(unwrap_fabric(getattr(trained, name)), artifact_path=name)
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

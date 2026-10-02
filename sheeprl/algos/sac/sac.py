@@ -108,11 +108,11 @@ def sample_batches(
     )  # [1, N_Samples, ...]
     if fabric.world_size == 1:
         data = {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
-        return data, range(len(data["observations"]))
+        return data, range(n_samples)
     data = fabric.all_gather(sample)  # [World_Size, 1, N_Samples, ...]
     data = {k: v.float().reshape(-1, *sample[k].shape[2:]) for k, v in data.items()}
     sampler = DistributedSampler(
-        list(range(len(data["observations"]))),
+        list(range(n_samples * fabric.world_size)),
         num_replicas=fabric.world_size,
         rank=fabric.global_rank,
         shuffle=True,

@@ -107,6 +107,25 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "policy": lambda saved: entries(saved["agent"], "_actor."),
         "models": ["agent"],
     },
+    "sac_ae": {
+        "args": [
+            "exp=sac_ae",
+            # Pendulum rendered: the actions of the dummy environments are unbounded
+            "env.id=Pendulum-v1",
+            "env.frame_stack=1",
+            "algo.cnn_keys.encoder=[rgb]",
+            "algo.mlp_keys.encoder=[state]",
+            "algo.hidden_size=8",
+            "algo.dense_units=8",
+            "algo.cnn_channels_multiplier=1",
+            "algo.encoder.features_dim=8",
+            "algo.per_rank_batch_size=4",
+            "algo.learning_starts=0",
+        ],
+        # The policy is made of the modules of the actor (its encoder shares the layers of the critics' one)
+        "policy": lambda saved: entries(saved["agent"], "_actor."),
+        "models": ["agent", "encoder", "decoder"],
+    },
     "dreamer_v3": {
         "args": ["exp=dreamer_v3", *DREAMER_ARGS],
         "policy": lambda saved: dreamer_policy(saved, "actor"),
