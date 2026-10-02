@@ -2,8 +2,21 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution, Independent, OneHotCategoricalStraightThrough
-from torch.distributions.kl import kl_divergence
+from torch.distributions import Distribution
+
+
+def categorical_kl(p_logits: Tensor, q_logits: Tensor) -> Tensor:
+    """The KL divergence between independent categorical distributions, given by the logits of their classes (the
+    last dimension), summed over the variables (the dimension before): the one of
+    `kl_divergence(Independent(OneHotCategorical(logits=p_logits), 1), Independent(OneHotCategorical(logits=q_logits),
+    1))`, computed as PyTorch does, without its distributions (which `torch.compile` handles less well)."""
+    p_log_probs = p_logits - p_logits.logsumexp(dim=-1, keepdim=True)
+    q_log_probs = q_logits - q_logits.logsumexp(dim=-1, keepdim=True)
+    p_probs, q_probs = p_log_probs.softmax(dim=-1), q_log_probs.softmax(dim=-1)
+    t = p_probs * (p_log_probs - q_log_probs)
+    t = torch.where(q_probs == 0, torch.inf, t)
+    t = torch.where(p_probs == 0, 0.0, t)
+    return t.sum(dim=-1).sum(dim=-1)
 
 
 def reconstruction_loss(
@@ -61,16 +74,10 @@ def reconstruction_loss(
     observation_loss = -sum([po[k].log_prob(observations[k]) for k in po.keys()])
     reward_loss = -pr.log_prob(rewards)
     # KL balancing
-    dyn_loss = kl = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
-    )
+    dyn_loss = kl = categorical_kl(posteriors_logits.detach(), priors_logits)
     free_nats = torch.full_like(dyn_loss, kl_free_nats)
     dyn_loss = kl_dynamic * torch.maximum(dyn_loss, free_nats)
-    repr_loss = kl_divergence(
-        Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
-        Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
-    )
+    repr_loss = categorical_kl(posteriors_logits, priors_logits.detach())
     repr_loss = kl_representation * torch.maximum(repr_loss, free_nats)
     kl_loss = dyn_loss + repr_loss
     if pc is not None and continue_targets is not None:
