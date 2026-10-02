@@ -997,7 +997,6 @@ from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
 from sheeprl.algos.sac import sac as sac
-from sheeprl.algos.sac import sac_decoupled as sac_decoupled
 from sheeprl.algos.sac_ae import sac_ae as sac_ae
 +from sheeprl.algos.sota import sota as sota
 
@@ -1019,7 +1018,6 @@ SheepRL Agents
 │ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │ False     │
 │ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │ False     │
 │ sheeprl.algos.sac           │ sac           │ main       │ False     │
-│ sheeprl.algos.sac           │ sac_decoupled │ main       │ True      │
 │ sheeprl.algos.droq          │ droq          │ main       │ False     │
 │ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
 │ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │

@@ -31,7 +31,6 @@ sheeprl/configs
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
-│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── buffer
 │   └── default.yaml
@@ -93,7 +92,6 @@ sheeprl/configs
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
 │   ├── sac_benchmarks.yaml
-│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── fabric
 │   ├── ddp-cpu.yaml
