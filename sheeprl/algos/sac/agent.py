@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -348,8 +348,8 @@ def build_agent(
     # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
     # are kept
     qfs_target = agent.qfs_target
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+    agent.actor = setup_module(fabric, agent.actor)
+    agent.critics = [setup_module(fabric, critic) for critic in agent.critics]
     if agent_state:
         agent.qfs_target = qfs_target
 

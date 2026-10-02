@@ -23,7 +23,7 @@ from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -63,9 +63,7 @@ def train(
         )
         qf_values = agent.get_q_values(normalized_obs, data["actions"])
         qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
-        qf_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(qf_loss)
-    qf_optimizer.step()
+    update(fabric, qf_loss, qf_optimizer)
     if aggregator and not aggregator.disabled:
         aggregator.update("Loss/value_loss", qf_loss)
 
@@ -81,16 +79,11 @@ def train(
             qf_values = agent.get_q_values(normalized_obs, actions, detach_encoder_features=True)
             min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
             actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-            actor_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(actor_loss)
-        actor_optimizer.step()
+        update(fabric, actor_loss, actor_optimizer)
 
         # Update the entropy value
         alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-        alpha_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(alpha_loss)
-        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-        alpha_optimizer.step()
+        update(fabric, alpha_loss, alpha_optimizer)
 
         if aggregator and not aggregator.disabled:
             aggregator.update("Loss/policy_loss", actor_loss)
@@ -108,10 +101,14 @@ def train(
                     F.mse_loss(target, reconstruction[k])  # Reconstruction
                     + cfg.algo.decoder.l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
                 )
-            encoder_optimizer.zero_grad(set_to_none=True)
-            decoder_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(reconstruction_loss)
-        encoder_optimizer.step()
+        # One backward pass for both, then the step of the encoder and the one of the decoder
+        decoder_optimizer.zero_grad(set_to_none=True)
+        update(
+            fabric,
+            reconstruction_loss,
+            encoder_optimizer,
+            params=[*encoder.parameters(), *decoder.parameters()],
+        )
         decoder_optimizer.step()
         if aggregator and not aggregator.disabled:
             aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
@@ -393,9 +390,10 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     sample_next_obs=cfg.buffer.sample_next_obs,
                     from_numpy=cfg.buffer.from_numpy,
                 )  # [1, G*B]
-                gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, 1, G*B]
+                # [World, 1, G*B] with several processes, [1, G*B] with one (no dimension of the processes)
+                gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)
                 for k, v in gathered_data.items():
-                    gathered_data[k] = v.flatten(start_dim=0, end_dim=2).float()  # [G*B*World]
+                    gathered_data[k] = v.reshape(-1, *sample[k].shape[2:]).float()  # [G*B*World]
                 len_data = len(gathered_data[next(iter(gathered_data.keys()))])
                 if fabric.world_size > 1:
                     dist_sampler: DistributedSampler = DistributedSampler(

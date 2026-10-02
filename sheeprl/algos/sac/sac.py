@@ -3,14 +3,13 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.plugins.collectives.collective import CollectibleGroup
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
@@ -21,7 +20,7 @@ from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -37,10 +36,9 @@ def train(
     alpha_optimizer: Optimizer,
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
-    update: int,
+    iteration: int,
     cfg: Dict[str, Any],
     policy_steps_per_iter: int,
-    group: Optional[CollectibleGroup] = None,
 ):
     # Update the soft-critic
     with autocast_cache_scope(fabric):
@@ -49,12 +47,10 @@ def train(
         )
         qf_values = agent.get_q_values(data["observations"], data["actions"])
         qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
-        qf_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(qf_loss)
-    qf_optimizer.step()
+    update(fabric, qf_loss, qf_optimizer)
 
     # Update the target networks with EMA
-    if update % (cfg.algo.critic.target_network_frequency // policy_steps_per_iter + 1) == 0:
+    if iteration % (cfg.algo.critic.target_network_frequency // policy_steps_per_iter + 1) == 0:
         agent.qfs_target_ema()
 
     # Update the actor
@@ -63,16 +59,11 @@ def train(
         qf_values = agent.get_q_values(data["observations"], actions)
         min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
         actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-        actor_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(actor_loss)
-    actor_optimizer.step()
+    update(fabric, actor_loss, actor_optimizer)
 
     # Update the entropy value
     alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-    alpha_optimizer.zero_grad(set_to_none=True)
-    fabric.backward(alpha_loss)
-    agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad, group=group)
-    alpha_optimizer.step()
+    update(fabric, alpha_loss, alpha_optimizer)
 
     if aggregator and not aggregator.disabled:
         aggregator.update("Loss/value_loss", qf_loss)
