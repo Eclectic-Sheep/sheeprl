@@ -290,6 +290,25 @@ class Ratio:
         self._prev += repeats / self._ratio
         return repeats
 
+    def realign(self, step: float) -> None:
+        """Continue from `step`, the step of the last call before the state of the ratio was saved.
+
+        A ratio continues from the step of its last call minus less than one gradient step (`1 / ratio` steps). The
+        state saved by a run that counted its steps from another start (a run resumed by an older version, which counted
+        them from where it resumed) is behind or ahead of `step` by more: the first call would do all the gradient steps
+        in between at once, or none for a while. Such a ratio continues from `step`, with a warning.
+        """
+        if self._ratio == 0 or self._prev is None:
+            return
+        behind = step - self._prev
+        if -1e-6 <= behind < 1 / self._ratio + 1e-6:
+            return
+        warnings.warn(
+            f"The replay ratio of the checkpoint counted {self._prev} steps, but the run resumes after {step}: it "
+            f"continues from {step} instead of doing {int(max(behind, 0) * self._ratio)} gradient steps at once"
+        )
+        self._prev = step
+
     def state_dict(self) -> Dict[str, Any]:
         return {"_ratio": self._ratio, "_prev": self._prev, "_pretrain_steps": self._pretrain_steps}
 
@@ -332,6 +351,8 @@ def off_policy_schedule(
     ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
     if cfg.checkpoint.resume_from and not refill:
         ratio.load_state_dict(state["ratio"])
+        # The policy steps of every process counted by the ratio at the end of the iteration of the checkpoint
+        ratio.realign((start_iter - train_starts) * policy_steps_per_iter / world_size)
     return learning_starts, train_starts, ratio
 
 
