@@ -49,3 +49,19 @@ def test_the_phases_are_timed_by_every_process_on_its_own(exp, monkeypatch):
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert set(timer.timers) >= {"Time/train_time", "Time/env_interaction_time"}
     assert not any(t.sync_on_compute for t in timer.timers.values())
+
+
+@pytest.mark.parametrize(
+    "device,disabled,synchronized", [("cuda:0", False, True), ("cpu", False, False), ("cuda:0", True, False)]
+)
+def test_the_training_timer_waits_for_the_gpu(device, disabled, synchronized, monkeypatch):
+    # The GPU runs the training after the CPU has launched it: the training timer stopped before it finished, and the
+    # first copy to the CPU of the interaction that followed waited for it, timed with the interaction
+    from sheeprl.utils.timer import training_timer
+
+    monkeypatch.setattr(timer, "timers", {})
+    monkeypatch.setattr(timer, "disabled", disabled)
+    with mock.patch("torch.cuda.synchronize") as synchronize:
+        with training_timer(device):
+            pass
+    assert synchronize.call_count == int(synchronized)

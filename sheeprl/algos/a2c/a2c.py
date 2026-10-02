@@ -19,7 +19,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import phase_timer, timer
+from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import gae, normalize_tensor, save_configs
 
 
@@ -365,7 +365,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
-        with phase_timer("Time/train_time"):
+        with training_timer(fabric.device):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
         train_step += world_size
 

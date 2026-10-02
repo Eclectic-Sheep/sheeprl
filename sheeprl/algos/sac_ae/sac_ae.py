@@ -27,7 +27,7 @@ from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import phase_timer, timer
+from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
 
 
@@ -412,7 +412,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     )
 
                 # Start training
-                with phase_timer("Time/train_time"):
+                with training_timer(fabric.device):
                     for batch_idxes in sampler:
                         train(
                             fabric,
