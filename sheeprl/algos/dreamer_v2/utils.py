@@ -219,7 +219,7 @@ def log_models_from_checkpoint(
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    world_model, actor, critic, target_critic = build_agent(
+    world_model, actor, critic, target_critic, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -244,7 +244,7 @@ def log_models_from_checkpoint(
             unwrap_fabric(critic), name="critic", serialization_format="pickle"
         )
         model_info["target_critic"] = mlflow.pytorch.log_model(
-            target_critic, name="target_critic", serialization_format="pickle"
+            unwrap_fabric(target_critic), name="target_critic", serialization_format="pickle"
         )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

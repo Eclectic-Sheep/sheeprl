@@ -30,18 +30,16 @@ def evaluate_a2c(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
         vector_env_idx=0,
     )()
     observation_space = env.observation_space
+    env.close()
 
+    # The checks of the training, which also accepts image observations
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if len(cfg.algo.mlp_keys.encoder) == 0:
-        raise RuntimeError("You should specify at least one MLP key for the encoder: `algo.mlp_keys.encoder=[state]`")
-    for k in cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder:
-        if k in observation_space.keys() and len(observation_space[k].shape) > 1:
-            raise ValueError(
-                "Only environments with vector-only observations are supported by the A2C agent. "
-                f"The observation with key '{k}' has shape {observation_space[k].shape}. "
-                f"Provided environment: {cfg.env.id}"
-            )
+    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        raise RuntimeError(
+            "You should specify at least one CNN keys or MLP keys from the cli: "
+            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+        )
     if cfg.metric.log_level > 0:
         fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)

@@ -125,7 +125,7 @@ def log_models_from_checkpoint(
     from sheeprl.algos.sac_ae.agent import build_agent
 
     # Create the models
-    agent, encoder, decoder = build_agent(
+    agent, encoder, decoder, _ = build_agent(
         fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]
     )
 

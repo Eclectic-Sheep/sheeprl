@@ -75,6 +75,7 @@ def log_models_from_checkpoint(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
+        _,
     ) = build_agent(
         fabric,
         actions_dim,
@@ -104,7 +105,7 @@ def log_models_from_checkpoint(
             unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
         )
         model_info["target_critic_task"] = mlflow.pytorch.log_model(
-            target_critic_task, name="target_critic_task", serialization_format="pickle"
+            unwrap_fabric(target_critic_task), name="target_critic_task", serialization_format="pickle"
         )
         if "exploration" in cfg.algo.name:
             model_info["ensembles"] = mlflow.pytorch.log_model(
@@ -117,7 +118,9 @@ def log_models_from_checkpoint(
                 unwrap_fabric(critic_exploration), name="critic_exploration", serialization_format="pickle"
             )
             model_info["target_critic_exploration"] = mlflow.pytorch.log_model(
-                target_critic_exploration, name="target_critic_exploration", serialization_format="pickle"
+                unwrap_fabric(target_critic_exploration),
+                name="target_critic_exploration",
+                serialization_format="pickle",
             )
         mlflow.log_dict(cfg.to_log, "config.json")
 

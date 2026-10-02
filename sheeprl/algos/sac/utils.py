@@ -93,7 +93,7 @@ def log_models_from_checkpoint(
     import mlflow  # noqa
 
     # Create the models
-    agent = build_agent(fabric, cfg, env.observation_space, env.action_space, state["agent"])
+    agent, _ = build_agent(fabric, cfg, env.observation_space, env.action_space, state["agent"])
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}

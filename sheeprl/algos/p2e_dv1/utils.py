@@ -74,6 +74,7 @@ def log_models_from_checkpoint(
         critic_task,
         actor_exploration,
         critic_exploration,
+        _,
     ) = build_agent(
         fabric,
         actions_dim,
