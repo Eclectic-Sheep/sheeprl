@@ -14,6 +14,7 @@ from unittest import mock
 
 import gymnasium as gym
 import pytest
+import torch
 
 from sheeprl import ROOT_DIR
 
@@ -58,6 +59,22 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "droq": {
         "module": "sheeprl.algos.droq.droq",
         "args": ["exp=droq", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4"],
+    },
+    "sac_ae": {
+        "module": "sheeprl.algos.sac_ae.sac_ae",
+        "args": [
+            "exp=sac_ae",
+            # A rendered environment with bounded continuous actions, whose renderer draws only shapes
+            "env.id=MountainCarContinuous-v0",
+            "env.frame_stack=1",
+            "algo.cnn_keys.encoder=[rgb]",
+            "algo.mlp_keys.encoder=[state]",
+            "algo.hidden_size=8",
+            "algo.dense_units=8",
+            "algo.cnn_channels_multiplier=1",
+            "algo.encoder.features_dim=8",
+            "algo.per_rank_batch_size=4",
+        ],
     },
     "dreamer_v1": {"module": "sheeprl.algos.dreamer_v1.dreamer_v1", "args": ["exp=dreamer_v1", *DREAMER_ARGS]},
     "dreamer_v2": {"module": "sheeprl.algos.dreamer_v2.dreamer_v2", "args": ["exp=dreamer_v2", *DREAMER_ARGS]},
@@ -134,6 +151,7 @@ def test_resumed_run_plays_no_random_actions_after_learning_starts(name, buffer_
                 *buffer_args,
             ],
         )
+        resumed_checkpoint = torch.load(checkpoint_of(root_dir, "resumed"), weights_only=False)
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     if buffer_checkpoint:
@@ -142,6 +160,43 @@ def test_resumed_run_plays_no_random_actions_after_learning_starts(name, buffer_
     else:
         # The policy fills a new buffer in iterations 5 and 6; training from iteration 6
         assert resumed == (0, 3 * 2)
+    # The gradient steps of the run count the ones of the run it resumes
+    assert resumed_checkpoint["per_rank_gradient_steps"] == 3 * 2 + resumed[1]
+
+
+def test_a_resumed_dreamer_v3_updates_its_target_critic_with_tau():
+    # The first gradient step of a run copies the critic into the target critic: a resumed run started counting its
+    # gradient steps from 0 again, so it copied it again, discarding the slow critic of the checkpoint
+    from sheeprl.algos.dreamer_v3 import dreamer_v3
+
+    root_dir = "pytest_resume_dreamer_v3_target_critic"
+    args = ["buffer.checkpoint=True", f"root_dir={root_dir}"]
+    critics = []
+
+    def first_train(*args, **kwargs):
+        # The critic and the target critic of the first gradient step
+        if len(critics) == 0:
+            critics.append({k: v.clone() for k, v in args[3].module.state_dict().items()})
+            critics.append({k: v.clone() for k, v in args[4].state_dict().items()})
+        return dreamer_v3_train(*args, **kwargs)
+
+    dreamer_v3_train = dreamer_v3.train
+    try:
+        train("dreamer_v3", ["algo.total_steps=8", "run_name=first", *args])
+        ckpt_path = checkpoint_of(root_dir, "first")
+        saved = torch.load(ckpt_path, weights_only=False)
+        with mock.patch.object(dreamer_v3, "train", first_train):
+            train(
+                "dreamer_v3", ["algo.total_steps=16", "run_name=resumed", f"checkpoint.resume_from={ckpt_path}", *args]
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    critic, target_critic = critics
+    tau = 0.02
+    for k, v in saved["critic"].items():
+        assert torch.equal(critic[k], v), k
+        assert torch.allclose(target_critic[k], tau * v + (1 - tau) * saved["target_critic"][k]), k
+    assert any(not torch.equal(target_critic[k], critic[k]) for k in critic)
 
 
 @pytest.mark.parametrize("exp", ["ppo", "a2c", "ppo_recurrent"])
