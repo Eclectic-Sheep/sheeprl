@@ -126,7 +126,7 @@ def log_models(
                 warnings.warn(f"Model {k} not found in models_to_log, skipping.", category=UserWarning)
                 continue
             unwrapped_models[k] = unwrap_fabric(models_to_log[k])
-            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], name=k, serialization_format="pickle")
         mlflow.log_dict(cfg, "config.json")
     return model_info
 
@@ -149,6 +149,8 @@ def log_models_from_checkpoint(
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
         for name in ("world_model", "actor", "critic"):
-            model_info[name] = mlflow.pytorch.log_model(unwrap_fabric(getattr(trained, name)), artifact_path=name)
+            model_info[name] = mlflow.pytorch.log_model(
+                unwrap_fabric(getattr(trained, name)), name=name, serialization_format="pickle"
+            )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

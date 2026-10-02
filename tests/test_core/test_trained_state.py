@@ -292,9 +292,15 @@ def test_registration_logs_the_trained_models(name):
 
     # A stand-in for MLflow, which records the logged models
     logged: Dict[str, torch.nn.Module] = {}
+
+    def log_model(model, name, serialization_format):
+        # MLflow 3 traces the models by default (`pt2`): the agents are saved as they are
+        assert serialization_format == "pickle"
+        logged.setdefault(name, model)
+
     fake_mlflow = types.SimpleNamespace(
         start_run=lambda **kwargs: contextlib.nullcontext(),
-        pytorch=types.SimpleNamespace(log_model=lambda model, artifact_path: logged.setdefault(artifact_path, model)),
+        pytorch=types.SimpleNamespace(log_model=log_model),
         log_dict=lambda *args, **kwargs: None,
     )
     utils = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.utils")
