@@ -42,7 +42,7 @@ class A2CState(TrainState):
     # Feature extractor, actor and critic
     agent: PPOAgent
     optimizer: Optimizer
-    # Created with `algo.anneal_lr`, but never stepped (known issue #31)
+    # Created with `algo.anneal_lr`, but never stepped: the learning rate is not annealed
     scheduler: Optional[PolynomialLR]
 
 

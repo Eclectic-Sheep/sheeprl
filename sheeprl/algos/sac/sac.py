@@ -253,7 +253,7 @@ class SAC(Algorithm):
         fabric = self.fabric
         # The target critics are updated at every gradient step of one iteration out of
         # `target_network_frequency // policy_steps_per_iter + 1`, so how often depends on the number of
-        # environments (known issue #39: they should be updated every `target_network_frequency` gradient steps)
+        # environments (they should be updated every `target_network_frequency` gradient steps)
         period = cfg.algo.critic.target_network_frequency // self.schedule.policy_steps_per_iter + 1
         self.update_targets = iteration % period == 0
 

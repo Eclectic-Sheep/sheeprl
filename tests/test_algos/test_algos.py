@@ -267,7 +267,7 @@ def test_ppo_recurrent(standard_args, start_time, env_id):
         f"run_name={run_name}",
     ]
     if env_id is not None:
-        # Continuous actions crashed (#29)
+        # Continuous actions crashed
         args += ["env=dummy", f"env.id={env_id}", "algo.cnn_keys.encoder=[]", "algo.mlp_keys.encoder=[state]"]
 
     with mock.patch.object(sys, "argv", args):

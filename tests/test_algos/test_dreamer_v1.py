@@ -1,5 +1,5 @@
-"""The parts of DreamerV1 (and P2E-DV1) that `main` got wrong: the continue loss (#11), the episode starts in the
-sequences (#24), the exploration noise (#17, #59) and the posterior of the player (#60)."""
+"""DreamerV1 (and P2E-DV1): the continue loss, the episode starts in the sequences, the exploration noise and the
+posterior of the player."""
 
 from types import SimpleNamespace
 

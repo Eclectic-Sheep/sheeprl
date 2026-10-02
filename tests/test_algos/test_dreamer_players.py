@@ -66,7 +66,7 @@ def stored_actions(player_cls, rows, actions_dim):
 @pytest.mark.parametrize("num_envs", [1, 4])
 def test_random_actions_are_stored_as_played(actions_dim, num_envs, player_cls):
     # The random actions are written one-hot: with multi-discrete actions and several envs they were mixed between the
-    # envs (#10), so the buffer didn't hold the actions the envs played
+    # envs, so the buffer didn't hold the actions the envs played
     rng = np.random.default_rng(0)
 
     def random_actions():
@@ -83,7 +83,7 @@ def test_random_actions_are_stored_as_played(actions_dim, num_envs, player_cls):
 @pytest.mark.parametrize("num_envs", [1, 4])
 def test_policy_actions_are_played_as_stored(actions_dim, num_envs, player_cls):
     # The policy gives one-hot actions, one tensor per discrete action: DreamerV1 and the P2E-DV1 exploration joined
-    # their indices along the envs (#10), so with multi-discrete actions and several envs the envs played a mix of the
+    # their indices along the envs, so with multi-discrete actions and several envs the envs played a mix of the
     # actions of the others while the buffer held the policy's
     generator = torch.Generator().manual_seed(0)
 
@@ -101,7 +101,7 @@ def test_policy_actions_are_played_as_stored(actions_dim, num_envs, player_cls):
 
 
 def test_dreamer_v1_marks_the_first_steps_of_the_episodes():
-    # DreamerV1 didn't store `is_first` (#24): the world model went on through the ends of the episodes in its sequences
+    # DreamerV1 didn't store `is_first`: the world model went on through the ends of the episodes in its sequences
     num_envs = 3
     resets = []
     policy = SimpleNamespace(

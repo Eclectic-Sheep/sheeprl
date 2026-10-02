@@ -105,7 +105,7 @@ def test_resumed_run_plays_no_random_actions_after_learning_starts(name, buffer_
 @pytest.mark.parametrize("exp", ["ppo", "ppo_recurrent"])
 def test_on_policy_run_resumes(exp):
     # The on-policy configs have no `algo.learning_starts`: the resume warning about it used to raise a `TypeError`.
-    # The annealed values follow the `algo.total_steps` of the resumed run (#35): the first run has 2 iterations, the
+    # The annealed values follow the `algo.total_steps` of the resumed run: the first run has 2 iterations, the
     # resumed one 4, so its last iteration uses 1/4 of the initial values (the restored scheduler kept the learning
     # rate at 0 after the 2 iterations of the first run)
     from sheeprl.cli import run
