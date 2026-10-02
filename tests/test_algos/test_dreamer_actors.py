@@ -41,3 +41,32 @@ def test_the_normal_distribution_has_a_positive_std(actor_cls):
     torch.testing.assert_close(std, torch.full_like(std, nn.functional.softplus(torch.tensor(-3.0)).item() + 0.1))
     assert torch.isfinite(dist.log_prob(actions[0])).all()
     assert torch.isfinite(dist.entropy()).all()
+
+
+@pytest.mark.parametrize(
+    "actor_cls,distribution",
+    [
+        (DV2Actor, "tanh_normal"),
+        (DV2Actor, "normal"),
+        (DV2Actor, "trunc_normal"),
+        (DV3Actor, "tanh_normal"),
+        (DV3Actor, "normal"),
+        (DV3Actor, "scaled_normal"),
+    ],
+)
+def test_greedy_continuous_actions_are_the_most_likely_sample_of_every_environment(actor_cls, distribution):
+    # The samples were indexed with the best index of every environment at once: with N environments the actions had
+    # N * N * A values, the most likely samples of every environment for every environment
+    kwargs = {"action_clip": 0.0} if actor_cls is DV3Actor else {}
+    actor = make_actor(actor_cls, distribution, actions_dim=(2,), **kwargs)
+    num_envs = 3
+    state = torch.randn(1, num_envs, LATENT)
+    torch.manual_seed(1)
+    (actions,), (dist,) = actor(state, greedy=True)
+    assert actions.shape == (1, num_envs, 2)
+
+    torch.manual_seed(1)
+    sample = dist.sample((100,))
+    log_prob = dist.log_prob(sample)
+    for env in range(num_envs):
+        torch.testing.assert_close(actions[0, env], sample[log_prob[:, 0, env].argmax(), 0, env])
