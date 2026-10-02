@@ -21,6 +21,7 @@ from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, compute_lambda_values, prepare_obs, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -298,10 +299,8 @@ def train(
         objective = actor_objective(
             cfg.algo.actor.objective_mix, is_continuous, lambda_values_exploration[1:], reinforce
         )
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        # The tanh-normal policies have no analytic entropy: it is estimated from samples
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(-1)
         policy_loss_exploration = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss_exploration)
     actor_exploration_grad = None
@@ -386,10 +385,8 @@ def train(
 
         # Dynamics backpropagation (the lambda-values) and REINFORCE
         objective = actor_objective(cfg.algo.actor.objective_mix, is_continuous, lambda_values_task[1:], reinforce)
-        try:
-            entropy = cfg.algo.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(-1)
-        except NotImplementedError:
-            entropy = torch.zeros_like(objective)
+        # The tanh-normal policies have no analytic entropy: it is estimated from samples
+        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(-1)
         policy_loss_task = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     fabric.backward(policy_loss_task)
     actor_task_grad = None
