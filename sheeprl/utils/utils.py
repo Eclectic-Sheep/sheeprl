@@ -300,6 +300,41 @@ class Ratio:
         return self
 
 
+def off_policy_schedule(
+    cfg: Dict[str, Any], state: Dict[str, Any], start_iter: int, policy_steps_per_iter: int, world_size: int
+) -> Tuple[int, int, Ratio]:
+    """When an off-policy run plays random actions and trains, and its replay ratio.
+
+    The run plays random actions in its first `algo.learning_starts` policy steps (rounded down to whole iterations),
+    filling its replay buffer, and trains from the end of the last of them (from the first iteration without them),
+    `algo.replay_ratio` gradient steps per policy step played from the start of that iteration.
+
+    A resumed run continues as the run it resumes: it doesn't play random actions again, and with the replay buffer
+    of the checkpoint it trains from its first iteration, with the ratio of the checkpoint. Without it
+    (`buffer.checkpoint=False`) it fills a new one first, playing its policy for `algo.learning_starts` policy steps,
+    then trains as a new run.
+
+    Args:
+        cfg (Dict[str, Any]): the configuration of the run.
+        state (Dict[str, Any]): the checkpoint the run resumes from (unused when it doesn't).
+        start_iter (int): the first iteration of the run (1, or the one after the checkpoint).
+        policy_steps_per_iter (int): the policy steps of one iteration, played by all the processes.
+        world_size (int): the number of processes.
+
+    Returns:
+        The last iteration that plays random actions (the ones from 1 to it do), the first iteration that trains,
+        and the replay ratio, which gives the gradient steps of every process from the policy steps played from the
+        start of the first iteration that trains, divided by the number of processes.
+    """
+    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
+    refill = bool(cfg.checkpoint.resume_from) and not cfg.buffer.checkpoint
+    train_starts = (start_iter - 1 if refill else 0) + max(learning_starts, 1)
+    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
+    if cfg.checkpoint.resume_from and not refill:
+        ratio.load_state_dict(state["ratio"])
+    return learning_starts, train_starts, ratio
+
+
 # https://github.com/pytorch/rl/blob/824f6d192e88c115790cf046e4df416ce2d7aaf6/torchrl/modules/distributions/utils.py#L156
 def safetanh(x, eps):
     lim = 1.0 - eps
