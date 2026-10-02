@@ -47,6 +47,37 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
         return observation * self.mask
 
 
+class NormalizeAction(gym.ActionWrapper):
+    """Exposes the bounded dimensions of a `Box` action space as [-1, 1], rescaled to the bounds of the environment,
+    and clips the actions to the exposed space. The unbounded dimensions are left as they are.
+
+    The `NormalizeAction` and `ClipAction` wrappers of DreamerV3
+    (https://github.com/danijar/dreamerv3/blob/bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01/embodied/core/wrappers.py).
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        space = env.action_space
+        if not isinstance(space, gym.spaces.Box):
+            raise ValueError(f"Only `Box` action spaces can be normalized, got: {space}")
+        self._mask = np.isfinite(space.low) & np.isfinite(space.high)
+        self._low = np.where(self._mask, space.low, -1)
+        self._high = np.where(self._mask, space.high, 1)
+        # The dimensions already in [-1, 1] are not recomputed: they get the same actions, bit for bit
+        self._rescale = self._mask & ((self._low != -1) | (self._high != 1))
+        self.action_space = gym.spaces.Box(
+            low=np.where(self._mask, -1, space.low),
+            high=np.where(self._mask, 1, space.high),
+            shape=space.shape,
+            dtype=space.dtype,
+        )
+
+    def action(self, action: np.ndarray) -> np.ndarray:
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        env_action = (action + 1) / 2 * (self._high - self._low) + self._low
+        return np.where(self._rescale, env_action, action).astype(self.env.action_space.dtype, copy=False)
+
+
 class ActionRepeat(gym.Wrapper):
     def __init__(self, env: gym.Env, amount: int = 1):
         super().__init__(env)

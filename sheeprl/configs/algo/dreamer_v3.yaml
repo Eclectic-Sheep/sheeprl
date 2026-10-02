@@ -11,6 +11,9 @@ name: dreamer_v3
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
+# The bounded dimensions of continuous actions exposed as [-1, 1] (the range of the actor), rescaled to the bounds of
+# the environment, as DreamerV3 does (`sheeprl.envs.wrappers.NormalizeAction`)
+normalize_actions: True
 
 # Training recipe
 replay_ratio: 1

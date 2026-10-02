@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from sheeprl.envs.dummy import ContinuousDummyEnv, DiscreteDummyEnv, MultiDiscreteDummyEnv
-from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper, RewardAsObservationWrapper
+from sheeprl.envs.wrappers import ActionRepeat, MaskVelocityWrapper, NormalizeAction, RewardAsObservationWrapper
 
 ENVIRONMENTS = {
     "discrete_dummy": DiscreteDummyEnv,
@@ -102,3 +102,32 @@ def test_reset_method(env_id):
 
     obs = env.reset()[0]
     assert obs is not None
+
+
+def test_normalize_action():
+    # Bounded dimensions (one already in [-1, 1]), one unbounded
+    low, high = np.array([-2.0, 0.0, -1.0, -np.inf]), np.array([2.0, 1.0, 1.0, np.inf])
+    dummy = ContinuousDummyEnv(action_dim=4)
+    dummy.action_space = gym.spaces.Box(low, high, dtype=np.float32)
+    played = []
+    dummy.step = lambda action: played.append(action) or (dummy.get_obs(), 0.0, False, False, {})
+    env = NormalizeAction(dummy)
+
+    np.testing.assert_array_equal(env.action_space.low, [-1, -1, -1, -np.inf])
+    np.testing.assert_array_equal(env.action_space.high, [1, 1, 1, np.inf])
+    assert env.action_space.dtype == np.float32
+    env.step(np.array([1.0, -1.0, 0.3, 7.0], dtype=np.float32))
+    env.step(np.array([0.5, 0.5, -0.7, -7.0], dtype=np.float32))
+    # Out of the exposed bounds: clipped first
+    env.step(np.array([3.0, -2.0, 1.5, 9.0], dtype=np.float32))
+    np.testing.assert_allclose(
+        played, [[2.0, 0.0, 0.3, 7.0], [1.0, 0.75, -0.7, -7.0], [2.0, 0.0, 1.0, 9.0]], rtol=1e-6, atol=1e-7
+    )
+    assert all(action.dtype == np.float32 for action in played)
+    # The dimension already in [-1, 1] gets the same action, bit for bit
+    assert played[0][2] == np.float32(0.3)
+
+
+def test_normalize_action_rejects_discrete_actions():
+    with pytest.raises(ValueError, match="Only `Box` action spaces"):
+        NormalizeAction(DiscreteDummyEnv())

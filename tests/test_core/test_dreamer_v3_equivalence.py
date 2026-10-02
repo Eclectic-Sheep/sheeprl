@@ -7,6 +7,11 @@ the metric aggregator (the losses, the KL, the entropies and the gradient norms 
 statistics) and checksums of the final checkpoint (weights, optimizer states, return normalization, replay ratio).
 The images in the buffer are recorded as checksums. The test runs the same configurations and compares.
 
+`pendulum_truncated` was recorded again when the continuous actions were normalized to [-1, 1]
+(`algo.normalize_actions`, #54), which changes it on purpose; checked against the old reference first: with
+`algo.normalize_actions=False` the run is identical, with it the stored random actions are exactly half the old ones
+(Pendulum's bounds are ±2) and the environment plays twice the stored actions.
+
 On the machine that recorded the reference the values match exactly. Other platforms can use a different BLAS, so
 the test allows a small tolerance.
 
