@@ -42,4 +42,4 @@ from sheeprl.algos.sac import evaluate as sac_evaluate  # noqa: F401, isort:skip
 from sheeprl.algos.sac_ae import evaluate as sac_ae_evaluate  # noqa: F401, isort:skip
 # fmt: on
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
