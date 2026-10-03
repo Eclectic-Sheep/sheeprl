@@ -53,12 +53,17 @@ DREAMER_ARGS = [
     "buffer.size=16",
 ]
 
-# For every algorithm: its module, the overrides of its training and the exploration it starts from, if any
+# For every algorithm: its module, the overrides of its training and the exploration it starts from, if any. The
+# buffers hold the 8 steps of every environment: on Windows a memory-mapped buffer takes its whole size on the disk
+# (SAC-AE's default one, of images, 12 GB)
 ALGORITHMS: Dict[str, Dict[str, Any]] = {
-    "sac": {"module": "sheeprl.algos.sac.sac", "args": ["exp=sac", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4"]},
+    "sac": {
+        "module": "sheeprl.algos.sac.sac",
+        "args": ["exp=sac", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "buffer.size=16"],
+    },
     "droq": {
         "module": "sheeprl.algos.droq.droq",
-        "args": ["exp=droq", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4"],
+        "args": ["exp=droq", "env.id=Pendulum-v1", "algo.per_rank_batch_size=4", "buffer.size=16"],
     },
     "sac_ae": {
         "module": "sheeprl.algos.sac_ae.sac_ae",
@@ -74,6 +79,7 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "algo.cnn_channels_multiplier=1",
             "algo.encoder.features_dim=8",
             "algo.per_rank_batch_size=4",
+            "buffer.size=16",
         ],
     },
     "dreamer_v1": {"module": "sheeprl.algos.dreamer_v1.dreamer_v1", "args": ["exp=dreamer_v1", *DREAMER_ARGS]},
