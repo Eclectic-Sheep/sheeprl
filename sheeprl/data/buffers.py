@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import logging
 import os
-import shutil
 import typing
-import uuid
 import warnings
-from itertools import compress
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Type
+from typing import Any, Dict, List, Optional, Sequence, Type
 
 import numpy as np
 import torch
@@ -752,7 +748,10 @@ class EnvIndependentReplayBuffer:
 
 
 class EpisodeBuffer:
-    """A replay buffer that stores separately the episodes.
+    """A replay buffer of whole episodes. The episodes of every key are stored one after the other in a circular
+    storage of `buffer_size` steps: the oldest episodes make room for the new ones, which continue from the start of
+    the storage when they reach its end. When memory-mapped, the storage of every key is a file in `memmap_dir`,
+    whatever the number of episodes; in memory, it grows with the episodes up to `buffer_size` steps.
 
     Args:
         buffer_size (int): The capacity of the buffer.
@@ -806,8 +805,11 @@ class EpisodeBuffer:
         self._open_episodes = [[] for _ in range(n_envs)]
         # Contain the cumulative length of the episodes in the buffer
         self._cum_lengths: Sequence[int] = []
-        # List of stored episodes
-        self._buf: Sequence[Dict[str, np.ndarray | MemmapArray]] = []
+        # The storage of every key, created with the first episode, the position in it of every stored episode and
+        # the position of the next one
+        self._storage: Dict[str, np.ndarray | MemmapArray] = {}
+        self._starts: List[int] = []
+        self._pos = 0
 
         self._memmap = memmap
         self._memmap_dir = memmap_dir
@@ -837,8 +839,20 @@ class EpisodeBuffer:
         self._prioritize_ends = prioritize_ends
 
     @property
-    def buffer(self) -> Sequence[Dict[str, np.ndarray | MemmapArray]]:
-        return self._buf
+    def buffer(self) -> Sequence[Dict[str, np.ndarray]]:
+        """The stored episodes, from the oldest one: dictionaries of arrays of shape [episode_length, ...], views of
+        the storage, or copies for the episodes that continue from its end to its start."""
+        lengths = np.diff(self._cum_lengths, prepend=0)
+        episodes = []
+        for start, length in zip(self._starts, lengths):
+            ranges = self._ranges(start, length)
+            episodes.append(
+                {
+                    k: v[ranges[0]] if len(ranges) == 1 else np.concatenate([v[r] for r in ranges], axis=0)
+                    for k, v in self._storage.items()
+                }
+            )
+        return episodes
 
     @property
     def obs_keys(self) -> Sequence[str]:
@@ -862,10 +876,22 @@ class EpisodeBuffer:
 
     @property
     def full(self) -> bool:
-        return self._cum_lengths[-1] + self._minimum_episode_length > self._buffer_size if len(self._buf) > 0 else False
+        return len(self) + self._minimum_episode_length > self._buffer_size if len(self._cum_lengths) > 0 else False
 
     def __len__(self) -> int:
-        return self._cum_lengths[-1] if len(self._buf) > 0 else 0
+        return self._cum_lengths[-1] if len(self._cum_lengths) > 0 else 0
+
+    @property
+    def _capacity(self) -> int:
+        """The number of steps of the storage: `buffer_size`, or fewer while an in-memory storage grows."""
+        return next(iter(self._storage.values())).shape[0] if len(self._storage) > 0 else 0
+
+    def _ranges(self, start: int, length: int) -> Sequence[slice]:
+        """The slices of the storage of the `length` steps from `start`: two when they continue from its end."""
+        end = start + length
+        if end <= self._capacity:
+            return [slice(start, end)]
+        return [slice(start, self._capacity), slice(0, end - self._capacity)]
 
     @typing.overload
     def add(
@@ -999,46 +1025,77 @@ class EpisodeBuffer:
                 f"or longer than {self._buffer_size} steps (the buffer size)"
             )
             return
+        if len(self._storage) > 0 and episode.keys() != self._storage.keys():
+            raise RuntimeError(
+                f"Every episode must have the same keys: the buffer holds {list(self._storage.keys())}, "
+                f"got: {list(episode.keys())}"
+            )
 
-        # If the buffer is full, then remove the oldest episodes
+        # If the buffer is full, then remove the oldest episodes: their steps make room for the new one
         if self.full or len(self) + ep_len > self._buffer_size:
             # Compute the index of the last episode to remove
             cum_lengths = np.array(self._cum_lengths)
             mask = (len(self) - cum_lengths + ep_len) <= self._buffer_size
             last_to_remove = mask.argmax()
-            # Remove all memmaped episodes
-            if self._memmap and self._memmap_dir is not None:
-                for _ in range(last_to_remove + 1):
-                    dirname = os.path.dirname(self._buf[0][next(iter(self._buf[0].keys()))].filename)
-                    for v in self._buf[0].values():
-                        del v
-                    del self._buf[0]
-                    try:
-                        shutil.rmtree(dirname)
-                    except Exception as e:
-                        logging.error(e)
-            else:
-                self._buf = self._buf[last_to_remove + 1 :]
+            self._starts = self._starts[last_to_remove + 1 :]
             # Update the cum_lengths lists
             cum_lengths = cum_lengths[last_to_remove + 1 :] - cum_lengths[last_to_remove]
             self._cum_lengths = cum_lengths.tolist()
-        self._cum_lengths.append(len(self) + ep_len)
-        episode_to_store = episode
-        if self._memmap:
-            episode_dir = self._memmap_dir / f"episode_{str(uuid.uuid4())}"
-            episode_dir.mkdir(parents=True, exist_ok=True)
-            episode_to_store = {}
+        self._store(episode, ep_len)
+
+    def _store(self, episode: Dict[str, np.ndarray | MemmapArray], ep_len: int) -> None:
+        """Write the episode in the storage, after the newest one: the buffer has room for it."""
+        if len(self._storage) == 0:
+            # A memory-mapped storage holds the whole buffer from the start (its file grows on the disk as it is
+            # written), while an in-memory one grows with the episodes
             for k, v in episode.items():
-                path = Path(episode_dir / f"{k}.memmap")
-                filename = str(path)
-                episode_to_store[k] = MemmapArray(
-                    filename=str(filename),
-                    dtype=v.dtype,
-                    shape=v.shape,
-                    mode=self._memmap_mode,
-                )
-                episode_to_store[k][:] = episode[k]
-        self._buf.append(episode_to_store)
+                shape = (self._buffer_size if self._memmap else ep_len, *v.shape[1:])
+                if self._memmap:
+                    self._storage[k] = MemmapArray(
+                        filename=Path(self._memmap_dir / f"{k}.memmap"),
+                        dtype=v.dtype,
+                        shape=shape,
+                        mode=self._memmap_mode,
+                    )
+                else:
+                    self._storage[k] = np.empty(shape, dtype=v.dtype)
+        elif self._capacity < self._buffer_size and self._pos + ep_len > self._capacity:
+            # The storage only grows before it holds `buffer_size` steps: until then, no episode has been removed,
+            # and the episodes are in its first `self._pos` steps
+            capacity = min(self._buffer_size, max(2 * self._capacity, self._pos + ep_len))
+            for k, v in self._storage.items():
+                self._storage[k] = np.empty((capacity, *v.shape[1:]), dtype=v.dtype)
+                self._storage[k][: v.shape[0]] = v
+        start = self._pos % self._capacity
+        for k, v in episode.items():
+            written = 0
+            for steps in self._ranges(start, ep_len):
+                self._storage[k][steps] = v[written : written + steps.stop - steps.start]
+                written += steps.stop - steps.start
+        self._starts.append(start)
+        self._cum_lengths.append(len(self) + ep_len)
+        self._pos = start + ep_len
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # Up to sheeprl 0.7.0 every episode had its own arrays (memory-mapped to a directory of its own): the
+        # episodes of those buffers are copied into the storage, while their files are left where they are
+        episodes = state.pop("_buf", None)
+        self.__dict__.update(state)
+        if episodes is not None:
+            self._storage, self._starts, self._pos = {}, [], 0
+            lengths = np.diff(self._cum_lengths, prepend=0)
+            self._cum_lengths = []
+            for episode, ep_len in zip(episodes, lengths):
+                # Every file is opened only to be copied: the episodes could be more than the files a process can open
+                episode = {
+                    k: (
+                        np.memmap(v.filename, dtype=v.dtype, shape=v.shape, mode="r")
+                        if isinstance(v, MemmapArray)
+                        else v
+                    )
+                    for k, v in episode.items()
+                }
+                self._store(episode, ep_len)
 
     def sample(
         self,
@@ -1070,29 +1127,24 @@ class EpisodeBuffer:
             raise ValueError(f"Batch size must be greater than 0, got: {batch_size}")
         if n_samples <= 0:
             raise ValueError(f"The number of samples must be greater than 0, got: {n_samples}")
+        lengths = np.diff(self._cum_lengths, prepend=0)
         if sample_next_obs:
-            valid_episode_idxes = np.array(self._cum_lengths) - np.array([0] + self._cum_lengths[:-1]) > sequence_length
+            valid_episodes = np.flatnonzero(lengths > sequence_length)
         else:
-            valid_episode_idxes = (
-                np.array(self._cum_lengths) - np.array([0] + self._cum_lengths[:-1]) >= sequence_length
-            )
-        valid_episodes = list(compress(self._buf, valid_episode_idxes))
+            valid_episodes = np.flatnonzero(lengths >= sequence_length)
         if len(valid_episodes) == 0:
             raise RuntimeError(
                 "No valid episodes has been added to the buffer. Please add at least one episode of length greater "
                 f"than or equal to {sequence_length} calling `self.add()`"
             )
 
-        chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
         nsample_per_eps = np.bincount(np.random.randint(0, len(valid_episodes), (batch_size * n_samples,))).astype(
             np.intp
         )
-        samples_per_eps = {k: [] for k in valid_episodes[0].keys()}
-        if sample_next_obs:
-            samples_per_eps.update({f"next_{k}": [] for k in self._obs_keys})
+        first_steps = []
         for i, n in enumerate(nsample_per_eps):
             if n > 0:
-                ep_len = np.logical_or(valid_episodes[i]["terminated"], valid_episodes[i]["truncated"]).shape[0]
+                ep_len = lengths[valid_episodes[i]]
                 if sample_next_obs:
                     ep_len -= 1
                 # Define the maximum index that can be sampled in the episodes
@@ -1103,30 +1155,24 @@ class EpisodeBuffer:
                     upper += sequence_length
                 # Sample the starting indices and upper bound with `ep_len - sequence_length`
                 start_idxes = np.minimum(
-                    np.random.randint(0, upper, size=(n,)).reshape(-1, 1), ep_len - sequence_length, dtype=np.intp
+                    np.random.randint(0, upper, size=(n,)), ep_len - sequence_length, dtype=np.intp
                 )
-                # Compute the indices of the sequences
-                indices = start_idxes + chunk_length
-                # Retrieve the data
-                for k in valid_episodes[0].keys():
-                    samples_per_eps[k].append(
-                        np.take(valid_episodes[i][k], indices.flat, axis=0).reshape(
-                            n, sequence_length, *valid_episodes[i][k].shape[1:]
-                        )
-                    )
-                    if sample_next_obs and k in self._obs_keys:
-                        samples_per_eps[f"next_{k}"].append(valid_episodes[i][k][indices + 1])
-        # Concatenate all the trajectories on the batch dimension and properly reshape them
+                first_steps.append(self._starts[valid_episodes[i]] + start_idxes)
+        # The steps of the sequences in the storage, where an episode can continue from its end to its start
+        indices = (
+            np.concatenate(first_steps).reshape(-1, 1) + np.arange(sequence_length, dtype=np.intp)
+        ) % self._capacity
         samples = {}
-        for k, v in samples_per_eps.items():
-            if len(v) > 0:
-                samples[k] = np.moveaxis(
-                    np.concatenate(v, axis=0).reshape(n_samples, batch_size, sequence_length, *v[0].shape[2:]),
-                    2,
-                    1,
-                )
-                if clone:
-                    samples[k] = samples[k].copy()
+        for k, v in self._storage.items():
+            array = v.array if isinstance(v, MemmapArray) else v
+            samples[k] = np.take(array, indices.flat, axis=0)
+            if sample_next_obs and k in self._obs_keys:
+                samples[f"next_{k}"] = np.take(array, ((indices + 1) % self._capacity).flat, axis=0)
+        # Reshape the sequences to [n_samples, sequence_length, batch_size, ...]
+        for k, v in samples.items():
+            samples[k] = np.moveaxis(v.reshape(n_samples, batch_size, sequence_length, *v.shape[1:]), 2, 1)
+            if clone:
+                samples[k] = samples[k].copy()
         return samples
 
     @torch.no_grad()
