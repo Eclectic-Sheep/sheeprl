@@ -20,6 +20,7 @@ from sheeprl.algos.dreamer_v3 import dreamer_v3
 from sheeprl.algos.dreamer_v3.agent import RepresentationModel, build_agent
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3.utils import init_weights
+from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 
 
@@ -360,30 +361,30 @@ def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
 
 
 def test_cuda_graphs_are_used_only_in_the_tested_precisions(monkeypatch):
-    monkeypatch.setattr(dreamer_v3, "_WARNED", {})
+    monkeypatch.setattr(compile_utils, "_WARNED", {})
     cfg = dotdict(
         {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
     )
-    assert dreamer_v3.compile_mode(cfg) == "reduce-overhead"
+    assert compile_utils.compile_mode(cfg) == "reduce-overhead"
     cfg.fabric.precision = "bf16-mixed"
-    assert dreamer_v3.compile_mode(cfg) == "reduce-overhead"
+    assert compile_utils.compile_mode(cfg) == "reduce-overhead"
     cfg.fabric.precision = "16-mixed"
     with pytest.warns(UserWarning, match="reduce-overhead"):
-        assert dreamer_v3.compile_mode(cfg) is None
+        assert compile_utils.compile_mode(cfg) is None
 
 
 @pytest.mark.parametrize("strategy", ["auto", "ddp"])
 def test_the_losses_are_compiled_only_when_enabled(monkeypatch, strategy):
-    monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
     fabric = Fabric(accelerator="cpu", devices=1, strategy=strategy)
     cfg = dotdict({"algo": {"compile": {"enabled": False, "mode": None}}, "fabric": {"precision": "32-true"}})
-    assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is dreamer_v3.world_model_loss
+    assert compile_utils.compiled(dreamer_v3.world_model_loss, fabric, cfg) is dreamer_v3.world_model_loss
     # Also with the strategy of several processes: the modules are not wrapped by DistributedDataParallel, whose forward
     # isn't traced by `torch.compile`
     cfg.algo.compile.enabled = True
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert dreamer_v3.compiled(dreamer_v3.world_model_loss, fabric, cfg) is not dreamer_v3.world_model_loss
+        assert compile_utils.compiled(dreamer_v3.world_model_loss, fabric, cfg) is not dreamer_v3.world_model_loss
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
@@ -398,7 +399,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
         "compute_stochastic_state",
         lambda logits, discrete=32, sample=True: original(logits, discrete=discrete, sample=False),
     )
-    monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
     losses = []
     for enabled in (False, True):
         _, world_model, _, train_step = small_dreamer_v3(
