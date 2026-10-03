@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import torch
 from hydra import compose, initialize_config_module
-from hydra.utils import get_class
+from hydra.utils import get_class, instantiate
 from lightning import Fabric
 from omegaconf import OmegaConf
 from torch import nn
@@ -23,11 +23,14 @@ from torch.distributions import Bernoulli, Independent, Normal, TanhTransform, T
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
-from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent
-from sheeprl.algos.dreamer_v1.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent, gru_step
+from sheeprl.algos.dreamer_v1.loss import reconstruction_loss, state_kl
 from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
+from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+
+from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
 DREAMER_ARGS = [
     "hydra/job_logging=disabled",
@@ -429,3 +432,113 @@ def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch
     dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, None, cfg)
     steps = posteriors[:-1] if use_continues else posteriors
     torch.testing.assert_close(starts[0], torch.cat(steps).reshape(1, -1, posteriors[0].shape[-1]))
+
+
+def compilable_dreamer_v1(continuous, overrides=(), accelerator="cpu"):
+    """A small DreamerV1 with continues, its optimizers and a batch for a gradient step."""
+    cfg = dreamer_v1_cfg(
+        "dreamer_v1",
+        [
+            "algo.world_model.use_continues=True",
+            "algo.per_rank_batch_size=2",
+            "algo.per_rank_sequence_length=4",
+            "algo.horizon=3",
+            *overrides,
+        ],
+    )
+    fabric = Fabric(accelerator=accelerator, devices=1)
+    torch.manual_seed(0)
+    world_model, actor, critic, _ = build_agent(fabric, [2] if continuous else [3], continuous, cfg, IMAGES)
+    optimizers = fabric.setup_optimizers(
+        *(
+            instantiate(optimizer, params=model.parameters(), _convert_="all")
+            for optimizer, model in (
+                (cfg.algo.world_model.optimizer, world_model),
+                (cfg.algo.actor.optimizer, actor),
+                (cfg.algo.critic.optimizer, critic),
+            )
+        )
+    )
+    T, B = 4, 2
+    g = torch.Generator().manual_seed(1)
+    actions = (
+        torch.rand(T, B, 2, generator=g) * 2 - 1
+        if continuous
+        else nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=g), 3).float()
+    )
+    data = {
+        "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=g).float(),
+        "actions": actions,
+        "rewards": torch.randn(T, B, 1, generator=g),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": torch.zeros(T, B, 1),
+    }
+    data["terminated"][-1, 0] = 1
+    return cfg, fabric, (world_model, actor, critic), optimizers, {k: v.to(fabric.device) for k, v in data.items()}
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, continuous):
+    # The losses are compiled with `algo.compile.enabled`: `nn.GRU` and the dispatch of `kl_divergence` broke the
+    # graph of the world model, at every step of the unroll for the GRU
+    cfg, _, (world_model, actor, critic), _, data = compilable_dreamer_v1(continuous)
+    world_model_cfg = cfg.algo.world_model
+    no_host_reads(monkeypatch)
+    graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
+    _, posteriors, recurrent_states, _ = graph(dreamer_v1.world_model_loss)(
+        world_model,
+        data,
+        cnn_keys=("rgb",),
+        mlp_keys=(),
+        stochastic_size=world_model_cfg.stochastic_size,
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        use_continues=True,
+        gamma=cfg.algo.gamma,
+        kl_free_nats=world_model_cfg.kl_free_nats,
+        kl_regularizer=world_model_cfg.kl_regularizer,
+        continue_scale_factor=world_model_cfg.continue_scale_factor,
+    )
+    trajectories, lambda_values, discount = graph(dreamer_v1.imagine)(
+        world_model,
+        actor,
+        critic,
+        posteriors.detach(),
+        recurrent_states.detach(),
+        horizon=cfg.algo.horizon,
+        gamma=cfg.algo.gamma,
+        lmbda=cfg.algo.lmbda,
+        use_continues=True,
+    )
+    graph(dreamer_v1.value_loss_fn)(critic, trajectories, lambda_values, discount)
+
+
+def test_the_compiled_gru_step_and_kl_are_the_ones_of_pytorch():
+    torch.manual_seed(0)
+    p = Independent(Normal(torch.randn(5, 3, 30), torch.rand(5, 3, 30) + 0.1), 1)
+    q = Independent(Normal(torch.randn(5, 3, 30), torch.rand(5, 3, 30) + 0.1), 1)
+    assert torch.equal(state_kl(p, q), torch.distributions.kl_divergence(p, q))
+    rnn = nn.GRU(16, 16)
+    x, h = torch.randn(1, 4, 16), torch.randn(1, 4, 16)
+    step = gru_step(x, h, rnn.weight_ih_l0, rnn.bias_ih_l0, rnn.weight_hh_l0, rnn.bias_hh_l0)
+    torch.testing.assert_close(step, rnn(x, h)[1])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, continuous):
+    # The same weights, the same batch and the same random numbers: the same losses and gradients, with and without
+    # `torch.compile` (and its CUDA graphs)
+    same_random_numbers(monkeypatch)
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
+    results = []
+    for enabled in (False, True):
+        cfg, fabric, models, optimizers, data = compilable_dreamer_v1(
+            continuous, [f"algo.compile.enabled={enabled}"], accelerator="cuda"
+        )
+        with monkeypatch.context() as patch:
+            aggregator, losses, grads = recording(dreamer_v1, patch)
+            torch.manual_seed(1)
+            dreamer_v1.train(fabric, *models, *optimizers, data, aggregator, cfg)
+        results.append((losses, grads))
+    assert_same_step(*results)
