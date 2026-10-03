@@ -19,6 +19,7 @@ from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl import ROOT_DIR
+from sheeprl.algos.dreamer_v2 import dreamer_v2
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
@@ -29,7 +30,10 @@ from sheeprl.algos.dreamer_v2.utils import (
     sample_batches,
 )
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+
+from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
 
 def kl_loss_of(posteriors_logits, priors_logits, kl_free_nats, kl_free_avg):
@@ -325,7 +329,7 @@ def test_the_buffer_of_every_environment_holds_a_sequence():
     assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8
 
 
-def small_dreamer_v2(overrides=()):
+def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerator="cpu"):
     """A small DreamerV2 on images and vectors."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
@@ -354,7 +358,7 @@ def small_dreamer_v2(overrides=()):
         }
     )
     world_model, actor, critic, target_critic, _ = build_agent(
-        Fabric(accelerator="cpu", devices=1), (3,), False, cfg, obs_space
+        Fabric(accelerator=accelerator, devices=1), actions_dim, continuous, cfg, obs_space
     )
     return cfg, (world_model, actor, critic, target_critic)
 
@@ -399,3 +403,115 @@ def test_the_weight_decay_multiplies_the_weights_before_every_step():
     torch.testing.assert_close(weight.detach(), torch.full((3,), 0.9))
     # Without weight decay, the optimizer of the configuration
     assert type(build_optimizer({"_target_": "torch.optim.Adam", "lr": 1e-3}, [weight])) is torch.optim.Adam
+
+
+def compilable_dreamer_v2(continuous, overrides=(), accelerator="cpu"):
+    """A small DreamerV2 with continues, its optimizers and a batch for a gradient step."""
+    actions_dim = (2,) if continuous else (3,)
+    torch.manual_seed(0)
+    cfg, models = small_dreamer_v2(
+        [
+            "algo.world_model.use_continues=True",
+            "algo.per_rank_batch_size=2",
+            "algo.per_rank_sequence_length=4",
+            "algo.horizon=3",
+            *overrides,
+        ],
+        actions_dim,
+        continuous,
+        accelerator,
+    )
+    world_model, actor, critic, _ = models
+    fabric = Fabric(accelerator=accelerator, devices=1)
+    optimizers = fabric.setup_optimizers(
+        build_optimizer(cfg.algo.world_model.optimizer, world_model.parameters()),
+        build_optimizer(cfg.algo.actor.optimizer, actor.parameters()),
+        build_optimizer(cfg.algo.critic.optimizer, critic.parameters()),
+    )
+    T, B = 4, 2
+    g = torch.Generator().manual_seed(1)
+    actions = (
+        torch.rand(T, B, 2, generator=g) * 2 - 1
+        if continuous
+        else nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=g), 3).float()
+    )
+    data = {
+        "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=g).float(),
+        "state": torch.randn(T, B, 5, generator=g),
+        "actions": actions,
+        "rewards": torch.randn(T, B, 1, generator=g),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": torch.zeros(T, B, 1),
+    }
+    data["terminated"][-1, 0] = 1
+    return cfg, fabric, models, optimizers, actions_dim, {k: v.to(fabric.device) for k, v in data.items()}
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, continuous):
+    # The losses are compiled with `algo.compile.enabled`
+    cfg, _, (world_model, actor, critic, target_critic), _, actions_dim, data = compilable_dreamer_v2(continuous)
+    world_model_cfg = cfg.algo.world_model
+    no_host_reads(monkeypatch)
+    graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
+    _, posteriors, recurrent_states, _ = graph(dreamer_v2.world_model_loss)(
+        world_model,
+        data,
+        cnn_keys=("rgb",),
+        mlp_keys=("state",),
+        stochastic_size=world_model_cfg.stochastic_size,
+        discrete_size=world_model_cfg.discrete_size,
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        use_continues=True,
+        gamma=cfg.algo.gamma,
+        kl_balancing_alpha=world_model_cfg.kl_balancing_alpha,
+        kl_free_nats=world_model_cfg.kl_free_nats,
+        kl_free_avg=world_model_cfg.kl_free_avg,
+        kl_regularizer=world_model_cfg.kl_regularizer,
+        discount_scale_factor=world_model_cfg.discount_scale_factor,
+    )
+    trajectories, actions, values, lambda_values, discount = graph(dreamer_v2.imagine)(
+        world_model,
+        actor,
+        target_critic,
+        posteriors.detach(),
+        recurrent_states.detach(),
+        data["terminated"],
+        horizon=cfg.algo.horizon,
+        gamma=cfg.algo.gamma,
+        lmbda=cfg.algo.lmbda,
+        use_continues=True,
+    )
+    graph(dreamer_v2.actor_loss)(
+        actor,
+        trajectories,
+        actions,
+        values,
+        lambda_values,
+        discount,
+        objective_mix=0.5,
+        actions_dim=actions_dim,
+        ent_coef=cfg.algo.actor.ent_coef,
+    )
+    graph(dreamer_v2.critic_loss)(critic, trajectories, lambda_values, discount)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, continuous):
+    # The same weights, the same batch and the same random numbers, with the objective of the actor mixing the dynamics
+    # and REINFORCE: the same losses and gradients, with and without `torch.compile` (and its CUDA graphs)
+    same_random_numbers(monkeypatch)
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
+    results = []
+    for enabled in (False, True):
+        cfg, fabric, models, optimizers, actions_dim, data = compilable_dreamer_v2(
+            continuous, ["algo.actor.objective_mix=0.5", f"algo.compile.enabled={enabled}"], accelerator="cuda"
+        )
+        with monkeypatch.context() as patch:
+            aggregator, losses, grads = recording(dreamer_v2, patch)
+            torch.manual_seed(1)
+            dreamer_v2.train(fabric, *models, *optimizers, data, aggregator, cfg, actions_dim)
+        results.append((losses, grads))
+    assert_same_step(*results)

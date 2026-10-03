@@ -8,6 +8,7 @@ import gymnasium
 import hydra
 import numpy as np
 import torch
+import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
@@ -96,6 +97,9 @@ class RecurrentModel(nn.Module):
         nn.init.orthogonal_(self.rnn.weight_hh_l0)
         nn.init.zeros_(self.rnn.bias_ih_l0)
         nn.init.zeros_(self.rnn.bias_hh_l0)
+        # The weights of the GRU, for the compiled step: `torch.compile` doesn't trace the code that reaches `nn.GRU`
+        # (a tuple: they stay the weights of the GRU, also in the state dict)
+        self._gru_weights = (self.rnn.weight_ih_l0, self.rnn.bias_ih_l0, self.rnn.weight_hh_l0, self.rnn.bias_hh_l0)
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -109,9 +113,26 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
+        if torch.compiler.is_compiling():
+            # `torch.compile` doesn't trace `nn.GRU`: the same step of the GRU, from its weights
+            recurrent_state = gru_step(feat, recurrent_state, *self._gru_weights)
+            return recurrent_state, recurrent_state
         self.rnn.flatten_parameters()
         out, recurrent_state = self.rnn(feat, recurrent_state)
         return out, recurrent_state
+
+
+def gru_step(
+    input: Tensor, hidden: Tensor, weight_ih: Tensor, bias_ih: Tensor, weight_hh: Tensor, bias_hh: Tensor
+) -> Tensor:
+    """One step of a single-layer `nn.GRU` (the recurrent state after `input`), computed from its weights: the reset
+    and update gates and the candidate state, in the order of PyTorch."""
+    input_reset, input_update, input_candidate = F.linear(input, weight_ih, bias_ih).chunk(3, -1)
+    hidden_reset, hidden_update, hidden_candidate = F.linear(hidden, weight_hh, bias_hh).chunk(3, -1)
+    reset = torch.sigmoid(input_reset + hidden_reset)
+    update = torch.sigmoid(input_update + hidden_update)
+    candidate = torch.tanh(input_candidate + reset * hidden_candidate)
+    return (1 - update) * candidate + update * hidden
 
 
 class RSSM(nn.Module):
