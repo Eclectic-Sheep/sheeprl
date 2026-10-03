@@ -10,6 +10,11 @@ import pytest
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
 
+# For the trainings run inside the pytest process: environments stepped in this process and no videos. An environment
+# worker forked from a process where pygame has already rendered (e.g. in an earlier test) hangs forever when it closes
+# pygame: SDL waits for its timer thread, which exists only in the parent process
+IN_PROCESS_ENV_ARGS = ["env.sync_env=True", "env.capture_video=False"]
+
 
 def test_dp_strategy_str_warning():
     args = [
@@ -20,6 +25,7 @@ def test_dp_strategy_str_warning():
         "dry_run=True",
         "algo.rollout_steps=1",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -49,8 +55,11 @@ def test_dp_strategy_instance_warning():
         "algo=ppo",
         "algo.rollout_steps=1",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
-    with mock.patch.object(sys, "argv", args):
+    # The warning is raised by the checks of the configuration, before the training: the training itself is not run,
+    # since `DataParallel` refuses the CPU when CUDA is available
+    with mock.patch.object(sys, "argv", args), mock.patch("sheeprl.cli.run_algorithm"):
         with pytest.warns(UserWarning) as record:
             run()
         assert len(record) >= 1
@@ -83,6 +92,7 @@ def test_strategy_warning():
         "dry_run=True",
         "algo.rollout_steps=1",
         "metric.log_level=0",
+        *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
         with pytest.warns(UserWarning) as record:
@@ -155,12 +165,12 @@ def test_resume_from_checkpoint():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -209,12 +219,12 @@ def test_resume_from_checkpoint_env_error():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -265,12 +275,12 @@ def test_resume_from_checkpoint_algo_error():
     try:
         path = os.path.join("logs", "runs", "pytest_test_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
     try:
         path = os.path.join("logs", "runs", "pytest_resume_ckpt")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -327,7 +337,7 @@ def test_evaluate_without_seed():
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))
 
 
@@ -367,7 +377,7 @@ def test_evaluate():
     try:
         path = os.path.join("logs", "runs", "pytest_test_evaluate")
         shutil.rmtree(path)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
@@ -437,5 +447,5 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(os.path.join("logs", "runs", root_dir)))

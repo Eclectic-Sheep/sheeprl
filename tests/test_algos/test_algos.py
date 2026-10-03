@@ -59,7 +59,7 @@ def remove_test_dir(path: str) -> None:
     """Utility function to cleanup a temporary folder if it still exists."""
     try:
         shutil.rmtree(path, False, None)
-    except (OSError, WindowsError):
+    except OSError:
         warnings.warn("Unable to delete folder {}.".format(path))
 
 
