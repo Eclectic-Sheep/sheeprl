@@ -52,9 +52,3 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     _, agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
     del _
     test(agent, fabric, cfg, log_dir)
-
-
-# This is just for showcase
-@register_evaluation(algorithms="ppo_decoupled")
-def evaluate_ppo_decoupled(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    evaluate_ppo(fabric, cfg, state)

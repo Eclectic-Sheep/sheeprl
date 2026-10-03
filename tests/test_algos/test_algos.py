@@ -3,7 +3,6 @@ import shutil
 import sys
 import time
 import warnings
-from contextlib import nullcontext
 from unittest import mock
 
 import pytest
@@ -186,49 +185,6 @@ def test_sac_ae(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-def test_sac_decoupled(standard_args, start_time):
-    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", os.environ["LT_DEVICES"])
-    run_name = "test_sac_decoupled"
-    args = standard_args + [
-        "exp=sac_decoupled",
-        "algo.per_rank_batch_size=1",
-        "algo.learning_starts=0",
-        "algo.replay_ratio=1",
-        f"fabric.devices={os.environ['LT_DEVICES']}",
-        f"root_dir={root_dir}",
-        f"run_name={run_name}",
-    ]
-
-    with mock.patch.object(sys, "argv", args):
-        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-            run()
-
-    if os.environ["LT_DEVICES"] != "1":
-        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
-
-
-def test_sac_decoupled_multiple_trainers(standard_args, start_time):
-    # One player and two trainers: the player must send a different chunk of data to each trainer
-    if os.environ["LT_DEVICES"] == "1":
-        pytest.skip("The test runs with three devices, it is enough to run it once")
-    root_dir = os.path.join(f"pytest_{start_time}", "sac_decoupled", "3")
-    run_name = "test_sac_decoupled_multiple_trainers"
-    args = standard_args + [
-        "exp=sac_decoupled",
-        "algo.per_rank_batch_size=2",
-        "algo.learning_starts=0",
-        "algo.replay_ratio=1",
-        "fabric.devices=3",
-        f"root_dir={root_dir}",
-        f"run_name={run_name}",
-    ]
-
-    # Fabric reads the number of devices from the `LT_DEVICES` environment variable, which takes precedence
-    with mock.patch.dict(os.environ, {"LT_DEVICES": "3"}), mock.patch.object(sys, "argv", args):
-        run()
-    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
-
-
 def test_a2c(standard_args, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
@@ -268,39 +224,11 @@ def test_ppo(standard_args, start_time, env_id):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_ppo_decoupled(standard_args, start_time, env_id):
-    root_dir = os.path.join(f"pytest_{start_time}", "ppo_decoupled", os.environ["LT_DEVICES"])
-    run_name = "test_ppo_decoupled"
-    args = standard_args + [
-        "exp=ppo_decoupled",
-        "env=dummy",
-        f"fabric.devices={os.environ['LT_DEVICES']}",
-        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
-        "algo.per_rank_batch_size=1",
-        "algo.update_epochs=1",
-        f"root_dir={root_dir}",
-        f"run_name={run_name}",
-        f"env.id={env_id}",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-    ]
-
-    with mock.patch.object(sys, "argv", args):
-        with pytest.raises(RuntimeError) if os.environ["LT_DEVICES"] == "1" else nullcontext():
-            run()
-
-    if os.environ["LT_DEVICES"] != "1":
-        remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
-
-
-@pytest.mark.parametrize("algo", ["ppo", "ppo_decoupled", "a2c", "ppo_recurrent"])
+@pytest.mark.parametrize("algo", ["ppo", "a2c", "ppo_recurrent"])
 def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     # The time limit truncates the episodes during the rollout, so the value of the final observation
     # of every truncated episode is bootstrapped: the frame-stacked `rgb` is the only selected key,
     # while the `state` key returned by the environment is not used by the agent
-    if algo == "ppo_decoupled" and os.environ["LT_DEVICES"] == "1":
-        pytest.skip("The decoupled algorithms need at least two devices")
     root_dir = os.path.join(f"pytest_{start_time}", algo, os.environ["LT_DEVICES"])
     run_name = f"test_{algo}_truncated_episodes"
     args = standard_args + [
@@ -316,8 +244,6 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
-    if algo == "ppo_decoupled":
-        args.append(f"fabric.devices={os.environ['LT_DEVICES']}")
     if algo == "ppo_recurrent":
         args += ["algo.per_rank_sequence_length=2", "fabric.precision=32"]
 
