@@ -173,14 +173,24 @@ def test_save_episode_errors():
     with pytest.raises(RuntimeError, match="The episode must contain exactly one done"):
         rb._save_episode(ep_chunks)
 
-    ep_chunks = [{"terminated": np.ones((1, 1)), "truncated": np.zeros((1, 1))}]
-    with pytest.raises(RuntimeError, match="Episode too short"):
-        rb._save_episode(ep_chunks)
 
-    ep_chunks = [{"terminated": np.zeros((110, 1)), "truncated": np.zeros((110, 1))} for _ in range(8)]
-    ep_chunks[-1]["truncated"][-1] = 1
-    with pytest.raises(RuntimeError, match="Episode too long"):
-        rb._save_episode(ep_chunks)
+def test_episodes_too_short_or_too_long_are_skipped():
+    # They crashed the training (one early death in Crafter ended the run): DreamerV2 skips them
+    rb = EpisodeBuffer(100, 5, n_envs=1, obs_keys=("terminated", "truncated"))
+    with pytest.warns(UserWarning, match="Skipping the episodes shorter than 5 steps or longer than 100 steps"):
+        rb._save_episode([{"terminated": np.ones((1, 1)), "truncated": np.zeros((1, 1))}])
+    long_episode = {"terminated": np.zeros((101, 1)), "truncated": np.zeros((101, 1))}
+    long_episode["truncated"][-1] = 1
+    with pytest.warns(UserWarning, match="Skipping the episodes"):
+        rb._save_episode([long_episode])
+    assert len(rb.buffer) == 0 and len(rb) == 0
+    # From the steps of the environment: an episode of 3 steps, skipped, then one of 6, stored
+    steps = {"terminated": np.zeros((9, 1, 1)), "truncated": np.zeros((9, 1, 1))}
+    steps["terminated"][2] = 1
+    steps["truncated"][8] = 1
+    with pytest.warns(UserWarning, match="Skipping the episodes"):
+        rb.add(steps)
+    assert len(rb.buffer) == 1 and len(rb) == 6
 
 
 def test_episode_buffer_sample_one_element():
