@@ -15,6 +15,14 @@ replay_ratio: 1.0
 learning_starts: 100
 per_rank_pretrain_steps: 0
 
+# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a minute or so the
+# first time, then mostly reused from the cache of PyTorch).
+# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
+# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
+compile:
+  enabled: False
+  mode: reduce-overhead
+
 # Model related parameters
 # Actor
 actor:
@@ -22,6 +30,8 @@ actor:
   optimizer:
     lr: 3e-4
     eps: 1e-4
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Critic
 critic:
@@ -31,6 +41,8 @@ critic:
   optimizer:
     lr: 3e-4
     eps: 1e-4
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Entropy coefficient
 alpha:
@@ -38,3 +50,5 @@ alpha:
   optimizer:
     lr: 3e-4
     eps: 1e-4
+    # One kernel for the whole update of the weights
+    fused: True

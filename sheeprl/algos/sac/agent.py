@@ -253,14 +253,19 @@ class SACAgent(nn.Module):
         # Get q-values for the next observations and actions, estimated by the target q-functions
         next_state_actions, next_state_log_pi = self.get_actions_and_log_probs(next_obs)
         qf_next_target = self.get_target_q_values(next_obs, next_state_actions)
-        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - self.alpha * next_state_log_pi
+        # The temperature as a tensor: no synchronization with the device, and no break of a compiled graph
+        alpha = self._log_alpha.exp()
+        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - alpha * next_state_log_pi
         next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
         return next_qf_value
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
-            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+        # `tau * critic + (1 - tau) * target` for all the weights at once, with the same roundings
+        targets = list(self.qfs_target.parameters())
+        updates = torch._foreach_mul(list(self.qfs_unwrapped.parameters()), self._tau)
+        torch._foreach_mul_(targets, 1 - self._tau)
+        torch._foreach_add_(targets, updates)
 
 
 class SACPlayer(nn.Module):

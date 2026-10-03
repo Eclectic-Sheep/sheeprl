@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import gymnasium as gym
 import hydra
@@ -19,6 +19,7 @@ from sheeprl.algos.sac.agent import SACAgent, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -26,6 +27,29 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
+
+
+def critic_loss_fn(
+    agent: SACAgent,
+    observations: Tensor,
+    actions: Tensor,
+    rewards: Tensor,
+    next_observations: Tensor,
+    terminated: Tensor,
+    gamma: float,
+) -> Tensor:
+    """The loss of the critics (Eq. 5), with the targets of the target critics on the next observations."""
+    next_target_qf_value = agent.get_next_target_q_values(next_observations, rewards, terminated, gamma)
+    qf_values = agent.get_q_values(observations, actions)
+    return critic_loss(qf_values, next_target_qf_value, agent.num_critics)
+
+
+def actor_loss_fn(agent: SACAgent, observations: Tensor) -> Tuple[Tensor, Tensor]:
+    """The loss of the actor (Eq. 7) and the log-probabilities of its actions, for the loss of the temperature."""
+    actions, logprobs = agent.get_actions_and_log_probs(observations)
+    qf_values = agent.get_q_values(observations, actions)
+    min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
+    return policy_loss(agent.log_alpha.exp().detach(), logprobs, min_qf_values), logprobs.detach()
 
 
 def train(
@@ -40,13 +64,20 @@ def train(
     cfg: Dict[str, Any],
     policy_steps_per_iter: int,
 ):
+    # The losses are compiled when `algo.compile.enabled` is set
+    mark_gradient_step(fabric, cfg)
+
     # Update the soft-critic
     with autocast_cache_scope(fabric):
-        next_target_qf_value = agent.get_next_target_q_values(
-            data["next_observations"], data["rewards"], data["terminated"], cfg.algo.gamma
+        qf_loss = compiled(critic_loss_fn, fabric, cfg)(
+            agent,
+            data["observations"],
+            data["actions"],
+            data["rewards"],
+            data["next_observations"],
+            data["terminated"],
+            cfg.algo.gamma,
         )
-        qf_values = agent.get_q_values(data["observations"], data["actions"])
-        qf_loss = critic_loss(qf_values, next_target_qf_value, agent.num_critics)
     update(fabric, qf_loss, qf_optimizer)
 
     # Update the target networks with EMA
@@ -55,14 +86,11 @@ def train(
 
     # Update the actor
     with autocast_cache_scope(fabric):
-        actions, logprobs = agent.get_actions_and_log_probs(data["observations"])
-        qf_values = agent.get_q_values(data["observations"], actions)
-        min_qf_values = torch.min(qf_values, dim=-1, keepdim=True)[0]
-        actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+        actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, data["observations"])
     update(fabric, actor_loss, actor_optimizer)
 
     # Update the entropy value
-    alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
+    alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
     update(fabric, alpha_loss, alpha_optimizer)
 
     if aggregator and not aggregator.disabled:
