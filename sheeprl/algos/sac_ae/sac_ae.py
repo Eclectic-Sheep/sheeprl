@@ -17,8 +17,9 @@ from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
 
-from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent
+from sheeprl.algos.sac.loss import critic_loss, policy_loss
+from sheeprl.algos.sac_ae.agent import SACAEAgent, build_agent, tie_actor_optimizer
+from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
@@ -29,6 +30,9 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
+
+# The most gradient steps whose batches are sampled (and moved to the device) at once
+MAX_SAMPLED_BATCHES = 16
 
 
 def train(
@@ -132,9 +136,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if cfg.checkpoint.resume_from:
         state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
 
-    # These arguments cannot be changed
-    cfg.env.screen_size = 64
-
     # Create Logger. This will create the logger only on the
     # rank-0 process
     logger = get_logger(fabric, cfg)
@@ -232,7 +233,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if cfg.checkpoint.resume_from:
         qf_optimizer.load_state_dict(state["qf_optimizer"])
-        actor_optimizer.load_state_dict(state["actor_optimizer"])
+        actor_optimizer.load_state_dict(tie_actor_optimizer(state["actor_optimizer"], state["agent"]))
         alpha_optimizer.load_state_dict(state["alpha_optimizer"])
         encoder_optimizer.load_state_dict(state["encoder_optimizer"])
         decoder_optimizer.load_state_dict(state["decoder_optimizer"])
@@ -384,53 +385,54 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
                 per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
-                # We sample one time to reduce the communications between processes
-                sample = rb.sample_tensors(
-                    per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
-                    sample_next_obs=cfg.buffer.sample_next_obs,
-                    from_numpy=cfg.buffer.from_numpy,
-                )  # [1, G*B]
-                # [World, 1, G*B] with several processes, [1, G*B] with one (no dimension of the processes)
-                gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)
-                for k, v in gathered_data.items():
-                    gathered_data[k] = v.reshape(-1, *sample[k].shape[2:]).float()  # [G*B*World]
-                len_data = len(gathered_data[next(iter(gathered_data.keys()))])
-                if fabric.world_size > 1:
-                    dist_sampler: DistributedSampler = DistributedSampler(
-                        range(len_data),
-                        num_replicas=fabric.world_size,
-                        rank=fabric.global_rank,
-                        shuffle=True,
-                        seed=cfg.seed,
-                        drop_last=False,
-                    )
-                    sampler: BatchSampler = BatchSampler(
-                        sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                    )
-                else:
-                    sampler = BatchSampler(
-                        sampler=range(len_data), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
-                    )
-
-                # Start training
                 with training_timer(fabric.device):
-                    for batch_idxes in sampler:
-                        train(
-                            fabric,
-                            agent,
-                            encoder,
-                            decoder,
-                            actor_optimizer,
-                            qf_optimizer,
-                            alpha_optimizer,
-                            encoder_optimizer,
-                            decoder_optimizer,
-                            {k: v[batch_idxes] for k, v in gathered_data.items()},
-                            aggregator,
-                            cumulative_per_rank_gradient_steps,
-                            cfg,
-                        )
-                        cumulative_per_rank_gradient_steps += 1
+                    # The batches of the gradient steps are sampled `MAX_SAMPLED_BATCHES` at a time: the images of all
+                    # the ones of the first training (with the pretraining) don't fit in the memory
+                    for first in range(0, per_rank_gradient_steps, MAX_SAMPLED_BATCHES):
+                        n_steps = min(MAX_SAMPLED_BATCHES, per_rank_gradient_steps - first)
+                        sample = rb.sample_tensors(
+                            n_steps * cfg.algo.per_rank_batch_size,
+                            sample_next_obs=cfg.buffer.sample_next_obs,
+                            from_numpy=cfg.buffer.from_numpy,
+                        )  # [1, G*B]
+                        # [World, 1, G*B] with several processes, [1, G*B] with one (no dimension of the processes)
+                        gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)
+                        for k, v in gathered_data.items():
+                            gathered_data[k] = v.reshape(-1, *sample[k].shape[2:]).float()  # [G*B*World]
+                        len_data = len(gathered_data[next(iter(gathered_data.keys()))])
+                        if fabric.world_size > 1:
+                            dist_sampler: DistributedSampler = DistributedSampler(
+                                range(len_data),
+                                num_replicas=fabric.world_size,
+                                rank=fabric.global_rank,
+                                shuffle=True,
+                                seed=cfg.seed,
+                                drop_last=False,
+                            )
+                            sampler: BatchSampler = BatchSampler(
+                                sampler=dist_sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+                            )
+                        else:
+                            sampler = BatchSampler(
+                                sampler=range(len_data), batch_size=cfg.algo.per_rank_batch_size, drop_last=False
+                            )
+                        for batch_idxes in sampler:
+                            train(
+                                fabric,
+                                agent,
+                                encoder,
+                                decoder,
+                                actor_optimizer,
+                                qf_optimizer,
+                                alpha_optimizer,
+                                encoder_optimizer,
+                                decoder_optimizer,
+                                {k: v[batch_idxes] for k, v in gathered_data.items()},
+                                aggregator,
+                                cumulative_per_rank_gradient_steps,
+                                cfg,
+                            )
+                            cumulative_per_rank_gradient_steps += 1
                     # The gradient steps of all the processes
                     train_step += world_size * per_rank_gradient_steps
 
