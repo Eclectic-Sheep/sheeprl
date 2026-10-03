@@ -53,6 +53,26 @@ DREAMER_ARGS = [
     "buffer.size=16",
 ]
 
+DREAMER_V3_5_ARGS = [
+    "env=dummy",
+    "env.id=discrete_dummy",
+    "algo.cnn_keys.encoder=[rgb]",
+    "algo.mlp_keys.encoder=[state]",
+    "algo.dense_units=8",
+    "algo.cnn_channels_multiplier=2",
+    "algo.world_model.recurrent_model.recurrent_state_size=16",
+    "algo.world_model.recurrent_model.hidden_size=8",
+    "algo.world_model.recurrent_model.blocks=4",
+    "algo.world_model.observation_model.block_space=2",
+    "algo.world_model.stochastic_size=4",
+    "algo.world_model.discrete_size=4",
+    "algo.horizon=4",
+    "algo.per_rank_batch_size=1",
+    # With the step of the replay context, sequences of 2 steps as the other Dreamers
+    "algo.per_rank_sequence_length=1",
+    "buffer.size=16",
+]
+
 # For every algorithm: its module, the overrides of its training and the exploration it starts from, if any. The
 # buffers hold the 8 steps of every environment: on Windows a memory-mapped buffer takes its whole size on the disk
 # (SAC-AE's default one, of images, 12 GB)
@@ -87,6 +107,12 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "dreamer_v1": {"module": "sheeprl.algos.dreamer_v1.dreamer_v1", "args": ["exp=dreamer_v1", *DREAMER_ARGS]},
     "dreamer_v2": {"module": "sheeprl.algos.dreamer_v2.dreamer_v2", "args": ["exp=dreamer_v2", *DREAMER_ARGS]},
     "dreamer_v3": {"module": "sheeprl.algos.dreamer_v3.dreamer_v3", "args": ["exp=dreamer_v3", *DREAMER_ARGS]},
+    # It plays its policy from the first step
+    "dreamer_v3_5": {
+        "module": "sheeprl.algos.dreamer_v3_5.dreamer_v3_5",
+        "args": ["exp=dreamer_v3_5", *DREAMER_V3_5_ARGS],
+        "random_actions": False,
+    },
     "p2e_dv3_exploration": {
         "module": "sheeprl.algos.p2e_dv3.p2e_dv3_exploration",
         "args": ["exp=p2e_dv3_exploration", *DREAMER_ARGS],
@@ -148,8 +174,10 @@ def test_resumed_run_plays_no_random_actions_after_learning_starts(name, buffer_
             buffer_args.append(f"checkpoint.exploration_ckpt_path={checkpoint_of(root_dir, 'exploration')}")
             assert train(name, ["algo.total_steps=8", "run_name=first", *buffer_args]) == (0, 3 * 2)
         else:
-            # Random actions in iterations 1 and 2; training from iteration 2
-            assert train(name, ["algo.total_steps=8", "run_name=first", *buffer_args]) == (2, 3 * 2)
+            # Random actions in iterations 1 and 2 (unless the policy plays from the first step); training from
+            # iteration 2
+            random_actions = 2 if ALGORITHMS[name].get("random_actions", True) else 0
+            assert train(name, ["algo.total_steps=8", "run_name=first", *buffer_args]) == (random_actions, 3 * 2)
         resumed = train(
             name,
             [

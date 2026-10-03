@@ -5,6 +5,7 @@ import time
 import warnings
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from sheeprl import ROOT_DIR
@@ -703,6 +704,91 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert len(crashes) == 1
     assert [1] in reset_envs
+
+
+# A small DreamerV3 (Nature version) on images and vectors
+DREAMER_V3_5_ARGS = [
+    "exp=dreamer_v3_5",
+    "env=dummy",
+    "algo.dense_units=8",
+    "algo.cnn_channels_multiplier=2",
+    "algo.world_model.recurrent_model.recurrent_state_size=16",
+    "algo.world_model.recurrent_model.hidden_size=8",
+    "algo.world_model.recurrent_model.blocks=4",
+    "algo.world_model.observation_model.block_space=2",
+    "algo.world_model.stochastic_size=4",
+    "algo.world_model.discrete_size=4",
+    "algo.cnn_keys.encoder=[rgb]",
+    "algo.mlp_keys.encoder=[state]",
+]
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("replay_context", [0, 1])
+def test_dreamer_v3_5(standard_args, env_id, replay_context, start_time):
+    if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
+        # Every action space runs with 1 process: with 2, one of them is enough
+        pytest.skip("With 2 processes only the continuous actions")
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3_5", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        *DREAMER_V3_5_ARGS,
+        f"env.id={env_id}",
+        f"algo.replay_context={replay_context}",
+        "algo.per_rank_batch_size=1",
+        "algo.per_rank_sequence_length=3",
+        "algo.replay_ratio=1",
+        "algo.horizon=4",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_v3_5",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_dreamer_v3_5_writes_back_the_latent_states_of_the_trained_steps(standard_args, start_time):
+    # The latent states computed by the trainings replace the ones of the player in the replay buffer
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("The latent states are checked in the process of rank 0")
+    from sheeprl.algos.dreamer_v3_5 import dreamer_v3_5
+
+    written = []
+    write_latent_states = dreamer_v3_5.write_latent_states
+
+    def recording_write(rb, updates, buffer_size):
+        write_latent_states(rb, updates, buffer_size)
+        # The last latent state computed for every step (the sampled sequences can overlap)
+        expected = {}
+        for step_ids, deter, stoch in updates:
+            for b in range(step_ids.shape[1]):
+                for t in range(step_ids.shape[0]):
+                    env, position = step_ids[t, b, 0], step_ids[t, b, 1] % buffer_size
+                    expected[env, position] = (deter[t, b].cpu().numpy(), stoch[t, b].cpu().numpy())
+        for (env, position), (deter, stoch) in expected.items():
+            written.append(
+                np.array_equal(rb.buffer[env]["deter"][position, 0], deter)
+                and np.array_equal(rb.buffer[env]["stoch"][position, 0], stoch)
+            )
+
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3_5_latents", os.environ["LT_DEVICES"])
+    args = [arg for arg in standard_args if not arg.startswith("dry_run")] + [
+        *DREAMER_V3_5_ARGS,
+        "env.id=discrete_dummy",
+        "algo.total_steps=24",
+        "algo.learning_starts=8",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=3",
+        "algo.replay_ratio=1",
+        "algo.horizon=2",
+        "buffer.size=16",
+        "algo.run_test=False",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_v3_5_latents",
+    ]
+    with mock.patch.object(dreamer_v3_5, "write_latent_states", recording_write), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert len(written) > 0 and all(written)
 
 
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
