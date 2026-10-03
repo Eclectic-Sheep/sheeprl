@@ -51,9 +51,7 @@ def test_module_not_found():
 def test_dp_strategy_instance_warning():
     args = [
         os.path.join(ROOT_DIR, "__main__.py"),
-        "exp=test_decoupled_strategy_instance",
-        "algo=ppo",
-        "algo.rollout_steps=1",
+        "exp=test_strategy_instance",
         "metric.log_level=0",
         *IN_PROCESS_ENV_ARGS,
     ]
@@ -70,17 +68,6 @@ def test_dp_strategy_instance_warning():
             "or with a single device with 'python sheeprl.py fabric.strategy=auto fabric.devices=1' "
             "if you run into any problems."
         )
-
-
-def test_decoupled_strategy_instance_fail():
-    args = [os.path.join(ROOT_DIR, "__main__.py"), "exp=test_decoupled_strategy_instance", "metric.log_level=0"]
-    with pytest.raises(
-        ValueError,
-        match=r"\w+ is currently not supported for decoupled algorithms. "
-        "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp'",
-    ):
-        with mock.patch.object(sys, "argv", args):
-            run()
 
 
 def test_strategy_warning():
@@ -104,17 +91,6 @@ def test_strategy_warning():
             "Please launch the script with a 'DDP' strategy with 'python sheeprl.py fabric.strategy=ddp' "
             "or the 'auto' one with 'python sheeprl.py fabric.strategy=auto' if you run into any problems."
         )
-
-
-def test_run_decoupled_algo():
-    subprocess.run(
-        sys.executable + " sheeprl.py exp=ppo_decoupled fabric.strategy=ddp fabric.devices=2 "
-        "dry_run=True algo.rollout_steps=1 algo.cnn_keys.encoder=[rgb] algo.mlp_keys.encoder=[state] "
-        "env.capture_video=False checkpoint.save_last=False metric.log_level=0 "
-        "metric.disable_timer=True",
-        shell=True,
-        check=True,
-    )
 
 
 def test_run_algo():

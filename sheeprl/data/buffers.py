@@ -5,6 +5,7 @@ import os
 import shutil
 import typing
 import uuid
+import warnings
 from itertools import compress
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Type
@@ -679,21 +680,30 @@ class EnvIndependentReplayBuffer:
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
 
-        bs_per_buf = np.bincount(self._rng.integers(0, self._n_envs, (batch_size,)))
-        per_buf_samples = [
-            b.sample(
-                batch_size=bs,
+        # The environment of every element of every batch, drawn independently: the batches of one call don't take the
+        # same number of elements from each environment
+        env_idxes = self._rng.integers(0, self._n_envs, (n_samples, batch_size))
+        axis = self._concat_along_axis
+        samples: Dict[str, np.ndarray] = {}
+        for env, buf in enumerate(self._buf):
+            sample_idxes, element_idxes = np.nonzero(env_idxes == env)
+            if len(sample_idxes) == 0:
+                continue
+            # All the elements of this environment at once, along the batch axis of a single sample
+            env_samples = buf.sample(
+                batch_size=len(sample_idxes),
                 sample_next_obs=sample_next_obs,
                 clone=clone,
-                n_samples=n_samples,
+                n_samples=1,
                 **kwargs,
             )
-            for b, bs in zip(self._buf, bs_per_buf)
-            if bs > 0
-        ]
-        samples = {}
-        for k in per_buf_samples[0].keys():
-            samples[k] = np.concatenate([s[k] for s in per_buf_samples], axis=self._concat_along_axis)
+            for k, v in env_samples.items():
+                if k not in samples:
+                    shape = list(v.shape)
+                    shape[0], shape[axis] = n_samples, batch_size
+                    samples[k] = np.empty(shape, dtype=v.dtype)
+                # Write them where they were drawn: index the samples and the batch axis together
+                np.moveaxis(samples[k], axis, 1)[sample_idxes, element_idxes] = np.moveaxis(v[0], axis - 1, 0)
         return samples
 
     @torch.no_grad()
@@ -746,8 +756,8 @@ class EpisodeBuffer:
 
     Args:
         buffer_size (int): The capacity of the buffer.
-        sequence_length (int): The length of the sequences of the samples
-            (an episode cannot be shorter than the episode length).
+        minimum_episode_length (int): The length of the sequences of the samples: the shorter episodes, and the ones
+            longer than the buffer, are skipped with a warning.
         n_envs (int): The number of environments.
             Default to 1.
         obs_keys (Sequence[str]): The observations keys to store in the buffer.
@@ -981,12 +991,14 @@ class EpisodeBuffer:
         ep_len = ends.shape[0]
         if len(ends.nonzero()[0]) != 1 or ends[-1] != 1:
             raise RuntimeError(f"The episode must contain exactly one done, got: {len(np.nonzero(ends))}")
-        if ep_len < self._minimum_episode_length:
-            raise RuntimeError(
-                f"Episode too short (at least {self._minimum_episode_length} steps), got: {ep_len} steps"
+        # As DreamerV2 does, the episodes shorter than the sampled sequences (they cannot be sampled) are skipped, and
+        # so are the ones longer than the buffer (they cannot be stored)
+        if ep_len < self._minimum_episode_length or ep_len > self._buffer_size:
+            warnings.warn(
+                f"Skipping the episodes shorter than {self._minimum_episode_length} steps "
+                f"or longer than {self._buffer_size} steps (the buffer size)"
             )
-        if ep_len > self._buffer_size:
-            raise RuntimeError(f"Episode too long (at most {self._buffer_size} steps), got: {ep_len} steps")
+            return
 
         # If the buffer is full, then remove the oldest episodes
         if self.full or len(self) + ep_len > self._buffer_size:

@@ -118,7 +118,7 @@ def train(
             aggregator.update("Loss/value_loss", v_loss.detach())
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(

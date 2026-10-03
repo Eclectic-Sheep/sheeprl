@@ -452,7 +452,7 @@ def train(
         aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -799,7 +799,7 @@ def log_models(
                 warnings.warn(f"Model {k} not found in models_to_log, skipping.", category=UserWarning)
                 continue
             unwrapped_models[k] = unwrap_fabric(models_to_log[k])
-            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], name=k, serialization_format="pickle")
         mlflow.log_dict(cfg, "config.json")
     return model_info
 ```
@@ -995,10 +995,8 @@ from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
 from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
-from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
 from sheeprl.algos.sac import sac as sac
-from sheeprl.algos.sac import sac_decoupled as sac_decoupled
 from sheeprl.algos.sac_ae import sac_ae as sac_ae
 +from sheeprl.algos.sota import sota as sota
 
@@ -1012,23 +1010,21 @@ __version__ = "0.4.3"
 Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:
 
 ```bash
-SheepRL Agents                             
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃ Decoupled ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │ False     │
-│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │ False     │
-│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │ False     │
-│ sheeprl.algos.sac           │ sac           │ main       │ False     │
-│ sheeprl.algos.sac           │ sac_decoupled │ main       │ True      │
-│ sheeprl.algos.droq          │ droq          │ main       │ False     │
-│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
-│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
-│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
-│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
-│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │ False     │
-│ sheeprl.algos.sota          │ sota          │ sota_main  │ False     │
-└─────────────────────────────┴───────────────┴────────────┴───────────┘
+SheepRL Agents
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │
+│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │
+│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │
+│ sheeprl.algos.sac           │ sac           │ main       │
+│ sheeprl.algos.droq          │ droq          │ main       │
+│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │
+│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │
+│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │
+│ sheeprl.algos.ppo           │ ppo           │ main       │
+│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │
+│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │
+│ sheeprl.algos.sota          │ sota          │ sota_main  │
+└─────────────────────────────┴───────────────┴────────────┘
 ```

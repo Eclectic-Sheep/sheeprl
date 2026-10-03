@@ -122,27 +122,39 @@ def log_models_from_checkpoint(
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
-        model_info["actor_task"] = mlflow.pytorch.log_model(unwrap_fabric(actor_task), artifact_path="actor_task")
-        model_info["critic_task"] = mlflow.pytorch.log_model(unwrap_fabric(critic_task), artifact_path="critic_task")
-        model_info["target_critic_task"] = mlflow.pytorch.log_model(
-            target_critic_task, artifact_path="target_critic_task"
+        model_info["world_model"] = mlflow.pytorch.log_model(
+            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
         )
-        model_info["moments_task"] = mlflow.pytorch.log_model(moments_task, artifact_path="moments_task")
+        model_info["actor_task"] = mlflow.pytorch.log_model(
+            unwrap_fabric(actor_task), name="actor_task", serialization_format="pickle"
+        )
+        model_info["critic_task"] = mlflow.pytorch.log_model(
+            unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
+        )
+        model_info["target_critic_task"] = mlflow.pytorch.log_model(
+            target_critic_task, name="target_critic_task", serialization_format="pickle"
+        )
+        model_info["moments_task"] = mlflow.pytorch.log_model(
+            moments_task, name="moments_task", serialization_format="pickle"
+        )
         if "exploration" in cfg.algo.name:
-            model_info["ensembles"] = mlflow.pytorch.log_model(unwrap_fabric(ensembles), artifact_path="ensembles")
+            model_info["ensembles"] = mlflow.pytorch.log_model(
+                unwrap_fabric(ensembles), name="ensembles", serialization_format="pickle"
+            )
             model_info["actor_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(actor_exploration), artifact_path="actor_exploration"
+                unwrap_fabric(actor_exploration), name="actor_exploration", serialization_format="pickle"
             )
             for k in critics_exploration.keys():
                 model_info[f"critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    critics_exploration[k]["module"], artifact_path=f"critic_exploration_{k}"
+                    critics_exploration[k]["module"], name=f"critic_exploration_{k}", serialization_format="pickle"
                 )
                 model_info[f"target_critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    critics_exploration[k]["target_module"], artifact_path=f"target_critic_exploration_{k}"
+                    critics_exploration[k]["target_module"],
+                    name=f"target_critic_exploration_{k}",
+                    serialization_format="pickle",
                 )
                 model_info[f"moments_exploration_{k}"] = mlflow.pytorch.log_model(
-                    moments_exploration[k], artifact_path=f"moments_exploration_{k}"
+                    moments_exploration[k], name=f"moments_exploration_{k}", serialization_format="pickle"
                 )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

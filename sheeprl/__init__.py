@@ -24,10 +24,8 @@ from sheeprl.algos.p2e_dv2 import p2e_dv2_finetuning  # noqa: F401
 from sheeprl.algos.p2e_dv3 import p2e_dv3_exploration  # noqa: F401
 from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning  # noqa: F401
 from sheeprl.algos.ppo import ppo  # noqa: F401
-from sheeprl.algos.ppo import ppo_decoupled  # noqa: F401
 from sheeprl.algos.ppo_recurrent import ppo_recurrent  # noqa: F401
 from sheeprl.algos.sac import sac  # noqa: F401
-from sheeprl.algos.sac import sac_decoupled  # noqa: F401
 from sheeprl.algos.sac_ae import sac_ae  # noqa: F401
 
 from sheeprl.algos.a2c import evaluate as a2c_evaluate  # noqa: F401, isort:skip
