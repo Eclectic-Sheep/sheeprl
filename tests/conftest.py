@@ -70,6 +70,8 @@ def restore_env_variables():
         "XRT_MESH_SERVICE_ADDRESS",
         # set by torchdynamo
         "TRITON_CACHE_DIR",
+        # set by torch.compile, e.g. in PyTorch 2.6
+        "TORCHINDUCTOR_CACHE_DIR",
         # set by Pygame
         "SDL_VIDEO_X11_WMCLASS",
         # set by us

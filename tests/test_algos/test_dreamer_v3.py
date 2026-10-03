@@ -358,8 +358,8 @@ def test_the_losses_are_compiled_only_when_enabled(monkeypatch, strategy):
 @pytest.mark.parametrize("precision,tolerance", [("32-true", 1e-4), ("bf16-mixed", 2e-2)])
 def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, precision, tolerance):
     # The same weights, the same batch and the latents taken as the most likely ones (the compiled code draws other
-    # random numbers): the same losses, with and without `torch.compile` (and its CUDA graphs). In mixed precision the
-    # modules are compiled without the hook of Lightning on their outputs (`sheeprl.utils.fabric.compilable`)
+    # random numbers): the same losses, with and without `torch.compile` (and its CUDA graphs). The modules are
+    # compiled without the hook of Lightning on their outputs (`sheeprl.utils.fabric.compilable`)
     original = dv3_agent.compute_stochastic_state
     monkeypatch.setattr(
         dv3_agent,

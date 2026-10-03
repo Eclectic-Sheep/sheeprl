@@ -45,7 +45,7 @@ dependencies = [
   "torchmetrics>=1.0",
   "rich>=13.5",
   "opencv-python>=4.10",
-  "torch>=2.5",
+  "torch>=2.6",
   "numpy>=1.26,<3",
 ]
 dynamic = ["version"]

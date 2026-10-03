@@ -1,3 +1,4 @@
+import pytest
 import torch
 from lightning import Fabric
 from lightning.fabric.strategies import SingleDeviceStrategy
@@ -18,10 +19,26 @@ def test_get_single_device_fabric():
     assert isinstance(single_device_fabric.strategy, SingleDeviceStrategy)
 
 
-def test_a_compilable_module_is_compiled_in_one_graph_in_mixed_precision():
-    # In mixed precision, the hook of `_FabricModule` on the outputs broke the compiled graph at every call of the
-    # module. Traced without generating code (`aot_eager`): the same computations as the eager ones
-    fabric = Fabric(accelerator="cpu", devices=1, precision="bf16-mixed")
+@pytest.mark.parametrize("precision", ["32-true", "64-true", "bf16-true", "bf16-mixed"])
+def test_a_compilable_module_hooks_its_outputs_only_when_not_compiled(monkeypatch, precision):
+    # `_FabricModule` hooks every output to check that the backward pass goes through `fabric.backward`, in every
+    # precision. PyTorch 2.5 and 2.6 can't compile the hook: it broke the graph at every call of the module, and the
+    # recompilations of `_FabricModule.forward` (one per module) reached `torch._dynamo.config.cache_size_limit`,
+    # after which the modules ran uncompiled. The hook was skipped only in mixed precision
+    fabric = Fabric(accelerator="cpu", devices=1, precision=precision)
+    module = compilable(fabric.setup_module(nn.Linear(4, 1)))
+    assert module(torch.randn(3, 4))._backward_hooks
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    output = module(torch.randn(3, 4))
+    assert not output._backward_hooks
+    # The output of the module in the default type, as without compiling
+    assert output.dtype == torch.float32
+
+
+@pytest.mark.parametrize("precision", ["32-true", "64-true", "bf16-true", "bf16-mixed"])
+def test_a_compilable_module_is_compiled_in_one_graph(precision):
+    # Traced without generating code (`aot_eager`): the same computations as the eager ones
+    fabric = Fabric(accelerator="cpu", devices=1, precision=precision)
     torch.manual_seed(0)
     module = compilable(fabric.setup_module(nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 1))))
     x = torch.randn(3, 4)
