@@ -334,7 +334,7 @@ actor:
 
   # Actor optimizer
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
 
@@ -351,7 +351,7 @@ critic:
 
   # Critic optimizer
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
 

@@ -1263,6 +1263,9 @@ def build_agent(
             mlp_decoder.heads.apply(uniform_init_weights(1.0))
         if cnn_decoder is not None:
             cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
+            # The projection of the latent state to the first feature maps: the default initializer of the linear
+            # layers of the official implementation, which its image decoder doesn't override
+            cnn_decoder.model[0].apply(uniform_init_weights(1.0))
 
     # Load models from checkpoint
     if world_model_state:

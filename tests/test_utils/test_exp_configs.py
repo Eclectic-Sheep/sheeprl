@@ -53,3 +53,14 @@ def test_dreamer_v2_on_atari_scales_the_discount_loss_as_the_paper():
 def test_dreamer_v1_pretrains_as_the_reference_implementation():
     # It did no pretraining: `danijar/dreamer` does 100 gradient steps after the `prefill` (`pretrain=100`)
     assert experiment("dreamer_v1").algo.per_rank_pretrain_steps == 100
+
+
+@pytest.mark.parametrize(
+    "exp", ["dreamer_v3", "dreamer_v3_100k_ms_pacman", "p2e_dv3_exploration", "p2e_dv3_finetuning"]
+)
+def test_dreamer_v3_learns_the_actor_and_the_critic_at_the_rate_of_the_official_code(exp):
+    # They learned at 8e-5, the rate of DreamerV1: DreamerV3 learns both at 3e-5 (`actor_opt` and `critic_opt` of the
+    # official `configs.yaml` of 2023, https://github.com/danijar/dreamerv3/blob/8fa35f8/dreamerv3/configs.yaml)
+    algo = experiment(exp).algo
+    assert algo.actor.optimizer.lr == 3e-5
+    assert algo.critic.optimizer.lr == 3e-5

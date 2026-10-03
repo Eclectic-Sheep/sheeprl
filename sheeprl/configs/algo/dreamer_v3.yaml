@@ -148,9 +148,9 @@ actor:
       low: 0.05
       high: 0.95
 
-  # Actor optimizer
+  # Actor optimizer (the learning rate of the actor and of the critic of the official implementation of 2023)
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
     # One kernel for the whole update of the weights
@@ -169,7 +169,7 @@ critic:
 
   # Critic optimizer
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
     # One kernel for the whole update of the weights

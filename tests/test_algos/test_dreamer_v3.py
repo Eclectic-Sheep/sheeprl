@@ -73,6 +73,38 @@ def test_the_cnn_decoder_is_normalized_as_configured():
     assert {m.eps for m in mlp_decoder.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
 
 
+def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initialization():
+    # The official decoder initializes the projection of the latent state to the first feature maps with the default
+    # initializer of its linear layers (uniform with the variance of the average fan), not with the one of the
+    # configuration: it was a truncated normal
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[rgb]",
+                "algo.mlp_keys.encoder=[]",
+                "algo.dense_units=8",
+                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict({"rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8)})
+    torch.manual_seed(0)
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    layer = world_model.observation_model.cnn_decoder.model[0]
+    weight = layer.weight.detach()
+    limit = math.sqrt(3 / ((layer.in_features + layer.out_features) / 2))
+    assert weight.abs().max().item() <= limit
+    assert weight.std().item() == pytest.approx(limit / math.sqrt(3), rel=0.03)
+    assert (weight.abs() > 0.9 * limit).float().mean().item() == pytest.approx(0.1, abs=0.01)
+    assert torch.all(layer.bias == 0)
+
+
 def test_the_player_resets_the_environments_one_by_one(recwarn):
     # After a full reset, the recurrent state was the initial one expanded to the environments, whose rows share the
     # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the player
@@ -369,11 +401,16 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
     monkeypatch.setattr(dreamer_v3, "_COMPILED", {})
     losses = []
     for enabled in (False, True):
-        _, _, _, train_step = small_dreamer_v3(
+        _, world_model, _, train_step = small_dreamer_v3(
             [f"algo.compile.enabled={enabled}", f"fabric.precision={precision}"],
             accelerator="cuda",
             precision=precision,
         )
+        # The imagined continues are the most likely ones: at the initialization the continue model predicts about
+        # 0.5, and the rounding of bf16 changes some of them between the compiled and the eager code. A clear
+        # prediction keeps them the same
+        with torch.no_grad():
+            world_model.continue_model.model[-1].bias.fill_(3.0)
         losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step().items()})
     for name in ("Loss/world_model_loss", "Loss/observation_loss", "Loss/state_loss", "Loss/value_loss"):
         torch.testing.assert_close(losses[1][name], losses[0][name], rtol=tolerance, atol=tolerance)
