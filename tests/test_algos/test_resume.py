@@ -80,6 +80,8 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "algo.encoder.features_dim=8",
             "algo.per_rank_batch_size=4",
             "buffer.size=16",
+            # The gradient steps are counted by the replay ratio
+            "algo.per_rank_pretrain_steps=0",
         ],
     },
     "dreamer_v1": {"module": "sheeprl.algos.dreamer_v1.dreamer_v1", "args": ["exp=dreamer_v1", *DREAMER_ARGS]},

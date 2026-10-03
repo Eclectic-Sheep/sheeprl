@@ -89,3 +89,20 @@ def test_dreamer_v1_has_the_hyper_parameters_of_the_official_code(exp):
     assert algo.actor.mlp_layers == 4
     assert algo.world_model.continue_scale_factor == 10.0
     assert algo.world_model.optimizer.eps == algo.actor.optimizer.eps == algo.critic.optimizer.eps == 1e-7
+
+
+def test_sac_ae_has_the_hyper_parameters_of_the_official_code():
+    # The convolutions had 512 channels (`cnn_channels_multiplier: 16`), the features were 64, there was no pretraining
+    # and the images were 64x64: the official implementation (https://github.com/denisyarats/pytorch_sac_ae) has
+    # convolutions of 32 channels, 50 features, 1000 gradient steps at its first training (`init_steps`) and images of
+    # 84x84
+    cfg = experiment("sac_ae")
+    algo = cfg.algo
+    assert algo.encoder.cnn_channels_multiplier == algo.decoder.cnn_channels_multiplier == 1
+    assert algo.encoder.features_dim == 50
+    assert algo.per_rank_pretrain_steps == algo.learning_starts == 1000
+    assert (cfg.env.screen_size, cfg.env.frame_stack) == (84, 3)
+    assert (algo.per_rank_batch_size, algo.actor.hidden_size, algo.critic.hidden_size) == (128, 1024, 1024)
+    assert (algo.tau, algo.encoder.tau, algo.alpha.alpha) == (0.01, 0.05, 0.1)
+    assert algo.actor.per_rank_update_freq == algo.critic.per_rank_target_network_update_freq == 2
+    assert (algo.decoder.l2_lambda, algo.decoder.optimizer.weight_decay) == (1e-6, 1e-7)

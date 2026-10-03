@@ -191,6 +191,13 @@ class CNNDecoder(DeCNN):
         )
         self._output_dim = Size([out_channels, screen_size, screen_size])
         self._encoder_conv_output_shape = encoder_conv_output_shape
+        with torch.no_grad():
+            reconstructed_size = tuple(self.to_obs(self.model(torch.zeros(1, *encoder_conv_output_shape))).shape[-2:])
+        if reconstructed_size != (screen_size, screen_size):
+            raise ValueError(
+                f"The decoder reconstructs images of {reconstructed_size[0]}x{reconstructed_size[1]} pixels from the "
+                f"ones of {screen_size}x{screen_size} (`env.screen_size`): the size must be even"
+            )
 
     def forward(self, x: Tensor, *args, **kwargs) -> Dict[str, Tensor]:
         reconstructed_obs = {}
@@ -330,9 +337,11 @@ class SACAEAgent(nn.Module):
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
-        # Tie encoder weights between actor and critic
+        # Tie encoder weights between actor and critic: the actor uses the convolutions of the critic, with its own
+        # fully-connected layer (`model` is a read-only property: assigning it registered the convolutions of the critic
+        # as an unused module, and the actor kept its own, never trained)
         if actor.encoder.cnn_encoder is not None:
-            actor.encoder.cnn_encoder.model = critic.encoder.cnn_encoder.model
+            actor.encoder.cnn_encoder._model = critic.encoder.cnn_encoder._model
         if actor.encoder.mlp_encoder is not None:
             actor.encoder.mlp_encoder.model = critic.encoder.mlp_encoder.model
 
@@ -498,6 +507,44 @@ class SACAEPlayer(nn.Module):
         return self(obs, greedy)
 
 
+def untied_actor_convolutions(agent_state: Dict[str, Tensor]) -> List[str]:
+    """The names of the weights of the actor, in the order of its parameters, of the state of an agent saved when the
+    actor didn't use the convolutions of the critic: they are registered as `model`, unused (empty for a newer state).
+    """
+    names = [k for k in agent_state if k.startswith("_actor.") and not k.endswith(("action_scale", "action_bias"))]
+    if not any(".cnn_encoder.model." in k for k in names):
+        return []
+    return names
+
+
+def tie_actor_convolutions(agent_state: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    """The state of an agent saved when the actor didn't use the convolutions of the critic (see `SACAEAgent`), for the
+    agent where it does: the actor gets the convolutions of the critic, the unused ones are dropped. A newer state is
+    returned as it is."""
+    if not untied_actor_convolutions(agent_state):
+        return agent_state
+    state = {k: v for k, v in agent_state.items() if not (k.startswith("_actor.") and ".cnn_encoder.model." in k)}
+    for k in state:
+        if k.startswith("_actor.") and ".cnn_encoder._model." in k:
+            state[k] = agent_state["_critic." + k[len("_actor.") :]]
+    return state
+
+
+def tie_actor_optimizer(optimizer_state: Dict[str, Any], agent_state: Dict[str, Any]) -> Dict[str, Any]:
+    """The state of the optimizer of the actor of the agent `agent_state` (see `tie_actor_convolutions`), for the agent
+    where the actor uses the convolutions of the critic: without the unused ones."""
+    names = untied_actor_convolutions(agent_state)
+    if not names:
+        return optimizer_state
+    keep = [i for i, k in enumerate(names) if ".cnn_encoder.model." not in k]
+    new_index = {old: new for new, old in enumerate(keep)}
+    (group,) = optimizer_state["param_groups"]
+    return {
+        "state": {new_index[i]: v for i, v in optimizer_state["state"].items() if i in new_index},
+        "param_groups": [{**group, "params": list(range(len(keep)))}],
+    }
+
+
 def build_agent(
     fabric: Fabric,
     cfg: Dict[str, Any],
@@ -565,6 +612,8 @@ def build_agent(
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
+    # The initialization of the official implementation, as the one of the actor and of the critic
+    decoder.apply(weight_init)
     if encoder_state:
         encoder.load_state_dict(encoder_state)
     if decoder_sate:
@@ -600,7 +649,7 @@ def build_agent(
     )
 
     if agent_state:
-        agent.load_state_dict(agent_state)
+        agent.load_state_dict(tie_actor_convolutions(agent_state))
 
     # Setup player agent
     player = SACAEPlayer(
