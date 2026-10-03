@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import gymnasium as gym
 import hydra
@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
@@ -19,6 +20,7 @@ from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -26,6 +28,27 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
 from sheeprl.utils.utils import off_policy_schedule, save_configs
+
+
+def next_target_fn(
+    agent: DROQAgent, next_observations: Tensor, rewards: Tensor, terminated: Tensor, gamma: float
+) -> Tensor:
+    """The targets of the critics, from the target critics on the next observations (Line 7 - Algorithm 2)."""
+    return agent.get_next_target_q_values(next_observations, rewards, terminated, gamma)
+
+
+def critic_loss_fn(agent: DROQAgent, observations: Tensor, actions: Tensor, targets: Tensor, critic_idx: int) -> Tensor:
+    """The loss of the critic `critic_idx` (Line 8 - Algorithm 2)."""
+    return F.mse_loss(agent.get_ith_q_value(observations, actions, critic_idx), targets)
+
+
+def actor_loss_fn(agent: DROQAgent, observations: Tensor) -> Tuple[Tensor, Tensor]:
+    """The loss of the actor, on the mean of the critics, and the log-probabilities of its actions, for the loss of the
+    temperature (Line 10 - Algorithm 2)."""
+    actions, logprobs = agent.get_actions_and_log_probs(observations)
+    qf_values = agent.get_q_values(observations, actions)
+    mean_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
+    return policy_loss(agent.log_alpha.exp().detach(), logprobs, mean_qf_values), logprobs.detach()
 
 
 def train(
@@ -92,10 +115,12 @@ def train(
         actor_data = {k: actor_data[k][actor_idxes] for k in actor_data.keys()}
 
     with training_timer(fabric.device):
-        # Update the soft-critic
+        # Update the soft-critic (the losses are compiled when `algo.compile.enabled` is set)
         for batch_idxes in critic_sampler:
+            mark_gradient_step(fabric, cfg)
             critic_batch_data = {k: critic_data[k][batch_idxes] for k in critic_data.keys()}
-            next_target_qf_value = agent.get_next_target_q_values(
+            next_target_qf_value = compiled(next_target_fn, fabric, cfg)(
+                agent,
                 critic_batch_data["next_observations"],
                 critic_batch_data["rewards"],
                 critic_batch_data["terminated"],
@@ -104,11 +129,12 @@ def train(
             for qf_value_idx in range(agent.num_critics):
                 # Line 8 - Algorithm 2
                 with autocast_cache_scope(fabric):
-                    qf_loss = F.mse_loss(
-                        agent.get_ith_q_value(
-                            critic_batch_data["observations"], critic_batch_data["actions"], qf_value_idx
-                        ),
+                    qf_loss = compiled(critic_loss_fn, fabric, cfg)(
+                        agent,
+                        critic_batch_data["observations"],
+                        critic_batch_data["actions"],
                         next_target_qf_value,
+                        qf_value_idx,
                     )
                 update(fabric, qf_loss, qf_optimizer, params=agent.qfs[qf_value_idx].parameters())
                 if aggregator and not aggregator.disabled:
@@ -118,15 +144,13 @@ def train(
                 agent.qfs_target_ema(critic_idx=qf_value_idx)
 
         # Update the actor
+        mark_gradient_step(fabric, cfg)
         with autocast_cache_scope(fabric):
-            actions, logprobs = agent.get_actions_and_log_probs(actor_data["observations"])
-            qf_values = agent.get_q_values(actor_data["observations"], actions)
-            min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
-            actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
+            actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, actor_data["observations"])
         update(fabric, actor_loss, actor_optimizer)
 
         # Update the entropy value
-        alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
+        alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
         update(fabric, alpha_loss, alpha_optimizer)
 
         if aggregator and not aggregator.disabled:
