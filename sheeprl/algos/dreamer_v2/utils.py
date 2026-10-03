@@ -4,6 +4,7 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Sequence
 
 import gymnasium as gym
+import hydra
 import numpy as np
 import torch
 import torch.nn as nn
@@ -63,13 +64,14 @@ def compute_stochastic_state(logits: Tensor, discrete: int = 32, sample=True) ->
     return stochastic_state
 
 
-def init_weights(m: nn.Module, mode: str = "normal"):
+def init_weights(m: nn.Module, mode: str = "uniform"):
     """
-    Initialize the parameters of the m module acording to the Xavier
-    normal method.
+    Initialize the parameters of the m module acording to the Xavier method, by default the uniform one (the default
+    initializer of the layers of Keras, which the official implementation uses), with zero biases.
 
     Args:
         m (nn.Module): the module to be initialized.
+        mode (str): `uniform`, `normal` or `zero`. Default: `uniform`.
     """
     if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
         if mode == "normal":
@@ -82,6 +84,20 @@ def init_weights(m: nn.Module, mode: str = "normal"):
             raise RuntimeError(f"Unrecognized initialization: {mode}. Choose between: `normal`, `uniform` and `zero`")
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
+
+
+def build_optimizer(optimizer_cfg: Dict[str, Any], params: Any) -> torch.optim.Optimizer:
+    """The optimizer of `optimizer_cfg` for `params`, with the weight decay of DreamerV2: before every step the weights
+    are multiplied by `1 - weight_decay`, whatever the learning rate (`Optimizer._apply_weight_decay` of
+    https://github.com/danijar/dreamerv2). Adam is built as AdamW with the weight decay divided by the learning rate,
+    which decays the weights that way: the weight decay of Adam is added to the gradients, where its normalization makes
+    it negligible."""
+    optimizer_cfg = dict(optimizer_cfg)
+    weight_decay = optimizer_cfg.get("weight_decay") or 0
+    if weight_decay > 0 and optimizer_cfg["_target_"] == "torch.optim.Adam":
+        optimizer_cfg["_target_"] = "torch.optim.AdamW"
+        optimizer_cfg["weight_decay"] = weight_decay / optimizer_cfg["lr"]
+    return hydra.utils.instantiate(optimizer_cfg, params=params, _convert_="all")
 
 
 # The most batches sampled (and moved to the device) at once: the first training can do many gradient steps

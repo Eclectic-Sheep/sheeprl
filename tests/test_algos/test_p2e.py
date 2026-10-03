@@ -104,7 +104,14 @@ def test_the_ensembles_are_trained_with_their_optimizer(version):
     assert len(optimizers) > 0
     for optimizer in optimizers:
         (group,) = optimizer.param_groups
-        assert group["lr"] == 0.0123 and group["weight_decay"] == 0.0456
+        assert group["lr"] == 0.0123
+        if version == "2":
+            # The weight decay of DreamerV2, which multiplies the weights by `1 - weight_decay` before every step: AdamW
+            # with the weight decay divided by the learning rate
+            assert isinstance(optimizer.optimizer, torch.optim.AdamW)
+            assert group["lr"] * group["weight_decay"] == pytest.approx(0.0456)
+        else:
+            assert group["weight_decay"] == 0.0456
 
 
 def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():

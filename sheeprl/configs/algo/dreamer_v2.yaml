@@ -53,11 +53,12 @@ world_model:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
 
-  # Recurrent model
+  # Recurrent model: the layer before the GRU has the size of the hidden layers of the prior and of the posterior (the
+  # `hidden` of the RSSM of the official implementation), and is normalized as them
   recurrent_model:
     recurrent_state_size: 600
-    layer_norm: True
-    dense_units: ${algo.dense_units}
+    layer_norm: ${algo.layer_norm}
+    dense_units: ${algo.world_model.transition_model.hidden_size}
 
   # Prior
   transition_model:
@@ -95,7 +96,8 @@ world_model:
     layer_norm: ${algo.layer_norm}
     dense_units: ${algo.dense_units}
 
-  # World model optimizer
+  # World model optimizer. The weight decay is the one of the official implementation: before every step the weights
+  # are multiplied by `1 - weight_decay` (`sheeprl.algos.dreamer_v2.utils.build_optimizer`)
   optimizer:
     lr: 3e-4
     eps: 1e-5
