@@ -224,6 +224,10 @@ def train(
     )
 
     # Behaviour Learning
+    if cfg.algo.world_model.use_continues and world_model.continue_model:
+        # The last step of the sequences could be terminal: the imagination starts from the other ones, as in the
+        # official implementation (`Dreamer._imagine_ahead`)
+        posteriors, recurrent_states = posteriors[:-1], recurrent_states[:-1]
     with autocast_cache_scope(fabric):
         # Unflatten first 2 dimensions of recurrent and posterior states in order
         # to have all the states on the first dimension.

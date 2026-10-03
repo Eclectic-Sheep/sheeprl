@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence, Tuple
+import math
+from functools import partial
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -8,7 +10,6 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from sympy import Union
 from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
@@ -16,15 +17,62 @@ from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
+from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
-from sheeprl.utils.utils import init_weights
+
+# The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
+# for the kernels, zero biases
+init_weights = partial(dv2_init_weights, mode="uniform")
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
 # to go to retrieve the class
-Actor = DV2Actor
 MinedojoActor = DV2MinedojoActor
+
+
+class Actor(DV2Actor):
+    """The actor of DreamerV1: the one of DreamerV2 (`sheeprl.algos.dreamer_v2.agent.Actor`), whose continuous actions
+    come by default (`distribution.type=auto`) from a tanh-transformed normal, as in the official implementation
+    (`ActionDecoder` of https://github.com/danijar/dreamer), with the standard deviation `init_std` before the tanh
+    when the network outputs zero (the actor of DreamerV2 adds `init_std` itself to the output before the softplus)."""
+
+    def __init__(
+        self,
+        latent_state_size: int,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
+        init_std: float = 5.0,
+        min_std: float = 1e-4,
+        dense_units: int = 400,
+        activation: nn.Module = nn.ELU,
+        mlp_layers: int = 4,
+        layer_norm: bool = False,
+        expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
+    ) -> None:
+        super().__init__(
+            latent_state_size=latent_state_size,
+            actions_dim=actions_dim,
+            is_continuous=is_continuous,
+            distribution_cfg=distribution_cfg,
+            init_std=init_std,
+            min_std=min_std,
+            dense_units=dense_units,
+            activation=activation,
+            mlp_layers=mlp_layers,
+            layer_norm=layer_norm,
+            expl_amount=expl_amount,
+            expl_decay=expl_decay,
+            expl_min=expl_min,
+        )
+        if is_continuous and distribution_cfg.get("type", "auto").lower() == "auto":
+            self.distribution = "tanh_normal"
+        if self.distribution == "tanh_normal":
+            # The inverse of the softplus of `init_std` (`raw_init_std` of the official implementation)
+            self.init_std = torch.tensor(math.log(math.expm1(init_std)))
 
 
 class RecurrentModel(nn.Module):
@@ -42,6 +90,12 @@ class RecurrentModel(nn.Module):
         super().__init__()
         self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation())
         self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
+        # The initialization of the `GRUCell` of Keras: the uniform Glorot initializer for the weights of the inputs,
+        # an orthogonal matrix for the ones of the recurrent state, zero biases
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0)
+        nn.init.orthogonal_(self.rnn.weight_hh_l0)
+        nn.init.zeros_(self.rnn.bias_ih_l0)
+        nn.init.zeros_(self.rnn.bias_hh_l0)
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
         """

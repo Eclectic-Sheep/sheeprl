@@ -1,25 +1,33 @@
-"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player, the episode starts."""
+"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player, the episode starts, the actor and
+the initialization."""
 
 import copy
+import math
 import os
 import shutil
 import sys
 from types import SimpleNamespace
+from typing import Any, Dict
 from unittest import mock
 
 import gymnasium as gym
 import numpy as np
 import pytest
 import torch
+from hydra import compose, initialize_config_module
+from hydra.utils import get_class
+from lightning import Fabric
+from omegaconf import OmegaConf
 from torch import nn
-from torch.distributions import Bernoulli, Independent, Normal
+from torch.distributions import Bernoulli, Independent, Normal, TanhTransform, TransformedDistribution
 
 from sheeprl import ROOT_DIR
-from sheeprl.algos.dreamer_v1 import agent
-from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel
+from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
+from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
+from sheeprl.utils.utils import dotdict
 
 DREAMER_ARGS = [
     "hydra/job_logging=disabled",
@@ -282,3 +290,142 @@ def test_a_buffer_saved_without_is_first_is_completed(memmap, tmp_path):
             "is_first": np.ones((1, 2, 1), np.float32),
         }
     )
+
+
+def dreamer_v1_cfg(exp: str, overrides=()) -> Dict[str, Any]:
+    """The configuration of a small DreamerV1 (or P2E-DV1) on images."""
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                f"exp={exp}",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[rgb]",
+                "algo.mlp_keys.encoder=[]",
+                "algo.dense_units=8",
+                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=16",
+                "algo.world_model.representation_model.hidden_size=16",
+                "algo.world_model.transition_model.hidden_size=16",
+                "algo.world_model.stochastic_size=4",
+                *overrides,
+            ],
+        )
+    return dotdict(OmegaConf.to_container(cfg, resolve=True))
+
+
+IMAGES = gym.spaces.Dict({"rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8)})
+
+
+@pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
+def test_the_continuous_actions_come_from_a_tanh_normal_of_the_initial_std(exp):
+    # They came from a truncated normal, whose std couldn't go below 0.1: in the official implementation from a
+    # tanh-transformed normal whose std is `init_std` when the network outputs zero, at least 1e-4
+    cfg = dreamer_v1_cfg(exp)
+    actor_cfg = cfg.algo.actor
+    assert (actor_cfg.init_std, actor_cfg.min_std, cfg.distribution.type) == (5.0, 1e-4, "auto")
+    actor = get_class(actor_cfg.cls)(
+        latent_state_size=4,
+        actions_dim=[2],
+        is_continuous=True,
+        distribution_cfg=cfg.distribution,
+        init_std=actor_cfg.init_std,
+        min_std=actor_cfg.min_std,
+        dense_units=8,
+        mlp_layers=1,
+    )
+    nn.init.zeros_(actor.mlp_heads[0].weight)
+    nn.init.zeros_(actor.mlp_heads[0].bias)
+    _, (dist,) = actor(torch.randn(3, 4))
+    assert isinstance(dist.base_dist, TransformedDistribution)
+    assert [type(t) for t in dist.base_dist.transforms] == [TanhTransform]
+    torch.testing.assert_close(dist.base_dist.base_dist.loc, torch.zeros(3, 2))
+    torch.testing.assert_close(dist.base_dist.base_dist.scale, torch.full((3, 2), 5.0 + 1e-4))
+
+
+def test_the_gru_is_initialized_as_the_one_of_keras():
+    # It had the initialization of PyTorch (uniform weights and biases): Keras initializes the weights of the inputs
+    # with the uniform Glorot initializer, the ones of the recurrent state with an orthogonal matrix and the biases to
+    # zero
+    torch.manual_seed(0)
+    # The GRU takes the output of a dense layer of its size
+    gru = RecurrentModel(64, 128).rnn
+    limit = math.sqrt(6 / (128 + 3 * 128))
+    assert gru.weight_ih_l0.abs().max().item() <= limit
+    assert (gru.weight_ih_l0.abs() > 0.9 * limit).float().mean().item() == pytest.approx(0.1, abs=0.02)
+    torch.testing.assert_close(gru.weight_hh_l0.T @ gru.weight_hh_l0, torch.eye(128), atol=1e-5, rtol=0)
+    assert torch.all(gru.bias_ih_l0 == 0) and torch.all(gru.bias_hh_l0 == 0)
+
+
+@pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
+def test_the_weights_are_initialized_as_the_layers_of_keras(exp):
+    # Keras initializes the kernels with the uniform Glorot initializer and the biases to zero: the kernels had the
+    # uniform Kaiming initialization, with larger weights
+    from sheeprl.algos.p2e_dv1.agent import build_agent as p2e_dv1_build_agent
+
+    torch.manual_seed(0)
+    cfg = dreamer_v1_cfg(exp, ["algo.dense_units=512"])
+    fabric = Fabric(accelerator="cpu", devices=1)
+    if exp == "dreamer_v1":
+        world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+        actors_and_critics = [actor, critic]
+    else:
+        world_model, _, *actors_and_critics, _ = p2e_dv1_build_agent(fabric, [3], False, cfg, IMAGES)
+    layers = [world_model.reward_model.module.model[2], world_model.encoder.module.cnn_encoder.model[0].model[2]]
+    for model in actors_and_critics:
+        mlp = model.module.model
+        layers.append((mlp if isinstance(mlp, nn.Sequential) else mlp.model)[2])
+    for layer in layers:
+        weight = layer.weight.detach()
+        fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(weight)
+        limit = math.sqrt(6 / (fan_in + fan_out))
+        assert weight.abs().max().item() <= limit
+        assert (weight.abs() > 0.9 * limit).float().mean().item() == pytest.approx(0.1, abs=0.02)
+        assert torch.all(layer.bias == 0)
+
+
+@pytest.mark.parametrize("use_continues", [False, True])
+def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch, use_continues):
+    # It started from every step: with the continues, the last step of the sequences could be terminal, and the
+    # official implementation starts from the other ones (`Dreamer._imagine_ahead`)
+    # The continue targets are the discount, not 0 or 1, as in the training
+    monkeypatch.setattr(torch.distributions.Distribution, "_validate_args", False)
+    T, B = 4, 2
+    cfg = dreamer_v1_cfg(
+        "dreamer_v1",
+        [
+            f"algo.world_model.use_continues={use_continues}",
+            f"algo.per_rank_sequence_length={T}",
+            f"algo.per_rank_batch_size={B}",
+            "algo.horizon=2",
+        ],
+    )
+    fabric = Fabric(accelerator="cpu", devices=1)
+    world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+    rssm = world_model.rssm
+    posteriors, starts = [], []
+
+    def dynamic(*args, **kwargs):
+        outputs = type(rssm).dynamic(rssm, *args, **kwargs)
+        posteriors.append(outputs[1].detach())
+        return outputs
+
+    def imagination(prior, *args, **kwargs):
+        starts.append(prior.detach())
+        return type(rssm).imagination(rssm, prior, *args, **kwargs)
+
+    rssm.dynamic, rssm.imagination = dynamic, imagination
+    generator = torch.Generator().manual_seed(0)
+    batch = {
+        "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=generator).float(),
+        "actions": nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=generator), 3).float(),
+        "rewards": torch.randn(T, B, 1, generator=generator),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": torch.zeros(T, B, 1),
+    }
+    batch["terminated"][-1, 0] = 1
+    optimizers = [torch.optim.Adam(m.parameters()) for m in (world_model, actor, critic)]
+    dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, None, cfg)
+    steps = posteriors[:-1] if use_continues else posteriors
+    torch.testing.assert_close(starts[0], torch.cat(steps).reshape(1, -1, posteriors[0].shape[-1]))

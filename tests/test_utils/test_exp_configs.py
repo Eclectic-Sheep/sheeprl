@@ -75,3 +75,17 @@ def test_dreamer_v2_on_atari_is_trained_as_the_official_implementation():
     assert cfg.algo.total_steps == 5e7
     assert cfg.algo.learning_starts == 5e4
     assert cfg.env.grayscale is True
+
+
+@pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration", "p2e_dv1_finetuning"])
+def test_dreamer_v1_has_the_hyper_parameters_of_the_official_code(exp):
+    # The heads had the 4 layers of the actor, the continue loss wasn't scaled and Adam had the epsilon of PyTorch:
+    # in the official implementation (https://github.com/danijar/dreamer) the reward model has 2 layers, the continue
+    # model and the critic 3, the continue loss is scaled by 10 (`pcont_scale`) and Adam has the epsilon of TensorFlow
+    algo = experiment(exp).algo
+    assert algo.world_model.reward_model.mlp_layers == 2
+    assert algo.world_model.discount_model.mlp_layers == 3
+    assert algo.critic.mlp_layers == 3
+    assert algo.actor.mlp_layers == 4
+    assert algo.world_model.continue_scale_factor == 10.0
+    assert algo.world_model.optimizer.eps == algo.actor.optimizer.eps == algo.critic.optimizer.eps == 1e-7
