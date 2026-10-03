@@ -1,9 +1,31 @@
 """Adapted from: https://github.com/Lightning-AI/lightning/blob/master/tests/tests_fabric/conftest.py"""
 
 import os
+from pathlib import Path
 
 import pytest
 import torch.distributed
+
+# Absolute: every test runs in a directory of its own (`run_in_its_own_directory`)
+SEARCH_PATH = f"file://{(Path(__file__).parent / 'configs').resolve().as_posix()};pkg://sheeprl.configs"
+
+
+def pytest_configure(config):
+    # Set before the pytest-xdist workers start, which inherit them:
+    # - one thread per process: the threads of PyTorch and of the BLAS libraries of every worker would otherwise
+    #   compete for the cores, making the tests several times slower;
+    # - the exceptions of a run raised by `run()`, as the tests expect: Hydra otherwise turns them into `SystemExit(1)`
+    #   (it raised them only when it saw a debugger, e.g. the tracer of `pytest --cov`)
+    for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(variable, "1")
+    os.environ.setdefault("HYDRA_FULL_ERROR", "1")
+
+
+@pytest.fixture(autouse=True)
+def run_in_its_own_directory(tmp_path, monkeypatch):
+    """Every test runs in a directory of its own: the logs, checkpoints and buffers it writes (e.g. `logs/runs/...`)
+    don't clash with the ones of the tests that other pytest-xdist workers run at the same time."""
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +43,7 @@ def preserve_global_rank_variable():
 def restore_env_variables():
     """Ensures that environment variables set during the test do not leak out."""
     env_backup = os.environ.copy()
-    os.environ["SHEEPRL_SEARCH_PATH"] = "file://tests/configs;pkg://sheeprl.configs"
+    os.environ["SHEEPRL_SEARCH_PATH"] = SEARCH_PATH
     yield
     leaked_vars = os.environ.keys() - env_backup.keys()
     # restore environment as it was before running the test
