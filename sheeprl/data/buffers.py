@@ -1060,8 +1060,8 @@ class EpisodeBuffer:
                 else:
                     self._storage[k] = np.empty(shape, dtype=v.dtype)
         elif self._capacity < self._buffer_size and self._pos + ep_len > self._capacity:
-            # The storage only grows before it holds `buffer_size` steps: until then, no episode has been removed,
-            # and the episodes are in its first `self._pos` steps
+            # No episode continues from the end of a storage smaller than `buffer_size` (it grows to hold the new one
+            # where it starts), so the episodes are in its first `self._pos` steps and keep their positions
             capacity = min(self._buffer_size, max(2 * self._capacity, self._pos + ep_len))
             for k, v in self._storage.items():
                 self._storage[k] = np.empty((capacity, *v.shape[1:]), dtype=v.dtype)
