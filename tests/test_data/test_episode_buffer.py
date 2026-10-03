@@ -584,3 +584,18 @@ def test_memmap_episode_buffer_saved_by_older_versions_opens_its_files_one_at_a_
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
     _assert_holds(rb, episodes)
+
+
+def test_episode_buffer_batches_of_a_call_are_independent():
+    # The sequences of a call were grouped by episode, from the oldest one, and split in this order among its
+    # `n_samples` batches (one per gradient step): the first batch took the oldest episodes and the last the newest
+    np.random.seed(0)
+    rb = EpisodeBuffer(100, 5, obs_keys=("observations",))
+    for i in range(4):
+        rb.add(_episode(i, 10))
+    episodes = rb.sample(8, n_samples=16, sequence_length=5)["observations"][:, 0, :, 0]
+    assert all(len(np.unique(batch)) > 1 for batch in episodes)
+    # The episodes are drawn uniformly, and so are the first steps of the sequences in them
+    sample = rb.sample(1000, n_samples=4, sequence_length=5)["observations"][:, 0]
+    assert (np.abs(np.bincount(sample[..., 0].ravel(), minlength=4) / sample[..., 0].size - 1 / 4) < 0.03).all()
+    assert (np.abs(np.bincount(sample[..., 1].ravel(), minlength=6) / sample[..., 1].size - 1 / 6) < 0.03).all()

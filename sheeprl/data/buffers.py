@@ -1138,30 +1138,20 @@ class EpisodeBuffer:
                 f"than or equal to {sequence_length} calling `self.add()`"
             )
 
-        nsample_per_eps = np.bincount(np.random.randint(0, len(valid_episodes), (batch_size * n_samples,))).astype(
-            np.intp
-        )
-        first_steps = []
-        for i, n in enumerate(nsample_per_eps):
-            if n > 0:
-                ep_len = lengths[valid_episodes[i]]
-                if sample_next_obs:
-                    ep_len -= 1
-                # Define the maximum index that can be sampled in the episodes
-                upper = ep_len - sequence_length + 1
-                # If you want to prioritize ends, then all the indices of the episode
-                # can be sampled as starting index
-                if self._prioritize_ends:
-                    upper += sequence_length
-                # Sample the starting indices and upper bound with `ep_len - sequence_length`
-                start_idxes = np.minimum(
-                    np.random.randint(0, upper, size=(n,)), ep_len - sequence_length, dtype=np.intp
-                )
-                first_steps.append(self._starts[valid_episodes[i]] + start_idxes)
+        # The episode of every sequence, drawn independently: each of the `n_samples` batches is a uniform sample
+        episodes = valid_episodes[np.random.randint(0, len(valid_episodes), (batch_size * n_samples,))]
+        ep_lens = lengths[episodes] - 1 if sample_next_obs else lengths[episodes]
+        # Define the maximum index that can be sampled in the episodes
+        upper = ep_lens - sequence_length + 1
+        # If you want to prioritize ends, then all the indices of the episode
+        # can be sampled as starting index
+        if self._prioritize_ends:
+            upper += sequence_length
+        # Sample the starting indices and upper bound with `ep_len - sequence_length`
+        start_idxes = np.minimum(np.random.randint(0, upper), ep_lens - sequence_length, dtype=np.intp)
         # The steps of the sequences in the storage, where an episode can continue from its end to its start
-        indices = (
-            np.concatenate(first_steps).reshape(-1, 1) + np.arange(sequence_length, dtype=np.intp)
-        ) % self._capacity
+        first_steps = np.array(self._starts, dtype=np.intp)[episodes] + start_idxes
+        indices = (first_steps.reshape(-1, 1) + np.arange(sequence_length, dtype=np.intp)) % self._capacity
         samples = {}
         for k, v in self._storage.items():
             array = v.array if isinstance(v, MemmapArray) else v
