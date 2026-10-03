@@ -163,6 +163,21 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "policy": lambda saved: dreamer_policy(saved, "actor"),
         "models": ["world_model", "actor", "critic", "target_critic", "moments"],
     },
+    "dreamer_v3_5": {
+        "args": [
+            "exp=dreamer_v3_5",
+            *[arg for arg in DREAMER_ARGS if "world_model" not in arg],
+            "algo.cnn_channels_multiplier=2",
+            "algo.world_model.recurrent_model.recurrent_state_size=16",
+            "algo.world_model.recurrent_model.hidden_size=8",
+            "algo.world_model.recurrent_model.blocks=4",
+            "algo.world_model.observation_model.block_space=2",
+            "algo.world_model.stochastic_size=4",
+            "algo.world_model.discrete_size=4",
+        ],
+        "policy": lambda saved: dreamer_policy(saved, "actor"),
+        "models": ["world_model", "actor", "critic", "target_critic", "moments"],
+    },
     "dreamer_v1": {
         "args": ["exp=dreamer_v1", *DREAMER_ARGS],
         "policy": lambda saved: dreamer_v2_policy(saved, "actor"),

@@ -54,6 +54,7 @@ EXPERIMENTS = [
     "dreamer_v1",
     "dreamer_v2",
     "dreamer_v3",
+    "dreamer_v3_5",
     "p2e_dv1_exploration",
     "p2e_dv2_exploration",
     "p2e_dv3_exploration",
