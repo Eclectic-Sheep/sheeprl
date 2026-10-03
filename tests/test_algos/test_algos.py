@@ -413,6 +413,9 @@ def test_dreamer_v1(standard_args, env_id, start_time):
 
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv1(standard_args, env_id, start_time):
+    if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
+        # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
+        pytest.skip("With 2 processes only the continuous actions")
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv1", os.environ["LT_DEVICES"])
     run_name = "test_p2e_dv1"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -526,6 +529,9 @@ def test_dreamer_v2(standard_args, env_id, start_time):
 
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv2(standard_args, env_id, start_time):
+    if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
+        # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
+        pytest.skip("With 2 processes only the continuous actions")
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv2", os.environ["LT_DEVICES"])
     run_name = "test_p2e_dv2"
     ckpt_path = os.path.join(root_dir, run_name)
@@ -701,6 +707,9 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
 
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
 def test_p2e_dv3(standard_args, env_id, start_time):
+    if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
+        # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
+        pytest.skip("With 2 processes only the continuous actions")
     root_dir = os.path.join(f"pytest_{start_time}", "p2e_dv3", os.environ["LT_DEVICES"])
     run_name = "test_p2e_dv3"
     ckpt_path = os.path.join(root_dir, run_name)
