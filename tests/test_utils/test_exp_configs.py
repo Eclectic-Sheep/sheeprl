@@ -64,3 +64,14 @@ def test_dreamer_v3_learns_the_actor_and_the_critic_at_the_rate_of_the_official_
     algo = experiment(exp).algo
     assert algo.actor.optimizer.lr == 3e-5
     assert algo.critic.optimizer.lr == 3e-5
+
+
+def test_dreamer_v2_on_atari_is_trained_as_the_official_implementation():
+    # It had γ = 0.995, batches of 32 sequences, RGB images and 4 times the steps of the official Atari configuration
+    # (https://github.com/danijar/dreamerv2/blob/main/dreamerv2/configs.yaml), which counts policy steps of 4 frames
+    cfg = experiment("dreamer_v2_ms_pacman")
+    assert cfg.algo.gamma == 0.999
+    assert cfg.algo.per_rank_batch_size == 16
+    assert cfg.algo.total_steps == 5e7
+    assert cfg.algo.learning_starts == 5e4
+    assert cfg.env.grayscale is True

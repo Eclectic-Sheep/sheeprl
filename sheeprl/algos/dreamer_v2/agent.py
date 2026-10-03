@@ -24,6 +24,10 @@ from torch.distributions import (
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.distribution import TruncatedNormal
+
+# The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
+# (https://github.com/danijar/dreamerv2), also inside its GRU
+LAYER_NORM_EPS = 1e-3
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
@@ -67,7 +71,9 @@ class CNNEncoder(nn.Module):
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
                 norm_args=(
-                    [{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)] if layer_norm else None
+                    [{"normalized_shape": (2**i) * channels_multiplier, "eps": LAYER_NORM_EPS} for i in range(4)]
+                    if layer_norm
+                    else None
                 ),
             ),
             nn.Flatten(-3, -1),
@@ -117,7 +123,11 @@ class MLPEncoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         self.output_dim = dense_units
 
@@ -180,7 +190,11 @@ class CNNDecoder(nn.Module):
                 ],
                 activation=[activation] * n_hidden + [None],
                 norm_layer=[LayerNormChannelLast] * n_hidden + [None] if layer_norm else None,
-                norm_args=[{"normalized_shape": c} for c in hidden_channels] + [None] if layer_norm else None,
+                norm_args=(
+                    [{"normalized_shape": c, "eps": LAYER_NORM_EPS} for c in hidden_channels] + [None]
+                    if layer_norm
+                    else None
+                ),
             ),
         )
 
@@ -232,7 +246,11 @@ class MLPDecoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -274,10 +292,15 @@ class RecurrentModel(nn.Module):
             hidden_sizes=[dense_units],
             activation=activation,
             norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS}] if layer_norm else None,
         )
         self.rnn = LayerNormGRUCell(
-            dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm_cls=nn.LayerNorm
+            dense_units,
+            recurrent_state_size,
+            bias=True,
+            batch_first=False,
+            layer_norm_cls=nn.LayerNorm,
+            layer_norm_kw={"eps": LAYER_NORM_EPS},
         )
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
@@ -479,7 +502,11 @@ class Actor(nn.Module):
             activation=activation,
             flatten_dim=None,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, sum(actions_dim) * 2)])
@@ -919,7 +946,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size, "eps": LAYER_NORM_EPS}]
             if world_model_cfg.representation_model.layer_norm
             else None
         ),
@@ -932,7 +959,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size, "eps": LAYER_NORM_EPS}]
             if world_model_cfg.transition_model.layer_norm
             else None
         ),
@@ -985,7 +1012,7 @@ def build_agent(
         ),
         norm_args=(
             [
-                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                {"normalized_shape": world_model_cfg.reward_model.dense_units, "eps": LAYER_NORM_EPS}
                 for _ in range(world_model_cfg.reward_model.mlp_layers)
             ]
             if world_model_cfg.reward_model.layer_norm
@@ -1006,7 +1033,7 @@ def build_agent(
             ),
             norm_args=(
                 [
-                    {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                    {"normalized_shape": world_model_cfg.discount_model.dense_units, "eps": LAYER_NORM_EPS}
                     for _ in range(world_model_cfg.discount_model.mlp_layers)
                 ]
                 if world_model_cfg.discount_model.layer_norm
@@ -1041,7 +1068,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            [{"normalized_shape": critic_cfg.dense_units, "eps": LAYER_NORM_EPS} for _ in range(critic_cfg.mlp_layers)]
             if critic_cfg.layer_norm
             else None
         ),

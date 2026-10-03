@@ -1,20 +1,33 @@
-"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the replay buffer, the objective of the actor."""
+"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the replay buffer, the objective of the actor, the RSSM, the
+initialization and the weight decay."""
 
+import math
 import os
 import shutil
 import sys
 from types import SimpleNamespace
 from unittest import mock
 
+import gymnasium as gym
+import numpy as np
 import pytest
 import torch
+from hydra import compose, initialize_config_module
+from lightning import Fabric
+from omegaconf import OmegaConf
 from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl import ROOT_DIR
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import actor_objective, build_buffer, env_buffer_size, sample_batches
+from sheeprl.algos.dreamer_v2.utils import (
+    actor_objective,
+    build_buffer,
+    build_optimizer,
+    env_buffer_size,
+    sample_batches,
+)
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.utils import dotdict
 
@@ -310,3 +323,79 @@ def test_the_buffer_of_every_environment_holds_a_sequence():
     cfg.dry_run = True
     assert env_buffer_size(fabric, cfg, dry_run_size=2) == 5
     assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8
+
+
+def small_dreamer_v2(overrides=()):
+    """A small DreamerV2 on images and vectors."""
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v2",
+                "env=dummy",
+                "algo.cnn_keys.encoder=[rgb]",
+                "algo.mlp_keys.encoder=[state]",
+                "algo.dense_units=8",
+                "algo.mlp_layers=2",
+                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=16",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.world_model.stochastic_size=4",
+                "algo.world_model.discrete_size=5",
+                *overrides,
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict(
+        {
+            "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
+            "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
+        }
+    )
+    world_model, actor, critic, target_critic, _ = build_agent(
+        Fabric(accelerator="cpu", devices=1), (3,), False, cfg, obs_space
+    )
+    return cfg, (world_model, actor, critic, target_critic)
+
+
+def test_the_rssm_is_the_one_of_the_official_implementation():
+    # The layer before the GRU had the units of the other layers and a LayerNorm, and the LayerNorms the epsilon of
+    # PyTorch: in the official RSSM it has the units of the hidden layers of the prior and of the posterior and the
+    # normalization of the configuration (none by default), and the LayerNorms the epsilon of Keras
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(config_name="config", overrides=["exp=dreamer_v2"])
+    world_model_cfg = cfg.algo.world_model
+    assert world_model_cfg.recurrent_model.dense_units == world_model_cfg.transition_model.hidden_size == 600
+    assert world_model_cfg.recurrent_model.layer_norm is False
+    _, (world_model, *_) = small_dreamer_v2()
+    recurrent = world_model.rssm.recurrent_model.module
+    assert not any(isinstance(m, nn.LayerNorm) for m in recurrent.mlp.modules())
+    assert {m.eps for m in recurrent.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
+    _, (world_model, *_) = small_dreamer_v2(["algo.layer_norm=True"])
+    assert {m.eps for m in world_model.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
+
+
+def test_the_weights_are_initialized_as_the_layers_of_keras():
+    # Keras initializes the kernels with the uniform Glorot initializer: they were drawn from a normal distribution
+    _, models = small_dreamer_v2(["algo.dense_units=512", "algo.mlp_layers=1"])
+    layer = models[2].module.model[0]
+    weight = layer.weight.detach()
+    limit = math.sqrt(6 / (layer.in_features + layer.out_features))
+    assert weight.abs().max().item() <= limit
+    assert (weight.abs() > 0.9 * limit).float().mean().item() == pytest.approx(0.1, abs=0.02)
+    assert torch.all(layer.bias == 0)
+
+
+def test_the_weight_decay_multiplies_the_weights_before_every_step():
+    # The weights are multiplied by `1 - weight_decay` before every step, as in the official implementation: the
+    # weight decay of Adam was added to the gradients
+    weight = nn.Parameter(torch.ones(3))
+    optimizer = build_optimizer(
+        {"_target_": "torch.optim.Adam", "lr": 1e-3, "eps": 1e-5, "weight_decay": 0.1}, [weight]
+    )
+    weight.grad = torch.zeros(3)
+    optimizer.step()
+    torch.testing.assert_close(weight.detach(), torch.full((3,), 0.9))
+    # Without weight decay, the optimizer of the configuration
+    assert type(build_optimizer({"_target_": "torch.optim.Adam", "lr": 1e-3}, [weight])) is torch.optim.Adam

@@ -25,6 +25,7 @@ from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
     actor_objective,
     build_buffer,
+    build_optimizer,
     compute_lambda_values,
     prepare_obs,
     sample_batches,
@@ -450,11 +451,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(
-        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
-    )
-    actor_optimizer = hydra.utils.instantiate(cfg.algo.actor.optimizer, params=actor.parameters(), _convert_="all")
-    critic_optimizer = hydra.utils.instantiate(cfg.algo.critic.optimizer, params=critic.parameters(), _convert_="all")
+    world_optimizer = build_optimizer(cfg.algo.world_model.optimizer, world_model.parameters())
+    actor_optimizer = build_optimizer(cfg.algo.actor.optimizer, actor.parameters())
+    critic_optimizer = build_optimizer(cfg.algo.critic.optimizer, critic.parameters())
     if cfg.checkpoint.resume_from:
         world_optimizer.load_state_dict(state["world_optimizer"])
         actor_optimizer.load_state_dict(state["actor_optimizer"])
