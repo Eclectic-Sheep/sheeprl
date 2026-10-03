@@ -799,7 +799,7 @@ def log_models(
                 warnings.warn(f"Model {k} not found in models_to_log, skipping.", category=UserWarning)
                 continue
             unwrapped_models[k] = unwrap_fabric(models_to_log[k])
-            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], name=k, serialization_format="pickle")
         mlflow.log_dict(cfg, "config.json")
     return model_info
 ```
