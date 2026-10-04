@@ -42,7 +42,7 @@ from sheeprl.algos.dreamer_v3_5.agent import Actor, PlayerDV3_5, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, test
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
@@ -451,12 +451,10 @@ def sample_sequences(store: ReplayStore, batch_size: int, n_samples: int) -> Tup
     return sample, step_ids
 
 
-def write_latent_states(
-    rb: EnvIndependentReplayBuffer, updates: List[Tuple[np.ndarray, Tensor, Tensor]], buffer_size: int
-) -> None:
+def write_latent_states(rb: ReplayBuffer, updates: List[Tuple[np.ndarray, Tensor, Tensor]], buffer_size: int) -> None:
     """Write the latent states computed by the trainings (`train`) back in the replay buffer, at the steps they were
     computed for. The steps are found from their identifiers: the environment and the number of steps of that
-    environment added before them, whose remainder by `buffer_size` is their position in its buffer."""
+    environment added before them, whose remainder by `buffer_size` is their row in the buffer."""
     if len(updates) == 0:
         return
     step_ids = np.concatenate([u[0] for u in updates], 1)
@@ -474,26 +472,28 @@ def write_latent_states(
         stoch = stochastic_states[:, columns].transpose(1, 0, 2).reshape(len(rows), -1)
         rows, last = np.unique(rows[::-1], return_index=True)
         last = len(deter) - 1 - last
-        buffer = rb.buffer[env]
-        if buffer.device is not None:
+        if rb.device is not None:
             # A buffer in the memory of a device
-            rows = torch.as_tensor(rows, device=buffer.device)
-            buffer["deter"][rows, 0] = torch.as_tensor(deter[last], device=buffer.device)
-            buffer["stoch"][rows, 0] = torch.as_tensor(stoch[last], device=buffer.device)
+            rows = torch.as_tensor(rows, device=rb.device)
+            rb["deter"][rows, int(env)] = torch.as_tensor(deter[last], device=rb.device)
+            rb["stoch"][rows, int(env)] = torch.as_tensor(stoch[last], device=rb.device)
         else:
-            buffer["deter"][rows, 0] = deter[last]
-            buffer["stoch"][rows, 0] = stoch[last]
+            rb["deter"][rows, int(env)] = deter[last]
+            rb["stoch"][rows, int(env)] = stoch[last]
 
 
-def step_counters(rb: EnvIndependentReplayBuffer) -> np.ndarray:
-    """The number of steps added to the buffer of every environment, from the identifiers of the steps it holds (0 for
-    an empty buffer)."""
+def step_counters(rb: ReplayBuffer) -> np.ndarray:
+    """The number of steps added to every environment of the buffer, from the identifiers of the steps it holds (0 for
+    an environment without steps): the rows written, not the ones never written, which hold garbage."""
     counters = np.zeros(rb.n_envs, dtype=np.int64)
-    for i, buffer in enumerate(rb.buffer):
-        if not buffer.empty:
-            step_ids = buffer[STEP_ID_KEY]
-            step_ids = step_ids.cpu().numpy() if torch.is_tensor(step_ids) else np.asarray(step_ids)
-            counters[i] = int(step_ids[..., 1].max()) + 1
+    if rb.empty:
+        return counters
+    step_ids = rb[STEP_ID_KEY]
+    step_ids = step_ids.cpu().numpy() if torch.is_tensor(step_ids) else np.asarray(step_ids)
+    written = np.where(rb.env_full, rb.buffer_size, rb.positions)
+    for env in range(rb.n_envs):
+        if written[env] > 0:
+            counters[env] = int(step_ids[: written[env], env, 1].max()) + 1
     return counters
 
 

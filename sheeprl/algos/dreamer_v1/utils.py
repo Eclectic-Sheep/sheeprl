@@ -12,7 +12,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
-from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.memmap import MemmapArray
@@ -43,7 +43,7 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
 
-def add_is_first(rb: ReplayStore | EnvIndependentReplayBuffer) -> ReplayStore | EnvIndependentReplayBuffer:
+def add_is_first(rb: ReplayStore | ReplayBuffer) -> ReplayStore | ReplayBuffer:
     """Complete a replay buffer saved before DreamerV1 stored `is_first` (a resumed run, or a finetuning that loads the
     buffer of its exploration, would fail to add rows with it).
 
@@ -52,17 +52,17 @@ def add_is_first(rb: ReplayStore | EnvIndependentReplayBuffer) -> ReplayStore | 
     row of a buffer not filled yet.
     """
     # The storage of a store
-    for buffer in getattr(rb, "storage", rb).buffer:
-        if buffer.empty or "is_first" in buffer.buffer:
-            continue
-        terminated, truncated = (
-            value.array if isinstance(value, MemmapArray) else value.cpu().numpy() if torch.is_tensor(value) else value
-            for value in (buffer["terminated"], buffer["truncated"])
-        )
-        is_first = np.roll(np.logical_or(terminated, truncated), 1, axis=0)
-        if not buffer.full:
-            is_first[0] = True
-        buffer["is_first"] = is_first.astype(terminated.dtype)
+    storage = getattr(rb, "storage", rb)
+    if storage.empty or "is_first" in storage.buffer:
+        return rb
+    terminated, truncated = (
+        value.array if isinstance(value, MemmapArray) else value.cpu().numpy() if torch.is_tensor(value) else value
+        for value in (storage["terminated"], storage["truncated"])
+    )
+    # The rows of every environment: [Buffer_Size, Num_Envs, 1]
+    is_first = np.roll(np.logical_or(terminated, truncated), 1, axis=0)
+    is_first[0, ~storage.env_full] = True
+    storage["is_first"] = is_first.astype(terminated.dtype)
     return rb
 
 

@@ -156,10 +156,10 @@ class SequencePlayer:
                 if agent_roe and not dones[i]:
                     # The last observation stored for the restarted environment ends its episode
                     buffer.wait()
-                    env_buffer = buffer.storage.buffer[i]
-                    last_inserted_idx = (env_buffer._pos - 1) % env_buffer.buffer_size
-                    env_buffer["terminated"][last_inserted_idx] = 0
-                    env_buffer["truncated"][last_inserted_idx] = 1
+                    storage = buffer.storage
+                    last_inserted_idx = (storage.positions[i] - 1) % storage.buffer_size
+                    storage["terminated"][last_inserted_idx, i] = 0
+                    storage["truncated"][last_inserted_idx, i] = 1
                     # The observation returned after the restart starts a new episode
                     step_data["is_first"][:, i] = np.ones_like(step_data["is_first"][:, i])
                     restarted_envs.append(i)

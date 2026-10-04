@@ -118,9 +118,7 @@ class ReplayStore:
     def on_device(self) -> bool:
         """Whether the storage is in the memory of a device (`ReplayBuffer` with `device`): its batches are gathered
         there, and there is nothing to prefetch."""
-        buffers = getattr(self.storage, "buffer", None)
-        buffers = buffers if isinstance(buffers, tuple) else (self.storage,)
-        return any(getattr(b, "device", None) is not None for b in buffers)
+        return getattr(self.storage, "device", None) is not None
 
     def batches(self, n_steps: int, batch_size: int, max_sampled: Optional[int] = None) -> Iterator[Dict[str, Tensor]]:
         """The batches of `n_steps` gradient steps, in single precision, sampled `max_sampled` at a time (all at once

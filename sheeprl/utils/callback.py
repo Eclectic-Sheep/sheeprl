@@ -4,6 +4,7 @@ import os
 import pathlib
 from typing import Any, Dict, Optional, Sequence, Union
 
+import numpy as np
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from torch import Tensor
@@ -75,19 +76,14 @@ class CheckpointCallback:
         # A `ReplayStore` is saved with its sampler: its storage is the buffer
         rb = getattr(rb, "storage", rb)
         if isinstance(rb, ReplayBuffer):
-            # clone the true done
-            state = _copy(rb["truncated"][(rb._pos - 1) % rb.buffer_size, :])
-            # substitute the last done with all True values (all the environment are truncated)
-            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = 1
+            # The last row of every environment: its true done is kept, then it is truncated (all the environments are
+            # truncated)
+            rows, envs = (rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)
+            state = _copy(rb["truncated"][rows, envs])
+            rb["truncated"][rows, envs] = 1
             # A memory-mapped buffer is saved by reference to its files, where the truncation is undone after the
             # checkpoint: the loaded buffer writes it again when it is used
             rb._checkpoint_truncation = rb.is_memmap
-        elif isinstance(rb, EnvIndependentReplayBuffer):
-            state = []
-            for b in rb.buffer:
-                state.append(_copy(b["truncated"][(b._pos - 1) % b.buffer_size, :]))
-                b["truncated"][(b._pos - 1) % b.buffer_size, :] = 1
-                b._checkpoint_truncation = b.is_memmap
         elif isinstance(rb, EpisodeBuffer):
             # remove open episodes from the buffer because the state of the environment is not saved
             state = rb._open_episodes
@@ -108,13 +104,9 @@ class CheckpointCallback:
         """
         rb = getattr(rb, "storage", rb)
         if isinstance(rb, ReplayBuffer):
-            # reinsert the true dones in the buffer
-            rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = state
+            # Reinsert the true dones of the last rows of the environments
+            rb["truncated"][(rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)] = state
             rb._checkpoint_truncation = False
-        elif isinstance(rb, EnvIndependentReplayBuffer):
-            for i, b in enumerate(rb.buffer):
-                b["truncated"][(b._pos - 1) % b.buffer_size, :] = state[i]
-                b._checkpoint_truncation = False
         elif isinstance(rb, EpisodeBuffer):
             # reinsert the open episodes to continue the training
             rb._open_episodes = state

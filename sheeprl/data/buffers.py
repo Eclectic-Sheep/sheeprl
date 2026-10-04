@@ -90,14 +90,14 @@ class ReplayBuffer:
             else:
                 self._memmap_dir = Path(self._memmap_dir)
                 self._memmap_dir.mkdir(parents=True, exist_ok=True)
-        self._pos = 0
-        self._full = False
+        # The row of the next step, whether every row was written, and the steps added, of every environment
+        self._env_pos = np.zeros(n_envs, dtype=np.int64)
+        self._env_full = np.zeros(n_envs, dtype=bool)
+        self._env_added = np.zeros(n_envs, dtype=np.int64)
         self._memmap_specs = {}
         # The generator and the online queue of `sample`: the samplers of a `ReplayStore` have their own
         self._rng: np.random.Generator = np.random.default_rng(seed)
         self._online = OnlineQueue()
-        # The steps added to every environment
-        self._added = 0
 
     @property
     def buffer(self) -> Dict[str, np.ndarray]:
@@ -109,7 +109,54 @@ class ReplayBuffer:
 
     @property
     def full(self) -> bool:
-        return self._full
+        """Whether every row of every environment was written."""
+        return bool(self._env_full.all())
+
+    @property
+    def positions(self) -> np.ndarray:
+        """The row of the next step of every environment."""
+        return self._env_pos.copy()
+
+    @property
+    def env_full(self) -> np.ndarray:
+        """Whether every row of every environment was written."""
+        return self._env_full.copy()
+
+    @property
+    def env_added(self) -> np.ndarray:
+        """The steps added to every environment."""
+        return self._env_added.copy()
+
+    @property
+    def lockstep(self) -> bool:
+        """Whether the environments are at the same row: always, unless steps are added to some of them only."""
+        return bool((self._env_pos == self._env_pos[0]).all() and (self._env_full == self._env_full[0]).all())
+
+    def _lockstep(self, value: np.ndarray) -> Any:
+        if not self.lockstep:
+            raise RuntimeError(
+                "The environments of the buffer are at different rows (steps are added to some of them only): "
+                "read `positions`, `env_full` and `env_added`"
+            )
+        return value[0].item()
+
+    @property
+    def _pos(self) -> int:
+        """The row of the next step of the environments, in lockstep."""
+        return self._lockstep(self._env_pos)
+
+    @property
+    def _full(self) -> bool:
+        return self._lockstep(self._env_full)
+
+    @property
+    def _added(self) -> int:
+        return self._lockstep(self._env_added)
+
+    def env_view(self, env: int) -> "_EnvView":
+        """The environment `env` as a buffer of one environment, for the samplers of the environments (its rows are
+        gathered from this buffer)."""
+        return _EnvView(self, env)
 
     @property
     def n_envs(self) -> int:
@@ -167,13 +214,20 @@ class ReplayBuffer:
     @typing.overload
     def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None: ...
 
-    def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray], validate_args: bool = False) -> None:
+    def add(
+        self,
+        data: "ReplayBuffer" | Dict[str, np.ndarray],
+        env_idxes: Optional[Sequence[int]] = None,
+        validate_args: bool = False,
+    ) -> None:
         """Add data to the replay buffer. If the replay buffer is full, then the oldest data is overwritten.
         If data is a dictionary, then the keys must be strings and the values must be numpy arrays of shape
         [sequence_length, n_envs, ...].
 
         Args:
             data (ReplayBuffer | Dict[str, np.ndarray]): the data to add to the replay buffer.
+            env_idxes (Sequence[int], optional): the environments of the columns of the data, written at their own
+                rows (e.g. the first steps of the environments that ended an episode). Defaults to None (all of them).
             validate_args (bool, optional): whether to validate the arguments. Defaults to False.
 
         Raises:
@@ -184,51 +238,76 @@ class ReplayBuffer:
         """
         if isinstance(data, ReplayBuffer):
             data = data.buffer
-        self._check_add(data, validate_args)
+        if isinstance(env_idxes, bool):
+            # Up to sheeprl 0.8.2 the second argument was `validate_args`
+            env_idxes, validate_args = None, env_idxes
+        envs = None if env_idxes is None else np.asarray(env_idxes, dtype=np.intp).reshape(-1)
+        if envs is not None:
+            if len(envs) != next(iter(data.values())).shape[1]:
+                raise ValueError(
+                    f"The length of 'env_idxes' ({len(envs)}) must be equal to the second dimension of the "
+                    f"arrays in 'data' ({next(iter(data.values())).shape[1]})"
+                )
+            if len(np.unique(envs)) != len(envs) or (envs < 0).any() or (envs >= self._n_envs).any():
+                raise ValueError(f"The environments must be distinct integers in [0, {self._n_envs}), got {env_idxes}")
+            if len(envs) == self._n_envs and (envs == np.arange(self._n_envs)).all():
+                envs = None
+        self._check_add(data, validate_args, n_envs=None if envs is None else len(envs))
         self._apply_checkpoint_truncation()
         data_len = next(iter(data.values())).shape[0]
-        next_pos = (self._pos + data_len) % self._buffer_size
-        if data_len > self._buffer_size:
-            # Only the last `buffer_size` steps are kept, in the rows they would take if added one at a time: the step
-            # of index `i` of the data goes in the row `(pos + i) % buffer_size`
-            data_to_store = {k: v[-self._buffer_size :] for k, v in data.items()}
-            idxes = (next_pos + np.arange(self._buffer_size)) % self._buffer_size
+        # Only the last `buffer_size` steps are kept, in the rows they would take if added one at a time: the step of
+        # index `i` of the data goes in the row `(pos + i) % buffer_size` of its environment
+        kept = min(data_len, self._buffer_size)
+        data_to_store = {k: v[-self._buffer_size :] for k, v in data.items()} if data_len > kept else data
+        steps = (data_len - kept) + np.arange(kept)
+        written = np.arange(self._n_envs) if envs is None else envs
+        if envs is None and self.lockstep:
+            # The rows of every environment
+            idxes = (self._env_pos[0] + steps) % self._buffer_size
         else:
-            data_to_store = data
-            idxes = (self._pos + np.arange(data_len)) % self._buffer_size
+            # The rows of every environment written: [Steps, Environments]
+            idxes = (self._env_pos[written][np.newaxis] + steps[:, np.newaxis]) % self._buffer_size
+        if self.empty:
+            self._allocate(data_to_store)
         if self._device is not None:
             # Normal tensors, also when the steps are played in inference mode: the buffer is changed outside of it too
             with torch.inference_mode(False):
-                if self.empty:
-                    self._allocate_on_device(data_to_store)
-                idxes = torch.as_tensor(idxes, device=self._device)
+                index = torch.as_tensor(idxes, device=self._device)
+                if idxes.ndim == 2:
+                    index = (index, torch.as_tensor(written, device=self._device))
                 for k, v in data_to_store.items():
                     # Cast to the dtype of the buffer, as NumPy does
                     value = torch.as_tensor(v, device=self._device).to(self.buffer[k].dtype)
                     # The leading dimensions of size one are dropped, as NumPy does when it broadcasts (`_check_add`)
                     while value.dim() > self.buffer[k].dim() and value.shape[0] == 1:
                         value = value[0]
-                    self.buffer[k][idxes] = value
-        elif self._memmap and self.empty:
+                    self.buffer[k][index] = value
+        else:
+            index = idxes if idxes.ndim == 1 else (idxes, written)
             for k, v in data_to_store.items():
+                self.buffer[k][index] = v
+        self._env_full[written] |= self._env_pos[written] + data_len >= self._buffer_size
+        self._env_pos[written] = (self._env_pos[written] + data_len) % self._buffer_size
+        self._env_added[written] += data_len
+
+    def _allocate(self, data: Dict[str, np.ndarray]) -> None:
+        """Create the arrays of the buffer, for the keys of `data`: memory-mapped, in the memory of the CPU or in the
+        one of the device."""
+        if self._device is not None:
+            # Normal tensors, also when the steps are played in inference mode
+            with torch.inference_mode(False):
+                self._allocate_on_device(data)
+        elif self._memmap:
+            for k, v in data.items():
                 self.buffer[k] = MemmapArray(
                     filename=Path(self._memmap_dir / f"{k}.memmap"),
                     dtype=v.dtype,
                     shape=(self._buffer_size, self._n_envs, *v.shape[2:]),
                     mode=self._memmap_mode,
                 )
-                self.buffer[k][idxes] = data_to_store[k]
-        elif self.empty:
-            for k, v in data_to_store.items():
-                self.buffer[k] = np.empty(shape=(self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype)
-                self.buffer[k][idxes] = data_to_store[k]
         else:
-            for k, v in data_to_store.items():
-                self.buffer[k][idxes] = data_to_store[k]
-        if self._pos + data_len >= self._buffer_size:
-            self._full = True
-        self._pos = next_pos
-        self._added += data_len
+            for k, v in data.items():
+                self.buffer[k] = np.empty(shape=(self._buffer_size, self._n_envs, *v.shape[2:]), dtype=v.dtype)
 
     def to(self, device: str | torch.device | None) -> "ReplayBuffer":
         """The buffer in the memory of `device` (`None`: NumPy arrays in the memory of the CPU), e.g. a buffer loaded
@@ -262,7 +341,9 @@ class ReplayBuffer:
         for k, (shape, dtype) in specs.items():
             self._buf[k] = torch.empty(shape, dtype=dtype, device=self._device)
 
-    def _check_add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None:
+    def _check_add(
+        self, data: Dict[str, np.ndarray], validate_args: bool = False, n_envs: Optional[int] = None
+    ) -> None:
         """Raise the errors that adding `data` would raise, before anything is written: an add that fails leaves the
         buffer as it was."""
         if validate_args:
@@ -299,12 +380,14 @@ class ReplayBuffer:
         data_len = next(iter(data.values())).shape[0]
         rows = min(data_len, self._buffer_size)
         for k, v in data.items():
+            # The columns of the environments written (all of them by default)
+            columns = self._n_envs if n_envs is None else n_envs
             if self.empty:
-                target = (rows, self._n_envs, *np.shape(v)[2:])
+                target = (rows, columns, *np.shape(v)[2:])
             elif k not in self._buf:
                 raise KeyError(f"The buffer has no key '{k}': its keys are {list(self._buf.keys())}")
             else:
-                target = (rows, *self._buf[k].shape[1:])
+                target = (rows, columns, *self._buf[k].shape[2:])
             # The rows written are the last `buffer_size` ones, broadcast as numpy does (also dropping the leading
             # dimensions of size one)
             shape = np.shape(v)
@@ -328,7 +411,7 @@ class ReplayBuffer:
         evaluated."""
         if self.__dict__.get("_checkpoint_truncation") and not self.empty:
             self._checkpoint_truncation = False
-            self._buf["truncated"][(self._pos - 1) % self._buffer_size, :] = 1
+            self._buf["truncated"][(self._env_pos - 1) % self._buffer_size, np.arange(self._n_envs)] = 1
 
     def sample(
         self,
@@ -362,16 +445,22 @@ class ReplayBuffer:
         return sampler.sample(self, batch_size, n_samples, clone=clone)
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        # Up to sheeprl 0.8.0 the buffers didn't count the steps added: only their remainder by the buffer size, the
-        # position of the next one, matters
-        state.setdefault("_added", state["_pos"] + (state["_buffer_size"] if state["_full"] else 0))
+        if "_env_pos" not in state:
+            # Up to sheeprl 0.8.2 the environments were written in lockstep, at the row `_pos`. Up to sheeprl 0.8.0 the
+            # buffers didn't count the steps added: only their remainder by the buffer size, the position of the next
+            # one, matters
+            pos, full = state.pop("_pos"), state.pop("_full")
+            added = state.pop("_added", pos + (state["_buffer_size"] if full else 0))
+            state["_env_pos"] = np.full(state["_n_envs"], pos, dtype=np.int64)
+            state["_env_full"] = np.full(state["_n_envs"], full, dtype=bool)
+            state["_env_added"] = np.full(state["_n_envs"], added, dtype=np.int64)
         # Up to sheeprl 0.8.2 the buffers were in the memory of the CPU
         state.setdefault("_device", None)
         # The online queue isn't checkpointed: it restarts empty, with the steps added after the loading (up to sheeprl
         # 0.8.2 it was kept in `_online_origin` and `_online_next`)
         state.pop("_online_origin", None)
         state.pop("_online_next", None)
-        state["_online"] = OnlineQueue(state["_added"])
+        state["_online"] = OnlineQueue(state["_env_added"].copy())
         self.__dict__.update(state)
 
     def gather(
@@ -596,7 +685,32 @@ class SequentialReplayBuffer(ReplayBuffer):
         return sampler.sample(self, batch_size, n_samples, clone=clone)
 
 
-class EnvIndependentReplayBuffer:
+class EnvIndependentReplayBuffer(ReplayBuffer):
+    """A `ReplayBuffer` sampled by `EnvIndependentSampler`: every step or sequence of its samples comes from a single
+    environment, drawn independently, then from the rows of that environment (written at its own row: see the
+    `env_idxes` of `add`).
+
+    It is kept for its `sample` and for the checkpoints of sheeprl up to 0.8.2, which hold a buffer per environment
+    (converted to a single storage when they are loaded).
+
+    Args:
+        buffer_size (int): the steps of every environment.
+        n_envs (int, optional): the number of environments. Defaults to 1.
+        obs_keys (Sequence[str], optional): names of the observation keys. Those are used
+            to sample the next-observation. Defaults to ("observations",).
+        memmap (bool, optional): whether to memory-map the numpy arrays saved in the buffer. Defaults to False.
+        memmap_dir (str | os.PathLike | None, optional): the memory-mapped files directory.
+            Defaults to None.
+        memmap_mode (str, optional): memory-map mode. Possible values are: "r+", "w+", "c", "copyonwrite",
+            "readwrite", "write". Defaults to "r+".
+        buffer_cls (Type[ReplayBuffer], optional): how `sample` reads the environments: steps (`ReplayBuffer`) or
+            sequences (`SequentialReplayBuffer`). Defaults to ReplayBuffer.
+        seed (int | np.random.SeedSequence | None, optional): the seed from which the independent random number
+            generators of `sample` (the one of the environments and the one of every environment) are derived.
+            Defaults to None.
+        kwargs: additional keyword arguments of `ReplayBuffer` (`device`).
+    """
+
     def __init__(
         self,
         buffer_size: int,
@@ -609,136 +723,16 @@ class EnvIndependentReplayBuffer:
         seed: int | np.random.SeedSequence | None = None,
         **kwargs,
     ):
-        """A replay buffer implementation that is composed of multiple independent replay buffers.
-
-        Args:
-            buffer_size (int): the buffer size.
-            n_envs (int, optional): the number of environments. Defaults to 1.
-            obs_keys (Sequence[str], optional): names of the observation keys. Those are used
-                to sample the next-observation. Defaults to ("observations",).
-            memmap (bool, optional): whether to memory-map the numpy arrays saved in the buffer. Defaults to False.
-            memmap_dir (str | os.PathLike | None, optional): the memory-mapped files directory.
-                Defaults to None.
-            memmap_mode (str, optional): memory-map mode. Possible values are: "r+", "w+", "c", "copyonwrite",
-                "readwrite", "write". Defaults to "r+".
-            buffer_cls (Type[ReplayBuffer], optional): the replay buffer class to use. Defaults to ReplayBuffer.
-            seed (int | np.random.SeedSequence | None, optional): the seed from which the independent random number
-                generators of this buffer and of every environment buffer are derived. Defaults to None.
-            kwargs: additional keyword arguments.
-        """
-        if buffer_size <= 0:
-            raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
         if n_envs <= 0:
             raise ValueError(f"The number of environments must be greater than zero, got: {n_envs}")
-        if memmap:
-            if memmap_mode not in ("r+", "w+", "c", "copyonwrite", "readwrite", "write"):
-                raise ValueError(
-                    'Accepted values for memmap_mode are "r+", "readwrite", "w+", "write", "c" or '
-                    '"copyonwrite". PyTorch does not support tensors backed by read-only '
-                    'NumPy arrays, so "r" and "readonly" are not supported.'
-                )
-            if memmap_dir is None:
-                raise ValueError(
-                    "The buffer is set to be memory-mapped but the 'memmap_dir' attribute is None. "
-                    "Set the 'memmap_dir' to a known directory.",
-                )
-            else:
-                memmap_dir = Path(memmap_dir)
-                memmap_dir.mkdir(parents=True, exist_ok=True)
         seed_sequences = np.random.SeedSequence(seed).spawn(n_envs + 1)
-        self._buf: Sequence[ReplayBuffer] = [
-            buffer_cls(
-                buffer_size=buffer_size,
-                n_envs=1,
-                obs_keys=obs_keys,
-                memmap=memmap,
-                memmap_dir=memmap_dir / f"env_{i}" if memmap else None,
-                memmap_mode=memmap_mode,
-                seed=seed_sequences[i],
-                **kwargs,
-            )
-            for i in range(n_envs)
-        ]
-        self._buffer_size = buffer_size
-        self._n_envs = n_envs
-        self._rng: np.random.Generator = np.random.default_rng(seed_sequences[-1])
+        super().__init__(
+            buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, seed=seed_sequences[-1], **kwargs
+        )
+        # The generators and the online queues of the environments in `sample`
+        self._env_rngs = [np.random.default_rng(s) for s in seed_sequences[:-1]]
+        self._env_online = [OnlineQueue() for _ in range(n_envs)]
         self._concat_along_axis = buffer_cls.batch_axis
-
-    @property
-    def buffer(self) -> Sequence[ReplayBuffer]:
-        return tuple(self._buf)
-
-    @property
-    def buffer_size(self) -> int:
-        return self._buffer_size
-
-    @property
-    def full(self) -> Sequence[bool]:
-        return tuple([b.full for b in self.buffer])
-
-    @property
-    def n_envs(self) -> int:
-        return self._n_envs
-
-    @property
-    def empty(self) -> Sequence[bool]:
-        return tuple([b.empty for b in self.buffer])
-
-    @property
-    def is_memmap(self) -> Sequence[bool]:
-        return tuple([b.is_memmap for b in self.buffer])
-
-    @property
-    def device(self) -> Optional[torch.device]:
-        """The device whose memory holds the buffers of the environments, `None` for the memory of the CPU."""
-        return self._buf[0].device
-
-    def to(self, device: str | torch.device | None) -> "EnvIndependentReplayBuffer":
-        """The buffers of the environments in the memory of `device` (see `ReplayBuffer.to`)."""
-        for b in self._buf:
-            b.to(device)
-        return self
-
-    def __len__(self) -> int:
-        return self.buffer_size
-
-    @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None: ...
-
-    @typing.overload
-    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None: ...
-
-    def add(
-        self,
-        data: "ReplayBuffer" | Dict[str, np.ndarray],
-        indices: Optional[Sequence[int]] = None,
-        validate_args: bool = False,
-    ) -> None:
-        """Add data to the replay buffers specified by the 'indices'. If 'indices' is None, then the data is added
-        one for every environment. The length of indices must be equal to the second dimension of the arrays in 'data',
-        which is the number of environments. If data is a dictionary, then the keys must be strings
-        and the values must be numpy arrays of shape [sequence_length, n_envs, ...].
-
-
-        Args:
-            data (Union[ReplayBuffer, Dict[str, np.ndarray]]): the data to add to the replay buffers.
-            indices (Optional[Sequence[int]], optional): the indices of the replay buffers to add the data to.
-                Defaults to None.
-            validate_args (bool, optional): whether to validate the arguments. Defaults to False.
-        """
-        if indices is None:
-            indices = tuple(range(self.n_envs))
-        elif len(indices) != next(iter(data.values())).shape[1]:
-            raise ValueError(
-                f"The length of 'indices' ({len(indices)}) must be equal to the second dimension of the "
-                f"arrays in 'data' ({next(iter(data.values())).shape[1]})"
-            )
-        env_data = [{k: v[:, i : i + 1] for k, v in data.items()} for i in range(len(indices))]
-        # Every environment is checked before any is written: an add that fails leaves the buffer as it was
-        for data_of_env, env_idx in zip(env_data, indices):
-            self._buf[env_idx]._check_add(data_of_env, validate_args=validate_args)
-        for data_of_env, env_idx in zip(env_data, indices):
-            self._buf[env_idx].add(data_of_env)
 
     def sample(
         self,
@@ -750,8 +744,8 @@ class EnvIndependentReplayBuffer:
         **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Samples data from the buffer (`EnvIndependentSampler`, with the generators and the online queues of the
-        buffer and of the buffers of the environments). The returned samples are sampled given the 'buffer_cls' class
-        used to initialize the buffer: sequences for a `SequentialReplayBuffer`, steps for a `ReplayBuffer`.
+        buffer). The returned samples are sampled given the 'buffer_cls' class used to initialize the buffer:
+        sequences for a `SequentialReplayBuffer`, steps for a `ReplayBuffer`.
 
         Args:
             batch_size (int): The number of samples to draw from the buffer.
@@ -768,65 +762,68 @@ class EnvIndependentReplayBuffer:
             [n_samples, sequence_length, batch_size, ...] if 'buffer_cls' is a 'SequentialReplayBuffer',
             otherwise [n_samples, batch_size, ...] if 'buffer_cls' is a 'ReplayBuffer'.
         """
-        if self._buf is None:
-            raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         sequence_length = kwargs.get("sequence_length", 1) if self._concat_along_axis == 2 else None
         env_samplers = [
             (
-                TransitionSampler(sample_next_obs, rng=buf._rng, queue=buf._online)
+                TransitionSampler(sample_next_obs, rng=rng, queue=queue)
                 if sequence_length is None
-                else SequenceSampler(sequence_length, sample_next_obs, rng=buf._rng, queue=buf._online)
+                else SequenceSampler(sequence_length, sample_next_obs, rng=rng, queue=queue)
             )
-            for buf in self._buf
+            for rng, queue in zip(self._env_rngs, self._env_online)
         ]
         sampler = EnvIndependentSampler(
             self._n_envs, sequence_length, sample_next_obs, online, rng=self._rng, env_samplers=env_samplers
         )
         return sampler.sample(self, batch_size, n_samples, clone=clone)
 
-    @torch.no_grad()
-    def sample_tensors(
-        self,
-        batch_size: int,
-        sample_next_obs: bool = False,
-        clone: bool = False,
-        n_samples: int = 1,
-        dtype: Optional[torch.dtype] = None,
-        device: str | torch.dtype = "cpu",
-        from_numpy: bool = False,
-        **kwargs,
-    ) -> Dict[str, Tensor]:
-        """Sample elements from the replay buffer and convert them to torch tensors.
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        if isinstance(state.get("_buf"), list):
+            state = _merge_env_buffers(state)
+        super().__setstate__(state)
+        # The online queues aren't checkpointed: they restart empty, with the steps added after the loading
+        self._env_online = [OnlineQueue(self._env_added[i : i + 1].copy()) for i in range(self._n_envs)]
 
-        Args:
-            batch_size (int): Number of elements to sample.
-            sample_next_obs (bool): whether to sample the next observations from the 'observations' key.
-                Defaults to False.
-            clone (bool): whether to clone the sampled tensors.
-            n_samples (int): the number of samples per batch_size to retrieve. Defaults to 1.
-            dtype (Optional[torch.dtype], optional): the torch dtype to convert the arrays to. If None,
-                then the dtypes of the numpy arrays is maintained. Defaults to None.
-            device (str | torch.dtype, optional): the torch device to move the tensors to. Defaults to "cpu".
-            from_numpy (bool, optional): whether to convert the numpy arrays to torch tensors
-                with the 'torch.from_numpy' function. If False, then the numpy arrays are converted
-                with the 'torch.as_tensor' function. Defaults to False.
-            kwargs: additional keyword arguments to be passed to the 'self.sample' method.
 
-        Returns:
-            Dict[str, Tensor]: the sampled dictionary, containing the sampled array,
-            one for every key, with a shape of [n_samples, sequence_length, batch_size, ...] if 'buffer_cls' is a
-            'SequentialReplayBuffer', otherwise [n_samples, batch_size, ...] if 'buffer_cls' is a 'ReplayBuffer'.
-        """
-        samples = self.sample(
-            batch_size=batch_size,
-            sample_next_obs=sample_next_obs,
-            clone=clone,
-            n_samples=n_samples,
-            **kwargs,
-        )
-        return {
-            k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
-        }
+def _merge_env_buffers(state: Dict[str, Any]) -> Dict[str, Any]:
+    """The state of an `EnvIndependentReplayBuffer` of sheeprl up to 0.8.2, which held a buffer per environment, as the
+    one of a single storage: the arrays of the environments side by side (memory-mapped in the parent directory of
+    the ones of the environments, if they were), with their rows and their generators."""
+    buffers: List[ReplayBuffer] = state["_buf"]
+    first = buffers[0]
+    n_envs, buffer_size = len(buffers), state["_buffer_size"]
+    for b in buffers:
+        b._apply_checkpoint_truncation()
+    memmap_dir = Path(first._memmap_dir).parent if first.is_memmap else None
+    arrays: Dict[str, np.ndarray | MemmapArray] = {}
+    filled = [b for b in buffers if not b.empty]
+    for k, v in (filled[0].buffer.items() if filled else ()):
+        shape = (buffer_size, n_envs, *v.shape[2:])
+        if memmap_dir is not None:
+            arrays[k] = MemmapArray(
+                filename=memmap_dir / f"{k}.memmap", dtype=v.dtype, shape=shape, mode=first._memmap_mode
+            )
+        else:
+            arrays[k] = np.empty(shape, dtype=v.dtype)
+        for env, b in enumerate(buffers):
+            if not b.empty:
+                arrays[k][:, env] = np.asarray(b.buffer[k])[:, 0]
+    return {
+        "_buffer_size": buffer_size,
+        "_n_envs": n_envs,
+        "_obs_keys": first._obs_keys,
+        "_memmap": memmap_dir is not None,
+        "_memmap_dir": memmap_dir,
+        "_memmap_mode": first._memmap_mode,
+        "_buf": arrays,
+        "_memmap_specs": {},
+        "_rng": state["_rng"],
+        "_device": None,
+        "_env_pos": np.array([b._env_pos[0] for b in buffers], dtype=np.int64),
+        "_env_full": np.array([b._env_full[0] for b in buffers], dtype=bool),
+        "_env_added": np.array([b._env_added[0] for b in buffers], dtype=np.int64),
+        "_env_rngs": [b._rng for b in buffers],
+        "_concat_along_axis": state["_concat_along_axis"],
+    }
 
 
 class EpisodeBuffer:
@@ -1334,3 +1331,18 @@ def _check_free_memory(device: torch.device, needed: int) -> None:
                 f"The replay buffer needs {needed / 2**30:.2f} GB on {device}, but {free / 2**30:.2f} GB are "
                 "free: keep it in the memory of the CPU (`buffer.on_device=False`) or make it smaller (`buffer.size`)"
             )
+
+
+class _EnvView:
+    """An environment of a `ReplayBuffer`, as a buffer of one environment: its row, whether it was filled and its steps
+    added, which its sampler reads (`EnvIndependentSampler`)."""
+
+    n_envs = 1
+    lockstep = True
+
+    def __init__(self, buffer: ReplayBuffer, env: int) -> None:
+        self.buffer_size = buffer.buffer_size
+        self._pos = int(buffer._env_pos[env])
+        self.full = self._full = bool(buffer._env_full[env])
+        self._added = int(buffer._env_added[env])
+        self.env_added = buffer._env_added[env : env + 1].copy()

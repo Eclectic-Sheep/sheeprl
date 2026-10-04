@@ -12,7 +12,7 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
 from sheeprl.data.samplers import EnvIndependentSampler, EpisodeSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.env import make_env
@@ -125,15 +125,15 @@ def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> i
 def sequential_store(
     fabric: Fabric, cfg: Dict[str, Any], log_dir: str, buffer_size: int, sequence_length: int
 ) -> ReplayStore:
-    """One buffer of `buffer_size` steps per environment, sampled in sequences of `sequence_length` steps of a single
-    environment (`EnvIndependentSampler`, with the online queue with `buffer.online`)."""
-    storage = EnvIndependentReplayBuffer(
+    """A buffer of `buffer_size` steps per environment, every environment written at its own row (its first steps after
+    the end of an episode), sampled in sequences of `sequence_length` steps of a single environment
+    (`EnvIndependentSampler`, with the online queue with `buffer.online`)."""
+    storage = ReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        buffer_cls=SequentialReplayBuffer,
         device=fabric.device if cfg.buffer.on_device else None,
     )
     sampler = EnvIndependentSampler(
