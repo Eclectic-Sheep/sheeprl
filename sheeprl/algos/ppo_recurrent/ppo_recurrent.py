@@ -380,15 +380,16 @@ class PPORecurrent(Algorithm):
                 # The sequences start from the recurrent states of the rollout, computed by the weights that played it:
                 # every epoch after the first one unrolls them again with the current weights, from the state before
                 # the first step of the rollout
-                obs = {k: data[k] / 255.0 - 0.5 for k in cfg.algo.cnn_keys.encoder}
-                obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
+                # As the sequences, in single precision (`split_in_sequences`)
+                obs = {k: data[k].float() / 255.0 - 0.5 for k in cfg.algo.cnn_keys.encoder}
+                obs.update({k: data[k].float() for k in cfg.algo.mlp_keys.encoder})
                 with autocast(self.fabric):
                     prev_hx, prev_cx = recurrent_states(
                         state.agent,
                         obs,
-                        data["prev_actions"],
-                        data["dones"],
-                        (data["prev_hx"][:1], data["prev_cx"][:1]),
+                        data["prev_actions"].float(),
+                        data["dones"].float(),
+                        (data["prev_hx"][:1].float(), data["prev_cx"][:1].float()),
                         cfg.algo.reset_recurrent_state_on_done,
                     )
                 refreshed = split_in_sequences(
