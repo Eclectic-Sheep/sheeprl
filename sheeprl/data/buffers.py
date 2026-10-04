@@ -4,7 +4,7 @@ import os
 import typing
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Type
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
 import numpy as np
 import torch
@@ -12,6 +12,16 @@ from torch import Tensor
 
 from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT
+
+# No queued sequences: the environments and the first steps of none
+_NO_SEQUENCES = (np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp))
+
+
+def _oldest_first(envs: np.ndarray, starts: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray]:
+    """The first `n` of the sequences of the environments `envs` that start at the steps `starts`: the ones that start
+    first, in the order of their environments."""
+    order = np.lexsort((envs, starts))[:n]
+    return envs[order], starts[order]
 
 
 class ReplayBuffer:
@@ -77,6 +87,11 @@ class ReplayBuffer:
         self._full = False
         self._memmap_specs = {}
         self._rng: np.random.Generator = np.random.default_rng(seed)
+        # The steps added to every environment, and the online queue (`sample(online=True)`): the step from which its
+        # sequences are cut, and the first step of the next sequence of every environment
+        self._added = 0
+        self._online_origin = 0
+        self._online_next: np.ndarray | None = None
 
     @property
     def buffer(self) -> Dict[str, np.ndarray]:
@@ -217,9 +232,16 @@ class ReplayBuffer:
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
+        self._added += data_len
 
     def sample(
-        self, batch_size: int, sample_next_obs: bool = False, clone: bool = False, n_samples: int = 1, **kwargs
+        self,
+        batch_size: int,
+        sample_next_obs: bool = False,
+        clone: bool = False,
+        n_samples: int = 1,
+        online: bool = False,
+        **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Sample elements from the replay buffer. If the replay buffer is not full, then the samples are taken
         from the first 'self.pos' elements. Otherwise, the samples are taken from all the elements.
@@ -233,12 +255,42 @@ class ReplayBuffer:
                 Defaults to False.
             clone (bool): whether to clone the sampled numpy arrays. Defaults to False.
             n_samples (int): the number of samples to perform. Defaults to 1.
+            online (bool): whether the samples start with the elements of the online queue, the oldest first, and only
+                the rest of them is sampled uniformly: every element added is sampled once soon after (see
+                `_online_pending`). Defaults to False.
 
         Returns:
             Dict[str, np.ndarray]: the sampled dictionary with a shape of [n_samples, batch_size, ...].
         """
         if batch_size <= 0 or n_samples <= 0:
             raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
+        return self._sample(batch_size, n_samples, 1, sample_next_obs, clone, online)
+
+    def _sample(
+        self,
+        batch_size: int,
+        n_samples: int,
+        sequence_length: int,
+        sample_next_obs: bool,
+        clone: bool,
+        online: bool,
+    ) -> Dict[str, np.ndarray]:
+        """The samples of `sample`: the sequences of the online queue first, with `online`, then the uniform ones."""
+        n = batch_size * n_samples
+        envs, starts = self._online_pop(sequence_length, sample_next_obs, n) if online else _NO_SEQUENCES
+        idxes, env_idxes = self._sample_idxes(n - len(starts), sample_next_obs, sequence_length)
+        return self._get_samples(
+            np.concatenate((starts % self.buffer_size, idxes)),
+            np.concatenate((envs, env_idxes)),
+            batch_size,
+            n_samples,
+            sequence_length,
+            sample_next_obs=sample_next_obs,
+            clone=clone,
+        )
+
+    def _sample_idxes(self, n: int, sample_next_obs: bool, sequence_length: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The rows and the environments of `n` elements drawn uniformly."""
         if not self._full and self._pos == 0:
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
@@ -247,9 +299,7 @@ class ReplayBuffer:
             # Every row can be sampled, except the last inserted one if the next observation is needed:
             # the valid rows are the ones in [pos, pos + n_valid) (modulo the buffer size)
             n_valid = self.buffer_size - int(sample_next_obs)
-            batch_idxes = (
-                self._pos + self._rng.integers(0, n_valid, size=(batch_size * n_samples,), dtype=np.intp)
-            ) % self.buffer_size
+            idxes = (self._pos + self._rng.integers(0, n_valid, size=(n,), dtype=np.intp)) % self.buffer_size
         else:
             max_pos_to_sample = self._pos - 1 if sample_next_obs else self._pos
             if max_pos_to_sample == 0:
@@ -257,19 +307,65 @@ class ReplayBuffer:
                     "You want to sample the next observations, but one sample has been added to the buffer. "
                     "Make sure that at least two samples are added."
                 )
-            batch_idxes = self._rng.integers(0, max_pos_to_sample, size=(batch_size * n_samples,), dtype=np.intp)
-        return {
-            k: v.reshape(n_samples, batch_size, *v.shape[1:])
-            for k, v in self._get_samples(batch_idxes=batch_idxes, sample_next_obs=sample_next_obs, clone=clone).items()
-        }
+            idxes = self._rng.integers(0, max_pos_to_sample, size=(n,), dtype=np.intp)
+        return idxes, self._rng.integers(0, self.n_envs, size=(n,), dtype=np.intp)
+
+    def _online_pending(self, sequence_length: int, sample_next_obs: bool, limit: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The sequences of the online queue, up to `limit` of every environment, the oldest first: their
+        environments and their first steps (the steps added to the environment before them).
+
+        As in the online queue of DreamerV3 (https://github.com/danijar/dreamerv3), the steps of every environment are
+        cut into consecutive sequences of `sequence_length` steps (from its second step, or from its first one with
+        sequences of one step), which join the queue when their steps are in the buffer (and the step after them, with
+        `sample_next_obs`). The steps are the ones added after the creation of the buffer or its loading from a
+        checkpoint: the queue isn't checkpointed. The sequences overwritten before being sampled are dropped.
+        """
+        if self._online_next is None:
+            self._online_next = np.full(self.n_envs, self._online_origin + int(sequence_length > 1), dtype=np.int64)
+        # The sequences that start before the oldest step in the buffer are dropped
+        behind = np.maximum(self._added - self.buffer_size - self._online_next, 0)
+        self._online_next += -(-behind // sequence_length) * sequence_length
+        ready = np.maximum((self._added - int(sample_next_obs) - self._online_next) // sequence_length, 0)
+        counts = np.minimum(ready, limit)
+        envs = np.repeat(np.arange(self.n_envs, dtype=np.intp), counts)
+        starts = np.concatenate([n + sequence_length * np.arange(c) for n, c in zip(self._online_next, counts)])
+        return _oldest_first(envs, starts, len(starts))
+
+    def _online_take(self, envs: np.ndarray, starts: np.ndarray, sequence_length: int) -> None:
+        """Remove from the online queue the sequences of the environments `envs` that start at the steps `starts`: the
+        first ones of their environments (`_online_pending`)."""
+        np.maximum.at(self._online_next, envs, starts + sequence_length)
+
+    def _online_pop(self, sequence_length: int, sample_next_obs: bool, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Remove the oldest `n` sequences from the online queue, or all of them if they are fewer: their environments
+        and their first steps."""
+        envs, starts = _oldest_first(*self._online_pending(sequence_length, sample_next_obs, n), n)
+        self._online_take(envs, starts, sequence_length)
+        return envs, starts
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # Up to sheeprl 0.8.0 the buffers didn't count the steps added: only their remainder by the buffer size, the
+        # position of the next one, matters
+        state.setdefault("_added", state["_pos"] + (state["_buffer_size"] if state["_full"] else 0))
+        # The online queue isn't checkpointed: it restarts empty, with the steps added after the loading
+        state["_online_origin"], state["_online_next"] = state["_added"], None
+        self.__dict__.update(state)
 
     def _get_samples(
-        self, batch_idxes: np.ndarray, sample_next_obs: bool = False, clone: bool = False
+        self,
+        batch_idxes: np.ndarray,
+        env_idxes: np.ndarray,
+        batch_size: int,
+        n_samples: int,
+        sequence_length: int = 1,
+        sample_next_obs: bool = False,
+        clone: bool = False,
     ) -> Dict[str, np.ndarray]:
+        """The elements at the rows `batch_idxes` of the environments `env_idxes`, of shape
+        `[n_samples, batch_size, ...]`."""
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         samples: Dict[str, np.ndarray] = {}
-        env_idxes = self._rng.integers(0, self.n_envs, size=(len(batch_idxes),), dtype=np.intp)
         flattened_idxes = (batch_idxes * self.n_envs + env_idxes).flat
         if sample_next_obs:
             flattened_next_idxes = (((batch_idxes + 1) % self._buffer_size) * self.n_envs + env_idxes).flat
@@ -281,7 +377,7 @@ class ReplayBuffer:
                 samples[f"next_{k}"] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_next_idxes, axis=0)
                 if clone:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
-        return samples
+        return {k: v.reshape(n_samples, batch_size, *v.shape[1:]) for k, v in samples.items()}
 
     @torch.no_grad()
     def sample_tensors(
@@ -398,6 +494,7 @@ class SequentialReplayBuffer(ReplayBuffer):
         clone: bool = False,
         n_samples: int = 1,
         sequence_length: int = 1,
+        online: bool = False,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Sample elements from the replay buffer in a sequential manner, without considering the episode
@@ -410,17 +507,21 @@ class SequentialReplayBuffer(ReplayBuffer):
             clone (bool): whether to clone the sampled tensors.
             n_samples (int): the number of samples to perform. Defaults to 1.
             sequence_length (int): the length of the sequence of each element. Defaults to 1.
+            online (bool): whether the samples start with the sequences of the online queue, the oldest first, and only
+                the rest of them is sampled uniformly: every step added is sampled once soon after (see
+                `_online_pending`). Defaults to False.
 
         Returns:
             Dict[str, np.ndarray]: the sampled dictionary with a shape of
             [n_samples, sequence_length, batch_size, ...].
         """
-        # the batch_size can be fused with the number of samples to have single batch size
-        batch_dim = batch_size * n_samples
-
-        # Sanity checks
         if batch_size <= 0 or n_samples <= 0:
             raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
+        return self._sample(batch_size, n_samples, sequence_length, sample_next_obs, clone, online)
+
+    def _sample_idxes(self, n: int, sample_next_obs: bool, sequence_length: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The first rows and the environments of `n` sequences drawn uniformly."""
+        # Sanity checks
         if not self.full and self._pos == 0:
             raise ValueError(
                 "No sample has been added to the buffer. Please add at least one sample calling 'self.add()'"
@@ -440,42 +541,35 @@ class SequentialReplayBuffer(ReplayBuffer):
             # where the newest data are followed by the oldest ones: the valid starting indices are the ones
             # in [pos, pos + buffer_size - sequence_length] (modulo the buffer size)
             n_valid = self.buffer_size - sequence_length + 1
-            start_idxes = (
-                self._pos + self._rng.integers(0, n_valid, size=(batch_dim,), dtype=np.intp)
-            ) % self.buffer_size
+            start_idxes = (self._pos + self._rng.integers(0, n_valid, size=(n,), dtype=np.intp)) % self.buffer_size
         else:
             # when the buffer is not full, we need to start the sequence so that it does not go out of bounds
-            start_idxes = self._rng.integers(0, self._pos - sequence_length + 1, size=(batch_dim,), dtype=np.intp)
+            start_idxes = self._rng.integers(0, self._pos - sequence_length + 1, size=(n,), dtype=np.intp)
 
-        # chunk_length contains the relative indices of the sequence (0, 1, ..., sequence_length-1)
-        chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
-        idxes = (start_idxes.reshape(-1, 1) + chunk_length) % self.buffer_size
-
-        # (n_samples, sequence_length, batch_size)
-        return self._get_samples(
-            idxes, batch_size, n_samples, sequence_length, sample_next_obs=sample_next_obs, clone=clone
-        )
+        # Each sequence must come from the same environment
+        if self._n_envs == 1:
+            env_idxes = np.zeros((n,), dtype=np.intp)
+        else:
+            env_idxes = self._rng.integers(0, self.n_envs, size=(n,), dtype=np.intp)
+        return start_idxes, env_idxes
 
     def _get_samples(
         self,
-        batch_idxes: np.ndarray,
+        start_idxes: np.ndarray,
+        env_idxes: np.ndarray,
         batch_size: int,
         n_samples: int,
         sequence_length: int,
         sample_next_obs: bool = False,
         clone: bool = False,
     ) -> Dict[str, np.ndarray]:
-        batch_shape = (batch_size * n_samples, sequence_length)  # [Batch_size * N_samples, Seq_len]
-        flattened_batch_idxes = np.ravel(batch_idxes)
-
+        """The sequences that start at the rows `start_idxes` of the environments `env_idxes`, of shape
+        `[n_samples, sequence_length, batch_size, ...]`."""
+        # chunk_length contains the relative indices of the sequence (0, 1, ..., sequence_length-1)
+        chunk_length = np.arange(sequence_length, dtype=np.intp).reshape(1, -1)
+        flattened_batch_idxes = np.ravel((start_idxes.reshape(-1, 1) + chunk_length) % self.buffer_size)
         # Each sequence must come from the same environment
-        if self._n_envs == 1:
-            env_idxes = np.zeros((np.prod(batch_shape),), dtype=np.intp)
-        else:
-            env_idxes = self._rng.integers(0, self.n_envs, size=(batch_shape[0],), dtype=np.intp)
-            env_idxes = np.reshape(env_idxes, (-1, 1))
-            env_idxes = np.tile(env_idxes, (1, sequence_length))
-            env_idxes = np.ravel(env_idxes)
+        env_idxes = np.repeat(env_idxes, sequence_length)
 
         # Flatten indexes
         flattened_idxes = (flattened_batch_idxes * self._n_envs + env_idxes).flat
@@ -654,6 +748,7 @@ class EnvIndependentReplayBuffer:
         sample_next_obs: bool = False,
         clone: bool = False,
         n_samples: int = 1,
+        online: bool = False,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Samples data from the buffer. The returned samples are sampled given the 'buffer_cls' class
@@ -664,7 +759,10 @@ class EnvIndependentReplayBuffer:
             sample_next_obs (bool): Whether to sample the next observation or the current observation.
             clone (bool): Whether to clone the data or return a reference to the original data.
             n_samples (int): The number of samples to draw for each batch element.
-            **kwargs: Additional keyword arguments to pass to the underlying buffer's `sample` method.
+            online (bool): whether the samples start with the elements of the online queues of the environments, the
+                oldest first (the ones that start first, in the order of their environments), and only the rest of
+                them is sampled uniformly (see `ReplayBuffer._online_pending`). Defaults to False.
+            **kwargs: Additional keyword arguments of the underlying buffer's `sample` method (`sequence_length`).
 
         Returns:
             Dict[str, np.ndarray]: the sampled dictionary with a shape of
@@ -676,23 +774,36 @@ class EnvIndependentReplayBuffer:
         if self._buf is None:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
 
-        # The environment of every element of every batch, drawn independently: the batches of one call don't take the
-        # same number of elements from each environment
-        env_idxes = self._rng.integers(0, self._n_envs, (n_samples, batch_size))
         axis = self._concat_along_axis
+        sequence_length = kwargs.get("sequence_length", 1) if axis == 2 else 1
+        n = batch_size * n_samples
+        queued_envs, queued_starts = self._online_pop(sequence_length, sample_next_obs, n) if online else _NO_SEQUENCES
+        # The environment of every element of every batch: the queued ones first, then the ones drawn independently
+        # (the batches of one call don't take the same number of elements from each environment)
+        env_idxes = np.concatenate((queued_envs, self._rng.integers(0, self._n_envs, (n - len(queued_envs),))))
         samples: Dict[str, np.ndarray] = {}
         for env, buf in enumerate(self._buf):
-            sample_idxes, element_idxes = np.nonzero(env_idxes == env)
-            if len(sample_idxes) == 0:
+            positions = np.flatnonzero(env_idxes == env)
+            if len(positions) == 0:
                 continue
-            # All the elements of this environment at once, along the batch axis of a single sample
-            env_samples = buf.sample(
-                batch_size=len(sample_idxes),
+            # All the elements of this environment at once, along the batch axis of a single sample: its queued
+            # sequences come first among them
+            starts = queued_starts[queued_envs == env] % buf.buffer_size
+            idxes, buf_env_idxes = (
+                buf._sample_idxes(len(positions) - len(starts), sample_next_obs, sequence_length)
+                if len(positions) > len(starts)
+                else _NO_SEQUENCES
+            )
+            env_samples = buf._get_samples(
+                np.concatenate((starts, idxes)),
+                np.concatenate((np.zeros(len(starts), dtype=np.intp), buf_env_idxes)),
+                len(positions),
+                1,
+                sequence_length,
                 sample_next_obs=sample_next_obs,
                 clone=clone,
-                n_samples=1,
-                **kwargs,
             )
+            sample_idxes, element_idxes = np.divmod(positions, batch_size)
             for k, v in env_samples.items():
                 if k not in samples:
                     shape = list(v.shape)
@@ -701,6 +812,17 @@ class EnvIndependentReplayBuffer:
                 # Write them where they were drawn: index the samples and the batch axis together
                 np.moveaxis(samples[k], axis, 1)[sample_idxes, element_idxes] = np.moveaxis(v[0], axis - 1, 0)
         return samples
+
+    def _online_pop(self, sequence_length: int, sample_next_obs: bool, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Remove the oldest `n` sequences from the online queues of the environments, or all of them if they are
+        fewer: their environments and their first steps."""
+        pending = [buf._online_pending(sequence_length, sample_next_obs, n)[1] for buf in self._buf]
+        envs = np.repeat(np.arange(self._n_envs, dtype=np.intp), [len(starts) for starts in pending])
+        envs, starts = _oldest_first(envs, np.concatenate(pending), n)
+        for env in np.unique(envs):
+            env_starts = starts[envs == env]
+            self._buf[env]._online_take(np.zeros(len(env_starts), dtype=np.intp), env_starts, sequence_length)
+        return envs, starts
 
     @torch.no_grad()
     def sample_tensors(
@@ -810,6 +932,11 @@ class EpisodeBuffer:
         self._storage: Dict[str, np.ndarray | MemmapArray] = {}
         self._starts: List[int] = []
         self._pos = 0
+        # The episodes stored, and the online queue (`sample(online=True)`): the next episode with sequences in it, and
+        # the next of its sequences
+        self._stored = 0
+        self._online_episode = 0
+        self._online_sequence = 0
 
         self._memmap = memmap
         self._memmap_dir = memmap_dir
@@ -1075,14 +1202,17 @@ class EpisodeBuffer:
         self._starts.append(start)
         self._cum_lengths.append(len(self) + ep_len)
         self._pos = start + ep_len
+        self._stored += 1
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         # Up to sheeprl 0.7.0 every episode had its own arrays (memory-mapped to a directory of its own): the
         # episodes of those buffers are copied into the storage, while their files are left where they are
         episodes = state.pop("_buf", None)
+        # Up to sheeprl 0.8.0 the episodes stored weren't counted
+        state.setdefault("_stored", len(state.get("_starts", [])))
         self.__dict__.update(state)
         if episodes is not None:
-            self._storage, self._starts, self._pos = {}, [], 0
+            self._storage, self._starts, self._pos, self._stored = {}, [], 0, 0
             lengths = np.diff(self._cum_lengths, prepend=0)
             self._cum_lengths = []
             for episode, ep_len in zip(episodes, lengths):
@@ -1096,6 +1226,34 @@ class EpisodeBuffer:
                     for k, v in episode.items()
                 }
                 self._store(episode, ep_len)
+        # The online queue isn't checkpointed: it restarts empty, with the episodes stored after the loading
+        self._online_episode, self._online_sequence = self._stored, 0
+
+    def _online_pop(self, sequence_length: int, sample_next_obs: bool, n: int) -> np.ndarray:
+        """Remove the oldest `n` sequences from the online queue, or all of them if they are fewer: their first steps
+        in the storage.
+
+        The steps of every stored episode are cut into consecutive sequences of `sequence_length` steps that end at its
+        last step (at the one before, with `sample_next_obs`), which join the queue with the episode: its first steps,
+        fewer than a sequence, are left out. The episodes are the ones stored after the creation of the buffer or its
+        loading from a checkpoint: the queue isn't checkpointed. The episodes removed before being sampled are dropped.
+        """
+        lengths = np.diff(self._cum_lengths, prepend=0)
+        oldest = self._stored - len(self._starts)
+        if self._online_episode < oldest:
+            self._online_episode, self._online_sequence = oldest, 0
+        first_steps = []
+        while len(first_steps) < n and self._online_episode < self._stored:
+            episode = self._online_episode - oldest
+            steps = lengths[episode] - int(sample_next_obs)
+            n_sequences = steps // sequence_length
+            taken = max(min(n_sequences - self._online_sequence, n - len(first_steps)), 0)
+            offsets = steps % sequence_length + sequence_length * (self._online_sequence + np.arange(taken))
+            first_steps.extend(self._starts[episode] + offsets)
+            self._online_sequence += taken
+            if self._online_sequence >= n_sequences:
+                self._online_episode, self._online_sequence = self._online_episode + 1, 0
+        return np.array(first_steps, dtype=np.intp)
 
     def sample(
         self,
@@ -1104,6 +1262,7 @@ class EpisodeBuffer:
         n_samples: int = 1,
         clone: bool = False,
         sequence_length: int = 1,
+        online: bool = False,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
         """Sample trajectories from the replay buffer.
@@ -1118,6 +1277,9 @@ class EpisodeBuffer:
                 Default to False.
             sequence_length (int): The length of the sequences to sample.
                 Default to 1.
+            online (bool): whether the samples start with the sequences of the online queue, the oldest first, and only
+                the rest of them is sampled uniformly: every step of the stored episodes (but their first ones, fewer
+                than a sequence) is sampled once soon after (see `_online_pop`). Defaults to False.
 
         Returns:
             Dict[str, np.ndarray]: the sampled dictionary with a shape of
@@ -1127,6 +1289,8 @@ class EpisodeBuffer:
             raise ValueError(f"Batch size must be greater than 0, got: {batch_size}")
         if n_samples <= 0:
             raise ValueError(f"The number of samples must be greater than 0, got: {n_samples}")
+        n = batch_size * n_samples
+        queued = self._online_pop(sequence_length, sample_next_obs, n) if online else np.empty(0, dtype=np.intp)
         lengths = np.diff(self._cum_lengths, prepend=0)
         if sample_next_obs:
             valid_episodes = np.flatnonzero(lengths > sequence_length)
@@ -1139,7 +1303,7 @@ class EpisodeBuffer:
             )
 
         # The episode of every sequence, drawn independently: each of the `n_samples` batches is a uniform sample
-        episodes = valid_episodes[np.random.randint(0, len(valid_episodes), (batch_size * n_samples,))]
+        episodes = valid_episodes[np.random.randint(0, len(valid_episodes), (n - len(queued),))]
         ep_lens = lengths[episodes] - 1 if sample_next_obs else lengths[episodes]
         # Define the maximum index that can be sampled in the episodes
         upper = ep_lens - sequence_length + 1
@@ -1149,8 +1313,9 @@ class EpisodeBuffer:
             upper += sequence_length
         # Sample the starting indices and upper bound with `ep_len - sequence_length`
         start_idxes = np.minimum(np.random.randint(0, upper), ep_lens - sequence_length, dtype=np.intp)
-        # The steps of the sequences in the storage, where an episode can continue from its end to its start
-        first_steps = np.array(self._starts, dtype=np.intp)[episodes] + start_idxes
+        # The steps of the sequences in the storage, where an episode can continue from its end to its start: the
+        # queued sequences first
+        first_steps = np.concatenate((queued, np.array(self._starts, dtype=np.intp)[episodes] + start_idxes))
         indices = (first_steps.reshape(-1, 1) + np.arange(sequence_length, dtype=np.intp)) % self._capacity
         samples = {}
         for k, v in self._storage.items():
@@ -1176,6 +1341,7 @@ class EpisodeBuffer:
         dtype: Optional[torch.dtype] = None,
         device: str | torch.dtype = "cpu",
         from_numpy: bool = False,
+        online: bool = False,
         **kwargs,
     ) -> Dict[str, Tensor]:
         """Sample elements from the replay buffer and convert them to torch tensors.
@@ -1187,6 +1353,8 @@ class EpisodeBuffer:
             clone (bool): whether to clone the sampled tensors.
             n_samples (int): the number of samples per batch_size. Defaults to 1.
             sequence_length (int): the length of the sequence of each element. Defaults to 1.
+            online (bool): whether the samples start with the sequences of the online queue (see `sample`).
+                Defaults to False.
             dtype (Optional[torch.dtype], optional): the torch dtype to convert the arrays to. If None,
                 then the dtypes of the numpy arrays is maintained. Defaults to None.
             device (str | torch.dtype, optional): the torch device to move the tensors to. Defaults to "cpu".
@@ -1195,7 +1363,7 @@ class EpisodeBuffer:
                 with the 'torch.as_tensor' function. Defaults to False.
             kwargs: additional keyword arguments to be passed to the 'self.sample' method.
         """
-        samples = self.sample(batch_size, sample_next_obs, n_samples, clone, sequence_length)
+        samples = self.sample(batch_size, sample_next_obs, n_samples, clone, sequence_length, online=online)
         return {
             k: get_tensor(v, dtype=dtype, clone=clone, device=device, from_numpy=from_numpy) for k, v in samples.items()
         }

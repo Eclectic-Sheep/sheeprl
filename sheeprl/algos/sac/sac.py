@@ -336,6 +336,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     dtype=None,
                     device=device,
                     from_numpy=cfg.buffer.from_numpy,
+                    online=cfg.buffer.online,
                 )  # [G*B]
                 gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
                 for k, v in gathered_data.items():

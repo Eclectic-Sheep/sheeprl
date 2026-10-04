@@ -263,7 +263,12 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
             calls.append(n_samples)
             return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
 
-    cfg = dotdict({"algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2}, "buffer": {"from_numpy": False}})
+    cfg = dotdict(
+        {
+            "algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2},
+            "buffer": {"from_numpy": False, "online": False},
+        }
+    )
     batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
     assert calls == [16, 16, 8]
     assert len(batches) == 40

@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shutil
 import sys
@@ -789,6 +790,92 @@ def test_dreamer_v3_5_writes_back_the_latent_states_of_the_trained_steps(standar
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert len(written) > 0 and all(written)
+
+
+# Small Dreamers (and Plan2Explore) on images and vectors, which train on sequences of one step in the dry run
+SMALL_DREAMER_ARGS = [
+    "env=dummy",
+    "env.id=discrete_dummy",
+    "algo.per_rank_batch_size=1",
+    "algo.per_rank_sequence_length=1",
+    "algo.horizon=2",
+    "algo.dense_units=8",
+    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.world_model.recurrent_model.recurrent_state_size=8",
+    "algo.world_model.representation_model.hidden_size=8",
+    "algo.world_model.transition_model.hidden_size=8",
+    "algo.cnn_keys.encoder=[rgb]",
+    "algo.mlp_keys.encoder=[state]",
+]
+
+
+@pytest.mark.parametrize(
+    "exp,overrides",
+    [
+        ("sac", []),
+        ("droq", []),
+        (
+            "sac_ae",
+            [
+                "algo.mlp_keys.encoder=[state]",
+                "algo.cnn_keys.encoder=[rgb]",
+                "env.screen_size=64",
+                "algo.hidden_size=4",
+                "algo.dense_units=4",
+                "algo.cnn_channels_multiplier=2",
+            ],
+        ),
+        ("dreamer_v1", SMALL_DREAMER_ARGS),
+        ("dreamer_v2", SMALL_DREAMER_ARGS),
+        ("dreamer_v3", SMALL_DREAMER_ARGS),
+        # Plan2Explore with DreamerV1 and DreamerV2 doesn't imagine from sequences of one step
+        ("p2e_dv1_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
+        ("p2e_dv2_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
+        ("p2e_dv3_exploration", SMALL_DREAMER_ARGS),
+        (
+            "dreamer_v3_5",
+            [*DREAMER_V3_5_ARGS, "algo.per_rank_batch_size=1", "algo.per_rank_sequence_length=1", "algo.horizon=2"],
+        ),
+    ],
+)
+def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(standard_args, start_time, exp, overrides):
+    # With `buffer.online`, the batches of the training are sampled with the online queue of the replay buffer
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("The sampling is checked in the process of rank 0")
+    from sheeprl.data import buffers
+
+    online = []
+
+    def recording(sample):
+        def recording_sample(self, *args, **kwargs):
+            online.append(kwargs.get("online", False))
+            return sample(self, *args, **kwargs)
+
+        return recording_sample
+
+    root_dir = os.path.join(f"pytest_{start_time}", f"{exp}_online", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        f"exp={exp}",
+        *overrides,
+        "buffer.online=True",
+        "algo.learning_starts=0",
+        "algo.replay_ratio=1",
+        f"root_dir={root_dir}",
+        f"run_name=test_{exp}_online",
+    ]
+    buffer_classes = (
+        buffers.ReplayBuffer,
+        buffers.SequentialReplayBuffer,
+        buffers.EnvIndependentReplayBuffer,
+        buffers.EpisodeBuffer,
+    )
+    with contextlib.ExitStack() as stack:
+        for cls in buffer_classes:
+            stack.enter_context(mock.patch.object(cls, "sample", recording(cls.sample)))
+        stack.enter_context(mock.patch.object(sys, "argv", args))
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert True in online
 
 
 @pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])

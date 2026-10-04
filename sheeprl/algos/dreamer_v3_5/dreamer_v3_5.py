@@ -13,6 +13,8 @@ Compared with DreamerV3 of the 2023 paper (`sheeprl.algos.dreamer_v3`), besides 
 - the critic is regularized towards a slow copy of itself, and bootstraps from itself (not from the slow copy);
 - the replay buffer keeps the latent states of the steps (computed by the player and refreshed by every training on
   them): a sequence starts from the latent state of the step before it (`algo.replay_context`) instead of zeros;
+- the batches start with the sequences of the new steps (the online queue of the replay buffer, `buffer.online`), and
+  only the rest of them is sampled uniformly: every step is trained on soon after it is played;
 - the policy plays from the first step (no random actions): `algo.learning_starts` only delays the training.
 """
 
@@ -453,10 +455,12 @@ def sample_sequences(
     n_samples: int,
     device: torch.device,
     from_numpy: bool = False,
+    online: bool = False,
 ) -> Tuple[Dict[str, Tensor], np.ndarray]:
     """`n_samples` batches of sequences, of shape `[n_samples, sequence_length, batch_size, ...]` and in the dtypes of
-    the buffer, on `device`, but the identifiers of their steps (`STEP_ID_KEY`), on the CPU."""
-    sample = rb.sample(batch_size=batch_size, sequence_length=sequence_length, n_samples=n_samples)
+    the buffer, on `device`, but the identifiers of their steps (`STEP_ID_KEY`), on the CPU. With `online`, the batches
+    start with the sequences of the online queue of the buffer."""
+    sample = rb.sample(batch_size=batch_size, sequence_length=sequence_length, n_samples=n_samples, online=online)
     step_ids = sample.pop(STEP_ID_KEY)
     return {k: get_tensor(v, device=device, from_numpy=from_numpy) for k, v in sample.items()}, step_ids
 
@@ -823,6 +827,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             n_samples,
                             device,
                             from_numpy=cfg.buffer.from_numpy,
+                            online=cfg.buffer.online,
                         )
                         latent_updates = []
                         for i in range(n_samples):
