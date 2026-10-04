@@ -8,11 +8,9 @@ Written on the shared training loop of `sheeprl.core`: `DreamerV3` says how to b
 
 from __future__ import annotations
 
-import copy
 import os
-import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -20,17 +18,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
+from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import env_buffer_size, sample_batches
-from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, build_models
+from sheeprl.algos.dreamer_v2.utils import actor_objective, env_buffer_size, reinforce_weight, sample_batches
+from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, autocast, run, setup_module, update
+from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
     MSEDistribution,
@@ -38,6 +37,7 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.distribution import entropy as policy_entropy
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 
@@ -183,7 +183,7 @@ class SequencePlayer:
 
 
 def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """The configuration of `world_model_loss`, as plain values (a compiled function guards on them)."""
+    """The configuration of `world_model_loss`, as plain values."""
     world_model_cfg = cfg.algo.world_model
     return {
         "cnn_keys": tuple(cfg.algo.cnn_keys.encoder),
@@ -353,39 +353,6 @@ def world_model_loss(
     return rec_loss, posteriors, recurrent_states, metrics
 
 
-# The precisions in which the losses are compiled with CUDA graphs (`algo.compile.mode=reduce-overhead`)
-CUDA_GRAPHS_PRECISIONS = ("32-true", "32", 32, "bf16-mixed")
-
-
-def compile_mode(cfg: Dict[str, Any]) -> Optional[str]:
-    """The mode of `torch.compile` for the losses (`algo.compile.mode`), `None` for the default one. CUDA graphs
-    (`reduce-overhead`) are used only in the precisions where they have been tested (`CUDA_GRAPHS_PRECISIONS`)."""
-    mode = (cfg.algo.get("compile") or {}).get("mode", None)
-    if mode == "reduce-overhead" and cfg.fabric.precision not in CUDA_GRAPHS_PRECISIONS:
-        if not _WARNED.get("reduce-overhead"):
-            warnings.warn(
-                f"`algo.compile.mode=reduce-overhead` (CUDA graphs) is not used with `fabric.precision="
-                f"{cfg.fabric.precision}`: the losses are compiled with the default mode"
-            )
-            _WARNED["reduce-overhead"] = True
-        return None
-    return mode
-
-
-def compiled(fn: Callable, cfg: Dict[str, Any]) -> Callable:
-    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call)."""
-    if not (cfg.algo.get("compile") or {}).get("enabled", False):
-        return fn
-    mode = compile_mode(cfg)
-    if (fn, mode) not in _COMPILED:
-        _COMPILED[fn, mode] = torch.compile(fn, mode=mode)
-    return _COMPILED[fn, mode]
-
-
-_COMPILED: Dict[Tuple[Callable, Optional[str]], Callable] = {}
-_WARNED: Dict[str, bool] = {}
-
-
 def world_model_learning(
     fabric: Fabric,
     cfg: Dict[str, Any],
@@ -400,30 +367,28 @@ def world_model_learning(
         detach_heads: the reward and continue models learn from the latent states without changing them (P2E).
 
     Returns:
-        The posteriors and the recurrent states of the batch, the starting points of the imagination, and the metrics.
+        The posteriors and the recurrent states of the batch, the starting points of the imagination, and the metrics
+        (with the norm of the gradients before clipping, `Grads/world_model`, when they are clipped).
     """
     # Every sequence starts an episode: the world model starts from its initial state
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
-    if (cfg.algo.get("compile") or {}).get("enabled", False) and compile_mode(cfg) == "reduce-overhead":
-        # A new gradient step: the outputs of the CUDA graphs of the previous one, already used, can be overwritten
-        torch.compiler.cudagraph_mark_step_begin()
-    with autocast(fabric):
-        rec_loss, posteriors, recurrent_states, metrics = compiled(world_model_loss, cfg)(
+    mark_gradient_step(fabric, cfg)
+    # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
+    with autocast_cache_scope(fabric):
+        rec_loss, posteriors, recurrent_states, metrics = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
             **world_model_loss_kwargs(cfg),
             detach_heads=detach_heads,
             entropies=not MetricAggregator.disabled,
         )
-    grads = update(
-        fabric,
-        rec_loss,
-        world_optimizer,
-        max_grad_norm=cfg.algo.world_model.clip_gradients or 0.0,
-        error_if_nonfinite=False,
+    # The gradients of all the weights of the world model are averaged over the processes, also the ones of the
+    # learnable initial recurrent state, which is in no module
+    world_model_grads = update(
+        fabric, rec_loss, world_optimizer, cfg.algo.world_model.clip_gradients, error_if_nonfinite=False
     )
-    if grads is not None:
-        metrics["Grads/world_model"] = grads.mean().detach()
+    if world_model_grads:
+        metrics["Grads/world_model"] = world_model_grads.mean().detach()
     return posteriors, recurrent_states, metrics
 
 
@@ -438,9 +403,15 @@ def imagine(
     horizon: int,
     gamma: float,
     lmbda: float,
+    action_clip: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor, and estimate
     their lambda-values. Can be compiled (`algo.compile`).
+
+    Args:
+        action_clip: the magnitude the recurrent model clips the continuous actions to (`clip_actions`), 0 for the
+            discrete ones. The returned actions are the samples of the actor, as DreamerV3 clips them in its RSSM:
+            REINFORCE takes their log-probabilities.
 
     Returns:
         The imagined latent states and actions, the values predicted by the critic, the lambda-values and the
@@ -451,7 +422,7 @@ def imagine(
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+    actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
     imagined_trajectories = [imagined_latent_state]
     imagined_actions = [actions]
 
@@ -469,10 +440,12 @@ def imagine(
 
     # Imagine trajectories in the latent space
     for i in range(1, horizon + 1):
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_prior, recurrent_state = world_model.rssm.imagination(
+            imagined_prior, recurrent_state, clip_actions(actions, action_clip)
+        )
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
         imagined_trajectories.append(imagined_latent_state)
         imagined_actions.append(actions)
     imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
@@ -505,12 +478,14 @@ def actor_loss(
     offset: Tensor,
     invscale: Tensor,
     *,
+    objective_mix: Optional[float],
     is_continuous: bool,
     actions_dim: Sequence[int],
     ent_coef: float,
 ) -> Tensor:
     """The loss of the actor (Eq. 11 in the paper), from the imagined trajectories and the normalization of the
-    returns (`offset`, `invscale`). Can be compiled (`algo.compile`)."""
+    returns (`offset`, `invscale`): the dynamics backpropagation of the advantages and REINFORCE, mixed by
+    `objective_mix` (`actor_objective`), with the entropy of the policies. Can be compiled (`algo.compile`)."""
     # Given the following diagram, with H=3
     # Actions:          [a'0]    [a'1]    [a'2]    a'3
     #                    ^ \      ^ \      ^ \     ^
@@ -526,10 +501,9 @@ def actor_loss(
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
-    if is_continuous:
-        objective = advantage
-    else:
-        objective = (
+
+    def reinforce() -> Tensor:
+        return (
             torch.stack(
                 [
                     p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
@@ -539,6 +513,9 @@ def actor_loss(
             ).sum(dim=-1)
             * advantage.detach()
         )
+
+    objective = actor_objective(objective_mix, is_continuous, advantage, reinforce)
+    # The tanh-normal policies have no analytic entropy: it is estimated from samples
     entropy = ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
     return -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
 
@@ -546,8 +523,8 @@ def actor_loss(
 def critic_loss(
     critic: nn.Module, target_critic: nn.Module, imagined_trajectories: Tensor, lambda_values: Tensor, discount: Tensor
 ) -> Tensor:
-    """The loss of the critic (Eq. 10 in the paper): the lambda-values and the values of the target critic as targets.
-    Can be compiled (`algo.compile`)."""
+    """The loss of the critic (Eq. 10 in the paper): the lambda-values and the values of the target critic as
+    targets. Can be compiled (`algo.compile`)."""
     qv = TwoHotEncodingDistribution(critic(imagined_trajectories.detach()[:-1]), dims=1)
     predicted_target_values = TwoHotEncodingDistribution(
         target_critic(imagined_trajectories.detach()[:-1]), dims=1
@@ -572,19 +549,24 @@ def behaviour_learning(
     terminated: Tensor,
     is_continuous: bool,
     actions_dim: Sequence[int],
-) -> Dict[str, Optional[Tensor]]:
+) -> Dict[str, Tensor]:
     """One update of the actor and one of the critic, on trajectories imagined from the latent states of the batch
     (behaviour learning, Eq. 10 and 11 in the paper).
 
     Returns:
-        The losses (`policy_loss`, `value_loss`) and the norms of the gradients before clipping (`actor_grads`,
-        `critic_grads`, `None` without clipping).
+        The losses (`policy_loss`, `value_loss`) and, when they are clipped, the norms of the gradients before
+        clipping (`actor_grads`, `critic_grads`).
     """
-    # The actor learns the discrete actions by REINFORCE, from the imagined actions and the lambda-values without
-    # their gradients: the imagination needs a computational graph only for the continuous actions (dynamics
-    # backpropagation)
-    with autocast(fabric), torch.set_grad_enabled(is_continuous):
-        imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = compiled(imagine, cfg)(
+    metrics = {}
+    # The actor learns by REINFORCE, from the imagined actions and the lambda-values without their gradients, and by
+    # the dynamics backpropagation of the lambda-values, mixed by `algo.actor.objective_mix` (by default the dynamics
+    # for the continuous actions, REINFORCE for the discrete ones): the imagination needs a computational graph only
+    # for the dynamics backpropagation
+    objective_mix = cfg.algo.actor.objective_mix
+    with autocast_cache_scope(fabric), torch.set_grad_enabled(reinforce_weight(objective_mix, is_continuous) < 1):
+        imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = compiled(
+            imagine, fabric, cfg
+        )(
             world_model,
             actor,
             critic,
@@ -594,11 +576,12 @@ def behaviour_learning(
             horizon=cfg.algo.horizon,
             gamma=cfg.algo.gamma,
             lmbda=cfg.algo.lmbda,
+            action_clip=float(cfg.algo.actor.action_clip) if is_continuous else 0.0,
         )
-    with autocast(fabric):
+    with autocast_cache_scope(fabric):
         # The normalization of the returns, from their percentiles (not compiled: it updates its state in place)
         offset, invscale = moments(lambda_values, fabric)
-        policy_loss = compiled(actor_loss, cfg)(
+        policy_loss = compiled(actor_loss, fabric, cfg)(
             actor,
             imagined_trajectories,
             imagined_actions,
@@ -607,33 +590,97 @@ def behaviour_learning(
             discount,
             offset,
             invscale,
+            objective_mix=objective_mix,
             is_continuous=is_continuous,
             actions_dim=tuple(int(dim) for dim in actions_dim),
             ent_coef=cfg.algo.actor.ent_coef,
         )
-    actor_grads = update(
+    actor_grads = update(fabric, policy_loss, actor_optimizer, cfg.algo.actor.clip_gradients, error_if_nonfinite=False)
+    if actor_grads:
+        metrics["actor_grads"] = actor_grads.mean().detach()
+
+    with autocast_cache_scope(fabric):
+        value_loss = compiled(critic_loss, fabric, cfg)(
+            critic, target_critic, imagined_trajectories, lambda_values, discount
+        )
+    critic_grads = update(
+        fabric, value_loss, critic_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
+    )
+    if critic_grads:
+        metrics["critic_grads"] = critic_grads.mean().detach()
+    metrics["policy_loss"] = policy_loss.detach()
+    metrics["value_loss"] = value_loss.detach()
+    return metrics
+
+
+def train(
+    fabric: Fabric,
+    world_model: WorldModel,
+    actor: _FabricModule,
+    critic: _FabricModule,
+    target_critic: torch.nn.Module,
+    world_optimizer: Optimizer,
+    actor_optimizer: Optimizer,
+    critic_optimizer: Optimizer,
+    data: Dict[str, Tensor],
+    aggregator: MetricAggregator | None,
+    cfg: Dict[str, Any],
+    is_continuous: bool,
+    actions_dim: Sequence[int],
+    moments: Moments,
+) -> None:
+    """Runs one-step update of the agent: the world model learns from the batch (`world_model_learning`), then the
+    actor and the critic from the trajectories imagined from it (`behaviour_learning`).
+
+    Args:
+        fabric (Fabric): the fabric instance.
+        world_model (_FabricModule): the world model wrapped with Fabric.
+        actor (_FabricModule): the actor model wrapped with Fabric.
+        critic (_FabricModule): the critic model wrapped with Fabric.
+        target_critic (nn.Module): the target critic model.
+        world_optimizer (Optimizer): the world optimizer.
+        actor_optimizer (Optimizer): the actor optimizer.
+        critic_optimizer (Optimizer): the critic optimizer.
+        data (Dict[str, Tensor]): the batch of data to use for training.
+        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
+        cfg (DictConfig): the configs.
+        is_continuous (bool): whether or not the environment is continuous.
+        actions_dim (Sequence[int]): the actions dimension.
+        moments (Moments): the moments for normalizing the lambda values.
+    """
+    posteriors, recurrent_states, metrics = world_model_learning(fabric, cfg, world_model, world_optimizer, data)
+    behaviour = behaviour_learning(
         fabric,
-        policy_loss,
+        cfg,
+        world_model,
+        actor,
+        critic,
+        target_critic,
         actor_optimizer,
-        max_grad_norm=cfg.algo.actor.clip_gradients or 0.0,
-        error_if_nonfinite=False,
+        critic_optimizer,
+        moments,
+        posteriors,
+        recurrent_states,
+        data["terminated"],
+        is_continuous,
+        actions_dim,
     )
 
-    with autocast(fabric):
-        value_loss = compiled(critic_loss, cfg)(critic, target_critic, imagined_trajectories, lambda_values, discount)
-    critic_grads = update(
-        fabric,
-        value_loss,
-        critic_optimizer,
-        max_grad_norm=cfg.algo.critic.clip_gradients or 0.0,
-        error_if_nonfinite=False,
-    )
-    return {
-        "policy_loss": policy_loss.detach(),
-        "value_loss": value_loss.detach(),
-        "actor_grads": None if actor_grads is None else actor_grads.mean().detach(),
-        "critic_grads": None if critic_grads is None else critic_grads.mean().detach(),
-    }
+    # Log metrics
+    if aggregator and not aggregator.disabled:
+        for name, value in metrics.items():
+            aggregator.update(name, value)
+        aggregator.update("Loss/policy_loss", behaviour["policy_loss"])
+        aggregator.update("Loss/value_loss", behaviour["value_loss"])
+        if "actor_grads" in behaviour:
+            aggregator.update("Grads/actor", behaviour["actor_grads"])
+        if "critic_grads" in behaviour:
+            aggregator.update("Grads/critic", behaviour["critic_grads"])
+
+    # Reset everything
+    actor_optimizer.zero_grad(set_to_none=True)
+    critic_optimizer.zero_grad(set_to_none=True)
+    world_optimizer.zero_grad(set_to_none=True)
 
 
 class DreamerV3(Algorithm):
@@ -686,23 +733,9 @@ class DreamerV3(Algorithm):
             fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
             fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
 
-        world_model, actor, critic = build_models(fabric.device, self.actions_dim, self.is_continuous, cfg, obs_space)
-        world_model.encoder = setup_module(fabric, world_model.encoder)
-        world_model.observation_model = setup_module(fabric, world_model.observation_model)
-        world_model.reward_model = setup_module(fabric, world_model.reward_model)
-        world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
-        world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
-        world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
-        if world_model.continue_model:
-            world_model.continue_model = setup_module(fabric, world_model.continue_model)
-        if fabric.device.type == "cuda":
-            # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
-            # activations from and to it (the values of the weights don't change)
-            world_model.encoder.to(memory_format=torch.channels_last)
-            world_model.observation_model.to(memory_format=torch.channels_last)
-        actor = setup_module(fabric, actor)
-        critic = setup_module(fabric, critic)
-        target_critic = setup_module(fabric, copy.deepcopy(critic.module))
+        world_model, actor, critic, target_critic, self._policy = build_agent(
+            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
+        )
 
         world_optimizer = hydra.utils.instantiate(
             cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
@@ -743,19 +776,8 @@ class DreamerV3(Algorithm):
         return state, buffer
 
     def policy(self, state: DreamerV3State) -> PlayerDV3:
-        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
-        cfg = self.cfg
-        return PlayerDV3(
-            state.world_model.encoder,
-            state.world_model.rssm,
-            state.actor,
-            self.actions_dim,
-            cfg.env.num_envs,
-            cfg.algo.world_model.stochastic_size,
-            cfg.algo.world_model.recurrent_model.recurrent_state_size,
-            self.fabric.device,
-            discrete_size=cfg.algo.world_model.discrete_size,
-        )
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
 
     def player(self, state: DreamerV3State) -> SequencePlayer:
         # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
@@ -783,33 +805,24 @@ class DreamerV3(Algorithm):
             tau = 1 if step == 0 else cfg.algo.critic.tau
             for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-
-        posteriors, recurrent_states, metrics = world_model_learning(
-            self.fabric, cfg, state.world_model, state.world_optimizer, batch
-        )
-        behaviour = behaviour_learning(
+        metrics = Metrics()
+        train(
             self.fabric,
-            cfg,
             state.world_model,
             state.actor,
             state.critic,
             state.target_critic,
+            state.world_optimizer,
             state.actor_optimizer,
             state.critic_optimizer,
-            state.moments,
-            posteriors,
-            recurrent_states,
-            batch["terminated"],
+            batch,
+            metrics,
+            cfg,
             self.is_continuous,
             self.actions_dim,
+            state.moments,
         )
-        metrics["Loss/policy_loss"] = behaviour["policy_loss"]
-        metrics["Loss/value_loss"] = behaviour["value_loss"]
-        if behaviour["actor_grads"] is not None:
-            metrics["Grads/actor"] = behaviour["actor_grads"]
-        if behaviour["critic_grads"] is not None:
-            metrics["Grads/critic"] = behaviour["critic_grads"]
-        return metrics
+        return metrics.values
 
 
 @register_algorithm()

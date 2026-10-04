@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import time
-from contextlib import ContextDecorator
-from typing import Dict, Optional, Type, Union
+from contextlib import ContextDecorator, contextmanager
+from typing import Dict, Iterator, Optional, Type, Union
 
 import torch
 from torchmetrics import Metric, SumMetric
@@ -81,3 +81,21 @@ class timer(ContextDecorator):
         """Stop the context manager timer"""
         if not timer.disabled:
             self.stop()
+
+
+def phase_timer(name: str) -> timer:
+    """The timer of a phase of the iterations (`Time/env_interaction_time`, `Time/train_time`), timed by every process
+    on its own: the processes play and train at the same time, and summing their times (`metric.sync_on_compute`)
+    would divide the speeds of the run (`Time/sps_*`) by their number."""
+    return timer(name, SumMetric, sync_on_compute=False)
+
+
+@contextmanager
+def training_timer(device: Union[str, torch.device]) -> Iterator[None]:
+    """The timer of the training phase (`Time/train_time`), which waits for the GPU at its end: the GPU runs the
+    training after the CPU has launched it, and without waiting the training would be timed with the interaction that
+    follows (whose first copy to the CPU waits for it)."""
+    with phase_timer("Time/train_time"):
+        yield
+        if not timer.disabled and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)

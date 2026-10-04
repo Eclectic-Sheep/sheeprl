@@ -1,13 +1,17 @@
 import copy
-from typing import Any, Dict, Sequence, SupportsFloat, Tuple, Union
+from math import prod
+from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
+import gymnasium
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -223,9 +227,8 @@ class SACAgent(nn.Module):
         return
 
     @property
-    def alpha(self) -> Tensor:
-        # A tensor, not a float: reading its value on the CPU would wait for the GPU at every call
-        return self._log_alpha.exp().detach()
+    def alpha(self) -> float:
+        return self._log_alpha.exp().item()
 
     @property
     def target_entropy(self) -> Tensor:
@@ -250,14 +253,19 @@ class SACAgent(nn.Module):
         # Get q-values for the next observations and actions, estimated by the target q-functions
         next_state_actions, next_state_log_pi = self.get_actions_and_log_probs(next_obs)
         qf_next_target = self.get_target_q_values(next_obs, next_state_actions)
-        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - self.alpha * next_state_log_pi
+        # The temperature as a tensor: no synchronization with the device, and no break of a compiled graph
+        alpha = self._log_alpha.exp()
+        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - alpha * next_state_log_pi
         next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
         return next_qf_value
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
-            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+        # `tau * critic + (1 - tau) * target` for all the weights at once, with the same roundings
+        targets = list(self.qfs_target.parameters())
+        updates = torch._foreach_mul(list(self.qfs_unwrapped.parameters()), self._tau)
+        torch._foreach_mul_(targets, 1 - self._tau)
+        torch._foreach_add_(targets, updates)
 
 
 class SACPlayer(nn.Module):
@@ -305,3 +313,64 @@ class SACPlayer(nn.Module):
 
     def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
         return self(obs, greedy=greedy)
+
+
+def build_agent(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    action_space: gymnasium.spaces.Box,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[SACAgent, SACPlayer]:
+    act_dim = prod(action_space.shape)
+    obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
+    actor = SACActor(
+        observation_dim=obs_dim,
+        action_dim=act_dim,
+        distribution_cfg=cfg.distribution,
+        hidden_size=cfg.algo.actor.hidden_size,
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+    critics = [
+        SACCritic(observation_dim=obs_dim + act_dim, hidden_size=cfg.algo.critic.hidden_size, num_critics=1)
+        for _ in range(cfg.algo.critic.n)
+    ]
+    target_entropy = -act_dim
+    agent = SACAgent(actor, critics, target_entropy, alpha=cfg.algo.alpha.alpha, tau=cfg.algo.tau, device=fabric.device)
+    if agent_state:
+        agent.load_state_dict(agent_state)
+
+    # Setup player agent
+    player = SACPlayer(
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+
+    # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
+    # are kept
+    qfs_target = agent.qfs_target
+    agent.actor = setup_module(fabric, agent.actor)
+    agent.critics = [setup_module(fabric, critic) for critic in agent.critics]
+    if agent_state:
+        agent.qfs_target = qfs_target
+
+    # Wrap the target q-functions with a single-device fabric. This let the target q-functions
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
+
+    # Setup player agent
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, player

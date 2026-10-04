@@ -120,7 +120,7 @@ class Cadence:
             ckpt["ratio"] = schedule.ratio.state_dict()
         ckpt_path = os.path.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
         self.fabric.call(
-            "on_checkpoint",
+            "on_checkpoint_coupled",
             fabric=self.fabric,
             ckpt_path=ckpt_path,
             state=ckpt,

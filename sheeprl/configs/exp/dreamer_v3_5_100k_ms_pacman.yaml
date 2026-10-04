@@ -1,0 +1,33 @@
+# @package _global_
+
+# DreamerV3 (Nature version) on Atari 100k (the `atari100k` configuration of the official implementation, with the
+# 12M model instead of the 200M one: `algo=dreamer_v3_5` for it)
+
+defaults:
+  - dreamer_v3_5
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v4
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  size: 100000
+  checkpoint: True
+
+# Algorithm
+algo:
+  total_steps: 100000
+  learning_starts: 1024
+  # The `train_ratio` of 256 of the official configuration
+  replay_ratio: 0.25

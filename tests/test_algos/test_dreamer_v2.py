@@ -1,6 +1,12 @@
-"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the sampling of the batches and the objective of the actor."""
+"""DreamerV2 (and P2E-DV2): the KL loss, the decoder, the replay buffer, the objective of the actor, the RSSM, the
+initialization and the weight decay."""
 
+import math
+import os
+import shutil
+import sys
 from types import SimpleNamespace
+from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -12,18 +18,22 @@ from omegaconf import OmegaConf
 from torch import nn
 from torch.distributions import Independent, Normal
 
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder
-from sheeprl.algos.dreamer_v2.dreamer_v2 import (
-    DreamerV2,
-    behaviour_learning,
+from sheeprl import ROOT_DIR
+from sheeprl.algos.dreamer_v2 import dreamer_v2
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
+from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
+from sheeprl.algos.dreamer_v2.utils import (
+    actor_objective,
     build_buffer,
+    build_optimizer,
     env_buffer_size,
     sample_batches,
 )
-from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.core import TrainSchedule
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+
+from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
 
 def kl_loss_of(posteriors_logits, priors_logits, kl_free_nats, kl_free_avg):
@@ -60,6 +70,25 @@ def test_the_free_nats_bound_the_kl_of_every_step_without_free_avg():
     torch.testing.assert_close(kl_loss_avg, kl.mean().clamp(min=1.0))
 
 
+@pytest.mark.parametrize("buffer_type", ["sequential", "episode"])
+def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path):
+    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number
+    cfg = dotdict(
+        {
+            "dry_run": False,
+            "seed": 0,
+            "buffer": {"size": 1000, "type": buffer_type, "memmap": False, "prioritize_ends": False},
+            "env": {"num_envs": 4},
+            "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+        }
+    )
+    buffer = build_buffer(SimpleNamespace(world_size=2, global_rank=0), cfg, str(tmp_path), dry_run_size=2)
+    if buffer_type == "episode":
+        assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
+    else:
+        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
+
+
 @pytest.mark.parametrize("output_channels", [[1], [3], [3, 3]])
 def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
     # The LayerNorms were one per output channel: only 3 channels (one RGB image) built a decoder
@@ -80,9 +109,153 @@ def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
     ]
 
 
+@pytest.mark.parametrize(
+    "objective_mix,is_continuous,expected",
+    [(None, True, "dynamics"), (None, False, "reinforce"), (0.0, False, "dynamics"), (1.0, True, "reinforce")],
+)
+def test_the_actor_objective_is_the_dynamics_or_reinforce(objective_mix, is_continuous, expected):
+    # By default (`null`) DreamerV2 learns the continuous actions by backpropagating the lambda-values through the
+    # dynamics and the discrete ones with REINFORCE (`actor_grad: auto`); the default was REINFORCE for both
+    dynamics, reinforce = torch.tensor(1.0), torch.tensor(2.0)
+    objective = actor_objective(objective_mix, is_continuous, dynamics, lambda: reinforce)
+    assert objective is (dynamics if expected == "dynamics" else reinforce)
+    torch.testing.assert_close(actor_objective(0.25, is_continuous, dynamics, lambda: reinforce), torch.tensor(1.25))
+
+
+def test_the_default_objective_depends_on_the_actions():
+    from hydra import compose, initialize_config_module
+
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(config_name="config", overrides=["exp=dreamer_v2"])
+    assert cfg.algo.actor.objective_mix is None
+
+
+DREAMER_ARGS = [
+    "hydra/job_logging=disabled",
+    "hydra/hydra_logging=disabled",
+    "dry_run=True",
+    "env=dummy",
+    "env.id=continuous_dummy",
+    "env.num_envs=2",
+    "env.sync_env=True",
+    "env.capture_video=False",
+    "fabric.devices=1",
+    "fabric.accelerator=cpu",
+    "metric.log_level=0",
+    "checkpoint.save_last=True",
+    "algo.run_test=False",
+    "algo.cnn_keys.encoder=[]",
+    "algo.cnn_keys.decoder=[]",
+    "algo.mlp_keys.encoder=[state]",
+    "algo.mlp_keys.decoder=[state]",
+    "algo.dense_units=8",
+    "algo.world_model.recurrent_model.recurrent_state_size=8",
+    "algo.world_model.representation_model.hidden_size=8",
+    "algo.world_model.transition_model.hidden_size=8",
+    "algo.horizon=4",
+    "algo.per_rank_batch_size=1",
+    "algo.per_rank_sequence_length=2",
+    "algo.learning_starts=0",
+    "algo.replay_ratio=1",
+    "buffer.size=10",
+]
+
+
+@pytest.mark.parametrize(
+    "module,args,expected",
+    [
+        # DreamerV2 on continuous actions, with the default objective
+        ("sheeprl.algos.dreamer_v2.dreamer_v2", ["exp=dreamer_v2"], [(None, True)] * 2),
+        # The exploration of Plan2Explore reads `algo.actor.objective_mix` (it was hard-coded to the default), for its
+        # exploration actor and for its task actor
+        (
+            "sheeprl.algos.p2e_dv2.p2e_dv2_exploration",
+            ["exp=p2e_dv2_exploration", "algo.actor.objective_mix=0.5"],
+            [(0.5, True), (0.5, True)] * 2,
+        ),
+    ],
+)
+def test_the_actors_are_trained_with_the_configured_objective(module, args, expected):
+    import importlib
+
+    from sheeprl.cli import run
+
+    algo_module = importlib.import_module(module)
+    objectives = []
+
+    def recording_objective(objective_mix, is_continuous, dynamics, reinforce):
+        objectives.append((objective_mix, is_continuous))
+        return actor_objective(objective_mix, is_continuous, dynamics, reinforce)
+
+    root_dir = "pytest_dreamer_v2_objective"
+    argv = [os.path.join(ROOT_DIR, "__main__.py"), *DREAMER_ARGS, *args, f"root_dir={root_dir}"]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(algo_module, "actor_objective", recording_objective),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert objectives == expected
+
+
+@pytest.mark.parametrize(
+    "exp,module",
+    [
+        ("dreamer_v2", "sheeprl.algos.dreamer_v2.dreamer_v2"),
+        ("p2e_dv2_exploration", "sheeprl.algos.p2e_dv2.p2e_dv2_exploration"),
+        ("dreamer_v3", "sheeprl.algos.dreamer_v3.dreamer_v3"),
+        ("p2e_dv3_exploration", "sheeprl.algos.p2e_dv3.p2e_dv3_exploration"),
+    ],
+)
+def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
+    # The tanh-normal distribution has no analytic entropy: the fallback of the actor losses had the wrong shape. The
+    # losses of DreamerV2 crashed, the ones of DreamerV3 broadcast it: their entropy was always 0
+    import importlib
+
+    from sheeprl.cli import run
+    from sheeprl.utils.distribution import entropy
+
+    algo_module = importlib.import_module(module)
+    entropies = []
+
+    def recording_entropy(dist):
+        entropies.append(entropy(dist))
+        return entropies[-1]
+
+    root_dir = f"pytest_{exp}_tanh_normal"
+    argv = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        *DREAMER_ARGS,
+        f"exp={exp}",
+        "distribution.type=tanh_normal",
+        "algo.actor.ent_coef=1e-4",
+        f"root_dir={root_dir}",
+    ]
+    if "v3" in exp:
+        # A dry run of DreamerV3 plays one step before training
+        argv.append("algo.per_rank_sequence_length=1")
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(algo_module, "policy_entropy", recording_entropy),
+            # The task actor of P2E-DV3 learns as the actor of DreamerV3
+            mock.patch("sheeprl.algos.dreamer_v3.dreamer_v3.policy_entropy", recording_entropy),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # Every actor loss (two for Plan2Explore, at every gradient step) estimates the entropy of its policies
+    assert len(entropies) == (4 if "p2e" in exp else 2)
+    assert all(torch.isfinite(e).all() for e in entropies)
+
+
 def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     # They were sampled, and moved to the device, all at once: the 100 gradient steps of the first training of
-    # DreamerV2 (`algo.per_rank_pretrain_steps`) took 100 batches on the device
+    # DreamerV2 (`algo.per_rank_pretrain_steps`) would take 100 batches on the device
     calls = []
 
     class Buffer:
@@ -90,11 +263,59 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
             calls.append(n_samples)
             return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
 
-    cfg = dotdict({"algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2}, "buffer": {"from_numpy": False}})
+    cfg = dotdict(
+        {
+            "algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2},
+            "buffer": {"from_numpy": False, "online": False},
+        }
+    )
     batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
     assert calls == [16, 16, 8]
     assert len(batches) == 40
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
+
+
+@pytest.mark.parametrize("module,exp", [("dreamer_v2", "dreamer_v2"), ("dreamer_v1", "dreamer_v1")])
+def test_the_first_training_pretrains(module, exp):
+    # The ratio took the pretraining steps as the policy steps of the first training, capped to the ones of the
+    # iteration: with the replay ratio of DreamerV2 (0.2) the first training did no gradient step instead of 100
+    import importlib
+
+    from sheeprl.cli import run
+
+    algo_module = importlib.import_module(f"sheeprl.algos.{module}.{module}")
+    steps = []
+
+    def counting_train(*args, **kwargs):
+        steps.append(1)
+        return module_train(*args, **kwargs)
+
+    module_train = algo_module.train
+    root_dir = f"pytest_{exp}_pretrain"
+    argv = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        *DREAMER_ARGS,
+        f"exp={exp}",
+        "env.id=discrete_dummy",
+        "dry_run=False",
+        # 4 iterations of 2 environments, random actions in the first 2, training from the second one
+        "algo.total_steps=8",
+        "algo.learning_starts=4",
+        "algo.replay_ratio=0.25",
+        "algo.per_rank_pretrain_steps=5",
+        f"root_dir={root_dir}",
+    ]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(algo_module, "train", counting_train),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The replay ratio gives 0, 1, 0 gradient steps (2 policy steps per iteration); the first training also pretrains
+    assert len(steps) == 5 + 1
 
 
 def test_the_buffer_of_every_environment_holds_a_sequence():
@@ -113,94 +334,189 @@ def test_the_buffer_of_every_environment_holds_a_sequence():
     assert env_buffer_size(fabric, cfg, dry_run_size=8) == 8
 
 
-@pytest.mark.parametrize("buffer_type", ["sequential", "episode"])
-def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path):
-    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number
-    cfg = dotdict(
-        {
-            "dry_run": False,
-            "seed": 0,
-            "buffer": {"size": 1000, "type": buffer_type, "memmap": False, "prioritize_ends": False},
-            "env": {"num_envs": 4},
-            "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
-        }
-    )
-    buffer = build_buffer(SimpleNamespace(world_size=2, global_rank=0), cfg, str(tmp_path), dry_run_size=2)
-    if buffer_type == "episode":
-        assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
-    else:
-        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
-
-
-def behaviour_on_continuous_actions(overrides):
-    """The configuration of a small DreamerV2 on continuous actions and the output of its behaviour learning on random
-    latent states (the models initialized with seed 0)."""
+def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerator="cpu"):
+    """A small DreamerV2 on images and vectors."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
             overrides=[
                 "exp=dreamer_v2",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[]",
-                "algo.cnn_keys.decoder=[]",
+                "algo.cnn_keys.encoder=[rgb]",
                 "algo.mlp_keys.encoder=[state]",
-                "algo.mlp_keys.decoder=[state]",
                 "algo.dense_units=8",
-                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.mlp_layers=2",
+                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=16",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
-                "algo.horizon=4",
-                "algo.per_rank_batch_size=2",
-                "algo.per_rank_sequence_length=3",
-                "metric.log_level=0",
-            ]
-            + overrides,
+                "algo.world_model.stochastic_size=4",
+                "algo.world_model.discrete_size=5",
+                *overrides,
+            ],
         )
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
-    fabric = Fabric(accelerator="cpu", devices=1)
-    algo = DreamerV2(fabric, cfg)
-    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
-    schedule = TrainSchedule(cfg, 1, algo.steps_per_iteration, off_policy=True)
-    torch.manual_seed(0)
-    state, _ = algo.build(obs_space, gym.spaces.Box(-1, 1, shape=(2,)), schedule, "unused")
-    T, B = cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size
-    world_model_cfg = cfg.algo.world_model
-    posteriors = torch.randn(T, B, world_model_cfg.stochastic_size, world_model_cfg.discrete_size)
-    recurrent_states = torch.randn(T, B, world_model_cfg.recurrent_model.recurrent_state_size)
-    out = behaviour_learning(
-        fabric,
-        cfg,
-        state.world_model,
-        state.actor,
-        state.critic,
-        state.target_critic,
-        state.actor_optimizer,
-        state.critic_optimizer,
-        posteriors,
-        recurrent_states,
-        torch.zeros(T, B, 1),
-        algo.is_continuous,
-        algo.actions_dim,
-        objective_mix=cfg.algo.actor.objective_mix,
+    obs_space = gym.spaces.Dict(
+        {
+            "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
+            "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
+        }
     )
-    return cfg, out
+    world_model, actor, critic, target_critic, _ = build_agent(
+        Fabric(accelerator=accelerator, devices=1), actions_dim, continuous, cfg, obs_space
+    )
+    return cfg, (world_model, actor, critic, target_critic)
 
 
-def test_the_actor_learns_continuous_actions_by_dynamics_backpropagation():
-    # The default objective was REINFORCE for every action space: DreamerV2 backpropagates the lambda-values through the
-    # dynamics for continuous actions (`actor_grad: auto`)
-    cfg, out = behaviour_on_continuous_actions(["algo.actor.ent_coef=0"])
-    assert cfg.algo.actor.objective_mix is None and not cfg.algo.world_model.use_continues
-    # The objective is the lambda-values of the imagined states, discounted
-    lambda_values = out["lambda_values"]
-    discount = cfg.algo.gamma ** torch.arange(cfg.algo.horizon - 1).view(-1, 1, 1)
-    torch.testing.assert_close(out["policy_loss"], -(discount * lambda_values[1:]).mean())
+def test_the_rssm_is_the_one_of_the_official_implementation():
+    # The layer before the GRU had the units of the other layers and a LayerNorm, and the LayerNorms the epsilon of
+    # PyTorch: in the official RSSM it has the units of the hidden layers of the prior and of the posterior and the
+    # normalization of the configuration (none by default), and the LayerNorms the epsilon of Keras
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(config_name="config", overrides=["exp=dreamer_v2"])
+    world_model_cfg = cfg.algo.world_model
+    assert world_model_cfg.recurrent_model.dense_units == world_model_cfg.transition_model.hidden_size == 600
+    assert world_model_cfg.recurrent_model.layer_norm is False
+    _, (world_model, *_) = small_dreamer_v2()
+    recurrent = world_model.rssm.recurrent_model.module
+    assert not any(isinstance(m, nn.LayerNorm) for m in recurrent.mlp.modules())
+    assert {m.eps for m in recurrent.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
+    _, (world_model, *_) = small_dreamer_v2(["algo.layer_norm=True"])
+    assert {m.eps for m in world_model.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
 
 
-def test_the_entropy_of_the_tanh_normal_actor_is_in_its_loss():
-    # The entropy of the tanh-normal distribution, which has no analytic one, was 0: `ent_coef` did nothing
-    args = ["distribution.type=tanh_normal", "algo.actor.objective_mix=0"]
-    _, without_entropy = behaviour_on_continuous_actions(args + ["algo.actor.ent_coef=0"])
-    _, with_entropy = behaviour_on_continuous_actions(args + ["algo.actor.ent_coef=1"])
-    torch.testing.assert_close(with_entropy["lambda_values"], without_entropy["lambda_values"])
-    assert not torch.allclose(with_entropy["policy_loss"], without_entropy["policy_loss"])
+def test_the_weights_are_initialized_as_the_layers_of_keras():
+    # Keras initializes the kernels with the uniform Glorot initializer: they were drawn from a normal distribution
+    _, models = small_dreamer_v2(["algo.dense_units=512", "algo.mlp_layers=1"])
+    layer = models[2].module.model[0]
+    weight = layer.weight.detach()
+    limit = math.sqrt(6 / (layer.in_features + layer.out_features))
+    assert weight.abs().max().item() <= limit
+    assert (weight.abs() > 0.9 * limit).float().mean().item() == pytest.approx(0.1, abs=0.02)
+    assert torch.all(layer.bias == 0)
+
+
+def test_the_weight_decay_multiplies_the_weights_before_every_step():
+    # The weights are multiplied by `1 - weight_decay` before every step, as in the official implementation: the
+    # weight decay of Adam was added to the gradients
+    weight = nn.Parameter(torch.ones(3))
+    optimizer = build_optimizer(
+        {"_target_": "torch.optim.Adam", "lr": 1e-3, "eps": 1e-5, "weight_decay": 0.1}, [weight]
+    )
+    weight.grad = torch.zeros(3)
+    optimizer.step()
+    torch.testing.assert_close(weight.detach(), torch.full((3,), 0.9))
+    # Without weight decay, the optimizer of the configuration
+    assert type(build_optimizer({"_target_": "torch.optim.Adam", "lr": 1e-3}, [weight])) is torch.optim.Adam
+
+
+def compilable_dreamer_v2(continuous, overrides=(), accelerator="cpu"):
+    """A small DreamerV2 with continues, its optimizers and a batch for a gradient step."""
+    actions_dim = (2,) if continuous else (3,)
+    torch.manual_seed(0)
+    cfg, models = small_dreamer_v2(
+        [
+            "algo.world_model.use_continues=True",
+            "algo.per_rank_batch_size=2",
+            "algo.per_rank_sequence_length=4",
+            "algo.horizon=3",
+            *overrides,
+        ],
+        actions_dim,
+        continuous,
+        accelerator,
+    )
+    world_model, actor, critic, _ = models
+    fabric = Fabric(accelerator=accelerator, devices=1)
+    optimizers = fabric.setup_optimizers(
+        build_optimizer(cfg.algo.world_model.optimizer, world_model.parameters()),
+        build_optimizer(cfg.algo.actor.optimizer, actor.parameters()),
+        build_optimizer(cfg.algo.critic.optimizer, critic.parameters()),
+    )
+    T, B = 4, 2
+    g = torch.Generator().manual_seed(1)
+    actions = (
+        torch.rand(T, B, 2, generator=g) * 2 - 1
+        if continuous
+        else nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=g), 3).float()
+    )
+    data = {
+        "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=g).float(),
+        "state": torch.randn(T, B, 5, generator=g),
+        "actions": actions,
+        "rewards": torch.randn(T, B, 1, generator=g),
+        "terminated": torch.zeros(T, B, 1),
+        "truncated": torch.zeros(T, B, 1),
+        "is_first": torch.zeros(T, B, 1),
+    }
+    data["terminated"][-1, 0] = 1
+    return cfg, fabric, models, optimizers, actions_dim, {k: v.to(fabric.device) for k, v in data.items()}
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, continuous):
+    # The losses are compiled with `algo.compile.enabled`
+    cfg, _, (world_model, actor, critic, target_critic), _, actions_dim, data = compilable_dreamer_v2(continuous)
+    world_model_cfg = cfg.algo.world_model
+    no_host_reads(monkeypatch)
+    graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
+    _, posteriors, recurrent_states, _ = graph(dreamer_v2.world_model_loss)(
+        world_model,
+        data,
+        cnn_keys=("rgb",),
+        mlp_keys=("state",),
+        stochastic_size=world_model_cfg.stochastic_size,
+        discrete_size=world_model_cfg.discrete_size,
+        recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+        use_continues=True,
+        gamma=cfg.algo.gamma,
+        kl_balancing_alpha=world_model_cfg.kl_balancing_alpha,
+        kl_free_nats=world_model_cfg.kl_free_nats,
+        kl_free_avg=world_model_cfg.kl_free_avg,
+        kl_regularizer=world_model_cfg.kl_regularizer,
+        discount_scale_factor=world_model_cfg.discount_scale_factor,
+    )
+    trajectories, actions, values, lambda_values, discount = graph(dreamer_v2.imagine)(
+        world_model,
+        actor,
+        target_critic,
+        posteriors.detach(),
+        recurrent_states.detach(),
+        data["terminated"],
+        horizon=cfg.algo.horizon,
+        gamma=cfg.algo.gamma,
+        lmbda=cfg.algo.lmbda,
+        use_continues=True,
+    )
+    graph(dreamer_v2.actor_loss)(
+        actor,
+        trajectories,
+        actions,
+        values,
+        lambda_values,
+        discount,
+        objective_mix=0.5,
+        actions_dim=actions_dim,
+        ent_coef=cfg.algo.actor.ent_coef,
+    )
+    graph(dreamer_v2.critic_loss)(critic, trajectories, lambda_values, discount)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("continuous", [False, True])
+def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, continuous):
+    # The same weights, the same batch and the same random numbers, with the objective of the actor mixing the dynamics
+    # and REINFORCE: the same losses and gradients, with and without `torch.compile` (and its CUDA graphs)
+    same_random_numbers(monkeypatch)
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
+    results = []
+    for enabled in (False, True):
+        cfg, fabric, models, optimizers, actions_dim, data = compilable_dreamer_v2(
+            continuous, ["algo.actor.objective_mix=0.5", f"algo.compile.enabled={enabled}"], accelerator="cuda"
+        )
+        with monkeypatch.context() as patch:
+            aggregator, losses, grads = recording(dreamer_v2, patch)
+            torch.manual_seed(1)
+            dreamer_v2.train(fabric, *models, *optimizers, data, aggregator, cfg, actions_dim)
+        results.append((losses, grads))
+    assert_same_step(*results)

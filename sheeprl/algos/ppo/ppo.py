@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
@@ -17,13 +17,13 @@ from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, setup_module, update
+from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
+from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor, polynomial_decay
+from sheeprl.utils.utils import gae, normalize_tensor
 
 
 @dataclass
@@ -31,10 +31,6 @@ class PPOState(TrainState):
     # Feature extractor, actor and critic
     agent: PPOAgent
     optimizer: Optimizer
-    # Annealed values are tensors, so that changing them never recompiles a compiled training step (the annealed
-    # learning rate is the one of the optimizer)
-    clip_coef: Tensor
-    ent_coef: Tensor
 
 
 class RolloutPlayer:
@@ -60,19 +56,15 @@ class RolloutPlayer:
 
         step = env.step(env_actions)
 
+        def final_values(env_idxes: np.ndarray) -> np.ndarray:
+            final_obs = step.final_obs(env_idxes, self.obs_keys)
+            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            return self.policy.get_values(final_obs).cpu().numpy()
+
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
+        # value of their final observation is added to the reward, after the rewards are clipped
         rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
-        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
-        # bootstrap the value of their final observation, in the scale of the clipped rewards the critic learns
-        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
-        if len(truncated_envs) > 0:
-            final_obs = prepare_obs(
-                self.fabric,
-                step.final_obs(truncated_envs, self.obs_keys),
-                cnn_keys=self.cnn_keys,
-                num_envs=len(truncated_envs),
-            )
-            final_values = self.policy.get_values(final_obs).cpu().numpy()
-            rewards[truncated_envs] += cfg.algo.gamma * final_values.reshape(rewards[truncated_envs].shape)
+        rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
         rewards = rewards.reshape(num_envs, -1).astype(np.float32)
 
@@ -119,6 +111,9 @@ class PPO(Algorithm):
                 f"to the rollout steps ({cfg.algo.rollout_steps})"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
+        # The values the annealed coefficients start from
+        self.initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
+        self.initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
@@ -136,33 +131,13 @@ class PPO(Algorithm):
             if is_continuous
             else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
         )
-
-        agent = PPOAgent(
-            actions_dim=actions_dim,
-            obs_space=obs_space,
-            encoder_cfg=cfg.algo.encoder,
-            actor_cfg=cfg.algo.actor,
-            critic_cfg=cfg.algo.critic,
-            cnn_keys=cfg.algo.cnn_keys.encoder,
-            mlp_keys=cfg.algo.mlp_keys.encoder,
-            screen_size=cfg.env.screen_size,
-            distribution_cfg=cfg.distribution,
-            is_continuous=is_continuous,
-        )
-        agent.feature_extractor = setup_module(self.fabric, agent.feature_extractor)
-        agent.actor = setup_module(self.fabric, agent.actor)
-        agent.critic = setup_module(self.fabric, agent.critic)
+        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
         self.total_iters = schedule.total_iters
 
-        state = PPOState(
-            agent=agent,
-            optimizer=optimizer,
-            clip_coef=torch.tensor(cfg.algo.clip_coef, device=self.fabric.device),
-            ent_coef=torch.tensor(cfg.algo.ent_coef, device=self.fabric.device),
-        )
+        state = PPOState(agent=agent, optimizer=optimizer)
         buffer = ReplayBuffer(
             cfg.buffer.size,
             cfg.env.num_envs,
@@ -173,8 +148,8 @@ class PPO(Algorithm):
         return state, Rollout(buffer)
 
     def policy(self, state: PPOState) -> PPOPlayer:
-        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
-        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
 
     def player(self, state: PPOState) -> RolloutPlayer:
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
@@ -183,14 +158,15 @@ class PPO(Algorithm):
         self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
-        anneal(cfg.algo, state, iteration, self.total_iters)
+        # The learning rate and the coefficients of the iteration
+        anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = {k: rollout.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-            next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
+            next_values = self.policy(state).get_values(next_obs)
             returns, advantages = gae(
                 data["rewards"],
                 data["values"],
@@ -239,13 +215,13 @@ class PPO(Algorithm):
             advantages = batch["advantages"]
             if cfg.normalize_advantages:
                 advantages = normalize_tensor(advantages)
-            pg_loss = policy_loss(logprobs, batch["logprobs"], advantages, state.clip_coef, cfg.loss_reduction)
+            pg_loss = policy_loss(logprobs, batch["logprobs"], advantages, cfg.clip_coef, cfg.loss_reduction)
             v_loss = value_loss(
-                values, batch["values"], batch["returns"], state.clip_coef, cfg.clip_vloss, cfg.loss_reduction
+                values, batch["values"], batch["returns"], cfg.clip_coef, cfg.clip_vloss, cfg.loss_reduction
             )
             ent_loss = entropy_loss(entropy, cfg.loss_reduction)
             # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + state.ent_coef * ent_loss
+            loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
         return {
             "Loss/policy_loss": pg_loss.detach(),
@@ -254,32 +230,12 @@ class PPO(Algorithm):
         }
 
     def end_iteration(self, state: PPOState, iteration: int) -> Dict[str, float]:
-        return annealed_values(state)
-
-
-def anneal(cfg: Dict[str, Any], state: PPOState, iteration: int, total_iters: int) -> None:
-    """Set the learning rate and the coefficients that `algo.anneal_*` anneal (`cfg` is `algo`) to their values for
-    the iteration `iteration` of `total_iters`: a linear decay from the configured values, to 0 at the end of the
-    training. They depend only on the iteration, so a resumed run follows the schedule of its own `algo.total_steps`.
-    Used by PPO and PPO-recurrent, whose states have the same `optimizer`, `clip_coef` and `ent_coef`."""
-    # The iterations are numbered from 1: the first one uses the configured values
-    decay = partial(polynomial_decay, iteration - 1, final=0.0, max_decay_steps=total_iters)
-    if cfg.anneal_lr:
-        for group in state.optimizer.param_groups:
-            group["lr"] = decay(initial=cfg.optimizer.lr)
-    if cfg.anneal_clip_coef:
-        state.clip_coef.fill_(decay(initial=cfg.clip_coef))
-    if cfg.anneal_ent_coef:
-        state.ent_coef.fill_(decay(initial=cfg.ent_coef))
-
-
-def annealed_values(state: PPOState) -> Dict[str, float]:
-    """The learning rate and the coefficients used in an iteration, to log."""
-    return {
-        "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
-        "Info/clip_coef": state.clip_coef.item(),
-        "Info/ent_coef": state.ent_coef.item(),
-    }
+        # The learning rate and the coefficients used in the iteration
+        return {
+            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
+            "Info/clip_coef": self.cfg.algo.clip_coef,
+            "Info/ent_coef": self.cfg.algo.ent_coef,
+        }
 
 
 @register_algorithm()

@@ -10,7 +10,7 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACPlayer
+from sheeprl.algos.sac.agent import SACPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -38,8 +38,6 @@ def prepare_obs(
 
 @torch.no_grad()
 def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
-    """Play one episode and log its return at `policy_step`: the last policy step of the training (0 for an
-    evaluation)."""
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
@@ -94,18 +92,14 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.sac.sac import SAC
-    from sheeprl.core import load_trained_state
-
-    # The models are built as by the training, with its configuration
-    algo = SAC(fabric, cfg.to_log)
-    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
+    # Create the models
+    agent, _ = build_agent(fabric, cfg, env.observation_space, env.action_space, state["agent"])
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
         model_info["agent"] = mlflow.pytorch.log_model(
-            unwrap_fabric(trained.agent), name="agent", serialization_format="pickle"
+            unwrap_fabric(agent), name="agent", serialization_format="pickle"
         )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

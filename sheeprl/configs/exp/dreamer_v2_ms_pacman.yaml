@@ -8,9 +8,12 @@ defaults:
 seed: 5
 
 # Environment
+# The Atari configuration of the official implementation (https://github.com/danijar/dreamerv2/blob/main/dreamerv2/configs.yaml):
+# grayscale images, 200M frames (5e7 policy steps of 4 frames), 5e4 steps of random actions, batches of 16 sequences
 env:
   max_episode_steps: 27000
   id: MsPacmanNoFrameskip-v0
+  grayscale: True
 
 # Checkpoint
 checkpoint:
@@ -25,11 +28,11 @@ buffer:
 
 # Algorithm
 algo:
-  gamma: 0.995
+  gamma: 0.999
   replay_ratio: 0.0625
-  total_steps: 200000000
-  learning_starts: 200000
-  per_rank_batch_size: 32
+  total_steps: 50000000
+  learning_starts: 50000
+  per_rank_batch_size: 16
   per_rank_pretrain_steps: 1
   
   world_model:

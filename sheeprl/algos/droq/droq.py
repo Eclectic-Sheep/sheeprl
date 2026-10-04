@@ -3,7 +3,7 @@ high replay ratio. Written on the shared training loop of `sheeprl.core`, as `SA
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -13,14 +13,36 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.utils.data import BatchSampler
 
-from sheeprl.algos.droq.agent import DROQAgent, DROQCritic
-from sheeprl.algos.sac.agent import SACActor
+from sheeprl.algos.droq.agent import DROQAgent, build_agent
+from sheeprl.algos.sac.agent import SACPlayer
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.sac import SAC, SACState, sample_batches
 from sheeprl.algos.sac.utils import test
 from sheeprl.core import autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
+
+
+def next_target_fn(
+    agent: DROQAgent, next_observations: Tensor, rewards: Tensor, terminated: Tensor, gamma: float
+) -> Tensor:
+    """The targets of the critics, from the target critics on the next observations (Line 7 - Algorithm 2)."""
+    return agent.get_next_target_q_values(next_observations, rewards, terminated, gamma)
+
+
+def critic_loss_fn(agent: DROQAgent, observations: Tensor, actions: Tensor, targets: Tensor, critic_idx: int) -> Tensor:
+    """The loss of the critic `critic_idx` (Line 8 - Algorithm 2)."""
+    return F.mse_loss(agent.get_ith_q_value(observations, actions, critic_idx), targets)
+
+
+def actor_loss_fn(agent: DROQAgent, observations: Tensor) -> Tuple[Tensor, Tensor]:
+    """The loss of the actor, on the mean of the critics, and the log-probabilities of its actions, for the loss of the
+    temperature (Line 10 - Algorithm 2)."""
+    actions, logprobs = agent.get_actions_and_log_probs(observations)
+    qf_values = agent.get_q_values(observations, actions)
+    mean_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
+    return policy_loss(agent.log_alpha.exp().detach(), logprobs, mean_qf_values), logprobs.detach()
 
 
 class DroQ(SAC):
@@ -32,42 +54,24 @@ class DroQ(SAC):
     name = "DroQ"
     buffer_dtype = np.float32
 
-    def make_agent(self, obs_dim: int, act_dim: int, action_space: gym.spaces.Box) -> DROQAgent:
-        cfg = self.cfg
-        actor = SACActor(
-            observation_dim=obs_dim,
-            action_dim=act_dim,
-            distribution_cfg=cfg.distribution,
-            hidden_size=cfg.algo.actor.hidden_size,
-            action_low=action_space.low,
-            action_high=action_space.high,
-        )
-        critics = [
-            DROQCritic(
-                observation_dim=obs_dim + act_dim,
-                hidden_size=cfg.algo.critic.hidden_size,
-                num_critics=1,
-                dropout=cfg.algo.critic.dropout,
-            )
-            for _ in range(cfg.algo.critic.n)
-        ]
-        return DROQAgent(
-            actor,
-            critics,
-            target_entropy=-act_dim,
-            alpha=cfg.algo.alpha.alpha,
-            tau=cfg.algo.tau,
-            device=self.fabric.device,
-        )
+    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPlayer]:
+        return build_agent(self.fabric, self.cfg, obs_space, action_space)
 
     def batches(
         self, state: SACState, buffer: ReplayBuffer, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         batch_size = cfg.algo.per_rank_batch_size
-        # The batches of the critics for all the gradient steps, then the one of the actor, sampled before training
+        # The batches of the critics for all the gradient steps, then the one of the actor, sampled before training.
+        # The new transitions of the online queue (`buffer.online`) go to the critics: the batch of the actor is sampled
+        # uniformly
         critic_data, critic_sampler = sample_batches(
-            self.fabric, cfg, buffer, n_steps * batch_size, sample_next_obs=cfg.buffer.sample_next_obs
+            self.fabric,
+            cfg,
+            buffer,
+            n_steps * batch_size,
+            sample_next_obs=cfg.buffer.sample_next_obs,
+            online=cfg.buffer.online,
         )
         actor_data, actor_sampler = sample_batches(self.fabric, cfg, buffer, batch_size)
         actor_idxes = list(actor_sampler)
@@ -80,21 +84,23 @@ class DroQ(SAC):
             yield batch
 
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        cfg = self.cfg.algo
+        fabric, cfg = self.fabric, self.cfg
         agent = state.agent
+        # The losses are compiled when `algo.compile.enabled` is set
+        mark_gradient_step(fabric, cfg)
 
         # Critics: each one regresses its Q-values towards the same target with its own optimizer step, then its
         # target critic follows it
-        with autocast(self.fabric):
-            target_qf_values = agent.get_next_target_q_values(
-                batch["next_observations"], batch["rewards"], batch["terminated"], cfg.gamma
-            )
+        target_qf_values = compiled(next_target_fn, fabric, cfg)(
+            agent, batch["next_observations"], batch["rewards"], batch["terminated"], cfg.algo.gamma
+        )
         qf_losses = []
-        for i, critic in enumerate(agent.qfs):
-            with autocast(self.fabric):
-                qf_values = agent.get_ith_q_value(batch["observations"], batch["actions"], i)
-                qf_loss = F.mse_loss(qf_values, target_qf_values)
-            update(self.fabric, qf_loss, state.qf_optimizer, params=critic.parameters())
+        for i in range(agent.num_critics):
+            with autocast(fabric):
+                qf_loss = compiled(critic_loss_fn, fabric, cfg)(
+                    agent, batch["observations"], batch["actions"], target_qf_values, i
+                )
+            update(fabric, qf_loss, state.qf_optimizer, params=agent.qfs[i].parameters())
             agent.qfs_target_ema(critic_idx=i)
             qf_losses.append(qf_loss.detach())
         metrics = {"Loss/value_loss": torch.stack(qf_losses).mean()}
@@ -102,17 +108,14 @@ class DroQ(SAC):
             return metrics
 
         # Actor: maximize the mean Q-value of its actions (not the smallest, as SAC) plus their entropy
-        obs = batch["actor_observations"]
-        with autocast(self.fabric):
-            actions, logprobs = agent.get_actions_and_log_probs(obs)
-            qf_values = agent.get_q_values(obs, actions)
-            mean_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
-            actor_loss = policy_loss(agent.alpha, logprobs, mean_qf_values)
-        update(self.fabric, actor_loss, state.actor_optimizer)
+        mark_gradient_step(fabric, cfg)
+        with autocast(fabric):
+            actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, batch["actor_observations"])
+        update(fabric, actor_loss, state.actor_optimizer)
 
         # Entropy coefficient: towards the target entropy
-        alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-        update(self.fabric, alpha_loss, state.alpha_optimizer)
+        alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
+        update(fabric, alpha_loss, state.alpha_optimizer)
 
         metrics["Loss/policy_loss"] = actor_loss.detach()
         metrics["Loss/alpha_loss"] = alpha_loss.detach()

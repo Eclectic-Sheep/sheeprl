@@ -1,3 +1,7 @@
+"""The environments of the algorithms: the Dreamers play normalized continuous actions."""
+
+import importlib
+import os
 from typing import List
 from unittest import mock
 
@@ -8,9 +12,8 @@ from hydra import compose, initialize_config_module
 from lightning import Fabric
 from omegaconf import OmegaConf
 
-from sheeprl.algos.p2e_dv1.p2e_dv1_finetuning import P2EDV1Finetuning
-from sheeprl.algos.p2e_dv2.p2e_dv2_finetuning import P2EDV2Finetuning
-from sheeprl.algos.p2e_dv3.p2e_dv3_finetuning import P2EDV3Finetuning
+from sheeprl.cli import resume_from_checkpoint
+from sheeprl.core import loop
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import dotdict
 
@@ -92,7 +95,38 @@ def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with,
         del exploration_cfg.algo["normalize_actions"]
     else:
         exploration_cfg.algo.normalize_actions = explored_with
-    cfg = config([f"exp={algo}_finetuning", *overrides])
-    finetuning_cls = {"p2e_dv3": P2EDV3Finetuning, "p2e_dv2": P2EDV2Finetuning, "p2e_dv1": P2EDV1Finetuning}[algo]
-    finetuning_cls(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
+    cfg = config([f"exp={algo}_finetuning", *overrides, "checkpoint.exploration_ckpt_path=exploration.ckpt"])
+    finetuning = importlib.import_module(f"sheeprl.algos.{algo}.{algo}_finetuning")
+
+    class Stop(Exception):
+        pass
+
+    # The finetuning takes the options of its exploration before anything else: it is stopped right after
+    with (
+        mock.patch.object(Fabric, "load", return_value={}),
+        # The finetuning stops where the training loop of the core creates the logger
+        mock.patch.object(loop, "get_logger", side_effect=Stop),
+        pytest.raises(Stop),
+    ):
+        finetuning.main(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
     assert cfg.algo.normalize_actions is bool(explored_with)
+
+
+@pytest.mark.parametrize("saved_with", [True, False, None])
+def test_a_resumed_run_normalizes_the_actions_as_the_run_it_resumes(saved_with, tmp_path):
+    # A run saved before the option played the actions of the policy as they were: resumed, it took the default of the
+    # new configuration and played them rescaled
+    overrides = ["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"]
+    old_cfg = config(overrides)
+    if saved_with is None:
+        del old_cfg.algo["normalize_actions"]
+    else:
+        old_cfg.algo.normalize_actions = saved_with
+    os.makedirs(tmp_path / "checkpoint")
+    OmegaConf.save(old_cfg.as_dict(), tmp_path / "config.yaml")
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[*overrides, f"checkpoint.resume_from={tmp_path / 'checkpoint' / 'ckpt_0_0.ckpt'}"],
+        )
+    assert resume_from_checkpoint(cfg).algo.normalize_actions is bool(saved_with)

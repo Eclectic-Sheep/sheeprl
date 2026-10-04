@@ -3,6 +3,7 @@ build, play and train; `sheeprl.core.loop.run` does the rest."""
 
 from __future__ import annotations
 
+import copy
 import os
 import warnings
 from dataclasses import dataclass
@@ -18,10 +19,10 @@ from torch.optim import Optimizer
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.ppo import anneal, annealed_values
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer
+from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, setup_module, update
+from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -32,10 +33,6 @@ class PPORecurrentState(TrainState):
     # Feature extractor, LSTM, actor and critic
     agent: RecurrentPPOAgent
     optimizer: Optimizer
-    # Annealed values are tensors, so that changing them never recompiles a compiled training step (the annealed
-    # learning rate is the one of the optimizer)
-    clip_coef: Tensor
-    ent_coef: Tensor
 
 
 @dataclass
@@ -95,22 +92,18 @@ class RecurrentRolloutPlayer:
 
         step = env.step(env_actions)
 
+        def final_values(env_idxes: np.ndarray) -> np.ndarray:
+            final_obs = step.final_obs(env_idxes, self.obs_keys)
+            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            values, _ = self.policy.get_values(
+                final_obs, torch_actions[:, env_idxes, :], tuple(s[:, env_idxes, ...] for s in states)
+            )
+            return values.cpu().numpy()
+
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
+        # value of their final observation is added to the reward, after the rewards are clipped
         rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
-        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
-        # bootstrap the value of their final observation, in the scale of the clipped rewards the critic learns
-        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
-        if len(truncated_envs) > 0:
-            final_obs = prepare_obs(
-                self.fabric,
-                step.final_obs(truncated_envs, self.obs_keys),
-                cnn_keys=self.cnn_keys,
-                num_envs=len(truncated_envs),
-            )
-            final_values, _ = self.policy.get_values(
-                final_obs, torch_actions[:, truncated_envs, :], tuple(s[:, truncated_envs, ...] for s in states)
-            )
-            final_values = final_values.view(rewards[truncated_envs].shape).cpu().numpy()
-            rewards[truncated_envs] += cfg.algo.gamma * final_values.reshape(rewards[truncated_envs].shape)
+        rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(1, num_envs, -1).astype(np.float32)
         rewards = rewards.reshape(1, num_envs, -1).astype(np.float32)
 
@@ -198,6 +191,9 @@ class PPORecurrent(Algorithm):
                 "with recurrent PPO only gradients are shared"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
+        # The values the annealed coefficients start from
+        self.initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
+        self.initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
@@ -210,42 +206,18 @@ class PPORecurrent(Algorithm):
             self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
         is_continuous = isinstance(action_space, gym.spaces.Box)
         is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-        self.actions_dim = tuple(
+        actions_dim = tuple(
             action_space.shape
             if is_continuous
             else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
         )
-
-        agent = RecurrentPPOAgent(
-            actions_dim=self.actions_dim,
-            obs_space=obs_space,
-            encoder_cfg=cfg.algo.encoder,
-            rnn_cfg=cfg.algo.rnn,
-            actor_cfg=cfg.algo.actor,
-            critic_cfg=cfg.algo.critic,
-            cnn_keys=cfg.algo.cnn_keys.encoder,
-            mlp_keys=cfg.algo.mlp_keys.encoder,
-            is_continuous=is_continuous,
-            distribution_cfg=cfg.distribution,
-            num_envs=cfg.env.num_envs,
-            screen_size=cfg.env.screen_size,
-            device=self.fabric.device,
-        )
-        agent.feature_extractor = setup_module(self.fabric, agent.feature_extractor)
-        agent.rnn = setup_module(self.fabric, agent.rnn)
-        agent.critic = setup_module(self.fabric, agent.critic)
-        agent.actor = setup_module(self.fabric, agent.actor)
+        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
         self.total_iters = schedule.total_iters
 
-        state = PPORecurrentState(
-            agent=agent,
-            optimizer=optimizer,
-            clip_coef=torch.tensor(cfg.algo.clip_coef, device=self.fabric.device),
-            ent_coef=torch.tensor(cfg.algo.ent_coef, device=self.fabric.device),
-        )
+        state = PPORecurrentState(agent=agent, optimizer=optimizer)
         # One rollout, whatever `buffer.size`
         buffer = ReplayBuffer(
             cfg.algo.rollout_steps,
@@ -257,16 +229,8 @@ class PPORecurrent(Algorithm):
         return state, RecurrentRollout(buffer)
 
     def policy(self, state: PPORecurrentState) -> RecurrentPPOPlayer:
-        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
-        agent = state.agent
-        return RecurrentPPOPlayer(
-            agent.feature_extractor,
-            agent.rnn,
-            agent.actor,
-            agent.critic,
-            self.cfg.algo.rnn.lstm.hidden_size,
-            self.actions_dim,
-        )
+        """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
+        return self._policy
 
     def player(self, state: PPORecurrentState) -> RecurrentRolloutPlayer:
         return RecurrentRolloutPlayer(self.fabric, self.cfg, self.policy(state))
@@ -275,7 +239,8 @@ class PPORecurrent(Algorithm):
         self, state: PPORecurrentState, rollout: RecurrentRollout, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
-        anneal(cfg.algo, state, iteration, self.total_iters)
+        # The learning rate and the coefficients of the iteration
+        anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -342,15 +307,13 @@ class PPORecurrent(Algorithm):
             normalized_advantages = batch["advantages"][mask]
             if cfg.normalize_advantages and len(normalized_advantages) > 1:
                 normalized_advantages = normalize_tensor(normalized_advantages)
-            pg_loss = policy_loss(
-                logprobs[mask], batch["logprobs"][mask], normalized_advantages, state.clip_coef, "mean"
-            )
+            pg_loss = policy_loss(logprobs[mask], batch["logprobs"][mask], normalized_advantages, cfg.clip_coef, "mean")
             v_loss = value_loss(
-                values[mask], batch["values"][mask], batch["returns"][mask], state.clip_coef, cfg.clip_vloss, "mean"
+                values[mask], batch["values"][mask], batch["returns"][mask], cfg.clip_coef, cfg.clip_vloss, "mean"
             )
             ent_loss = entropy_loss(entropies[mask], cfg.loss_reduction)
             # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + state.ent_coef * ent_loss
+            loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
             if "loss_weight" in batch:
                 loss = loss * batch["loss_weight"]
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
@@ -363,7 +326,12 @@ class PPORecurrent(Algorithm):
         }
 
     def end_iteration(self, state: PPORecurrentState, iteration: int) -> Dict[str, float]:
-        return annealed_values(state)
+        # The learning rate and the coefficients used in the iteration
+        return {
+            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
+            "Info/clip_coef": self.cfg.algo.clip_coef,
+            "Info/ent_coef": self.cfg.algo.ent_coef,
+        }
 
 
 @register_algorithm()

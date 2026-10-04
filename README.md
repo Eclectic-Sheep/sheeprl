@@ -205,6 +205,7 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 | Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3 (Nature)       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
@@ -225,6 +226,7 @@ The actions supported by sheeprl agents are:
 | Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3 (Nature)       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |

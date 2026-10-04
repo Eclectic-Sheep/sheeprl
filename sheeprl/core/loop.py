@@ -10,23 +10,15 @@ import gymnasium as gym
 import hydra
 import torch
 from lightning import Fabric
-from torchmetrics import SumMetric
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.runner import EnvRunner
 from sheeprl.core.schedule import TrainSchedule
-from sheeprl.core.store import load_replay_buffer
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
-from sheeprl.utils.timer import timer
+from sheeprl.utils.timer import phase_timer, training_timer
 from sheeprl.utils.utils import save_configs
-
-
-def phase_timer(name: str) -> timer:
-    """The timer of a phase of the iterations (playing, training): the time of the process. Summed over the processes,
-    it would divide the speeds of the run (`Time/sps_*`) by their number."""
-    return timer(name, SumMetric, sync_on_compute=False)
 
 
 def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str, int]:
@@ -70,7 +62,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     if checkpoint is not None:
         state.load_state_dict(checkpoint)
         if save_buffer:
-            store = load_replay_buffer(fabric, checkpoint["rb"], store)
+            store = algo.load_store(checkpoint["rb"], store)
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
     cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint, policy_step=schedule.policy_step)
@@ -87,14 +79,11 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         # off-policy algorithms before `algo.learning_starts`
         n_steps = schedule.gradient_steps(iteration)
         if n_steps != 0:
-            with phase_timer("Time/train_time"):
+            # The timer waits for the GPU to finish the training, which would otherwise be timed with the interaction
+            with training_timer(fabric.device):
                 for batch in algo.batches(state, store, n_steps, iteration):
                     cadence.accumulate(algo.train_step(state, batch, schedule.gradient_step))
                     schedule.gradient_step += 1
-                if not timer.disabled and fabric.device.type == "cuda":
-                    # The GPU runs the training after the CPU has launched it: the timer waits for it to finish, or
-                    # the training would be timed with the interaction that follows (its first copy to the CPU waits)
-                    torch.cuda.synchronize(fabric.device)
 
         info = algo.end_iteration(state, iteration)
         if cfg.metric.log_level > 0 and info:

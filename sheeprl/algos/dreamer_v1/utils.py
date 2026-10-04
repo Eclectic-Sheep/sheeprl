@@ -4,6 +4,7 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence, Tuple
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning import Fabric
@@ -11,7 +12,9 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
+from sheeprl.data.buffers import EnvIndependentReplayBuffer
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
@@ -37,6 +40,28 @@ AGGREGATOR_KEYS = {
     "Params/exploration_amount",
 }
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
+
+
+def add_is_first(rb: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+    """Complete a replay buffer saved before DreamerV1 stored `is_first` (a resumed run, or a finetuning that loads the
+    buffer of its exploration, would fail to add rows with it).
+
+    A row is the first of an episode when the row before it, in the buffer of the same environment, ends one
+    (`terminated` or `truncated`: the next row holds the first observation of the new episode), or when it is the first
+    row of a buffer not filled yet.
+    """
+    for buffer in rb.buffer:
+        if buffer.empty or "is_first" in buffer.buffer:
+            continue
+        terminated, truncated = (
+            value.array if isinstance(value, MemmapArray) else value
+            for value in (buffer["terminated"], buffer["truncated"])
+        )
+        is_first = np.roll(np.logical_or(terminated, truncated), 1, axis=0)
+        if not buffer.full:
+            is_first[0] = True
+        buffer["is_first"] = is_first.astype(terminated.dtype)
+    return rb
 
 
 def compute_lambda_values(
@@ -138,19 +163,38 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.dreamer_v1.dreamer_v1 import DreamerV1
-    from sheeprl.core import load_trained_state
+    from sheeprl.algos.dreamer_v1.agent import build_agent
 
-    # The models are built as by the training, with its configuration
-    algo = DreamerV1(fabric, cfg.to_log)
-    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
+    # Create the models
+    is_continuous = isinstance(env.action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        env.action_space.shape
+        if is_continuous
+        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    )
+    world_model, actor, critic, _ = build_agent(
+        fabric,
+        actions_dim,
+        is_continuous,
+        cfg,
+        env.observation_space,
+        state["world_model"],
+        state["actor"],
+        state["critic"],
+    )
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        for name in ("world_model", "actor", "critic"):
-            model_info[name] = mlflow.pytorch.log_model(
-                unwrap_fabric(getattr(trained, name)), name=name, serialization_format="pickle"
-            )
+        model_info["world_model"] = mlflow.pytorch.log_model(
+            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
+        )
+        model_info["actor"] = mlflow.pytorch.log_model(
+            unwrap_fabric(actor), name="actor", serialization_format="pickle"
+        )
+        model_info["critic"] = mlflow.pytorch.log_model(
+            unwrap_fabric(critic), name="critic", serialization_format="pickle"
+        )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

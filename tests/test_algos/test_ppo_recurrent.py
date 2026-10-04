@@ -1,20 +1,15 @@
-"""The agent and the rollouts of PPO-recurrent: orthogonal initialization, continuous actions, bootstrapped rewards."""
+"""The agent of PPO-recurrent: orthogonal initialization, continuous actions, the player."""
 
 from math import sqrt
-from types import SimpleNamespace
 from typing import List
 
 import gymnasium as gym
 import numpy as np
 import pytest
 import torch
-from lightning import Fabric
 from torch import nn
 
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer
-from sheeprl.algos.ppo_recurrent.ppo_recurrent import RecurrentRollout, RecurrentRolloutPlayer
-from sheeprl.core import EnvStep
-from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.utils import dotdict
 
 HIDDEN_SIZE = 16
@@ -86,40 +81,43 @@ def test_continuous_actions():
     torch.testing.assert_close(agent_logprobs, logprobs)
 
 
-@pytest.mark.parametrize("clip_rewards", [False, True])
-def test_rollout_bootstraps_only_the_truncated_episodes(clip_rewards):
-    # Three envs end their episode with reward 3: truncated by the time limit, truncated and terminated in the same
-    # step, terminated. Only the first one goes on in the MDP: its reward gets gamma times the value (2) of its final
-    # observation, added after the clipping of the reward (`env.clip_rewards` was ignored)
-    num_envs = 3
-    obs = {"state": np.zeros((num_envs, 8), dtype=np.float32)}
-    step = EnvStep(
-        obs=obs,
-        next_obs={"state": np.ones((num_envs, 8), dtype=np.float32)},
-        rewards=np.full(num_envs, 3.0),
-        terminated=np.array([False, True, True]),
-        truncated=np.array([True, True, False]),
-        info={"final_obs": np.array([{"state": np.full(8, 5, dtype=np.float32)}] * num_envs, dtype=object)},
-    )
-    env = SimpleNamespace(num_envs=num_envs, obs=obs, step=lambda actions: step)
-    player = player_of(build_agent())
-    player.get_values = lambda obs, actions, states: (torch.full((1, len(obs["state"][0]), 1), 2.0), states)
-    cfg = dotdict(
-        {
-            "algo": {
-                "cnn_keys": {"encoder": []},
-                "mlp_keys": {"encoder": ["state"]},
-                "gamma": 0.9,
-                "reset_recurrent_state_on_done": True,
-            },
-            "env": {"clip_rewards": clip_rewards},
-            "buffer": {"memmap": False, "validate_args": False},
-        }
-    )
-    rollout = RecurrentRollout(ReplayBuffer(1, num_envs, memmap=False, obs_keys=["state"]))
-    with torch.no_grad():
-        RecurrentRolloutPlayer(Fabric(accelerator="cpu", devices=1), cfg, player).step(env, rollout)
+def config(overrides: List[str]) -> dotdict:
+    from hydra import compose, initialize_config_module
+    from omegaconf import OmegaConf
 
-    reward = np.tanh(3.0) if clip_rewards else 3.0
-    np.testing.assert_allclose(rollout.buffer["rewards"][0, :, 0], [reward + 0.9 * 2.0, reward, reward], rtol=1e-6)
-    np.testing.assert_array_equal(rollout.buffer["dones"][0, :, 0], [1, 1, 1])
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        return dotdict(OmegaConf.to_container(compose(config_name="config", overrides=overrides), resolve=True))
+
+
+@pytest.mark.parametrize(
+    "accelerator",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only"))],
+)
+def test_the_player_follows_the_updates_of_the_agent(accelerator):
+    # The player was a copy of the agent with the weights tied: on CUDA its LSTM moved them into a new buffer at its
+    # first forward (`flatten_parameters`), and the player played with the initial weights for the whole training
+    from lightning import Fabric
+
+    from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
+
+    cfg = config(
+        ["exp=ppo_recurrent", "env.num_envs=2", "algo.mlp_keys.encoder=[state]", "algo.rnn.lstm.hidden_size=8"]
+    )
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
+    fabric = Fabric(accelerator=accelerator, devices=1)
+    agent, player = build_agents(fabric, [3], False, cfg, obs_space)
+    device = fabric.device
+    with torch.no_grad():
+        player(
+            {"state": torch.randn(1, 2, 8, device=device)},
+            prev_actions=torch.zeros(1, 2, 3, device=device),
+            prev_states=(torch.zeros(1, 2, 8, device=device), torch.zeros(1, 2, 8, device=device)),
+        )
+        for p in agent.parameters():
+            p.add_(1.0)
+    for module in ("feature_extractor", "rnn", "actor", "critic"):
+        agent_params = list(getattr(agent, module).parameters())
+        player_params = list(getattr(player, module).parameters())
+        assert len(agent_params) == len(player_params) > 0
+        for agent_p, player_p in zip(agent_params, player_params):
+            assert torch.equal(agent_p, player_p), module

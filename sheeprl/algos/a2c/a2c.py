@@ -18,20 +18,10 @@ from torch.optim.lr_scheduler import PolynomialLR
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
 from sheeprl.algos.a2c.loss import policy_loss
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
-from sheeprl.core import (
-    Algorithm,
-    EnvRunner,
-    Rollout,
-    TrainSchedule,
-    TrainState,
-    all_reduce_gradients,
-    autocast,
-    run,
-    setup_module,
-)
+from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
+from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, all_reduce_gradients, autocast, run
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -70,19 +60,14 @@ class RolloutPlayer:
 
         step = env.step(env_actions)
 
+        def final_values(env_idxes: np.ndarray) -> np.ndarray:
+            final_obs = step.final_obs(env_idxes, self.obs_keys)
+            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            return self.policy.get_values(final_obs).cpu().numpy()
+
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
         # bootstrap the value of their final observation
-        rewards = step.rewards
-        truncated_envs = np.nonzero(np.logical_and(step.truncated, np.logical_not(step.terminated)))[0]
-        if len(truncated_envs) > 0:
-            final_obs = prepare_obs(
-                self.fabric,
-                step.final_obs(truncated_envs, self.obs_keys),
-                cnn_keys=self.cnn_keys,
-                num_envs=len(truncated_envs),
-            )
-            final_values = self.policy.get_values(final_obs).cpu().numpy()
-            rewards[truncated_envs] += cfg.algo.gamma * final_values.reshape(rewards[truncated_envs].shape)
+        rewards = bootstrap_truncated(step.rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
         rewards = rewards.reshape(num_envs, -1)
 
@@ -147,21 +132,8 @@ class A2C(Algorithm):
             else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
         )
 
-        agent = PPOAgent(
-            actions_dim=actions_dim,
-            obs_space=obs_space,
-            encoder_cfg=cfg.algo.encoder,
-            actor_cfg=cfg.algo.actor,
-            critic_cfg=cfg.algo.critic,
-            cnn_keys=cfg.algo.cnn_keys.encoder,
-            mlp_keys=cfg.algo.mlp_keys.encoder,
-            screen_size=cfg.env.screen_size,
-            distribution_cfg=cfg.distribution,
-            is_continuous=is_continuous,
-        )
-        agent.feature_extractor = setup_module(self.fabric, agent.feature_extractor)
-        agent.actor = setup_module(self.fabric, agent.actor)
-        agent.critic = setup_module(self.fabric, agent.critic)
+        # The agent of PPO
+        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
@@ -178,8 +150,8 @@ class A2C(Algorithm):
         return state, Rollout(buffer)
 
     def policy(self, state: A2CState) -> PPOPlayer:
-        """The policy to play with: it shares its modules (and so its weights) with the trained agent."""
-        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
 
     def player(self, state: A2CState) -> RolloutPlayer:
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
@@ -196,7 +168,7 @@ class A2C(Algorithm):
             next_obs = prepare_obs(
                 self.fabric, rollout.next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
             )
-            next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
+            next_values = self.policy(state).get_values(next_obs)
             returns, advantages = gae(
                 data["rewards"].to(torch.float64),
                 data["values"],

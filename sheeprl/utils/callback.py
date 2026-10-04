@@ -14,7 +14,7 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, Repl
 class CheckpointCallback:
     """Callback to checkpoint the training: the models, the optimizers and the replay buffers.
 
-    `on_checkpoint` is called by all the processes: the process of rank 0 gets the buffers of all the processes
+    `on_checkpoint_coupled` is called by all the processes: the process of rank 0 gets the buffers of all the processes
     and saves the state of the training.
 
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
@@ -23,7 +23,7 @@ class CheckpointCallback:
     def __init__(self, keep_last: int | None = None) -> None:
         self.keep_last = keep_last
 
-    def on_checkpoint(
+    def on_checkpoint_coupled(
         self,
         fabric: Fabric,
         ckpt_path: str,
@@ -75,11 +75,15 @@ class CheckpointCallback:
             state = rb["truncated"][(rb._pos - 1) % rb.buffer_size, :].copy()
             # substitute the last done with all True values (all the environment are truncated)
             rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = 1
+            # A memory-mapped buffer is saved by reference to its files, where the truncation is undone after the
+            # checkpoint: the loaded buffer writes it again when it is used
+            rb._checkpoint_truncation = rb.is_memmap
         elif isinstance(rb, EnvIndependentReplayBuffer):
             state = []
             for b in rb.buffer:
                 state.append(b["truncated"][(b._pos - 1) % b.buffer_size, :].copy())
                 b["truncated"][(b._pos - 1) % b.buffer_size, :] = 1
+                b._checkpoint_truncation = b.is_memmap
         elif isinstance(rb, EpisodeBuffer):
             # remove open episodes from the buffer because the state of the environment is not saved
             state = rb._open_episodes
@@ -101,9 +105,11 @@ class CheckpointCallback:
         if isinstance(rb, ReplayBuffer):
             # reinsert the true dones in the buffer
             rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = state
+            rb._checkpoint_truncation = False
         elif isinstance(rb, EnvIndependentReplayBuffer):
             for i, b in enumerate(rb.buffer):
                 b["truncated"][(b._pos - 1) % b.buffer_size, :] = state[i]
+                b._checkpoint_truncation = False
         elif isinstance(rb, EpisodeBuffer):
             # reinsert the open episodes to continue the training
             rb._open_episodes = state

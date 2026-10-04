@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import copy
 from math import prod
-from typing import Any, Dict, List, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import hydra
 import numpy as np
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward
 
 LOG_STD_MAX = 2
@@ -189,6 +191,13 @@ class CNNDecoder(DeCNN):
         )
         self._output_dim = Size([out_channels, screen_size, screen_size])
         self._encoder_conv_output_shape = encoder_conv_output_shape
+        with torch.no_grad():
+            reconstructed_size = tuple(self.to_obs(self.model(torch.zeros(1, *encoder_conv_output_shape))).shape[-2:])
+        if reconstructed_size != (screen_size, screen_size):
+            raise ValueError(
+                f"The decoder reconstructs images of {reconstructed_size[0]}x{reconstructed_size[1]} pixels from the "
+                f"ones of {screen_size}x{screen_size} (`env.screen_size`): the size must be even"
+            )
 
     def forward(self, x: Tensor, *args, **kwargs) -> Dict[str, Tensor]:
         reconstructed_obs = {}
@@ -328,9 +337,11 @@ class SACAEAgent(nn.Module):
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
-        # Tie encoder weights between actor and critic
+        # Tie encoder weights between actor and critic: the actor uses the convolutions of the critic, with its own
+        # fully-connected layer (`model` is a read-only property: assigning it registered the convolutions of the critic
+        # as an unused module, and the actor kept its own, never trained)
         if actor.encoder.cnn_encoder is not None:
-            actor.encoder.cnn_encoder.model = critic.encoder.cnn_encoder.model
+            actor.encoder.cnn_encoder._model = critic.encoder.cnn_encoder._model
         if actor.encoder.mlp_encoder is not None:
             actor.encoder.mlp_encoder.model = critic.encoder.mlp_encoder.model
 
@@ -427,21 +438,27 @@ class SACAEAgent(nn.Module):
         # Get q-values for the next observations and actions, estimated by the target q-functions
         next_state_actions, next_state_log_pi = self.get_actions_and_log_probs(next_obs)
         qf_next_target = self.get_target_q_values(next_obs, next_state_actions)
-        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - self.alpha * next_state_log_pi
+        # The temperature as a tensor: no synchronization with the device, and no break of a compiled graph
+        alpha = self._log_alpha.exp()
+        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - alpha * next_state_log_pi
         next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
         return next_qf_value
 
     @torch.no_grad()
     def critic_target_ema(self) -> None:
-        for param, target_param in zip(self.critic_unwrapped.qfs.parameters(), self.critic_target.qfs.parameters()):
-            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+        _ema(self.critic_unwrapped.qfs.parameters(), self.critic_target.qfs.parameters(), self._tau)
 
     @torch.no_grad()
     def critic_encoder_target_ema(self) -> None:
-        for param, target_param in zip(
-            self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters()
-        ):
-            target_param.data.copy_(self._encoder_tau * param.data + (1 - self._encoder_tau) * target_param.data)
+        _ema(self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters(), self._encoder_tau)
+
+
+def _ema(params: Iterable[Tensor], targets: Iterable[Tensor], tau: float) -> None:
+    """`tau * param + (1 - tau) * target` for all the weights at once, with the same roundings."""
+    targets = list(targets)
+    updates = torch._foreach_mul(list(params), tau)
+    torch._foreach_mul_(targets, 1 - tau)
+    torch._foreach_add_(targets, updates)
 
 
 class SACAEPlayer(nn.Module):
@@ -496,20 +513,59 @@ class SACAEPlayer(nn.Module):
         return self(obs, greedy)
 
 
-def build_models(
+def untied_actor_convolutions(agent_state: Dict[str, Tensor]) -> List[str]:
+    """The names of the weights of the actor, in the order of its parameters, of the state of an agent saved when the
+    actor didn't use the convolutions of the critic: they are registered as `model`, unused (empty for a newer state).
+    """
+    names = [k for k in agent_state if k.startswith("_actor.") and not k.endswith(("action_scale", "action_bias"))]
+    if not any(".cnn_encoder.model." in k for k in names):
+        return []
+    return names
+
+
+def tie_actor_convolutions(agent_state: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    """The state of an agent saved when the actor didn't use the convolutions of the critic (see `SACAEAgent`), for the
+    agent where it does: the actor gets the convolutions of the critic, the unused ones are dropped. A newer state is
+    returned as it is."""
+    if not untied_actor_convolutions(agent_state):
+        return agent_state
+    state = {k: v for k, v in agent_state.items() if not (k.startswith("_actor.") and ".cnn_encoder.model." in k)}
+    for k in state:
+        if k.startswith("_actor.") and ".cnn_encoder._model." in k:
+            state[k] = agent_state["_critic." + k[len("_actor.") :]]
+    return state
+
+
+def tie_actor_optimizer(optimizer_state: Dict[str, Any], agent_state: Dict[str, Any]) -> Dict[str, Any]:
+    """The state of the optimizer of the actor of the agent `agent_state` (see `tie_actor_convolutions`), for the agent
+    where the actor uses the convolutions of the critic: without the unused ones."""
+    names = untied_actor_convolutions(agent_state)
+    if not names:
+        return optimizer_state
+    keep = [i for i, k in enumerate(names) if ".cnn_encoder.model." not in k]
+    new_index = {old: new for new, old in enumerate(keep)}
+    (group,) = optimizer_state["param_groups"]
+    return {
+        "state": {new_index[i]: v for i, v in optimizer_state["state"].items() if i in new_index},
+        "param_groups": [{**group, "params": list(range(len(keep)))}],
+    }
+
+
+def build_agent(
+    fabric: Fabric,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
-    device: torch.device,
-) -> Tuple[SACAEAgent, MultiEncoder, MultiDecoder]:
-    """Create the models of SAC-AE with their initial weights: the agent (actor, critics, target critics and entropy
-    coefficient), the encoder of the critics and the decoder. The actor's encoder shares its convolutional and MLP
-    layers with the critics' one. They are not set up with Fabric.
-    """
+    agent_state: Optional[Dict[str, Tensor]] = None,
+    encoder_state: Optional[Dict[str, Tensor]] = None,
+    decoder_sate: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPlayer]:
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
-    # The encoder and the decoder
+    # Define the encoder and decoder and setup them with fabric.
+    # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
+    # we do not need it wrapped with the strategy inside actor and critic
     cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
     mlp_dims = [obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
     cnn_encoder = (
@@ -562,6 +618,12 @@ def build_models(
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
+    # The initialization of the official implementation, as the one of the actor and of the critic
+    decoder.apply(weight_init)
+    if encoder_state:
+        encoder.load_state_dict(encoder_state)
+    if decoder_sate:
+        decoder.load_state_dict(decoder_sate)
 
     # Setup actor and critic. Those will initialize with orthogonal weights
     # both the actor and critic
@@ -589,6 +651,47 @@ def build_models(
         alpha=cfg.algo.alpha.alpha,
         tau=cfg.algo.tau,
         encoder_tau=cfg.algo.encoder.tau,
-        device=device,
+        device=fabric.device,
     )
-    return agent, encoder, decoder
+
+    if agent_state:
+        agent.load_state_dict(tie_actor_convolutions(agent_state))
+
+    # Setup player agent
+    player = SACAEPlayer(
+        copy.deepcopy(agent.actor.encoder),
+        copy.deepcopy(agent.actor.model),
+        copy.deepcopy(agent.actor.fc_mean),
+        copy.deepcopy(agent.actor.fc_logstd),
+        action_low=action_space.low,
+        action_high=action_space.high,
+    )
+
+    # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`): they are trained only
+    # through the critic and decoder losses (`detach_encoder_features` in the actor loss)
+    encoder = setup_module(fabric, encoder)
+    decoder = setup_module(fabric, decoder)
+    # Setting the critic makes the target critic a copy of it: the one of the checkpoint is kept
+    critic_target = agent.critic_target
+    agent.actor = setup_module(fabric, agent.actor)
+    agent.critic = setup_module(fabric, agent.critic)
+    if agent_state:
+        agent.critic_target = critic_target
+
+    # Wrap the target critic with a single-device fabric. This lets the target critic
+    # to be on the same device as the agent and to run with the same precision
+    fabric_player = get_single_device_fabric(fabric)
+    agent.critic_target = fabric_player.setup_module(agent.critic_target)
+
+    # Setup player agent
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.model = fabric_player.setup_module(player.model)
+    player.fc_mean = fabric_player.setup_module(player.fc_mean)
+    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
+    player.action_scale = player.action_scale.to(fabric_player.device)
+    player.action_bias = player.action_bias.to(fabric_player.device)
+
+    # Tie weights between the agent and the player
+    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
+        player_p.data = agent_p.data
+    return agent, encoder, decoder, player

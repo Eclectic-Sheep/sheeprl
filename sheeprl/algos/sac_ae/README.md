@@ -11,7 +11,7 @@ Since learning directly from images can be cumbersome, as the authors have found
 2. The encoder will receive the gradients from the critic but not from the actor: receiving the gradients from the actor changes also the Q-function during the actor update, since the encoder is shared between the actor and the critic. 
 3. To overcame the slowdown in the encoder update due to 2., the convolutional weights of the target Q-function are updated faster than the rest of the network’s parameters (effectively using a $\tau_{\text{enc}} > \tau_{\text{Q}}$)
 
-The models are created by the `build_models` function of the `agent.py` file. The critics encode the observations with the encoder, while the actor encodes them with a copy of it: the agent ties the convolutional layers of the CNN encoder and the layers of the MLP encoder of the actor to the ones of the critics.
+The models are created by the `build_agent` function of the `agent.py` file. The critics encode the observations with the encoder, while the actor encodes them with a copy of it: the agent ties the convolutional layers of the CNN encoder and the layers of the MLP encoder of the actor to the ones of the critics.
 
 ```python
 encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -52,13 +52,9 @@ return agent, encoder, decoder
 The algorithm is the `SACAE` class in the `sac_ae.py` file, run by the training loop shared by all the algorithms (`sheeprl.core.loop.run`). Its `build` method moves the models to the device with `sheeprl.core.setup_module`: the models are not wrapped in `DistributedDataParallel`, and with several processes `sheeprl.core.update` averages the gradients across them before every optimizer step.
 
 ```python
-agent, encoder, decoder = build_models(cfg, obs_space, action_space, fabric.device)
-encoder = setup_module(fabric, encoder)
-decoder = setup_module(fabric, decoder)
-agent.actor = setup_module(fabric, agent.actor)
-# Setting the critic also creates the target critic, as a copy of it
-agent.critic = setup_module(fabric, agent.critic)
-agent.critic_target = setup_module(fabric, agent.critic_target)
+# The modules set up on the device of the process (`setup_module`), and the policy to play with, which shares the
+# weights of the actor
+agent, encoder, decoder, player = build_agent(fabric, cfg, obs_space, action_space)
 ```
 
 Every iteration plays one step in every environment (with random actions until `algo.learning_starts`) and stores it in a replay buffer, then does `algo.replay_ratio` gradient steps per policy step, each one on its own batch sampled from the buffer.

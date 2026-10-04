@@ -9,10 +9,12 @@ name: sac_ae
 # Training recipe
 replay_ratio: 1.0
 learning_starts: 1000
-per_rank_pretrain_steps: 0
+# The official implementation does `init_steps` (1000) gradient steps at its first training
+per_rank_pretrain_steps: 1000
 
 # Model related parameters
-cnn_channels_multiplier: 16
+# The convolutions have 32 * `cnn_channels_multiplier` channels (32 in the official implementation)
+cnn_channels_multiplier: 1
 dense_units: 64
 mlp_layers: 2
 dense_act: torch.nn.ReLU
@@ -27,7 +29,7 @@ mlp_keys:
 # Encoder
 encoder:
   tau: 0.05
-  features_dim: 64
+  features_dim: 50
   cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}

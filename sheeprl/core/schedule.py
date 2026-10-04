@@ -78,10 +78,12 @@ class TrainSchedule:
             if cfg.dry_run:
                 # A dry run lasts until its first training
                 self.total_iters = max(self.total_iters, self.train_starts)
-            if checkpoint is not None and not refill:
-                self.ratio.load_state_dict(checkpoint["ratio"])
             # The replay ratio counts the policy steps from the start of the first training iteration
             self.prefill_steps = self.train_starts - 1
+            if checkpoint is not None and not refill:
+                self.ratio.load_state_dict(checkpoint["ratio"])
+                # The policy steps of every process counted by the ratio at the end of the iteration of the checkpoint
+                self.ratio.realign((self.start_iter - 1 - self.prefill_steps) * self.policy_steps_per_iter / world_size)
             # One gradient step per iteration, whatever the replay ratio (`exp=sac_benchmarks`)
             self.run_benchmarks = bool(cfg.get("run_benchmarks", False))
 

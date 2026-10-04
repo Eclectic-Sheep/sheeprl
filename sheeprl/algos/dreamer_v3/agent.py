@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -8,6 +9,7 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
+from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.distributions import (
@@ -15,7 +17,6 @@ from torch.distributions import (
     Independent,
     Normal,
     OneHotCategoricalStraightThrough,
-    TanhTransform,
     TransformedDistribution,
 )
 from torch.distributions.utils import probs_to_logits
@@ -33,6 +34,8 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
+from sheeprl.utils.distribution import SafeTanhTransform
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
 
@@ -764,6 +767,15 @@ class PlayerDV3(nn.Module):
         return actions
 
 
+def clip_actions(actions: Tensor, action_clip: float) -> Tensor:
+    """The continuous `actions` divided by their magnitude where it exceeds `action_clip` (when greater than 0), with
+    the gradient of the division stopped, as DreamerV3 clips the actions that its recurrent model takes."""
+    if action_clip > 0.0:
+        action_clip = torch.full_like(actions, action_clip)
+        actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
+    return actions
+
+
 class Actor(nn.Module):
     """
     The wrapper class of the Dreamer_v2 Actor model.
@@ -854,7 +866,7 @@ class Actor(nn.Module):
         self._action_clip = action_clip
 
     def forward(
-        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, clip: bool = True
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -866,6 +878,9 @@ class Actor(nn.Module):
                 Default to False.
             mask (Dict[str, Tensor], optional): the mask to use on the actions.
                 Default to None.
+            clip (bool): whether to clip the continuous actions to `action_clip` (`clip_actions`); without, the
+                samples of the distribution, whose log-probabilities REINFORCE takes.
+                Default to True.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -879,7 +894,7 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
             elif self.distribution == "normal":
                 # The std is the output of the network: made positive as the one of `tanh_normal`
                 std = F.softplus(std + self.init_std) + self.min_std
@@ -896,9 +911,8 @@ class Actor(nn.Module):
                 sample = actions_dist.sample((100,))
                 best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
                 actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
-            if self._action_clip > 0.0:
-                action_clip = torch.full_like(actions, self._action_clip)
-                actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
+            if clip:
+                actions = clip_actions(actions, self._action_clip)
             actions = [actions]
             actions_dist = [actions_dist]
         else:
@@ -957,7 +971,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, clip: bool = True
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -969,6 +983,8 @@ class MinedojoActor(Actor):
                 Default to False.
             mask (Dict[str, Tensor], optional): the mask to apply to the actions.
                 Default to None.
+            clip (bool): unused, the actions are discrete.
+                Default to True.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -1010,28 +1026,40 @@ class MinedojoActor(Actor):
         return tuple(actions), tuple(actions_dist)
 
 
-def build_models(
-    device: torch.device,
+def build_agent(
+    fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
-) -> Tuple[WorldModel, Actor | MinedojoActor, nn.Module]:
-    """Create the world model, the actor and the critic, with their initial weights. They are not set up with Fabric:
-    only the RSSM is moved to `device`, since its initial recurrent state belongs to no submodule.
+    world_model_state: Optional[Dict[str, Tensor]] = None,
+    actor_state: Optional[Dict[str, Tensor]] = None,
+    critic_state: Optional[Dict[str, Tensor]] = None,
+    target_critic_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
+    """Build the models and wrap them with Fabric.
 
     Args:
-        device (torch.device): the device of the RSSM.
+        fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
         cfg (DictConfig): the configs of DreamerV3.
         obs_space (Dict[str, Any]): the observation space.
+        world_model_state (Dict[str, Tensor], optional): the state of the world model.
+            Default to None.
+        actor_state: (Dict[str, Tensor], optional): the state of the actor.
+            Default to None.
+        critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
+        target_critic_state: (Dict[str, Tensor], optional): the state of the critic.
+            Default to None.
 
     Returns:
         The world model (WorldModel): composed by the encoder, rssm, observation and
         reward models and the continue model.
-        The actor (Actor | MinedojoActor).
-        The critic (nn.Module).
+        The actor (_FabricModule).
+        The critic (_FabricModule).
+        The target critic (nn.Module).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -1131,7 +1159,7 @@ def build_models(
         discrete=world_model_cfg.discrete_size,
         unimix=cfg.algo.unimix,
         learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
-    ).to(device)
+    ).to(fabric.device)
 
     cnn_decoder = (
         CNNDecoder(
@@ -1248,4 +1276,69 @@ def build_models(
             mlp_decoder.heads.apply(uniform_init_weights(1.0))
         if cnn_decoder is not None:
             cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
-    return world_model, actor, critic
+            # The projection of the latent state to the first feature maps: the default initializer of the linear
+            # layers of the official implementation, which its image decoder doesn't override
+            cnn_decoder.model[0].apply(uniform_init_weights(1.0))
+
+    # Load models from checkpoint
+    if world_model_state:
+        world_model.load_state_dict(world_model_state)
+    if actor_state:
+        actor.load_state_dict(actor_state)
+    if critic_state:
+        critic.load_state_dict(critic_state)
+
+    if fabric.device.type == "cuda":
+        # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
+        # activations from and to it (the values of the weights don't change). Before the copy of the player and the
+        # setup, which keep the layout: changing it later would replace the weights the player shares
+        world_model.encoder.to(memory_format=torch.channels_last)
+        world_model.observation_model.to(memory_format=torch.channels_last)
+
+    # Create the player agent
+    fabric_player = get_single_device_fabric(fabric)
+    player = PlayerDV3(
+        copy.deepcopy(world_model.encoder),
+        copy.deepcopy(world_model.rssm),
+        copy.deepcopy(actor),
+        actions_dim,
+        cfg.env.num_envs,
+        cfg.algo.world_model.stochastic_size,
+        cfg.algo.world_model.recurrent_model.recurrent_state_size,
+        fabric_player.device,
+        discrete_size=cfg.algo.world_model.discrete_size,
+    )
+
+    # Setup models with Fabric
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
+    if world_model.continue_model:
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    actor = setup_module(fabric, actor)
+    critic = setup_module(fabric, critic)
+
+    # The target critic: a copy of the critic, or the one of the checkpoint
+    target_critic = copy.deepcopy(critic.module)
+    if target_critic_state:
+        target_critic.load_state_dict(target_critic_state)
+    target_critic = setup_module(fabric, target_critic)
+
+    # Setup the player agent with a single-device Fabric
+    player.encoder = fabric_player.setup_module(player.encoder)
+    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
+    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
+    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
+    player.actor = fabric_player.setup_module(player.actor)
+
+    # Tie weights between the agent and the player
+    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+        p.data = agent_p.data
+    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+        p.data = agent_p.data
+    return world_model, actor, critic, target_critic, player

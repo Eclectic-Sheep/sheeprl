@@ -311,7 +311,8 @@ def test_registration_logs_the_trained_models(name):
     try:
         with (
             mock.patch.dict(sys.modules, {"mlflow": fake_mlflow}),
-            mock.patch.object(utils, "_IS_MLFLOW_AVAILABLE", True),
+            # The module of the function (A2C registers the agent of PPO with PPO's)
+            mock.patch.object(sys.modules[utils.log_models_from_checkpoint.__module__], "_IS_MLFLOW_AVAILABLE", True),
         ):
             utils.log_models_from_checkpoint(fabric, env, cfg, saved)
     finally:

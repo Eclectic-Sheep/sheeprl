@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Bernoulli, Categorical, Distribution, Independent, TransformedDistribution, constraints
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
+from torch.distributions.transforms import TanhTransform
 from torch.distributions.utils import broadcast_all
 
 from sheeprl.utils.utils import symexp, symlog
@@ -50,6 +51,22 @@ def entropy(dist: Distribution, n_samples: int = 100) -> Tensor:
     return value
 
 
+class SafeTanhTransform(TanhTransform):
+    """The tanh transform of the `TanhBijector` of DreamerV1 and DreamerV2: its inverse computes in float32 and clips
+    the values in [-1, 1] to the largest float32 below 1 in magnitude (the 0.99999997 of the official code) before the
+    atanh. The tanh of a value above ~9.01 in float32 (~3.47 in bfloat16) rounds to +-1, whose atanh is infinite: the
+    log-probability of such a sample (REINFORCE, the greedy actions) would be NaN, the infinite log-density of the base
+    distribution minus the infinite log-determinant of the Jacobian."""
+
+    def _inverse(self, y: Tensor) -> Tensor:
+        dtype = y.dtype
+        y = y.float()
+        # The float32 numbers below 1 are spaced by half the machine epsilon (the spacing above 1)
+        bound = 1 - torch.finfo(torch.float32).eps / 2
+        y = torch.where(y.abs() <= 1, y.clamp(-bound, bound), y)
+        return y.atanh().to(dtype)
+
+
 class TruncatedStandardNormal(Distribution):
     """
     Truncated Standard Normal distribution
@@ -71,7 +88,8 @@ class TruncatedStandardNormal(Distribution):
         super(TruncatedStandardNormal, self).__init__(batch_shape, validate_args=validate_args)
         if self.a.dtype != self.b.dtype:
             raise ValueError("Truncation bounds types are different")
-        if any((self.a >= self.b).view(-1).tolist()):
+        # A validation of the arguments: it reads the bounds on the host (a synchronization with the device)
+        if self._validate_args and any((self.a >= self.b).view(-1).tolist()):
             raise ValueError("Incorrect truncation range")
         eps = torch.finfo(self.a.dtype).eps
         self._dtype_min_gt_0 = eps

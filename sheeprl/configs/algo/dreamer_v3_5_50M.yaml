@@ -1,0 +1,13 @@
+# DreamerV3 (Nature version) with the 50M model of the official implementation (`size50m`)
+
+defaults:
+  - dreamer_v3_5
+  - _self_
+
+dense_units: 512
+cnn_channels_multiplier: 32
+world_model:
+  discrete_size: 32
+  recurrent_model:
+    recurrent_state_size: 4096
+    hidden_size: 512

@@ -168,9 +168,10 @@ def test_sample_tensors():
     td = {"observations": np.arange(8).reshape(-1, 1, 1), "dones": np.zeros((8, 1, 1))}
     td["dones"][-1] = 1
     rb.add(td)
-    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3, sequence_length=5)
+    # A sequence of 4 steps and its next observation fill the buffer
+    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3, sequence_length=4)
     assert isinstance(s["observations"], torch.Tensor)
-    assert s["observations"].shape == torch.Size([3, 5, 10, 1])
+    assert s["observations"].shape == torch.Size([3, 4, 10, 1])
 
 
 def test_sample_tensor_memmap():
@@ -192,3 +193,26 @@ def test_sample_tensor_memmap():
     assert sample["observations"].shape == torch.Size([3, 5, 10, 3, 64, 64])
     del rb
     shutil.rmtree(root_dir)
+
+
+@pytest.mark.parametrize("steps", [3, 7])
+def test_the_sequences_end_before_the_newest_step_with_their_next_observations(steps):
+    # The next observation of the newest step is not in the buffer: the row after it is not written yet (3 steps) or
+    # holds the oldest step (7 steps in a buffer of 5)
+    rb = SequentialReplayBuffer(5, 1, obs_keys=("value",), seed=0)
+    rb.add({"value": np.arange(steps).reshape(-1, 1, 1)})
+    sample = rb.sample(200, sample_next_obs=True, sequence_length=2)
+    value, next_value = sample["value"][0, :, :, 0], sample["next_value"][0, :, :, 0]
+    assert value.max() == steps - 2
+    np.testing.assert_array_equal(next_value, value + 1)
+
+
+def test_a_sequence_with_its_next_observation_needs_one_more_step():
+    rb = SequentialReplayBuffer(5, 1, seed=0)
+    rb.add({"value": np.arange(2).reshape(-1, 1, 1)})
+    rb.sample(1, sequence_length=2)
+    with pytest.raises(ValueError, match="Cannot sample a sequence of length 2 and its next observation"):
+        rb.sample(1, sample_next_obs=True, sequence_length=2)
+    rb.add({"value": np.arange(2, 5).reshape(-1, 1, 1)})
+    with pytest.raises(ValueError, match="and its next observation is greater than the buffer size"):
+        rb.sample(1, sample_next_obs=True, sequence_length=5)

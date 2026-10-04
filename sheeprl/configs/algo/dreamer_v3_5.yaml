@@ -1,0 +1,169 @@
+# DreamerV3 of the Nature paper (Hafner et al., 2025), with the defaults of the official implementation
+# (https://github.com/danijar/dreamerv3/blob/main/dreamerv3/configs.yaml): the 200M model (`size200m`).
+# The other sizes are `dreamer_v3_5_<size>` (1M, 12M, 25M, 50M, 100M, 200M, 400M).
+
+defaults:
+  - default
+  - _self_
+
+name: dreamer_v3_5
+# The discount: 1 - 1 / 333 (the `horizon` of the official configuration)
+gamma: 0.996996996996997
+lmbda: 0.95
+# The length of the imagined trajectories (the `imag_length` of the official configuration)
+horizon: 15
+# The bounded dimensions of continuous actions exposed as [-1, 1] (the range of the actor), rescaled to the bounds of
+# the environment (`sheeprl.envs.wrappers.NormalizeAction`)
+normalize_actions: True
+
+# Training recipe
+# The gradient steps per policy step: the `train_ratio` of the official configuration divided by the steps of a batch
+# (`per_rank_batch_size * per_rank_sequence_length`), e.g. 32 / (16 * 64)
+replay_ratio: 0.03125
+# The policy plays from the first step: the training starts after `learning_starts` policy steps
+learning_starts: 1024
+per_rank_pretrain_steps: 0
+per_rank_sequence_length: 64
+# The steps before every sampled sequence whose latent state (kept in the replay buffer) starts the training of the
+# sequence; 0 to start the sequences from zeros (the `replay_context` of the official configuration)
+replay_context: 1
+# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start.
+# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
+# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
+compile:
+  enabled: False
+  mode: reduce-overhead
+
+# Encoder and decoder keys
+cnn_keys:
+  decoder: ${algo.cnn_keys.encoder}
+mlp_keys:
+  decoder: ${algo.mlp_keys.encoder}
+
+# Model related parameters
+dense_units: 1024
+dense_act: torch.nn.SiLU
+# The epsilon of the RMSNorms
+norm_eps: 1e-4
+# The channels of the convolutions are `cnn_channels_multiplier` times `cnn_stages`
+cnn_channels_multiplier: 64
+cnn_stages: [2, 3, 4, 4]
+cnn_kernel_size: 5
+
+# The scales of the losses
+loss_scales:
+  observation: 1.0
+  reward: 1.0
+  continue: 1.0
+  dynamic: 1.0
+  representation: 0.1
+  policy: 1.0
+  value: 1.0
+  replay_value: 0.3
+
+# World model
+world_model:
+  discrete_size: 64
+  stochastic_size: 32
+  unimix: 0.01
+  kl_free_nats: 1.0
+  # The continue model predicts the discount `gamma` of the steps that don't terminate the episode (`contdisc`)
+  continue_discount: True
+  # The reward loss trains the latent states (`reward_grad`)
+  reward_grad: True
+
+  # Encoder
+  encoder:
+    cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
+    cnn_stages: ${algo.cnn_stages}
+    cnn_kernel_size: ${algo.cnn_kernel_size}
+    mlp_layers: 3
+    dense_units: ${algo.dense_units}
+    symlog_inputs: True
+
+  # Recurrent model: a GRU with block-diagonal weights
+  recurrent_model:
+    recurrent_state_size: 8192
+    # The size of the projections of the recurrent state, of the stochastic state and of the actions
+    hidden_size: 1024
+    blocks: 8
+    dynamics_layers: 1
+
+  # Prior
+  transition_model:
+    hidden_size: ${algo.world_model.recurrent_model.hidden_size}
+    layers: 2
+
+  # Posterior
+  representation_model:
+    hidden_size: ${algo.world_model.recurrent_model.hidden_size}
+    layers: 1
+
+  # Decoder
+  observation_model:
+    cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
+    cnn_stages: ${algo.cnn_stages}
+    cnn_kernel_size: ${algo.cnn_kernel_size}
+    # The blocks of the projection of the recurrent state to the first feature maps; 0 to project the whole latent
+    # state with a linear layer
+    block_space: 8
+    mlp_layers: 3
+    dense_units: ${algo.dense_units}
+
+  # Reward model
+  reward_model:
+    mlp_layers: 1
+    dense_units: ${algo.dense_units}
+    bins: 255
+
+  # Continue model
+  discount_model:
+    mlp_layers: 1
+    dense_units: ${algo.dense_units}
+
+# Actor
+actor:
+  ent_coef: 3e-4
+  min_std: 0.1
+  max_std: 1.0
+  mlp_layers: 3
+  dense_units: ${algo.dense_units}
+  # The share of the uniform distribution mixed into the categoricals of the discrete actions (the official
+  # implementation doesn't mix it)
+  unimix: 0.0
+  outscale: 0.01
+
+  # The scale of the returns: the range between their percentiles, at least `max`
+  moments:
+    decay: 0.99
+    max: 1.0
+    percentile:
+      low: 0.05
+      high: 0.95
+
+# Critic
+critic:
+  mlp_layers: 3
+  dense_units: ${algo.dense_units}
+  bins: 255
+  outscale: 0.0
+  # The slow critic: an exponential moving average of the critic, updated after every
+  # `per_rank_target_network_update_freq` gradient steps with weight `tau`
+  per_rank_target_network_update_freq: 1
+  tau: 0.02
+  # The weight of the loss towards the values of the slow critic
+  slow_regularizer: 1.0
+  # Train the critic also on the replayed sequences (`repval_loss`), also training the world model (`repval_grad`)
+  replay_loss: True
+  replay_grad: True
+
+# One optimizer for the world model, the actor and the critic
+optimizer:
+  _target_: sheeprl.algos.dreamer_v3_5.optim.LaProp
+  lr: 4e-5
+  betas: [0.9, 0.999]
+  eps: 1e-20
+  agc: 0.3
+  agc_pmin: 1e-3
+  warmup: 1000
+  weight_decay: 0.0

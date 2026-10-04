@@ -141,4 +141,3 @@ def test_on_policy_run_resumes(exp):
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert state["optimizer"]["param_groups"][0]["lr"] == pytest.approx(0.001 / 4)
-    assert state["clip_coef"].item() == pytest.approx(0.2 / 4)

@@ -1,68 +1,20 @@
-"""The rollouts and the losses of PPO and A2C: bootstrapped rewards, value loss, advantage normalization, buffer
-size."""
+"""PPO and A2C: the rewards of the rollout, the losses, the advantages."""
 
-from types import SimpleNamespace
+import glob
+import importlib
+import os
+import shutil
+import sys
+from unittest import mock
 
 import numpy as np
 import pytest
 import torch
-from lightning import Fabric
 
-from sheeprl.algos.a2c.a2c import A2C
-from sheeprl.algos.a2c.a2c import RolloutPlayer as A2CRolloutPlayer
-from sheeprl.algos.ppo.agent import PPOPlayer
+from sheeprl import ROOT_DIR
 from sheeprl.algos.ppo.loss import value_loss
-from sheeprl.algos.ppo.ppo import PPO
-from sheeprl.algos.ppo.ppo import RolloutPlayer as PPORolloutPlayer
-from sheeprl.core import EnvStep, Rollout
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.utils import dotdict, normalize_tensor
-from tests.test_algos.test_ppo_agent import build_agent
-
-
-def config(clip_rewards: bool = False, buffer_size: int = 4) -> dotdict:
-    return dotdict(
-        {
-            "algo": {
-                "cnn_keys": {"encoder": []},
-                "mlp_keys": {"encoder": ["state"]},
-                "gamma": 0.9,
-                "rollout_steps": 4,
-            },
-            "env": {"clip_rewards": clip_rewards, "wrapper": {"_target_": "gymnasium.make"}},
-            "buffer": {"size": buffer_size, "memmap": False, "validate_args": False},
-        }
-    )
-
-
-@pytest.mark.parametrize("player_cls", [PPORolloutPlayer, A2CRolloutPlayer])
-@pytest.mark.parametrize("clip_rewards", [False, True])
-def test_rollout_bootstraps_only_the_truncated_episodes(player_cls, clip_rewards):
-    # Three envs end their episode with reward 3: truncated by the time limit, truncated and terminated in the same
-    # step, terminated. Only the first one goes on in the MDP: its reward gets gamma times the value (2) of its final
-    # observation, added after the clipping of the reward (PPO; A2C doesn't clip)
-    num_envs = 3
-    obs = {"state": np.zeros((num_envs, 8), dtype=np.float32)}
-    step = EnvStep(
-        obs=obs,
-        next_obs={"state": np.ones((num_envs, 8), dtype=np.float32)},
-        rewards=np.full(num_envs, 3.0),
-        terminated=np.array([False, True, True]),
-        truncated=np.array([True, True, False]),
-        info={"final_obs": np.array([{"state": np.full(8, 5, dtype=np.float32)}] * num_envs, dtype=object)},
-    )
-    env = SimpleNamespace(num_envs=num_envs, obs=obs, step=lambda actions: step)
-    agent = build_agent(ortho_init=False)
-    policy = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
-    policy.get_values = lambda obs: torch.full((len(obs["state"]), 1), 2.0)
-    cfg = config(clip_rewards=clip_rewards)
-    rollout = Rollout(ReplayBuffer(1, num_envs, memmap=False, obs_keys=["state"]))
-    with torch.no_grad():
-        player_cls(Fabric(accelerator="cpu", devices=1), cfg, policy).step(env, rollout)
-
-    reward = np.tanh(3.0) if clip_rewards and player_cls is PPORolloutPlayer else 3.0
-    np.testing.assert_allclose(rollout.buffer["rewards"][0, :, 0], [reward + 0.9 * 2.0, reward, reward], rtol=1e-6)
-    np.testing.assert_array_equal(rollout.buffer["dones"][0, :, 0], [1, 1, 1])
+from sheeprl.algos.ppo.utils import bootstrap_truncated
+from sheeprl.utils.utils import normalize_tensor
 
 
 @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
@@ -87,11 +39,113 @@ def test_normalize_tensor_of_one_element():
     torch.testing.assert_close(normalized.mean(), torch.tensor(0.0))
 
 
-@pytest.mark.parametrize("algo_cls", [PPO, A2C])
-def test_the_buffer_holds_one_rollout(algo_cls):
-    # A larger buffer was accepted: its rows beyond the rollout were trained on, and the returns computed on the wrong
-    # rows from the second iteration
-    fabric = Fabric(accelerator="cpu", devices=1)
-    algo_cls(fabric, config(buffer_size=4))
-    with pytest.raises(ValueError, match="must be equal to the rollout steps"):
-        algo_cls(fabric, config(buffer_size=8))
+@pytest.mark.parametrize("clip_rewards", [False, True])
+def test_only_the_truncated_episodes_are_bootstrapped(clip_rewards):
+    # Three environments: truncated, truncated and terminated in the same step (gymnasium's `TimeLimit` truncates also
+    # when the termination falls on the last allowed step), terminated. Only the first one is bootstrapped, with the
+    # value of its final observation added after the reward is clipped (it was clipped with it)
+    rewards = np.full(3, 3.0)
+    if clip_rewards:
+        rewards = np.tanh(rewards)
+    asked = []
+
+    def final_values(env_idxes):
+        asked.append(env_idxes.tolist())
+        return np.full((len(env_idxes), 1), 2.0)
+
+    terminated = np.array([False, True, True])
+    truncated = np.array([True, True, False])
+    bootstrapped = bootstrap_truncated(rewards, terminated, truncated, final_values, gamma=0.9)
+    reward = np.tanh(3.0) if clip_rewards else 3.0
+    np.testing.assert_allclose(bootstrapped, [reward + 0.9 * 2.0, reward, reward])
+    assert asked == [[0]]
+    # The rewards given are left as they are
+    np.testing.assert_allclose(rewards, np.full(3, reward))
+
+
+@pytest.mark.parametrize("exp", ["ppo", "a2c"])
+def test_the_buffer_holds_one_rollout(exp):
+    # A larger buffer was accepted: the training read its rows never written, and from the second rollout computed the
+    # returns over rows of different rollouts
+    from sheeprl.cli import run
+
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        f"exp={exp}",
+        "dry_run=True",
+        "algo.rollout_steps=4",
+        "buffer.size=8",
+        "env.num_envs=1",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "root_dir=pytest_ppo_buffer_size",
+    ]
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(sys, "argv", args),
+            pytest.raises(ValueError, match=r"The size of the buffer \(8\) must be equal to the rollout steps \(4\)"),
+        ):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", "pytest_ppo_buffer_size"), ignore_errors=True)
+
+
+@pytest.mark.parametrize("exp", ["ppo", "ppo_recurrent"])
+def test_a_resumed_run_anneals_with_its_own_total_steps(exp):
+    # A run of 2 iterations resumed for 4: the learning rate and the clip coefficient of iterations 3 and 4 are the ones
+    # of a run of 4 iterations. The scheduler of the checkpoint kept the horizon of 2 (learning rate 0 after it), and
+    # the coefficients restarted from the configured ones
+    from sheeprl.cli import run
+
+    module = importlib.import_module(f"sheeprl.algos.{exp}.{exp}")
+    root_dir = f"pytest_{exp}_anneal"
+    args = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        f"exp={exp}",
+        "env.num_envs=2",
+        "algo.rollout_steps=4",
+        "algo.per_rank_batch_size=4",
+        "algo.anneal_lr=True",
+        "algo.anneal_clip_coef=True",
+        "algo.optimizer.lr=1e-3",
+        "algo.clip_coef=0.2",
+        "algo.run_test=False",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.devices=1",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "checkpoint.save_last=True",
+        f"root_dir={root_dir}",
+    ]
+    if exp == "ppo_recurrent":
+        args.append("algo.per_rank_sequence_length=2")
+    schedule = []
+
+    # The values used by the training of every iteration
+    algorithm = module.PPO if exp == "ppo" else module.PPORecurrent
+
+    def recording_end_iteration(self, state, iteration):
+        schedule.append((state.optimizer.param_groups[0]["lr"], self.cfg.algo.clip_coef))
+        return end_iteration(self, state, iteration)
+
+    end_iteration = algorithm.end_iteration
+    try:
+        with (
+            mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
+            mock.patch.object(algorithm, "end_iteration", recording_end_iteration),
+        ):
+            with mock.patch.object(sys, "argv", [*args, "algo.total_steps=16", "run_name=first"]):
+                run()
+            (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "first", "version_*", "checkpoint", "*"))
+            with mock.patch.object(
+                sys, "argv", [*args, "algo.total_steps=32", "run_name=resumed", f"checkpoint.resume_from={ckpt_path}"]
+            ):
+                run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    np.testing.assert_allclose(schedule, [(1e-3, 0.2), (5e-4, 0.1), (5e-4, 0.1), (2.5e-4, 0.05)])

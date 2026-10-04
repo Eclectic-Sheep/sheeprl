@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, Sequence
 import gymnasium as gym
 from lightning import Fabric
 
+from sheeprl.algos.droq.agent import build_agent
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS as sac_aggregator_keys
 from sheeprl.algos.sac.utils import MODELS_TO_REGISTER as sac_models_to_register
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
@@ -24,18 +25,14 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.droq.droq import DroQ
-    from sheeprl.core import load_trained_state
-
-    # The models are built as by the training, with its configuration
-    algo = DroQ(fabric, cfg.to_log)
-    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
+    # Create the models
+    agent, _ = build_agent(fabric, cfg, env.observation_space, env.action_space, state["agent"])
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
         model_info["agent"] = mlflow.pytorch.log_model(
-            unwrap_fabric(trained.agent), name="agent", serialization_format="pickle"
+            unwrap_fabric(agent), name="agent", serialization_format="pickle"
         )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

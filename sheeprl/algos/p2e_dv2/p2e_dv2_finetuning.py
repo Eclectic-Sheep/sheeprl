@@ -7,32 +7,23 @@ the exploration actor (`algo.player.actor_type`) until the training starts, then
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
-import hydra
 from lightning.fabric import Fabric
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import (
-    SequencePlayer,
-    actions_dim_of,
-    behaviour_learning,
-    build_buffer,
-    check_keys,
-    sample_batches,
-    setup_world_model,
-    world_model_learning,
-)
-from sheeprl.algos.dreamer_v2.utils import test
-from sheeprl.algos.p2e_dv2.agent import build_models
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run, setup_module
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys, train
+from sheeprl.algos.dreamer_v2.utils import build_buffer, build_optimizer, sample_batches, test
+from sheeprl.algos.p2e_dv2.agent import build_agent
+from sheeprl.core import Algorithm, Metrics, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import unwrap_fabric
 
 
 @dataclass
@@ -102,19 +93,15 @@ class P2EDV2Finetuning(Algorithm):
 
         # The exploration critic and the ensembles are not used: they are built to initialize the models in the same
         # order as the exploration did
-        world_model, actor_exploration, _, actor_task, critic_task, _ = build_models(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
+        # The exploration critics and the ensembles are not used: they are built to initialize the models in the same
+        # order as the exploration did. The policy plays with the actor of `algo.player.actor_type` until the training
+        # starts (see `batches`)
+        world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, _, self._policy = (
+            build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
         )
-        world_model = setup_world_model(fabric, world_model)
-        actor_exploration = setup_module(fabric, actor_exploration)
-        actor_task = setup_module(fabric, actor_task)
-        critic_task = setup_module(fabric, critic_task)
-        target_critic_task = setup_module(fabric, copy.deepcopy(critic_task.module))
 
         def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
-            return fabric.setup_optimizers(
-                hydra.utils.instantiate(optimizer_cfg, params=module.parameters(), _convert_="all")
-            )
+            return fabric.setup_optimizers(build_optimizer(optimizer_cfg, module.parameters()))
 
         state = P2EDV2FinetuningState(
             world_model=world_model,
@@ -138,33 +125,26 @@ class P2EDV2Finetuning(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: P2EDV2FinetuningState, actor: nn.Module, actor_type: str | None) -> PlayerDV2:
-        """The policy to play with `actor`: it shares its modules (and so its weights) with the trained agent."""
-        cfg = self.cfg
-        return PlayerDV2(
-            state.world_model.encoder,
-            state.world_model.rssm.recurrent_model,
-            state.world_model.rssm.representation_model,
-            actor,
-            self.actions_dim,
-            cfg.env.num_envs,
-            cfg.algo.world_model.stochastic_size,
-            cfg.algo.world_model.recurrent_model.recurrent_state_size,
-            self.fabric.device,
-            discrete_size=cfg.algo.world_model.discrete_size,
-            actor_type=actor_type,
-        )
+    def policy(self, state: P2EDV2FinetuningState) -> PlayerDV2:
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
+
+    def task_policy(self, state: P2EDV2FinetuningState) -> PlayerDV2:
+        """The policy of the task actor, which plays from the first training on."""
+        policy = self.policy(state)
+        if policy.actor_type != "task":
+            policy.actor_type = "task"
+            policy.actor = get_single_device_fabric(self.fabric).setup_module(unwrap_fabric(state.actor_task))
+            for agent_p, p in zip(state.actor_task.parameters(), policy.actor.parameters()):
+                p.data = agent_p.data
+        return policy
 
     def player(self, state: P2EDV2FinetuningState) -> SequencePlayer:
-        # The actor of `algo.player.actor_type` plays until the training starts (see `batches`); no random actions
-        if self.cfg.algo.player.actor_type == "exploration":
-            self.acting_policy = self.policy(state, state.actor_exploration, "exploration")
-        else:
-            self.acting_policy = self.policy(state, state.actor_task, "task")
+        # No random actions
         return SequencePlayer(
             self.fabric,
             self.cfg,
-            self.acting_policy,
+            self.policy(state),
             self.schedule,
             self.actions_dim,
             self.is_continuous,
@@ -179,44 +159,30 @@ class P2EDV2Finetuning(Algorithm):
         iteration: int,
     ) -> Iterator[Dict[str, Tensor]]:
         # From the first training on, the task actor plays
-        if self.acting_policy.actor_type != "task":
-            self.acting_policy.actor_type = "task"
-            self.acting_policy.actor = state.actor_task
+        self.task_policy(state)
         yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
 
     def train_step(self, state: P2EDV2FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        cfg = self.cfg
         # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps
-        if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
+        if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
             for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
                 tcp.data.copy_(cp.data)
-
-        posteriors, recurrent_states, metrics = world_model_learning(
-            self.fabric, cfg, state.world_model, state.world_optimizer, batch
-        )
-        task = behaviour_learning(
+        metrics = Metrics()
+        train(
             self.fabric,
-            cfg,
             state.world_model,
             state.actor_task,
             state.critic_task,
             state.target_critic_task,
+            state.world_optimizer,
             state.actor_task_optimizer,
             state.critic_task_optimizer,
-            posteriors,
-            recurrent_states,
-            batch["terminated"],
-            self.is_continuous,
-            self.actions_dim,
-            objective_mix=cfg.algo.actor.objective_mix,
+            batch,
+            metrics,
+            self.cfg,
+            actions_dim=self.actions_dim,
         )
-        metrics["Loss/policy_loss"] = task["policy_loss"]
-        metrics["Loss/value_loss"] = task["value_loss"]
-        if task["actor_grads"] is not None:
-            metrics["Grads/actor"] = task["actor_grads"]
-        if task["critic_grads"] is not None:
-            metrics["Grads/critic"] = task["critic_grads"]
-        return metrics
+        return metrics.values
 
 
 @register_algorithm()
@@ -226,7 +192,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state, state.actor_task, "task"), fabric, cfg, log_dir, "few-shot", policy_step=policy_step)
+        test(algo.task_policy(state), fabric, cfg, log_dir, "few-shot", policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

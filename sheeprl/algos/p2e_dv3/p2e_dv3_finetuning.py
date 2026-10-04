@@ -7,7 +7,6 @@ the exploration actor (`algo.player.actor_type`) until the training starts, then
 
 from __future__ import annotations
 
-import copy
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
@@ -19,14 +18,16 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import env_buffer_size, sample_batches
+from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
-from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, behaviour_learning, world_model_learning
+from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
-from sheeprl.algos.p2e_dv3.agent import build_models
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run, setup_module
+from sheeprl.algos.p2e_dv3.agent import build_agent
+from sheeprl.core import Algorithm, Metrics, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import unwrap_fabric
 
 
 @dataclass
@@ -123,21 +124,12 @@ class P2EDV3Finetuning(Algorithm):
 
         # The exploration critics and the ensembles are not used: they are built to initialize the models in the same
         # order as the exploration did
-        world_model, actor_task, critic_task, actor_exploration, _, _ = build_models(
+        # The exploration critics and the ensembles are not used: they are built to initialize the models in the same
+        # order as the exploration did. The policy plays with the actor of `algo.player.actor_type` until the training
+        # starts (see `batches`)
+        world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, self._policy = build_agent(
             fabric, self.actions_dim, self.is_continuous, cfg, obs_space
         )
-        world_model.encoder = setup_module(fabric, world_model.encoder)
-        world_model.observation_model = setup_module(fabric, world_model.observation_model)
-        world_model.reward_model = setup_module(fabric, world_model.reward_model)
-        world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
-        world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
-        world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
-        if world_model.continue_model:
-            world_model.continue_model = setup_module(fabric, world_model.continue_model)
-        actor_task = setup_module(fabric, actor_task)
-        critic_task = setup_module(fabric, critic_task)
-        target_critic_task = setup_module(fabric, copy.deepcopy(critic_task.module)).requires_grad_(False)
-        actor_exploration = setup_module(fabric, actor_exploration)
 
         def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(
@@ -179,30 +171,26 @@ class P2EDV3Finetuning(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: P2EDV3FinetuningState, actor: nn.Module, actor_type: str | None) -> PlayerDV3:
-        """The policy to play with `actor`: it shares its modules (and so its weights) with the trained agent."""
-        cfg = self.cfg
-        return PlayerDV3(
-            state.world_model.encoder,
-            state.world_model.rssm,
-            actor,
-            self.actions_dim,
-            cfg.env.num_envs,
-            cfg.algo.world_model.stochastic_size,
-            cfg.algo.world_model.recurrent_model.recurrent_state_size,
-            self.fabric.device,
-            discrete_size=cfg.algo.world_model.discrete_size,
-            actor_type=actor_type,
-        )
+    def policy(self, state: P2EDV3FinetuningState) -> PlayerDV3:
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
+
+    def task_policy(self, state: P2EDV3FinetuningState) -> PlayerDV3:
+        """The policy of the task actor, which plays from the first training on."""
+        policy = self.policy(state)
+        if policy.actor_type != "task":
+            policy.actor_type = "task"
+            policy.actor = get_single_device_fabric(self.fabric).setup_module(unwrap_fabric(state.actor_task))
+            for agent_p, p in zip(state.actor_task.parameters(), policy.actor.parameters()):
+                p.data = agent_p.data
+        return policy
 
     def player(self, state: P2EDV3FinetuningState) -> SequencePlayer:
-        # The actor of `algo.player.actor_type` plays until the training starts (see `batches`); no random actions
-        actor = state.actor_exploration if self.cfg.algo.player.actor_type == "exploration" else state.actor_task
-        self.acting_policy = self.policy(state, actor, None)
+        # No random actions
         return SequencePlayer(
             self.fabric,
             self.cfg,
-            self.acting_policy,
+            self.policy(state),
             self.schedule,
             self.actions_dim,
             self.is_continuous,
@@ -214,9 +202,7 @@ class P2EDV3Finetuning(Algorithm):
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # From the first training on, the task actor plays
-        if self.acting_policy.actor_type != "task":
-            self.acting_policy.actor_type = "task"
-            self.acting_policy.actor = state.actor_task
+        self.task_policy(state)
         yield from sample_batches(self.fabric, cfg, buffer, n_steps)
 
     def train_step(self, state: P2EDV3FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
@@ -229,32 +215,24 @@ class P2EDV3Finetuning(Algorithm):
             for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
 
-        posteriors, recurrent_states, metrics = world_model_learning(
-            self.fabric, cfg, state.world_model, state.world_optimizer, batch
-        )
-        task = behaviour_learning(
+        metrics = Metrics()
+        train(
             self.fabric,
-            cfg,
             state.world_model,
             state.actor_task,
             state.critic_task,
             state.target_critic_task,
+            state.world_optimizer,
             state.actor_task_optimizer,
             state.critic_task_optimizer,
-            state.moments_task,
-            posteriors,
-            recurrent_states,
-            batch["terminated"],
-            self.is_continuous,
-            self.actions_dim,
+            batch,
+            metrics,
+            cfg,
+            is_continuous=self.is_continuous,
+            actions_dim=self.actions_dim,
+            moments=state.moments_task,
         )
-        metrics["Loss/policy_loss"] = task["policy_loss"]
-        metrics["Loss/value_loss"] = task["value_loss"]
-        if task["actor_grads"] is not None:
-            metrics["Grads/actor"] = task["actor_grads"]
-        if task["critic_grads"] is not None:
-            metrics["Grads/critic"] = task["critic_grads"]
-        return metrics
+        return metrics.values
 
 
 @register_algorithm()
@@ -265,7 +243,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
         test(
-            algo.policy(state, state.actor_task, "task"),
+            algo.task_policy(state),
             fabric,
             cfg,
             log_dir,

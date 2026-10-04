@@ -5,11 +5,13 @@ import gymnasium
 import hydra
 import torch
 import torch.nn as nn
+from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class RecurrentModel(nn.Module):
@@ -413,3 +415,50 @@ class RecurrentPPOPlayer(nn.Module):
                 else:
                     sampled_actions.append(dist.sample())
         return tuple(sampled_actions), states
+
+
+def build_agent(
+    fabric: Fabric,
+    actions_dim: Sequence[int],
+    is_continuous: bool,
+    cfg: Dict[str, Any],
+    obs_space: gymnasium.spaces.Dict,
+    agent_state: Optional[Dict[str, Tensor]] = None,
+) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
+    agent = RecurrentPPOAgent(
+        actions_dim=actions_dim,
+        obs_space=obs_space,
+        encoder_cfg=cfg.algo.encoder,
+        rnn_cfg=cfg.algo.rnn,
+        actor_cfg=cfg.algo.actor,
+        critic_cfg=cfg.algo.critic,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
+        is_continuous=is_continuous,
+        distribution_cfg=cfg.distribution,
+        num_envs=cfg.env.num_envs,
+        screen_size=cfg.env.screen_size,
+        device=fabric.device,
+    )
+    if agent_state:
+        agent.load_state_dict(agent_state)
+
+    # Setup training agent
+    agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
+    agent.rnn = setup_module(fabric, agent.rnn)
+    agent.critic = setup_module(fabric, agent.critic)
+    agent.actor = setup_module(fabric, agent.actor)
+
+    # Setup player agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
+    # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
+    # (`flatten_parameters`): the player played with the initial weights for the whole training
+    fabric_player = get_single_device_fabric(fabric)
+    player = RecurrentPPOPlayer(
+        fabric_player.setup_module(agent.feature_extractor.module),
+        fabric_player.setup_module(agent.rnn.module),
+        fabric_player.setup_module(agent.actor.module),
+        fabric_player.setup_module(agent.critic.module),
+        cfg.algo.rnn.lstm.hidden_size,
+        actions_dim,
+    )
+    return agent, player

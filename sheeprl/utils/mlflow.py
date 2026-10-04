@@ -105,7 +105,8 @@ class MlflowModelManager(AbstractModelManager):
         self.fabric.print(f"Registered model {model_name} with version {model_version.version}")
         registered_model_description = self.client.get_registered_model(model_name).description or ""
 
-        if model_version.version == "1":
+        # The version is a string or an integer, depending on the store
+        if str(model_version.version) == "1":
             header = "# MODEL CHANGELOG\n"
         else:
             header = ""

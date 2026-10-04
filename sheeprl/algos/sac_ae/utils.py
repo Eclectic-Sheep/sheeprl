@@ -41,8 +41,6 @@ def prepare_obs(
 
 @torch.no_grad()
 def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
-    """Play one episode and log its return at `policy_step`: the last policy step of the training (0 for an
-    evaluation)."""
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
@@ -124,19 +122,24 @@ def log_models_from_checkpoint(
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
     import mlflow  # noqa
 
-    from sheeprl.algos.sac_ae.sac_ae import SACAE
-    from sheeprl.core import load_trained_state
+    from sheeprl.algos.sac_ae.agent import build_agent
 
-    # The models are built as by the training, with its configuration
-    algo = SACAE(fabric, cfg.to_log)
-    trained = load_trained_state(fabric, cfg.to_log, algo, state, env.observation_space, env.action_space)
+    # Create the models
+    agent, encoder, decoder, _ = build_agent(
+        fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]
+    )
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        for name in ("agent", "encoder", "decoder"):
-            model_info[name] = mlflow.pytorch.log_model(
-                unwrap_fabric(getattr(trained, name)), name=name, serialization_format="pickle"
-            )
+        model_info["agent"] = mlflow.pytorch.log_model(
+            unwrap_fabric(agent), name="agent", serialization_format="pickle"
+        )
+        model_info["encoder"] = mlflow.pytorch.log_model(
+            unwrap_fabric(encoder), name="encoder", serialization_format="pickle"
+        )
+        model_info["decoder"] = mlflow.pytorch.log_model(
+            unwrap_fabric(decoder), name="decoder", serialization_format="pickle"
+        )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

@@ -22,6 +22,7 @@ The list of selectable algorithms is given below:
 * `p2e_dv3`
 * `ppo`
 * `ppo_recurrent`
+* `sac_ae`
 
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 

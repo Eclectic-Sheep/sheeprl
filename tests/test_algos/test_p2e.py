@@ -1,115 +1,201 @@
-"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the optimizer of the ensembles, the slow critic of a finetuning, the
-configuration of the actors."""
+"""Plan2Explore (P2E-DV1, P2E-DV2, P2E-DV3): the update of the ensembles, their optimizer, the finetunings."""
 
-from typing import List
+import copy
+import glob
+import importlib
+import inspect
+import os
+import shutil
+import sys
+from unittest import mock
 
-import gymnasium as gym
 import numpy as np
 import pytest
 import torch
-from hydra import compose, initialize_config_module
-from lightning import Fabric
-from omegaconf import OmegaConf
 
-from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import P2EDV1Exploration
-from sheeprl.algos.p2e_dv2.p2e_dv2_exploration import P2EDV2Exploration
-from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning
-from sheeprl.algos.p2e_dv3.p2e_dv3_exploration import P2EDV3Exploration
-from sheeprl.algos.p2e_dv3.p2e_dv3_finetuning import P2EDV3Finetuning
-from sheeprl.core import TrainSchedule
-from sheeprl.utils.utils import dotdict
+from sheeprl import ROOT_DIR
+from sheeprl.utils.imports import _IS_WINDOWS
 
-# Small models, the observations of the dummy environment
-SMALL_ARGS = [
+P2E_ARGS = [
+    "hydra/job_logging=disabled",
+    "hydra/hydra_logging=disabled",
+    "dry_run=True",
     "env=dummy",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.cnn_keys.decoder=[rgb]",
+    "env.id=discrete_dummy",
+    "env.num_envs=2",
+    "env.sync_env=True",
+    "env.capture_video=False",
+    "fabric.devices=1",
+    "fabric.accelerator=cpu",
+    "metric.log_level=0",
+    "checkpoint.save_last=True",
+    "algo.run_test=False",
+    "algo.cnn_keys.encoder=[]",
+    "algo.cnn_keys.decoder=[]",
     "algo.mlp_keys.encoder=[state]",
     "algo.mlp_keys.decoder=[state]",
     "algo.dense_units=8",
-    "algo.world_model.encoder.cnn_channels_multiplier=2",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
     "algo.world_model.transition_model.hidden_size=8",
-    "metric.log_level=0",
+    "algo.horizon=4",
+    "algo.per_rank_batch_size=1",
+    "algo.learning_starts=0",
+    "algo.replay_ratio=1",
+    "algo.ensembles.n=2",
+    "buffer.size=10",
 ]
-OBS_SPACE = gym.spaces.Dict(
-    {
-        "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
-        "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
-    }
-)
 
 
-def config(overrides: List[str]) -> dotdict:
-    """The configuration the CLI gives to the algorithms (without checking the mandatory values)."""
-    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
-        return dotdict(OmegaConf.to_container(compose(config_name="config", overrides=overrides), resolve=True))
+def run_p2e(args, root_dir):
+    from sheeprl.cli import run
+
+    argv = [os.path.join(ROOT_DIR, "__main__.py"), *P2E_ARGS, *args, f"root_dir={root_dir}"]
+    with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(sys, "argv", argv):
+        run()
 
 
-def build(algo_cls, overrides: List[str], log_dir: str):
-    """The algorithm `algo_cls` and its training state, built from the configuration with `overrides`."""
-    cfg = config(SMALL_ARGS + overrides)
-    algo = algo_cls(Fabric(accelerator="cpu", devices=1), cfg)
-    schedule = TrainSchedule(cfg, 1, algo.steps_per_iteration, off_policy=algo.off_policy)
-    state, _ = algo.build(OBS_SPACE, gym.spaces.Discrete(3), schedule, log_dir)
-    return algo, state
+@pytest.mark.skipif(_IS_WINDOWS, reason="The CPU bf16 matmul crashes on part of the Windows runners")
+@pytest.mark.parametrize("version", ["1", "2", "3"])
+def test_the_ensembles_are_trained_in_mixed_precision(version):
+    # Their loss was back-propagated with `loss.backward()`: Fabric's modules in mixed precision require
+    # `fabric.backward`, and the training crashed
+    root_dir = f"pytest_p2e_dv{version}_mixed"
+    sequence_length = "1" if version == "3" else "2"
+    try:
+        run_p2e(
+            [
+                f"exp=p2e_dv{version}_exploration",
+                "fabric.precision=bf16-mixed",
+                f"algo.per_rank_sequence_length={sequence_length}",
+            ],
+            root_dir,
+        )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
 
 
-@pytest.mark.parametrize(
-    "algo_cls,exp",
-    [
-        (P2EDV1Exploration, "p2e_dv1_exploration"),
-        (P2EDV2Exploration, "p2e_dv2_exploration"),
-        (P2EDV3Exploration, "p2e_dv3_exploration"),
-    ],
-)
-def test_the_ensembles_are_trained_with_their_own_optimizer(algo_cls, exp, tmp_path):
-    # Their optimizer was the one of the critic (P2E-DV2, P2E-DV3) or of the world model (P2E-DV1)
-    _, state = build(
-        algo_cls,
-        [f"exp={exp}", "algo.ensembles.optimizer.lr=0.123", "algo.ensembles.optimizer.weight_decay=0.01"],
-        str(tmp_path),
-    )
-    (group,) = state.ensemble_optimizer.param_groups
-    assert group["lr"] == 0.123
-    assert group["weight_decay"] == 0.01
+@pytest.mark.parametrize("version", ["1", "2", "3"])
+def test_the_ensembles_are_trained_with_their_optimizer(version):
+    # Their optimizer was the one of the critic (P2E-DV2, P2E-DV3) or of the world model (P2E-DV1), not
+    # `algo.ensembles.optimizer`
+    module = importlib.import_module(f"sheeprl.algos.p2e_dv{version}.p2e_dv{version}_exploration")
+    optimizers = []
+
+    def recording_train(*args, **kwargs):
+        optimizers.append(inspect.signature(module_train).bind(*args, **kwargs).arguments["ensemble_optimizer"])
+        return module_train(*args, **kwargs)
+
+    module_train = module.train
+    root_dir = f"pytest_p2e_dv{version}_ensemble_optimizer"
+    try:
+        with mock.patch.object(module, "train", recording_train):
+            run_p2e(
+                [
+                    f"exp=p2e_dv{version}_exploration",
+                    f"algo.per_rank_sequence_length={'1' if version == '3' else '2'}",
+                    "algo.ensembles.optimizer.lr=0.0123",
+                    "algo.ensembles.optimizer.weight_decay=0.0456",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert len(optimizers) > 0
+    for optimizer in optimizers:
+        (group,) = optimizer.param_groups
+        assert group["lr"] == 0.0123
+        if version == "2":
+            # The weight decay of DreamerV2, which multiplies the weights by `1 - weight_decay` before every step: AdamW
+            # with the weight decay divided by the learning rate
+            assert isinstance(optimizer.optimizer, torch.optim.AdamW)
+            assert group["lr"] * group["weight_decay"] == pytest.approx(0.0456)
+        else:
+            assert group["weight_decay"] == 0.0456
 
 
-def test_a_finetuning_keeps_the_slow_critic_of_the_exploration(tmp_path, monkeypatch):
-    # Its first gradient step copied the critic into the target critic: the slow critic the exploration had trained
-    # was lost
-    algo, state = build(P2EDV3Finetuning, ["exp=p2e_dv3_finetuning"], str(tmp_path))
-    with torch.no_grad():
-        # The slow critic of the exploration lags behind its critic
-        for p in state.target_critic_task.parameters():
-            p.add_(1.0)
-    critic = [p.detach().clone() for p in state.critic_task.parameters()]
-    target = [p.detach().clone() for p in state.target_critic_task.parameters()]
-    # Only the update of the target critic is tested
-    monkeypatch.setattr(p2e_dv3_finetuning, "world_model_learning", lambda *args: (None, None, {}))
-    monkeypatch.setattr(
-        p2e_dv3_finetuning,
-        "behaviour_learning",
-        lambda *args: {"policy_loss": 0, "value_loss": 0, "actor_grads": None, "critic_grads": None},
-    )
-    algo.train_step(state, {"terminated": None}, step=0)
-    tau = algo.cfg.algo.critic.tau
-    assert 0 < tau < 1
-    for c, t, updated in zip(critic, target, state.target_critic_task.parameters()):
-        torch.testing.assert_close(updated.detach(), tau * c + (1 - tau) * t)
+def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():
+    # It wrote `terminated` twice and never `truncated`: the episode buffer never closed the truncated episodes
+    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+
+    root_dir = "pytest_p2e_dv2_truncated"
+    # Episodes of 3 steps in 4 iterations, played and not trained
+    args = ["dry_run=False", "algo.total_steps=8", "env.max_episode_steps=3", "algo.replay_ratio=0"]
+    rows = []
+    buffer_add = EnvIndependentReplayBuffer.add
+
+    def recording_add(self, data, *args, **kwargs):
+        rows.append(copy.deepcopy({k: np.asarray(v) for k, v in data.items()}))
+        return buffer_add(self, data, *args, **kwargs)
+
+    try:
+        run_p2e(["exp=p2e_dv2_exploration", "algo.per_rank_sequence_length=2", *args, "run_name=exploration"], root_dir)
+        (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "exploration", "version_*", "checkpoint", "*"))
+        with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+            run_p2e(
+                [
+                    "exp=p2e_dv2_finetuning",
+                    "algo.per_rank_sequence_length=2",
+                    *args,
+                    f"checkpoint.exploration_ckpt_path={ckpt_path}",
+                    "run_name=finetuning",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The step that reaches the time limit, in both environments
+    assert [row["truncated"].sum() for row in rows if row["truncated"].any()] == [2]
+    assert not any(row["terminated"].any() for row in rows)
 
 
-def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_actor(tmp_path):
-    # The actors ignored `algo.actor.max_std` and `algo.actor.unimix` (the one of the world model, `algo.unimix`, was
-    # used), and the exploration actor of P2E-DV3 `algo.actor.action_clip`. The task actor is built as the actor of
-    # DreamerV3
-    _, state = build(
-        P2EDV3Exploration,
-        ["exp=p2e_dv3_exploration", "algo.actor.max_std=0.7", "algo.actor.unimix=0.2", "algo.actor.action_clip=0.3"],
-        str(tmp_path),
-    )
-    for actor in (state.actor_task.module, state.actor_exploration.module):
-        assert actor.max_std == 0.7
-        assert actor._unimix == 0.2
-        assert actor._action_clip == 0.3
+def test_a_p2e_dv3_finetuning_keeps_the_slow_critic_of_the_exploration():
+    # The first gradient step of a finetuning copied its critic into its target critic, as a new DreamerV3 does: the
+    # slow critic learned by the exploration was discarded
+    from sheeprl.algos.p2e_dv3 import p2e_dv3_finetuning
+
+    root_dir = "pytest_p2e_dv3_slow_critic"
+    args = ["algo.per_rank_sequence_length=1"]
+    critics = []
+
+    def first_train(*args, **kwargs):
+        # The task critic and target critic at the first gradient step
+        if len(critics) == 0:
+            critics.append({k: v.clone() for k, v in args[3].module.state_dict().items()})
+            critics.append({k: v.clone() for k, v in args[4].state_dict().items()})
+        return finetuning_train(*args, **kwargs)
+
+    finetuning_train = p2e_dv3_finetuning.train
+    try:
+        run_p2e(["exp=p2e_dv3_exploration", *args, "run_name=exploration"], root_dir)
+        (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "exploration", "version_*", "checkpoint", "*"))
+        saved = torch.load(ckpt_path, weights_only=False)
+        with mock.patch.object(p2e_dv3_finetuning, "train", first_train):
+            run_p2e(
+                [
+                    "exp=p2e_dv3_finetuning",
+                    *args,
+                    f"checkpoint.exploration_ckpt_path={ckpt_path}",
+                    "run_name=finetuning",
+                ],
+                root_dir,
+            )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    critic, target_critic = critics
+    tau = 0.02
+    for k, v in saved["critic_task"].items():
+        torch.testing.assert_close(critic[k], v)
+        torch.testing.assert_close(target_critic[k], tau * v + (1 - tau) * saved["target_critic_task"][k])
+
+
+def test_the_p2e_dv3_exploration_trains_the_decoupled_rssm():
+    # Its world model unrolled the RSSM with the arguments of the coupled one: with the decoupled RSSM it crashed
+    root_dir = "pytest_p2e_dv3_decoupled"
+    try:
+        run_p2e(
+            ["exp=p2e_dv3_exploration", "algo.per_rank_sequence_length=1", "algo.world_model.decoupled_rssm=True"],
+            root_dir,
+        )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)

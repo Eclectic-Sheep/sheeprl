@@ -22,6 +22,8 @@ import torch
 from lightning import Fabric
 from torch import Tensor, nn
 
+from sheeprl.core.store import load_replay_buffer
+
 if TYPE_CHECKING:
     from sheeprl.core.runner import EnvRunner
     from sheeprl.core.schedule import TrainSchedule
@@ -86,6 +88,22 @@ def load_module_state_dict(module: nn.Module, state: Dict[str, Tensor]) -> None:
             target.copy_(state[name])
 
 
+class Metrics:
+    """The metrics of one gradient step, collected from a training function that logs them in a `MetricAggregator`
+    (`aggregator.update(name, value)`): `train_step` passes it as the aggregator and returns `values`."""
+
+    disabled = False
+
+    def __init__(self) -> None:
+        self.values: Dict[str, Tensor] = {}
+
+    def __contains__(self, name: str) -> bool:
+        return True
+
+    def update(self, name: str, value: Tensor) -> None:
+        self.values[name] = value
+
+
 class Player(Protocol):
     """Plays in the environments. Built by `Algorithm.player` from the current training state."""
 
@@ -124,6 +142,12 @@ class Algorithm:
         When a run is resumed, the training loop restores the returned state from the checkpoint.
         """
         raise NotImplementedError
+
+    def load_store(self, saved: Any, store: Any) -> Any:
+        """The store of a resumed run of an off-policy algorithm, from the replay buffer `saved` in its checkpoint
+        (`buffer.checkpoint`), in place of the new `store` returned by `build`. Override it to convert the buffers saved
+        by older versions."""
+        return load_replay_buffer(self.fabric, saved, store)
 
     def player(self, state: TrainState) -> Player:
         """Return the object that plays the current policy in the environments."""
