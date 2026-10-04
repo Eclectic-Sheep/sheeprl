@@ -11,6 +11,7 @@ from sheeprl.core.runner import EnvRunner, EnvStep
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import Rollout, load_replay_buffer
 from sheeprl.core.update import all_reduce_gradients, autocast, setup_module, update
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.model import ema_
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "EnvRunner",
     "EnvStep",
     "Player",
+    "ReplayStore",
     "Rollout",
     "TrainSchedule",
     "TrainState",

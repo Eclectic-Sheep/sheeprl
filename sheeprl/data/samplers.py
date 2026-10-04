@@ -125,6 +125,11 @@ class Sampler:
         """Restart the online queue from the steps that `storage` holds now: the ones added after are queued."""
         raise NotImplementedError
 
+    def continue_from(self, source) -> None:
+        """Draw with the generators of `source`: a sampler of the same kind from a checkpoint, or a buffer of sheeprl
+        up to 0.8.2, which sampled itself. A run resumed from the checkpoint draws what it would have drawn without
+        stopping."""
+
 
 def _check_samples(batch_size: int, n_samples: int) -> None:
     if batch_size <= 0 or n_samples <= 0:
@@ -153,6 +158,9 @@ class TransitionSampler(Sampler):
 
     def reset_online(self, storage: ReplayBuffer) -> None:
         self.queue.reset(storage._added)
+
+    def continue_from(self, source: Sampler | ReplayBuffer) -> None:
+        self.rng = getattr(source, "rng", getattr(source, "_rng", self.rng))
 
     def draw(self, storage: ReplayBuffer, n: int) -> Tuple[np.ndarray, np.ndarray]:
         """The rows and the environments of `n` steps drawn uniformly."""
@@ -224,6 +232,9 @@ class SequenceSampler(Sampler):
 
     def reset_online(self, storage: ReplayBuffer) -> None:
         self.queue.reset(storage._added)
+
+    def continue_from(self, source: Sampler | ReplayBuffer) -> None:
+        self.rng = getattr(source, "rng", getattr(source, "_rng", self.rng))
 
     def draw(self, storage: ReplayBuffer, n: int) -> Tuple[np.ndarray, np.ndarray]:
         """The first rows and the environments of `n` sequences drawn uniformly. With `sample_next_obs`, the step after
@@ -331,6 +342,12 @@ class EnvIndependentSampler(Sampler):
         for buf, sampler in zip(storage.buffer, self.env_samplers):
             sampler.reset_online(buf)
 
+    def continue_from(self, source: EnvIndependentSampler | EnvIndependentReplayBuffer) -> None:
+        self.rng = getattr(source, "rng", getattr(source, "_rng", self.rng))
+        sources = source.env_samplers if isinstance(source, EnvIndependentSampler) else source.buffer
+        for sampler, env_source in zip(self.env_samplers, sources):
+            sampler.continue_from(env_source)
+
     def _pending(self, storage: EnvIndependentReplayBuffer, n: int) -> Tuple[np.ndarray, np.ndarray]:
         """The oldest `n` sequences of the online queues of the environments, or all of them if they are fewer: their
         environments and their first steps."""
@@ -419,6 +436,11 @@ class EpisodeSampler(Sampler):
 
     def reset_online(self, storage: EpisodeBuffer) -> None:
         self.queue.reset(storage._stored)
+
+    def continue_from(self, source: EpisodeSampler | EpisodeBuffer) -> None:
+        # The episode buffers sampled with the global generator of NumPy: there is no generator to continue
+        if isinstance(source, EpisodeSampler):
+            self.rng = source.rng
 
     def _integers(self, low, high, size=None) -> np.ndarray:
         if self.rng is None:

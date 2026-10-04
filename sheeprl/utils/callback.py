@@ -70,6 +70,8 @@ class CheckpointCallback:
         Returns:
             The original state of the buffer.
         """
+        # A `ReplayStore` is saved with its sampler: its storage is the buffer
+        rb = getattr(rb, "storage", rb)
         if isinstance(rb, ReplayBuffer):
             # clone the true done
             state = rb["truncated"][(rb._pos - 1) % rb.buffer_size, :].copy()
@@ -102,6 +104,7 @@ class CheckpointCallback:
             rb (ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer): the buffer.
             state (Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]]): the original state of the buffer.
         """
+        rb = getattr(rb, "storage", rb)
         if isinstance(rb, ReplayBuffer):
             # reinsert the true dones in the buffer
             rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = state
