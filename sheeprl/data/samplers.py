@@ -9,7 +9,8 @@ samplers of different kinds, and the state of a sampler is saved with it in the 
   `[n_samples, sequence_length, batch_size, ...]`;
 - `EnvIndependentSampler`: the steps or the sequences of a `ReplayBuffer` whose environments are written at their own
   rows, every one from a single environment, drawn independently;
-- `EpisodeSampler`: sequences inside the episodes of an `EpisodeBuffer`.
+- `EpisodeSampler`: sequences inside the episodes of a `ReplayBuffer` (`EpisodeBufferSampler` for the ones of the
+  `EpisodeBuffer` of sheeprl up to 0.8.2).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 if TYPE_CHECKING:
     from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
@@ -430,7 +432,7 @@ class EnvIndependentSampler(Sampler):
         return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
 
 
-class EpisodeSampler(Sampler):
+class EpisodeBufferSampler(Sampler):
     """Sequences of `sequence_length` steps inside the episodes of an `EpisodeBuffer`, of shape
     `[n_samples, sequence_length, batch_size, ...]`: the episode of every sequence is drawn uniformly among the ones
     long enough, then its first step. With `prioritize_ends`, as in DreamerV2, the first steps are drawn among all the
@@ -460,9 +462,9 @@ class EpisodeSampler(Sampler):
     def reset_online(self, storage: EpisodeBuffer) -> None:
         self.queue.reset(storage._stored)
 
-    def continue_from(self, source: EpisodeSampler | EpisodeBuffer) -> None:
+    def continue_from(self, source: EpisodeBufferSampler | EpisodeBuffer) -> None:
         # The episode buffers sampled with the global generator of NumPy: there is no generator to continue
-        if isinstance(source, EpisodeSampler):
+        if isinstance(source, EpisodeBufferSampler):
             self.rng = source.rng
 
     def _integers(self, low, high, size=None) -> np.ndarray:
@@ -561,3 +563,175 @@ class EpochSampler:
                 if pad_to is not None:
                     idxes = idxes + idxes[:1] * (pad_to - size)
                 yield idxes, size
+
+
+class EpisodeSampler(Sampler):
+    """Sequences of `sequence_length` steps inside the episodes of a `ReplayBuffer`, of shape
+    `[n_samples, sequence_length, batch_size, ...]`, as DreamerV2 samples its episodes: the episode of every sequence
+    is drawn uniformly among the ones long enough, then its first step. With `prioritize_ends`, the first steps are
+    drawn among all the steps of the episode and the ones too close to its end are moved back: the sequences that end
+    at the last step are drawn more often.
+
+    The episodes are the steps of an environment up to the end of an episode (`terminated` or `truncated`): the ones
+    still being played are left out, and the oldest one of an environment can be cut, its first steps overwritten by
+    the new ones. The sampler indexes them as they are added (its index is rebuilt when it is loaded).
+
+    With `online`, the samples start with the sequences of the episodes ended since the previous sample, the oldest
+    first, cut into consecutive sequences that end at their last step (at the one before, with `sample_next_obs`):
+    their first steps, fewer than a sequence, are left out. The queue isn't checkpointed: it restarts empty, with the
+    episodes that end after the loading.
+    """
+
+    def __init__(
+        self,
+        sequence_length: int,
+        sample_next_obs: bool = False,
+        prioritize_ends: bool = False,
+        online: bool = False,
+        seed: int | np.random.SeedSequence | None = None,
+        rng: np.random.Generator | None = None,
+    ):
+        super().__init__(seed, rng)
+        self.sequence_length = sequence_length
+        self.sample_next_obs = sample_next_obs
+        self.prioritize_ends = prioritize_ends
+        self.online = online
+        # The index of the episodes: the steps of every environment scanned, and the ones that end an episode (in the
+        # numbering of the steps added to the environment, whose remainder by the buffer size is their row)
+        self._scanned: Optional[np.ndarray] = None
+        self._ends: List[np.ndarray] = []
+        # The online queue: the steps of every environment after which the episodes are queued, and the sequences
+        # taken from every queued episode (environment, last step)
+        self._origin: Optional[np.ndarray] = None
+        self._taken: Dict[Tuple[int, int], int] = {}
+
+    def __getstate__(self) -> Dict:
+        state = self.__dict__.copy()
+        # The index is rebuilt from the buffer, the queue restarts empty (`reset_online`)
+        state["_scanned"], state["_ends"], state["_taken"] = None, [], {}
+        return state
+
+    def reset_online(self, storage: ReplayBuffer) -> None:
+        self._origin = storage.env_added
+        self._taken = {}
+
+    def continue_from(self, source) -> None:
+        # The episode buffers of sheeprl up to 0.8.2 sampled with the global generator of NumPy
+        if isinstance(source, EpisodeSampler):
+            self.rng = source.rng
+
+    def _index(self, storage: ReplayBuffer) -> None:
+        """Index the episodes that ended in the steps added since the previous call (and in the last step scanned of
+        every environment, which may have been changed, e.g. when its environment restarted)."""
+        added, size = storage.env_added, storage.buffer_size
+        if self._scanned is None:
+            self._scanned = np.zeros(storage.n_envs, dtype=np.int64)
+            self._ends = [np.empty(0, dtype=np.int64) for _ in range(storage.n_envs)]
+        for env in range(storage.n_envs):
+            oldest = max(added[env] - size, 0)
+            first = max(self._scanned[env] - 1, oldest)
+            ends = self._ends[env]
+            ends = ends[(ends >= oldest) & (ends < first)]
+            if added[env] > first:
+                steps = np.arange(first, added[env])
+                done = _column(storage, "terminated", steps % size, env) | _column(
+                    storage, "truncated", steps % size, env
+                )
+                ends = np.concatenate((ends, steps[done]))
+            self._ends[env] = ends
+            self._scanned[env] = added[env]
+
+    def _episodes(self, storage: ReplayBuffer) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The episodes in the buffer, the oldest ending first: their environments, their first steps and their
+        lengths."""
+        added, size = storage.env_added, storage.buffer_size
+        envs, starts, lengths = [], [], []
+        for env, ends in enumerate(self._ends):
+            if len(ends) == 0:
+                continue
+            first = np.concatenate(([max(added[env] - size, 0)], ends[:-1] + 1))
+            envs.append(np.full(len(ends), env, dtype=np.intp))
+            starts.append(first)
+            lengths.append(ends - first + 1)
+        if not envs:
+            return (np.empty(0, dtype=np.intp),) * 3
+        envs, starts, lengths = np.concatenate(envs), np.concatenate(starts), np.concatenate(lengths)
+        order = np.lexsort((envs, starts + lengths))
+        return envs[order], starts[order], lengths[order]
+
+    def _pending(self, envs: np.ndarray, starts: np.ndarray, lengths: np.ndarray, n: int) -> Tuple:
+        """The first `n` sequences of the online queue: their environments and their first steps, and the sequences
+        they take from their episodes."""
+        sequence_length = self.sequence_length
+        queued_envs, first_steps, taken = [], [], {}
+        for env, start, length in zip(envs, starts, lengths):
+            last = int(start + length - 1)
+            if self._origin is not None and last < self._origin[env]:
+                continue
+            steps = int(length) - int(self.sample_next_obs)
+            n_sequences = steps // sequence_length
+            done = self._taken.get((int(env), last), 0)
+            k = max(min(n_sequences - done, n - len(first_steps)), 0)
+            offsets = steps % sequence_length + sequence_length * (done + np.arange(k))
+            first_steps.extend(start + offsets)
+            queued_envs.extend([env] * k)
+            if k > 0:
+                taken[int(env), last] = done + k
+            if len(first_steps) >= n:
+                break
+        return np.array(queued_envs, dtype=np.intp), np.array(first_steps, dtype=np.int64), taken
+
+    def sample(
+        self,
+        storage: ReplayBuffer,
+        batch_size: int,
+        n_samples: int = 1,
+        online: Optional[bool] = None,
+        clone: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        _check_samples(batch_size, n_samples)
+        online = self.online if online is None else online
+        sequence_length, sample_next_obs = self.sequence_length, self.sample_next_obs
+        n = batch_size * n_samples
+        self._index(storage)
+        envs, starts, lengths = self._episodes(storage)
+        queued_envs, queued_steps, taken = self._pending(envs, starts, lengths, n) if online else (*_NO_SEQUENCES, {})
+        valid = np.flatnonzero(lengths > sequence_length if sample_next_obs else lengths >= sequence_length)
+        if len(valid) == 0:
+            raise RuntimeError(
+                "No valid episodes has been added to the buffer. Please add at least one episode of length greater "
+                f"than or equal to {sequence_length} calling `self.add()`"
+            )
+        # The episode of every sequence, drawn independently: each of the `n_samples` batches is a uniform sample
+        episodes = valid[self.rng.integers(0, len(valid), (n - len(queued_steps),))]
+        ep_lens = lengths[episodes] - int(sample_next_obs)
+        # The last first step that leaves room for a sequence in the episode
+        upper = ep_lens - sequence_length + 1
+        # With the ends prioritized, every step of the episode can be drawn as the first one
+        if self.prioritize_ends:
+            upper = upper + sequence_length
+        first = np.minimum(self.rng.integers(0, upper), ep_lens - sequence_length)
+        # The queued sequences leave the queue once the uniform ones are drawn: a sample that fails leaves it as it is
+        if online:
+            self._taken.update(taken)
+            # The episodes overwritten leave it
+            oldest = np.maximum(storage.env_added - storage.buffer_size, 0)
+            self._taken = {key: v for key, v in self._taken.items() if key[1] >= oldest[key[0]]}
+        steps = np.concatenate((queued_steps, starts[episodes] + first))
+        samples = storage.gather(
+            (steps % storage.buffer_size).astype(np.intp),
+            np.concatenate((queued_envs, envs[episodes])).astype(np.intp),
+            sequence_length=sequence_length,
+            sample_next_obs=sample_next_obs,
+            clone=clone,
+        )
+        return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
+
+
+def _column(storage: ReplayBuffer, key: str, rows: np.ndarray, env: int) -> np.ndarray:
+    """The values of `key` at the rows `rows` of the environment `env` of a buffer, as booleans: in the memory of the
+    CPU, of a device, or memory-mapped."""
+    values = storage[key]
+    if torch.is_tensor(values):
+        return values[torch.as_tensor(rows, device=values.device), env].cpu().numpy().reshape(-1).astype(bool)
+    return np.asarray(values[rows, env]).reshape(-1).astype(bool)

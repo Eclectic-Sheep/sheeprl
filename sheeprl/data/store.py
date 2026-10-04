@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from sheeprl.data.buffers import get_tensor
+from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer, get_tensor
 
 
 class _Prefetch:
@@ -195,6 +195,9 @@ class ReplayStore:
         exploration samples it as configured). A checkpoint of sheeprl up to 0.8.2 holds the storage itself, whose
         generators the sampler continues. The online queue restarts empty, with the steps added from now on."""
         storage, source = (saved.storage, saved.sampler) if isinstance(saved, ReplayStore) else (saved, saved)
+        if isinstance(storage, EpisodeBuffer) and isinstance(self.storage, ReplayBuffer):
+            # The episodes of a checkpoint of sheeprl up to 0.8.2
+            storage = _write_episodes(storage, self.storage)
         if not isinstance(storage, type(self.storage)):
             raise RuntimeError(
                 f"The checkpoint holds a replay buffer of type {type(storage).__name__}, "
@@ -206,3 +209,13 @@ class ReplayStore:
         # Where this run keeps it (the checkpoints are loaded in the memory of the CPU)
         self.storage = storage.to(getattr(self.storage, "device", None))
         return self
+
+
+def _write_episodes(episodes: EpisodeBuffer, storage: ReplayBuffer) -> ReplayBuffer:
+    """The episodes of an `EpisodeBuffer` (of sheeprl up to 0.8.2) written in `storage`, the oldest first, every one in
+    the environment with the fewest steps: the buffer of episodes of every process became a buffer of steps of every
+    environment, sampled by `EpisodeSampler`."""
+    for episode in episodes.buffer:
+        env = int(np.argmin(storage.env_added))
+        storage.add({k: np.asarray(v)[:, np.newaxis] for k, v in episode.items()}, env_idxes=[env])
+    return storage

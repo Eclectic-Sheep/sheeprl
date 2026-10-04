@@ -12,8 +12,8 @@ from torch import Tensor
 
 from sheeprl.data.samplers import (
     EnvIndependentSampler,
+    EpisodeBufferSampler,
     EpisodeQueue,
-    EpisodeSampler,
     OnlineQueue,
     SequenceSampler,
     TransitionSampler,
@@ -1207,8 +1207,8 @@ class EpisodeBuffer:
         online: bool = False,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
-        """Sample trajectories from the replay buffer (`EpisodeSampler`, with the online queue of the buffer and the
-        global generator of NumPy).
+        """Sample trajectories from the replay buffer (`EpisodeBufferSampler`, with the online queue of the buffer and
+        the global generator of NumPy).
 
         Args:
             batch_size (int): Number of element in the batch.
@@ -1228,7 +1228,9 @@ class EpisodeBuffer:
             Dict[str, np.ndarray]: the sampled dictionary with a shape of
             [n_samples, sequence_length, batch_size, ...].
         """
-        sampler = EpisodeSampler(sequence_length, sample_next_obs, self._prioritize_ends, online, queue=self._online)
+        sampler = EpisodeBufferSampler(
+            sequence_length, sample_next_obs, self._prioritize_ends, online, queue=self._online
+        )
         return sampler.sample(self, batch_size, n_samples, clone=clone)
 
     def gather(
