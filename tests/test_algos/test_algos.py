@@ -1097,3 +1097,38 @@ def test_the_off_policy_algorithms_train_on_a_buffer_on_the_gpu(standard_args, s
     with mock.patch.object(sys, "argv", args + [f"checkpoint.resume_from={ckpt[0]}"]):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+def test_dreamer_v2_trains_on_the_episodes_of_its_buffer(standard_args, start_time):
+    # `buffer.type=episode`: sequences inside the episodes that ended, of every environment, with the online queue and
+    # prefetched; through a checkpoint, from which the training resumes
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("One process")
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2_episodes", os.environ["LT_DEVICES"])
+    args = [arg for arg in standard_args if not arg.startswith("dry_run")] + [
+        "exp=dreamer_v2",
+        *SMALL_DREAMER_ARGS,
+        "env.id=discrete_dummy",
+        "env.max_episode_steps=4",
+        "buffer.type=episode",
+        "buffer.online=True",
+        "buffer.prefetch=True",
+        "buffer.size=64",
+        "algo.per_rank_sequence_length=2",
+        "algo.per_rank_batch_size=2",
+        "algo.total_steps=24",
+        "algo.learning_starts=12",
+        "algo.replay_ratio=1",
+        "algo.per_rank_pretrain_steps=0",
+        "checkpoint.every=16",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_v2_episodes",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    ckpt = glob.glob(
+        os.path.join("logs", "runs", root_dir, "test_dreamer_v2_episodes", "version_0", "checkpoint", "*16_0.ckpt")
+    )
+    with mock.patch.object(sys, "argv", args + [f"checkpoint.resume_from={ckpt[0]}"]):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
