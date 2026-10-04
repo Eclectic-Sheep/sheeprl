@@ -475,7 +475,19 @@ The repository is structured as follows:
 - `models`: contains the implementation of some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
 - `utils`: contains utility functions for the framework.
 
-#### Training loop
+## :gear: How SheepRL works
+
+### From the command line to the algorithm
+
+```bash
+sheeprl exp=ppo env=gym env.id=CartPole-v1 algo.total_steps=100000
+```
+
+1. [Hydra](https://hydra.cc) composes the configuration from `sheeprl/configs`: the `exp` file chooses the groups (`algo`, `env`, `buffer`, `fabric`, `metric`, `checkpoint`, ...) and overrides some of their keys, and every key can be overridden from the command line.
+2. `sheeprl.cli.run` checks the configuration, creates the [Lightning Fabric](https://lightning.ai/docs/fabric/stable/) of the run (`fabric.accelerator`, `fabric.devices`, `fabric.strategy`, `fabric.precision`), starts one process per device and seeds them.
+3. Every process calls the `main()` of the algorithm named by `algo.name`, registered with the `@register_algorithm()` decorator. `main()` creates the algorithm and hands it to the training loop shared by every algorithm, `sheeprl.core.run`; when the training ends, it tests the agent (`algo.run_test=True`) and registers its models (`model_manager.disabled=False`).
+
+### The training loop
 
 Every process has its own environments and its own copy of the agent, which interacts with the environments and executes the training loop.
 
@@ -483,23 +495,44 @@ Every process has its own environments and its own copy of the agent, which inte
   <img src="./assets/images/sheeprl_coupled.png">
 </p>
 
-The training loop is the same for every algorithm: `sheeprl.core.loop.run(fabric, cfg, algo)`. Every iteration plays `algo.steps_per_iteration` steps in every environment, then trains the agent, then logs the metrics and saves a checkpoint when it's time to.
+Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
-The algorithm is implemented in the `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
+1. **plays**: the player of the algorithm chooses the actions for the current observations and steps the environments (`EnvRunner`) `algo.steps_per_iteration` times, writing every step in the *store* of the collected data: the rollout of the on-policy algorithms, the replay buffer of the off-policy ones;
+2. **trains**: `algo.batches()` yields one batch per gradient step and `algo.train_step()` does the step, returning its metrics. The on-policy algorithms train on their rollout (epochs × minibatches); the off-policy ones start after `algo.learning_starts` policy steps (optionally with `algo.per_rank_pretrain_steps` gradient steps first) and then do `algo.replay_ratio` gradient steps per policy step (`TrainSchedule`);
+3. **logs and saves**: the metrics are aggregated on the device and read on the host once every `metric.log_every` policy steps, and a checkpoint is saved every `checkpoint.every` policy steps (`Cadence`).
+
+### The interface of an algorithm
+
+An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
 - `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data: a `Rollout` for the on-policy algorithms, a replay buffer for the off-policy ones.
 - `player()`: returns the object that plays the current policy in the environments and writes what happens in the store.
 - `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
-- `train_step()`: executes one gradient step on a batch and returns the metrics to log.
+- `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.
 - `end_iteration()`: optional, updates what changes once per iteration (e.g. annealed coefficients).
+- `test()`: plays a test episode with the trained policy, at the end of the training and to evaluate a checkpoint.
 
-The off-policy algorithms (`off_policy = True`) start training after `algo.learning_starts` policy steps and then do `algo.replay_ratio` gradient steps per policy step. Their replay buffer is saved in the checkpoints when `buffer.checkpoint=True`.
+Its class attributes tell the loop how to drive it: `steps_per_iteration` (e.g. the rollout length of the on-policy algorithms, 1 for the off-policy ones), `off_policy` (training on a replay buffer, with the learning starts and the replay ratio above) and `restart_crashed_envs` (a crashed environment is created again instead of stopping the run).
+
+Every algorithm of SheepRL (A2C, PPO, PPO Recurrent, SAC, DroQ, SAC-AE, DreamerV1, DreamerV2, DreamerV3, DreamerV3.5 and the exploration and finetuning of Plan2Explore) is implemented this way: the environments, the logging, the checkpoints and the resuming of a run are the same for all of them.
+
+### Distributed training
+
+The modules are not wrapped by `DistributedDataParallel`: every process computes the gradients on its own data, and `update` (`sheeprl.core.update`) averages them over the processes before every optimizer step. The processes start from the same weights, so they stay identical. Every process samples its own replay buffer, and the processes of an on-policy algorithm do the same number of gradient steps, even with rollouts split into different numbers of minibatches.
+
+### Compiling the losses
+
+With `algo.compile.enabled=True`, the losses of the algorithm (forward and backward passes) are compiled with `torch.compile`, also with several processes. With `algo.compile.mode=reduce-overhead` (the default), the compiled losses run as CUDA graphs in the `32-true` and `bf16-mixed` precisions (the other precisions use the default mode), which removes most of the cost of launching their many small kernels. The players and the optimizer steps are not compiled.
+
+The losses are written so that they compile into graphs that don't wait for the GPU: they don't read tensors on the host (`.item()`, an `if` on a tensor), their shapes don't depend on the data (e.g. masked sums instead of boolean indexing, and the minibatches of PPO Recurrent padded to a few sizes), and the recurrent layers are unrolled from their weights while compiling, since `torch.compile` doesn't trace `nn.LSTM` and `nn.GRU`.
+
+Compiling takes from a few seconds (PPO, SAC) to a few minutes (the Dreamers) at the start of the run. Then, on an RTX 5070 in `32-true`, a gradient step of the default experiments is from about 1.2× (PPO on Atari and SAC-AE, on pixels) and 1.4-1.9× (the Dreamers) to 2.8× (PPO on CartPole) faster. CUDA graphs reserve more memory: when a large model doesn't fit, `algo.compile.mode=null` compiles without them.
+
+### Checkpoints, resuming and evaluation
 
 The training state is a `TrainState` dataclass: each of its fields (modules, optimizers, annealed coefficients, ...) is saved in the checkpoints and restored when a run is resumed. The evaluation (`sheeprl-eval`) and the registration of the models from a checkpoint (`sheeprl-registration`) restore it in the same way, with `sheeprl.core.load_trained_state`.
 
-A resumed run starts from the iteration after the one of its checkpoint. An off-policy run whose replay buffer is in the checkpoint trains right away, without playing random actions again; without the buffer (`buffer.checkpoint=False`), it first fills a new one, playing its policy for `algo.learning_starts` policy steps.
-
-The `main()` function of the file, registered with the `@register_algorithm()` decorator, builds the algorithm and calls `run`. When the training ends, it tests the agent (if `algo.run_test=True`) and registers its models (if `model_manager.disabled=False`).
+A resumed run starts from the iteration after the one of its checkpoint. The replay buffer of an off-policy run is saved in the checkpoints when `buffer.checkpoint=True`: a run resumed with it trains right away, without playing random actions again; without it, it first fills a new one, playing its policy for `algo.learning_starts` policy steps.
 
 ## Algorithms implementation
 
