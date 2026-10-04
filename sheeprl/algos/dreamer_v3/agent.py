@@ -17,7 +17,6 @@ from torch.distributions import (
     Independent,
     Normal,
     OneHotCategoricalStraightThrough,
-    TanhTransform,
     TransformedDistribution,
 )
 from torch.distributions.utils import probs_to_logits
@@ -35,6 +34,7 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
+from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
@@ -894,7 +894,7 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
             elif self.distribution == "normal":
                 # The std is the output of the network: made positive as the one of `tanh_normal`
                 std = F.softplus(std + self.init_std) + self.min_std

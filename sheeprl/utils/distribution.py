@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Bernoulli, Categorical, Distribution, Independent, TransformedDistribution, constraints
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
+from torch.distributions.transforms import TanhTransform
 from torch.distributions.utils import broadcast_all
 
 from sheeprl.utils.utils import symexp, symlog
@@ -48,6 +49,20 @@ def entropy(dist: Distribution, n_samples: int = 100) -> Tensor:
     if reinterpreted_batch_ndims > 0:
         value = value.flatten(-reinterpreted_batch_ndims).sum(-1)
     return value
+
+
+class SafeTanhTransform(TanhTransform):
+    """The tanh transform of the `TanhBijector` of DreamerV1 and DreamerV2: its inverse computes in float32 and clips
+    the values in [-1, 1] to +-0.99999997 (the largest float32 below 1) before the atanh. The tanh of a value above
+    ~9.01 in float32 (~3.47 in bfloat16) rounds to +-1, whose atanh is infinite: the log-probability of such a sample
+    (REINFORCE, the greedy actions) would be NaN, the infinite log-density of the base distribution minus the infinite
+    log-determinant of the Jacobian."""
+
+    def _inverse(self, y: Tensor) -> Tensor:
+        dtype = y.dtype
+        y = y.float()
+        y = torch.where(y.abs() <= 1, y.clamp(-0.99999997, 0.99999997), y)
+        return y.atanh().to(dtype)
 
 
 class TruncatedStandardNormal(Distribution):
