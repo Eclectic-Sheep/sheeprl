@@ -30,14 +30,12 @@ def test_env_independent_add():
     rb = EnvIndependentReplayBuffer(bs, n_envs)
     stps1 = {"dones": np.zeros((10, 4, 1))}
     rb.add(stps1)
-    for i in range(n_envs):
-        assert rb._buf[i]._pos == 10
+    assert (rb.positions == 10).all()
     stps2 = {"dones": np.zeros((10, 2, 1))}
     rb.add(stps2, [0, 3])
-    assert rb._buf[0]._pos == 0
-    assert rb._buf[1]._pos == 10
-    assert rb._buf[2]._pos == 10
-    assert rb._buf[0]._pos == 0
+    # Every environment at its own row
+    assert rb.positions.tolist() == [0, 10, 10, 0]
+    assert rb.env_full.tolist() == [True, False, False, True]
 
 
 def test_env_independent_add_error():
@@ -163,5 +161,5 @@ def test_a_failed_add_leaves_every_environment_as_it_was():
     rb.add({"a": np.zeros((1, 1, 1))}, [1])
     with pytest.raises(KeyError, match="The buffer has no key 'b'"):
         rb.add({"a": np.ones((1, 2, 1)), "b": np.ones((1, 2, 1))})
-    assert rb.buffer[0].empty
-    assert rb.buffer[1]._pos == 1 and rb.buffer[1]["a"][0, 0, 0] == 0
+    assert rb.env_added.tolist() == [0, 1]
+    assert rb.positions[1] == 1 and rb["a"][0, 1, 0] == 0

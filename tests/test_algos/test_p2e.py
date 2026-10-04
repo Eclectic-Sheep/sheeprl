@@ -119,13 +119,13 @@ def test_the_ensembles_are_trained_with_their_optimizer(version):
 
 def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():
     # It wrote `terminated` twice and never `truncated`: the episode buffer never closed the truncated episodes
-    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+    from sheeprl.data.buffers import ReplayBuffer
 
     root_dir = "pytest_p2e_dv2_truncated"
     # Episodes of 3 steps in 4 iterations, played and not trained
     args = ["dry_run=False", "algo.total_steps=8", "env.max_episode_steps=3", "algo.replay_ratio=0"]
     rows = []
-    buffer_add = EnvIndependentReplayBuffer.add
+    buffer_add = ReplayBuffer.add
 
     def recording_add(self, data, *args, **kwargs):
         rows.append(copy.deepcopy({k: np.asarray(v) for k, v in data.items()}))
@@ -134,7 +134,7 @@ def test_the_p2e_dv2_finetuning_stores_the_truncated_episodes():
     try:
         run_p2e(["exp=p2e_dv2_exploration", "algo.per_rank_sequence_length=2", *args, "run_name=exploration"], root_dir)
         (ckpt_path,) = glob.glob(os.path.join("logs", "runs", root_dir, "exploration", "version_*", "checkpoint", "*"))
-        with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+        with mock.patch.object(ReplayBuffer, "add", recording_add):
             run_p2e(
                 [
                     "exp=p2e_dv2_finetuning",

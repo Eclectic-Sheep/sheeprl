@@ -226,16 +226,16 @@ def test_the_rssm_starts_the_episodes_from_the_zero_state():
 @pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
 def test_the_rows_mark_the_first_observations_of_the_episodes(exp):
     # DreamerV1 stored no `is_first`: its sequences crossed the episodes with the recurrent state of the previous one
-    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+    from sheeprl.data.buffers import ReplayBuffer
 
     rows = []
-    buffer_add = EnvIndependentReplayBuffer.add
+    buffer_add = ReplayBuffer.add
 
     def recording_add(self, data, indices=None, *args, **kwargs):
         rows.append((copy.deepcopy({k: np.asarray(v) for k, v in data.items()}), indices))
         return buffer_add(self, data, indices, *args, **kwargs)
 
-    with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+    with mock.patch.object(ReplayBuffer, "add", recording_add):
         # Episodes of 3 steps (truncated) in 7 iterations
         run_dreamer_v1(
             [
@@ -281,7 +281,7 @@ def test_a_buffer_saved_without_is_first_is_completed(memmap, tmp_path):
             }
         )
     add_is_first(rb)
-    is_first = [np.asarray(buffer["is_first"])[:4, 0, 0].tolist() for buffer in rb.buffer]
+    is_first = [np.asarray(rb["is_first"])[:4, env, 0].tolist() for env in range(2)]
     assert is_first == [[1, 0, 1, 0], [1, 0, 0, 1]]
     # Rows with it can be added
     rb.add(

@@ -29,7 +29,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     build_store,
     env_buffer_size,
 )
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
@@ -97,7 +97,7 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
     if buffer_type == "episode":
         assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
     else:
-        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
+        assert isinstance(buffer, ReplayBuffer) and buffer.buffer_size == 125
 
 
 @pytest.mark.parametrize("output_channels", [[1], [3], [3, 3]])

@@ -769,8 +769,7 @@ def test_dreamer_v3_5_writes_back_the_latent_states_of_the_trained_steps(standar
                     expected[env, position] = (deter[t, b].cpu().numpy(), stoch[t, b].cpu().numpy())
         for (env, position), (deter, stoch) in expected.items():
             written.append(
-                np.array_equal(rb.buffer[env]["deter"][position, 0], deter)
-                and np.array_equal(rb.buffer[env]["stoch"][position, 0], stoch)
+                np.array_equal(rb["deter"][position, env], deter) and np.array_equal(rb["stoch"][position, env], stoch)
             )
 
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3_5_latents", os.environ["LT_DEVICES"])

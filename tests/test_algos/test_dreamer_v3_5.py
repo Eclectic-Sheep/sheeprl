@@ -429,12 +429,12 @@ def test_the_latent_states_are_written_back_at_their_steps():
     stoch = torch.as_tensor(np.repeat(step_ids[..., :1].astype(np.uint8), 2, -1))
     dreamer_v3_5.write_latent_states(rb, [(step_ids, deter, stoch)], rb.buffer_size)
     written = 0
-    for env, buffer in enumerate(rb.buffer):
-        ids = buffer[dreamer_v3_5.STEP_ID_KEY][:, 0]
+    for env in range(rb.n_envs):
+        ids = rb[dreamer_v3_5.STEP_ID_KEY][:, env]
         rows = np.isin(ids[:, 1], step_ids[..., 1][step_ids[..., 0] == env])
-        assert np.all(buffer["deter"][rows, 0] == ids[rows, 1:].astype(np.float16))
-        assert np.all(buffer["stoch"][rows, 0] == env)
-        assert np.all(buffer["deter"][~rows, 0] == 0)
+        assert np.all(rb["deter"][rows, env] == ids[rows, 1:].astype(np.float16))
+        assert np.all(rb["stoch"][rows, env] == env)
+        assert np.all(rb["deter"][~rows, env] == 0)
         written += rows.sum()
     assert written > 0
     # The steps added to every buffer, from the identifiers it holds
