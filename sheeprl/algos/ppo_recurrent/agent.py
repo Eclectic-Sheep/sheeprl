@@ -66,15 +66,14 @@ class RecurrentModel(nn.Module):
     def forward(
         self, input: Tensor, states: Tuple[Tensor, Tensor], mask: Optional[Tensor] = None
     ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        """The outputs of the LSTM at every step of the sequences and its last states.
+
+        The padded steps of the sequences (`mask` False) follow their valid ones: the LSTM runs on them too, which
+        doesn't change the outputs of the valid steps, without packing the sequences (it read their lengths on the
+        host). The returned states are the ones after the last step, padded or not."""
         x = self._pre_mlp(input)
         self._lstm.flatten_parameters()
-        if mask is not None:
-            # To avoid: RuntimeError: 'lengths' argument should be a 1D CPU int64 tensor, but got 1D cuda:0 Long tensor
-            lengths = mask.sum(dim=0).view(-1).cpu()
-            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths=lengths, batch_first=False, enforce_sorted=False)
         out, states = self._lstm(x, states)
-        if mask is not None:
-            out, _ = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=False, total_length=mask.shape[0])
         shape = out.shape
         return self._post_mlp(out.view(-1, *shape[2:])).view(shape), states
 
