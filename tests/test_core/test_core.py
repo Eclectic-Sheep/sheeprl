@@ -464,3 +464,34 @@ def test_every_process_returns_from_the_training_once_all_of_them_trained(monkey
     )
     run()
     assert "train" in events and events[-1] == "barrier"
+
+
+def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path):
+    # The steps of the rollout in its ReplayBuffer, read whole on the device; the minibatches of every epoch of its
+    # update cover all the elements of what the training computes from them
+    from sheeprl.core import Rollout
+    from sheeprl.data.samplers import EpochSampler
+
+    cfg = dotdict(
+        {
+            "seed": 0,
+            "env": {"num_envs": 2},
+            "buffer": {"memmap": False, "from_numpy": False, "share_data": False},
+            "algo": {"per_rank_batch_size": 3, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+        }
+    )
+    fabric = Fabric(accelerator="cpu", devices=1)
+    rollout = Rollout.build(fabric, cfg, str(tmp_path), size=4)
+    assert isinstance(rollout.storage, ReplayBuffer) and isinstance(rollout.sampler, EpochSampler)
+    for t in range(4):
+        rollout.add({"state": np.full((1, 2, 1), t, np.float32)}, next_obs={"state": np.full((2, 1), t + 1)})
+    data = rollout.read()
+    assert data["state"].shape == (4, 2, 1) and rollout.next_obs["state"][0, 0] == 4
+    flat = {"state": data["state"].flatten(0, 1)}
+    torch.manual_seed(0)
+    minibatches = list(rollout.minibatches(flat, epochs=2))
+    assert [len(b["state"]) for b in minibatches] == [3, 3, 2] * 2
+    for epoch in (minibatches[:3], minibatches[3:]):
+        assert sorted(torch.cat([b["state"] for b in epoch]).flatten().tolist()) == sorted(
+            flat["state"].flatten().tolist()
+        )
