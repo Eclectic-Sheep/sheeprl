@@ -1,4 +1,5 @@
 import contextlib
+import glob
 import os
 import shutil
 import sys
@@ -8,6 +9,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
+import torch
 
 from sheeprl import ROOT_DIR
 from sheeprl.cli import run
@@ -1061,3 +1063,38 @@ def test_the_off_policy_algorithms_train_on_prefetched_batches(standard_args, st
             run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert any(used) == (exp != "dreamer_v3_5")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="A replay buffer in the memory of a GPU")
+@pytest.mark.parametrize("exp,overrides", OFF_POLICY_CASES)
+def test_the_off_policy_algorithms_train_on_a_buffer_on_the_gpu(standard_args, start_time, exp, overrides):
+    # With `buffer.on_device`, the replay buffer is in the memory of the GPU of the training, where its batches are
+    # gathered: also through a checkpoint, from which the training resumes
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("One GPU")
+    root_dir = os.path.join(f"pytest_{start_time}", f"{exp}_on_device", os.environ["LT_DEVICES"])
+    args = [arg for arg in standard_args if not arg.startswith(("dry_run", "fabric.accelerator", "fabric.precision"))]
+    args += [
+        f"exp={exp}",
+        *overrides,
+        "fabric.accelerator=cuda",
+        "fabric.precision=32-true",
+        "buffer.on_device=True",
+        "buffer.size=64",
+        "algo.per_rank_batch_size=2",
+        "algo.total_steps=16",
+        "algo.learning_starts=4",
+        "algo.replay_ratio=1",
+        "algo.per_rank_pretrain_steps=0",
+        "checkpoint.every=8",
+        f"root_dir={root_dir}",
+        f"run_name=test_{exp}_on_device",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    ckpt = glob.glob(
+        os.path.join("logs", "runs", root_dir, f"test_{exp}_on_device", "version_0", "checkpoint", "*8_0.ckpt")
+    )
+    with mock.patch.object(sys, "argv", args + [f"checkpoint.resume_from={ckpt[0]}"]):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
