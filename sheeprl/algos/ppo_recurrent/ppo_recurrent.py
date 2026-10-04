@@ -133,6 +133,8 @@ class RecurrentRolloutPlayer:
 
 # Compiled, the minibatches are padded to a multiple of this number of sequences (`PPORecurrent.batches`)
 SEQUENCES_MULTIPLE = 16
+# The entries of a minibatch given to the loss as they are, `[Sequence_Length, Num_Sequences, ...]`
+SEQUENCES_KEYS = ("prev_actions", "actions", "logprobs", "values", "returns", "advantages")
 
 
 def split_in_sequences(data: Dict[str, Tensor], sequence_length: int) -> Dict[str, Tensor]:
@@ -361,17 +363,23 @@ class PPORecurrent(Algorithm):
     def train_step(self, state: PPORecurrentState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
         batch = dict(batch)
-        mask = batch["mask"].unsqueeze(-1)
         for k in cfg.cnn_keys.encoder:
             batch[k] = batch[k] / 255.0 - 0.5
+        obs = {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)}
+        states = (batch["prev_hx"][:1], batch["prev_cx"][:1])
+        mask = batch["mask"].unsqueeze(-1)
+        if compile_enabled(self.fabric, self.cfg):
+            # The number of sequences changes between the rollouts (`batches`): compiled once for all of them
+            for tensor in (*obs.values(), *states, mask, *(batch[k] for k in SEQUENCES_KEYS)):
+                torch._dynamo.maybe_mark_dynamic(tensor, 1)
         # The loss is compiled when `algo.compile.enabled` is set
         mark_gradient_step(self.fabric, self.cfg)
         with autocast(self.fabric):
             loss, pg_loss, v_loss, ent_loss = compiled(ppo_recurrent_loss, self.fabric, self.cfg)(
                 state.agent,
-                {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
+                obs,
                 batch["prev_actions"],
-                (batch["prev_hx"][:1], batch["prev_cx"][:1]),
+                states,
                 batch["actions"],
                 mask,
                 batch["logprobs"],
