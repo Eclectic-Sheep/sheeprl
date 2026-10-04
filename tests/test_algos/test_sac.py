@@ -138,6 +138,10 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, algo)
                     def sample(self, batch_size, n_samples=1, **kwargs):
                         return {k: v[None].repeat(n_samples, *([1] * v.dim())) for k, v in data.items()}
 
+                    def batches(self, n_steps, batch_size, max_sampled=None):
+                        for _ in range(n_steps):
+                            yield {k: v.float() for k, v in data.items()}
+
                 # Two gradient steps of DroQ: two updates of the critics, then one of the actor
                 droq_algo = droq.DroQ(fabric, cfg)
                 actor_optimizer, qf_optimizer, alpha_optimizer = optimizers

@@ -809,35 +809,35 @@ SMALL_DREAMER_ARGS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "exp,overrides",
-    [
-        ("sac", []),
-        ("droq", []),
-        (
-            "sac_ae",
-            [
-                "algo.mlp_keys.encoder=[state]",
-                "algo.cnn_keys.encoder=[rgb]",
-                "env.screen_size=64",
-                "algo.hidden_size=4",
-                "algo.dense_units=4",
-                "algo.cnn_channels_multiplier=2",
-            ],
-        ),
-        ("dreamer_v1", SMALL_DREAMER_ARGS),
-        ("dreamer_v2", SMALL_DREAMER_ARGS),
-        ("dreamer_v3", SMALL_DREAMER_ARGS),
-        # Plan2Explore with DreamerV1 and DreamerV2 doesn't imagine from sequences of one step
-        ("p2e_dv1_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
-        ("p2e_dv2_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
-        ("p2e_dv3_exploration", SMALL_DREAMER_ARGS),
-        (
-            "dreamer_v3_5",
-            [*DREAMER_V3_5_ARGS, "algo.per_rank_batch_size=1", "algo.per_rank_sequence_length=1", "algo.horizon=2"],
-        ),
-    ],
-)
+OFF_POLICY_CASES = [
+    ("sac", []),
+    ("droq", []),
+    (
+        "sac_ae",
+        [
+            "algo.mlp_keys.encoder=[state]",
+            "algo.cnn_keys.encoder=[rgb]",
+            "env.screen_size=64",
+            "algo.hidden_size=4",
+            "algo.dense_units=4",
+            "algo.cnn_channels_multiplier=2",
+        ],
+    ),
+    ("dreamer_v1", SMALL_DREAMER_ARGS),
+    ("dreamer_v2", SMALL_DREAMER_ARGS),
+    ("dreamer_v3", SMALL_DREAMER_ARGS),
+    # Plan2Explore with DreamerV1 and DreamerV2 doesn't imagine from sequences of one step
+    ("p2e_dv1_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
+    ("p2e_dv2_exploration", [*SMALL_DREAMER_ARGS, "algo.per_rank_sequence_length=2"]),
+    ("p2e_dv3_exploration", SMALL_DREAMER_ARGS),
+    (
+        "dreamer_v3_5",
+        [*DREAMER_V3_5_ARGS, "algo.per_rank_batch_size=1", "algo.per_rank_sequence_length=1", "algo.horizon=2"],
+    ),
+]
+
+
+@pytest.mark.parametrize("exp,overrides", OFF_POLICY_CASES)
 def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(standard_args, start_time, exp, overrides):
     # With `buffer.online`, the batches of the training are sampled with the online queue of the replay buffer
     if os.environ["LT_DEVICES"] != "1":
@@ -1023,3 +1023,41 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
     assert any(inputs_require_grad)
+
+
+@pytest.mark.parametrize("exp,overrides", OFF_POLICY_CASES)
+def test_the_off_policy_algorithms_train_on_prefetched_batches(standard_args, start_time, exp, overrides):
+    # With `buffer.prefetch`, the batches of an iteration are sampled at the end of the previous one, in a thread: the
+    # trainings use them, also around the checkpoints (DreamerV3.5 samples while it trains: none is prefetched)
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("The prefetching is checked in the process of rank 0")
+    from sheeprl.data.store import ReplayStore
+
+    used = []
+    take_prefetched = ReplayStore._take_prefetched
+
+    def recording_take_prefetched(self, *args, **kwargs):
+        batches = take_prefetched(self, *args, **kwargs)
+        used.append(batches is not None)
+        return batches
+
+    root_dir = os.path.join(f"pytest_{start_time}", f"{exp}_prefetch", os.environ["LT_DEVICES"])
+    args = [arg for arg in standard_args if not arg.startswith("dry_run")] + [
+        f"exp={exp}",
+        *overrides,
+        "buffer.prefetch=True",
+        "buffer.size=64",
+        "algo.per_rank_batch_size=2",
+        "algo.total_steps=16",
+        "algo.learning_starts=4",
+        "algo.replay_ratio=1",
+        "algo.per_rank_pretrain_steps=0",
+        "checkpoint.every=8",
+        f"root_dir={root_dir}",
+        f"run_name=test_{exp}_prefetch",
+    ]
+    with mock.patch.object(ReplayStore, "_take_prefetched", recording_take_prefetched):
+        with mock.patch.object(sys, "argv", args):
+            run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    assert any(used) == (exp != "dreamer_v3_5")

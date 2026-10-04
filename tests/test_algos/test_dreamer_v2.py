@@ -85,6 +85,7 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
                 "prioritize_ends": False,
                 "online": False,
                 "from_numpy": False,
+                "prefetch": False,
             },
             "env": {"num_envs": 4},
             "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
