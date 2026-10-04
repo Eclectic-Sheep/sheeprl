@@ -14,6 +14,29 @@ from sheeprl.models.models import MLP, MultiEncoder
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
+def lstm_unroll(
+    x: Tensor,
+    states: Tuple[Tensor, Tensor],
+    weight_ih: Tensor,
+    bias_ih: Tensor,
+    weight_hh: Tensor,
+    bias_hh: Tensor,
+) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    """A single-layer `nn.LSTM` on the sequences `x` (time first) from `states`, computed from its weights with the
+    equations of PyTorch (https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html): the same values up to the
+    rounding."""
+    h, c = states[0][0], states[1][0]
+    # The inputs of all the steps at once
+    x = torch.nn.functional.linear(x, weight_ih, bias_ih)
+    outputs = []
+    for t in range(x.shape[0]):
+        i, f, g, o = (x[t] + torch.nn.functional.linear(h, weight_hh, bias_hh)).chunk(4, -1)
+        c = torch.sigmoid(f) * c + torch.sigmoid(i) * torch.tanh(g)
+        h = torch.sigmoid(o) * torch.tanh(c)
+        outputs.append(h)
+    return torch.stack(outputs), (h.unsqueeze(0), c.unsqueeze(0))
+
+
 class RecurrentModel(nn.Module):
     def __init__(
         self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: Dict[str, Any], post_rnn_mlp_cfg: Dict[str, Any]
@@ -39,6 +62,14 @@ class RecurrentModel(nn.Module):
             input_size=pre_rnn_mlp_cfg.dense_units if pre_rnn_mlp_cfg.apply else input_size,
             hidden_size=lstm_hidden_size,
             batch_first=False,
+        )
+        # The weights of the LSTM, for the compiled loss: `torch.compile` doesn't trace the code that reaches `nn.LSTM`
+        # (a tuple: they stay the weights of the LSTM, also in the state dict)
+        self._lstm_weights = (
+            self._lstm.weight_ih_l0,
+            self._lstm.bias_ih_l0,
+            self._lstm.weight_hh_l0,
+            self._lstm.bias_hh_l0,
         )
         if post_rnn_mlp_cfg.apply:
             self._post_mlp = MLP(
@@ -72,8 +103,12 @@ class RecurrentModel(nn.Module):
         doesn't change the outputs of the valid steps, without packing the sequences (it read their lengths on the
         host). The returned states are the ones after the last step, padded or not."""
         x = self._pre_mlp(input)
-        self._lstm.flatten_parameters()
-        out, states = self._lstm(x, states)
+        if torch.compiler.is_compiling():
+            # `torch.compile` doesn't trace `nn.LSTM`: the same steps, from its weights
+            out, states = lstm_unroll(x, states, *self._lstm_weights)
+        else:
+            self._lstm.flatten_parameters()
+            out, states = self._lstm(x, states)
         shape = out.shape
         return self._post_mlp(out.view(-1, *shape[2:])).view(shape), states
 
