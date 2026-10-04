@@ -33,7 +33,7 @@ from sheeprl.algos.dreamer_v3_5.loss import TwoHot, lambda_return, symexp_bins
 from sheeprl.algos.dreamer_v3_5.optim import LaProp
 from sheeprl.algos.dreamer_v3_5.utils import Moments
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
-from sheeprl.data.samplers import EnvIndependentSampler
+from sheeprl.data.samplers import SequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict, symexp
@@ -421,7 +421,7 @@ def test_the_latent_states_are_written_back_at_their_steps():
     rb = EnvIndependentReplayBuffer(5, n_envs=2, buffer_cls=SequentialReplayBuffer, seed=0)
     counters = np.zeros(2, np.int64)
     add_steps(rb, counters, 8)
-    store = ReplayStore(rb, EnvIndependentSampler(2, sequence_length=3, seed=0))
+    store = ReplayStore(rb, SequenceSampler(3, seed=0))
     sample, step_ids = dreamer_v3_5.sample_sequences(store, batch_size=4, n_samples=1)
     step_ids = step_ids[0]
     # The written latent states: their step identifiers, as floats

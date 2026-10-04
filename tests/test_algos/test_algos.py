@@ -868,7 +868,6 @@ def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(stand
     sampler_classes = (
         samplers.TransitionSampler,
         samplers.SequenceSampler,
-        samplers.EnvIndependentSampler,
         samplers.EpisodeSampler,
     )
     with contextlib.ExitStack() as stack:

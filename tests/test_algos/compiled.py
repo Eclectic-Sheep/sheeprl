@@ -29,7 +29,8 @@ def recording(module, monkeypatch, *modules):
 
 def assert_same_step(eager, compiled):
     """The same losses and the same gradients: every tensor up to 0.1% of its norm, or 0.01% of the norm of all the
-    gradients of its update (the gradients that nearly cancel out are dominated by the rounding errors)."""
+    gradients of its update (the gradients that nearly cancel out are dominated by the rounding errors), or 1e-6 (as
+    the losses: the updates whose gradients all nearly vanish)."""
     (eager_losses, eager_grads), (compiled_losses, compiled_grads) = eager, compiled
     assert [name for name, _ in compiled_losses] == [name for name, _ in eager_losses]
     for (name, e), (_, c) in zip(eager_losses, compiled_losses):
@@ -41,7 +42,8 @@ def assert_same_step(eager, compiled):
         for j, (e, c) in enumerate(zip(eager_update, compiled_update)):
             if e is not None:
                 gap = (c - e).double().norm()
-                assert gap <= 1e-3 * e.double().norm() + 1e-4 * total, (i, j, tuple(e.shape), gap, e.norm(), total)
+                bound = 1e-3 * e.double().norm() + 1e-4 * total + 1e-6
+                assert gap <= bound, (i, j, tuple(e.shape), gap, e.norm(), total)
 
 
 def same_random_numbers(monkeypatch):

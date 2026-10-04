@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, ReplayBuffer, SequentialReplayBuffer
-from sheeprl.data.samplers import EnvIndependentSampler, SequenceSampler, TransitionSampler
+from sheeprl.data.samplers import SequenceSampler, TransitionSampler
 from sheeprl.data.store import ReplayStore
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="A buffer in the memory of a GPU")
@@ -27,10 +27,12 @@ def buffers(kind, device):
     if kind == "sequences":
         return SequentialReplayBuffer(8, 2, **kw), lambda: SequenceSampler(3, True, True, seed=1)
     cls = ReplayBuffer if kind == "env_transitions" else SequentialReplayBuffer
-    length = None if kind == "env_transitions" else 3
-    return EnvIndependentReplayBuffer(8, 2, buffer_cls=cls, **kw), lambda: EnvIndependentSampler(
-        2, length, True, True, 1
+    sampler = (
+        (lambda: TransitionSampler(True, True, seed=1))
+        if kind == "env_transitions"
+        else (lambda: SequenceSampler(3, True, True, seed=1))
     )
+    return EnvIndependentReplayBuffer(8, 2, buffer_cls=cls, **kw), sampler
 
 
 @cuda

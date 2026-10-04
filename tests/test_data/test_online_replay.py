@@ -93,15 +93,29 @@ def test_the_online_queues_of_the_environments_are_taken_oldest_first(buffer_cls
     assert rb.sample(5, online=True, **kwargs)["value"].shape == rb.sample(5, **kwargs)["value"].shape
 
 
-def test_a_failed_sample_leaves_the_online_queue_as_it_was():
-    # The environment 1 has no steps: a sample that draws it fails after the queued transitions of the environment 0
-    # have been chosen, which must stay in the queue
+def test_a_failed_sample_leaves_the_online_queue_as_it_was(monkeypatch):
+    # The queued transitions leave the queue once the uniform ones are drawn: a sample whose draw fails keeps them
+    from sheeprl.data.samplers import TransitionSampler
+
     rb = EnvIndependentReplayBuffer(10, 2, buffer_cls=ReplayBuffer, seed=0)
     add_steps(rb, 0, 3, envs=[0])
-    with pytest.raises(ValueError, match="No sample has been added"):
-        rb.sample(8, online=True)
+
+    def failing_draw(self, storage, n):
+        raise ValueError("The draw failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TransitionSampler, "draw", failing_draw)
+        with pytest.raises(ValueError, match="The draw failed"):
+            rb.sample(8, online=True)
     add_steps(rb, 0, 1, envs=[1])
     assert rb.sample(4, online=True)["value"][0, :, 0].tolist() == [0, 1, 10, 20]
+
+
+def test_an_environment_without_steps_is_not_sampled():
+    # The environments are drawn among the ones with steps: the environment 1, which has none, doesn't fail the sample
+    rb = EnvIndependentReplayBuffer(10, 2, buffer_cls=ReplayBuffer, seed=0)
+    add_steps(rb, 0, 3, envs=[0])
+    assert set(rb.sample(16)["value"][0, :, 0].tolist()) <= {0, 10, 20}
 
 
 def episode(values, rb: EpisodeBuffer) -> None:
