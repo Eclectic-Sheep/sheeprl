@@ -170,6 +170,32 @@ def split_in_sequences(data: Dict[str, Tensor], sequence_length: int) -> Dict[st
     return padded
 
 
+@torch.no_grad()
+def recurrent_states(
+    agent: RecurrentPPOAgent,
+    obs: Dict[str, Tensor],
+    prev_actions: Tensor,
+    dones: Tensor,
+    initial_states: Tuple[Tensor, Tensor],
+    reset_on_done: bool,
+) -> Tuple[Tensor, Tensor]:
+    """The recurrent states before every step of a rollout (`[Rollout_Steps, Num_Envs, Hidden_Size]`), unrolled with the
+    current weights of `agent` from the states before its first step (`initial_states`), and reset after the end of
+    every episode as the player does when `reset_on_done` (`algo.reset_recurrent_state_on_done`)."""
+    rnn = agent.rnn
+    x = rnn._pre_mlp(torch.cat((agent.feature_extractor(obs), prev_actions), dim=-1))
+    rnn._lstm.flatten_parameters()
+    hx, cx = initial_states
+    all_hx, all_cx = [], []
+    for t in range(x.shape[0]):
+        all_hx.append(hx)
+        all_cx.append(cx)
+        _, (hx, cx) = rnn._lstm(x[t : t + 1], (hx, cx))
+        if reset_on_done:
+            hx, cx = (1 - dones[t : t + 1]) * hx, (1 - dones[t : t + 1]) * cx
+    return torch.cat(all_hx), torch.cat(all_cx)
+
+
 def masked_mean(tensor: Tensor, mask: Tensor) -> Tensor:
     """The mean of the elements of `tensor` selected by `mask`."""
     return torch.where(mask, tensor, 0).sum() / mask.sum()
@@ -349,7 +375,27 @@ class PPORecurrent(Algorithm):
         padded_size = (
             -(-batch_size // SEQUENCES_MULTIPLE) * SEQUENCES_MULTIPLE if compile_enabled(self.fabric, cfg) else 0
         )
-        for _ in range(cfg.algo.update_epochs):
+        for epoch in range(cfg.algo.update_epochs):
+            if cfg.algo.refresh_recurrent_states and epoch > 0:
+                # The sequences start from the recurrent states of the rollout, computed by the weights that played it:
+                # every epoch after the first one unrolls them again with the current weights, from the state before
+                # the first step of the rollout
+                obs = {k: data[k] / 255.0 - 0.5 for k in cfg.algo.cnn_keys.encoder}
+                obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
+                with autocast(self.fabric):
+                    prev_hx, prev_cx = recurrent_states(
+                        state.agent,
+                        obs,
+                        data["prev_actions"],
+                        data["dones"],
+                        (data["prev_hx"][:1], data["prev_cx"][:1]),
+                        cfg.algo.reset_recurrent_state_on_done,
+                    )
+                refreshed = split_in_sequences(
+                    {"dones": data["dones"], "prev_hx": prev_hx.float(), "prev_cx": prev_cx.float()},
+                    cfg.algo.per_rank_sequence_length,
+                )
+                sequences["prev_hx"], sequences["prev_cx"] = refreshed["prev_hx"], refreshed["prev_cx"]
             sampler = BatchSampler(RandomSampler(range(num_sequences)), batch_size=batch_size, drop_last=False)
             for idxes in sampler:
                 size = len(idxes)

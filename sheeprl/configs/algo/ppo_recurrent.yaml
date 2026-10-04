@@ -13,6 +13,9 @@ max_grad_norm: 0.5
 anneal_ent_coef: False
 normalize_advantages: False
 reset_recurrent_state_on_done: True
+# Every epoch after the first one unrolls the recurrent states of the rollout again with the current weights: the
+# sequences start from them instead of the ones the player computed with the weights before the update
+refresh_recurrent_states: False
 per_rank_sequence_length: ???
 
 # Model related parameters
