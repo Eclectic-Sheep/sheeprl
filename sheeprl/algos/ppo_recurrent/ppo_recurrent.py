@@ -24,7 +24,7 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPla
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
 
@@ -129,6 +129,10 @@ class RecurrentRolloutPlayer:
             self.prev_states = tuple((1 - torch.as_tensor(dones, device=device)) * s for s in states)
         else:
             self.prev_states = states
+
+
+# Compiled, the minibatches are padded to a multiple of this number of sequences (`PPORecurrent.batches`)
+SEQUENCES_MULTIPLE = 16
 
 
 def split_in_sequences(data: Dict[str, Tensor], sequence_length: int) -> Dict[str, Tensor]:
@@ -336,10 +340,20 @@ class PPORecurrent(Algorithm):
         if self.fabric.world_size > 1:
             all_batches = self.fabric.all_reduce(torch.tensor(num_batches, device=self.fabric.device), reduce_op="max")
             padding = int(all_batches.item()) - num_batches
+        # The number of sequences changes with the episodes that end in the rollout, and so do the sizes of the
+        # minibatches: compiled with CUDA graphs, every new size is a new recording. Every minibatch of the rollout,
+        # the last one included, is padded to the size rounded up to a multiple of `SEQUENCES_MULTIPLE`, with copies
+        # of its first sequence out of the mask: the losses don't change and a run sees a few sizes
+        padded_size = (
+            -(-batch_size // SEQUENCES_MULTIPLE) * SEQUENCES_MULTIPLE if compile_enabled(self.fabric, cfg) else 0
+        )
         for _ in range(cfg.algo.update_epochs):
             sampler = BatchSampler(RandomSampler(range(num_sequences)), batch_size=batch_size, drop_last=False)
             for idxes in sampler:
+                size = len(idxes)
+                idxes = idxes + idxes[:1] * (padded_size - size)
                 batch = {k: v[:, idxes] for k, v in sequences.items()}
+                batch["mask"][:, size:] = False
                 yield batch
         for _ in range(padding):
             yield {**batch, "loss_weight": torch.zeros((), device=self.fabric.device)}
