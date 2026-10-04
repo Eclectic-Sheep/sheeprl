@@ -17,13 +17,12 @@ from torch.distributions import (
     Normal,
     OneHotCategorical,
     OneHotCategoricalStraightThrough,
-    TanhTransform,
     TransformedDistribution,
 )
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import TruncatedNormal
+from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
 # (https://github.com/danijar/dreamerv2), also inside its GRU
@@ -554,7 +553,7 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
             elif self.distribution == "normal":
                 # The std is the output of the network: made positive as the one of `tanh_normal`
                 std = F.softplus(std + self.init_std) + self.min_std
