@@ -15,7 +15,6 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import PolynomialLR
-from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
@@ -23,6 +22,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, all_reduce_gradients, autocast, run
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -217,21 +217,15 @@ class A2C(Algorithm):
             # Flatten [Rollout_Steps, Num_Envs]
             data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        indexes = list(range(next(iter(data.values())).shape[0]))
-        if cfg.buffer.share_data:
-            sampler = DistributedSampler(
-                indexes,
-                num_replicas=self.fabric.world_size,
-                rank=self.fabric.global_rank,
-                shuffle=True,
-                seed=cfg.seed,
-            )
-        else:
-            sampler = RandomSampler(indexes)
-        sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
-        if cfg.buffer.share_data:
-            sampler.sampler.set_epoch(0)
-        yield [{k: v[batch_idxes] for k, v in data.items()} for batch_idxes in sampler]
+        sampler = EpochSampler(
+            cfg.algo.per_rank_batch_size,
+            self.fabric.world_size,
+            self.fabric.global_rank,
+            seed=cfg.seed,
+            distributed=cfg.buffer.share_data,
+        )
+        n = next(iter(data.values())).shape[0]
+        yield [{k: v[batch_idxes] for k, v in data.items()} for batch_idxes, _ in sampler.epochs(n, 1)]
 
     def train_step(self, state: A2CState, minibatches: List[Dict[str, Tensor]], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo

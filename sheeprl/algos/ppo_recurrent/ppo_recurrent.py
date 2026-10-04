@@ -16,7 +16,6 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.utils.data.sampler import BatchSampler, RandomSampler
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
@@ -24,6 +23,7 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPla
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -397,10 +397,7 @@ class PPORecurrent(Algorithm):
                     cfg.algo.per_rank_sequence_length,
                 )
                 sequences["prev_hx"], sequences["prev_cx"] = refreshed["prev_hx"], refreshed["prev_cx"]
-            sampler = BatchSampler(RandomSampler(range(num_sequences)), batch_size=batch_size, drop_last=False)
-            for idxes in sampler:
-                size = len(idxes)
-                idxes = idxes + idxes[:1] * (padded_size - size)
+            for idxes, size in EpochSampler(batch_size).epochs(num_sequences, 1, pad_to=padded_size or None):
                 batch = {k: v[:, idxes] for k, v in sequences.items()}
                 batch["mask"][:, size:] = False
                 yield batch

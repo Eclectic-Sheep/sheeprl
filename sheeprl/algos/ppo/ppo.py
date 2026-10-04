@@ -15,13 +15,13 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -224,23 +224,15 @@ class PPO(Algorithm):
             # Flatten [Rollout_Steps, Num_Envs]
             data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        indexes = list(range(next(iter(data.values())).shape[0]))
-        if cfg.buffer.share_data:
-            sampler = DistributedSampler(
-                indexes,
-                num_replicas=self.fabric.world_size,
-                rank=self.fabric.global_rank,
-                shuffle=True,
-                seed=cfg.seed,
-            )
-        else:
-            sampler = RandomSampler(indexes)
-        sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
-        for epoch in range(cfg.algo.update_epochs):
-            if cfg.buffer.share_data:
-                sampler.sampler.set_epoch(epoch)
-            for batch_idxes in sampler:
-                yield {k: v[batch_idxes] for k, v in data.items()}
+        sampler = EpochSampler(
+            cfg.algo.per_rank_batch_size,
+            self.fabric.world_size,
+            self.fabric.global_rank,
+            seed=cfg.seed,
+            distributed=cfg.buffer.share_data,
+        )
+        for batch_idxes, _ in sampler.epochs(next(iter(data.values())).shape[0], cfg.algo.update_epochs):
+            yield {k: v[batch_idxes] for k, v in data.items()}
 
     def train_step(self, state: PPOState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo

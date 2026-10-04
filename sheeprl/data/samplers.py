@@ -14,7 +14,7 @@ samplers of different kinds, and the state of a sampler is saved with it in the 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -498,3 +498,47 @@ class EpisodeSampler(Sampler):
         first_steps = np.concatenate((queued, np.array(storage._starts, dtype=np.intp)[episodes] + start_idxes))
         samples = storage.gather(first_steps, sequence_length, sample_next_obs=sample_next_obs, clone=clone)
         return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
+
+
+class EpochSampler:
+    """The minibatches of the epochs of an on-policy update: the `n` elements of a rollout (e.g. its steps, or its
+    sequences), shuffled at every epoch and split in minibatches of `batch_size` elements, the last one smaller.
+
+    The elements are shuffled with the global generator of PyTorch, as `torch.utils.data.RandomSampler` does. With
+    `num_replicas` > 1 they are the elements of the rollouts of all the processes, and every process takes its share of
+    every epoch, shuffled with `seed`, as `torch.utils.data.DistributedSampler` does (`buffer.share_data`).
+
+    With `pad_to`, every minibatch is padded to `pad_to` elements with copies of its first one (e.g. to give the same
+    shapes to a compiled loss, which masks them out).
+    """
+
+    def __init__(
+        self, batch_size: int, num_replicas: int = 1, rank: int = 0, seed: int = 0, distributed: bool = False
+    ) -> None:
+        self.batch_size = batch_size
+        self.num_replicas, self.rank, self.seed = num_replicas, rank, seed
+        self.distributed = distributed
+
+    def epochs(
+        self, n: int, epochs: int, first_epoch: int = 0, pad_to: Optional[int] = None
+    ) -> Iterator[Tuple[List[int], int]]:
+        """The minibatches of `epochs` epochs over `n` elements, from the epoch `first_epoch` (which shuffles the
+        elements of the processes): their elements, padded to `pad_to`, and the number of the ones not padded."""
+        from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
+
+        indexes = list(range(n))
+        if self.distributed:
+            sampler = DistributedSampler(
+                indexes, num_replicas=self.num_replicas, rank=self.rank, shuffle=True, seed=self.seed
+            )
+        else:
+            sampler = RandomSampler(indexes)
+        batches = BatchSampler(sampler, batch_size=self.batch_size, drop_last=False)
+        for epoch in range(first_epoch, first_epoch + epochs):
+            if self.distributed:
+                sampler.set_epoch(epoch)
+            for idxes in batches:
+                size = len(idxes)
+                if pad_to is not None:
+                    idxes = idxes + idxes[:1] * (pad_to - size)
+                yield idxes, size
