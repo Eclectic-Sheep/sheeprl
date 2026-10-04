@@ -19,13 +19,6 @@ learning_starts: 5000
 per_rank_pretrain_steps: 100
 per_rank_sequence_length: ???
 
-# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes
-# the first time, then mostly reused from the cache of PyTorch).
-# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
-compile:
-  enabled: False
-  mode: reduce-overhead
 
 # Encoder and decoder keys
 cnn_keys:

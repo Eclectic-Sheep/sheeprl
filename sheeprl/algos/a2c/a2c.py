@@ -23,6 +23,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, all_reduce_gradients, autocast, run
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
 
@@ -87,6 +88,30 @@ class RolloutPlayer:
             data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
             data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
         rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
+
+
+def a2c_loss(
+    agent: PPOAgent,
+    obs: Dict[str, Tensor],
+    actions: Tensor,
+    values: Tensor,
+    returns: Tensor,
+    advantages: Tensor,
+    *,
+    actions_dim: Tuple[int, ...],
+    normalize_advantages: bool,
+    vf_coef: float,
+    ent_coef: float,
+    reduction: str,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """The loss of A2C on a minibatch and its policy and value terms. Can be compiled (`algo.compile`)."""
+    _, logprobs, entropy, new_values = agent(obs, torch.split(actions, actions_dim, dim=-1))
+    if normalize_advantages:
+        advantages = normalize_tensor(advantages)
+    pg_loss = policy_loss(logprobs, advantages, reduction)
+    v_loss = value_loss(new_values, values, returns, 0.0, False, reduction)
+    ent_loss = entropy_loss(entropy, reduction)
+    return pg_loss + vf_coef * v_loss + ent_coef * ent_loss, pg_loss, v_loss
 
 
 class A2C(Algorithm):
@@ -218,17 +243,21 @@ class A2C(Algorithm):
         policy_losses, value_losses = [], []
         for batch in minibatches:
             obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+            # Compiled with `algo.compile.enabled`, without CUDA graphs: the gradients are accumulated
             with autocast(self.fabric):
-                _, logprobs, entropy, values = state.agent(
-                    obs, torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
+                loss, pg_loss, v_loss = compiled(a2c_loss, self.fabric, self.cfg, cuda_graphs=False)(
+                    state.agent,
+                    obs,
+                    batch["actions"],
+                    batch["values"],
+                    batch["returns"],
+                    batch["advantages"],
+                    actions_dim=tuple(int(dim) for dim in state.agent.actions_dim),
+                    normalize_advantages=cfg.normalize_advantages,
+                    vf_coef=cfg.vf_coef,
+                    ent_coef=cfg.ent_coef,
+                    reduction=cfg.loss_reduction,
                 )
-                advantages = batch["advantages"]
-                if cfg.normalize_advantages:
-                    advantages = normalize_tensor(advantages)
-                pg_loss = policy_loss(logprobs, advantages, cfg.loss_reduction)
-                v_loss = value_loss(values, batch["values"], batch["returns"], 0.0, False, cfg.loss_reduction)
-                ent_loss = entropy_loss(entropy, cfg.loss_reduction)
-                loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
             self.fabric.backward(loss, inputs=params)
             policy_losses.append(pg_loss.detach())
             value_losses.append(v_loss.detach())

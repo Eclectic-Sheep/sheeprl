@@ -121,17 +121,15 @@ def init_weights(m: nn.Module):
 def normalize_tensor(tensor: Tensor, eps: float = 1e-8, mask: Optional[Tensor] = None) -> Tensor:
     """Zero mean and unit standard deviation (of the elements selected by `mask`). A single element has no standard
     deviation: it is returned as it is (as Stable-Baselines3 does with the advantages of a one-element minibatch)."""
-    unmasked = mask is None
-    if unmasked:
-        mask = torch.ones_like(tensor, dtype=torch.bool)
+    if mask is None:
+        # No selection: the shape doesn't depend on the data (`torch.compile` doesn't break the graph)
+        if tensor.numel() < 2:
+            return tensor
+        return (tensor - tensor.mean()) / (tensor.std() + eps)
     masked_tensor = tensor[mask]
     if masked_tensor.numel() < 2:
-        return tensor if unmasked else masked_tensor
-    normalized = (masked_tensor - masked_tensor.mean()) / (masked_tensor.std() + eps)
-    if unmasked:
-        return normalized.reshape_as(mask)
-    else:
-        return normalized
+        return masked_tensor
+    return (masked_tensor - masked_tensor.mean()) / (masked_tensor.std() + eps)
 
 
 def polynomial_decay(

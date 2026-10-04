@@ -34,11 +34,16 @@ def compile_enabled(fabric: Fabric, cfg: Dict[str, Any]) -> bool:
     return bool((cfg.algo.get("compile") or {}).get("enabled", False))
 
 
-def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any]) -> Callable:
-    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call)."""
+def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_graphs: bool = True) -> Callable:
+    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call).
+
+    Without `cuda_graphs`, `reduce-overhead` falls back to the default mode: the gradients of a loss accumulated over
+    several backward passes (e.g. A2C) live in the memory of the CUDA graphs, which the next replay overwrites."""
     if not compile_enabled(fabric, cfg):
         return fn
     mode = compile_mode(cfg)
+    if not cuda_graphs and mode == "reduce-overhead":
+        mode = None
     if (fn, mode) not in _COMPILED:
         _COMPILED[fn, mode] = torch.compile(fn, mode=mode)
     return _COMPILED[fn, mode]

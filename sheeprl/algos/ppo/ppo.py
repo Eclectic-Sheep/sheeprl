@@ -22,6 +22,7 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
 
@@ -84,6 +85,34 @@ class RolloutPlayer:
             data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
             data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
         rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
+
+
+def ppo_loss(
+    agent: PPOAgent,
+    obs: Dict[str, Tensor],
+    actions: Tensor,
+    logprobs: Tensor,
+    values: Tensor,
+    returns: Tensor,
+    advantages: Tensor,
+    clip_coef: Tensor,
+    ent_coef: Tensor,
+    *,
+    actions_dim: Tuple[int, ...],
+    normalize_advantages: bool,
+    vf_coef: float,
+    clip_vloss: bool,
+    reduction: str,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The loss of PPO on a minibatch (Equation 9 in the paper) and its terms: the clipped surrogate objective, the
+    value loss and the entropy of the policy. Can be compiled (`algo.compile`)."""
+    _, new_logprobs, entropy, new_values = agent(obs, torch.split(actions, actions_dim, dim=-1))
+    if normalize_advantages:
+        advantages = normalize_tensor(advantages)
+    pg_loss = policy_loss(new_logprobs, logprobs, advantages, clip_coef, reduction)
+    v_loss = value_loss(new_values, values, returns, clip_coef, clip_vloss, reduction)
+    ent_loss = entropy_loss(entropy, reduction)
+    return pg_loss + vf_coef * v_loss + ent_coef * ent_loss, pg_loss, v_loss, ent_loss
 
 
 class PPO(Algorithm):
@@ -212,34 +241,31 @@ class PPO(Algorithm):
 
     def train_step(self, state: PPOState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
+        # The loss is compiled when `algo.compile.enabled` is set
+        mark_gradient_step(self.fabric, self.cfg)
         obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
         with autocast(self.fabric):
-            _, logprobs, entropy, values = state.agent(
-                obs, torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
+            loss, pg_loss, v_loss, ent_loss = compiled(ppo_loss, self.fabric, self.cfg)(
+                state.agent,
+                obs,
+                batch["actions"],
+                batch["logprobs"],
+                batch["values"],
+                batch["returns"],
+                batch["advantages"],
+                self.clip_coef,
+                self.ent_coef,
+                actions_dim=tuple(int(dim) for dim in state.agent.actions_dim),
+                normalize_advantages=cfg.normalize_advantages,
+                vf_coef=cfg.vf_coef,
+                clip_vloss=cfg.clip_vloss,
+                reduction=cfg.loss_reduction,
             )
-            advantages = batch["advantages"]
-            if cfg.normalize_advantages:
-                advantages = normalize_tensor(advantages)
-            pg_loss = policy_loss(logprobs, batch["logprobs"], advantages, self.clip_coef, cfg.loss_reduction)
-            v_loss = value_loss(
-                values, batch["values"], batch["returns"], self.clip_coef, cfg.clip_vloss, cfg.loss_reduction
-            )
-            ent_loss = entropy_loss(entropy, cfg.loss_reduction)
-            # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + self.ent_coef * ent_loss
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
         return {
             "Loss/policy_loss": pg_loss.detach(),
             "Loss/value_loss": v_loss.detach(),
             "Loss/entropy_loss": ent_loss.detach(),
-        }
-
-    def end_iteration(self, state: PPOState, iteration: int) -> Dict[str, float]:
-        # The learning rate and the coefficients used in the iteration
-        return {
-            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
-            "Info/clip_coef": self.cfg.algo.clip_coef,
-            "Info/ent_coef": self.cfg.algo.ent_coef,
         }
 
 

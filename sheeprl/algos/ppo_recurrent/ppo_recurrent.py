@@ -24,6 +24,7 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPla
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
 
@@ -161,6 +162,45 @@ def split_in_sequences(data: Dict[str, Tensor], sequence_length: int) -> Dict[st
     padded["mask"] = (torch.arange(sequence_length).expand(len(lengths), sequence_length) < lengths.unsqueeze(1)).T
     padded["mask"] = padded["mask"].to(data["dones"].device)
     return padded
+
+
+def ppo_recurrent_loss(
+    agent: RecurrentPPOAgent,
+    obs: Dict[str, Tensor],
+    prev_actions: Tensor,
+    prev_states: Tuple[Tensor, Tensor],
+    actions: Tensor,
+    mask: Tensor,
+    logprobs: Tensor,
+    values: Tensor,
+    returns: Tensor,
+    advantages: Tensor,
+    clip_coef: Tensor,
+    ent_coef: Tensor,
+    *,
+    actions_dim: Tuple[int, ...],
+    normalize_advantages: bool,
+    vf_coef: float,
+    clip_vloss: bool,
+    entropy_reduction: str,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The loss of PPO on a minibatch of sequences, on their steps selected by `mask`, and its terms. Can be compiled
+    (`algo.compile`)."""
+    _, new_logprobs, entropies, new_values, _ = agent(
+        obs,
+        prev_actions=prev_actions,
+        prev_states=prev_states,
+        actions=torch.split(actions, actions_dim, dim=-1),
+        mask=mask,
+    )
+    normalized_advantages = advantages[mask]
+    if normalize_advantages and len(normalized_advantages) > 1:
+        normalized_advantages = normalize_tensor(normalized_advantages)
+    pg_loss = policy_loss(new_logprobs[mask], logprobs[mask], normalized_advantages, clip_coef, "mean")
+    v_loss = value_loss(new_values[mask], values[mask], returns[mask], clip_coef, clip_vloss, "mean")
+    ent_loss = entropy_loss(entropies[mask], entropy_reduction)
+    # Equation (9) in the paper
+    return pg_loss + vf_coef * v_loss + ent_coef * ent_loss, pg_loss, v_loss, ent_loss
 
 
 class PPORecurrent(Algorithm):
@@ -301,26 +341,28 @@ class PPORecurrent(Algorithm):
         mask = batch["mask"].unsqueeze(-1)
         for k in cfg.cnn_keys.encoder:
             batch[k] = batch[k] / 255.0 - 0.5
+        # The loss is compiled when `algo.compile.enabled` is set
+        mark_gradient_step(self.fabric, self.cfg)
         with autocast(self.fabric):
-            _, logprobs, entropies, values, _ = state.agent(
+            loss, pg_loss, v_loss, ent_loss = compiled(ppo_recurrent_loss, self.fabric, self.cfg)(
+                state.agent,
                 {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)},
-                prev_actions=batch["prev_actions"],
-                prev_states=(batch["prev_hx"][:1], batch["prev_cx"][:1]),
-                actions=torch.split(batch["actions"], state.agent.actions_dim, dim=-1),
-                mask=mask,
+                batch["prev_actions"],
+                (batch["prev_hx"][:1], batch["prev_cx"][:1]),
+                batch["actions"],
+                mask,
+                batch["logprobs"],
+                batch["values"],
+                batch["returns"],
+                batch["advantages"],
+                self.clip_coef,
+                self.ent_coef,
+                actions_dim=tuple(int(dim) for dim in state.agent.actions_dim),
+                normalize_advantages=cfg.normalize_advantages,
+                vf_coef=cfg.vf_coef,
+                clip_vloss=cfg.clip_vloss,
+                entropy_reduction=cfg.loss_reduction,
             )
-            normalized_advantages = batch["advantages"][mask]
-            if cfg.normalize_advantages and len(normalized_advantages) > 1:
-                normalized_advantages = normalize_tensor(normalized_advantages)
-            pg_loss = policy_loss(
-                logprobs[mask], batch["logprobs"][mask], normalized_advantages, self.clip_coef, "mean"
-            )
-            v_loss = value_loss(
-                values[mask], batch["values"][mask], batch["returns"][mask], self.clip_coef, cfg.clip_vloss, "mean"
-            )
-            ent_loss = entropy_loss(entropies[mask], cfg.loss_reduction)
-            # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + self.ent_coef * ent_loss
             if "loss_weight" in batch:
                 loss = loss * batch["loss_weight"]
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
@@ -330,14 +372,6 @@ class PPORecurrent(Algorithm):
             "Loss/policy_loss": pg_loss.detach(),
             "Loss/value_loss": v_loss.detach(),
             "Loss/entropy_loss": ent_loss.detach(),
-        }
-
-    def end_iteration(self, state: PPORecurrentState, iteration: int) -> Dict[str, float]:
-        # The learning rate and the coefficients used in the iteration
-        return {
-            "Info/learning_rate": state.optimizer.param_groups[0]["lr"],
-            "Info/clip_coef": self.cfg.algo.clip_coef,
-            "Info/ent_coef": self.cfg.algo.ent_coef,
         }
 
 
