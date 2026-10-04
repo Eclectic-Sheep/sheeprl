@@ -26,16 +26,16 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor, PlayerDV2, WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
+    MAX_SAMPLED_BATCHES,
     actor_objective,
-    build_buffer,
     build_optimizer,
+    build_store,
     compute_lambda_values,
     prepare_obs,
-    sample_batches,
     test,
 )
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, update
@@ -99,7 +99,7 @@ class SequencePlayer:
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: EnvRunner, buffer: EnvIndependentReplayBuffer | EpisodeBuffer) -> None:
+    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -674,7 +674,7 @@ class DreamerV2(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[DreamerV2State, EnvIndependentReplayBuffer | EpisodeBuffer]:
+    ) -> Tuple[DreamerV2State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -700,7 +700,7 @@ class DreamerV2(Algorithm):
             critic_optimizer=critic_optimizer,
         )
         self.schedule = schedule
-        return state, build_buffer(fabric, cfg, log_dir, dry_run_size=2)
+        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
     def policy(self, state: DreamerV2State) -> PlayerDV2:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -723,9 +723,9 @@ class DreamerV2(Algorithm):
         )
 
     def batches(
-        self, state: DreamerV2State, buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int, iteration: int
+        self, state: DreamerV2State, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: DreamerV2State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps

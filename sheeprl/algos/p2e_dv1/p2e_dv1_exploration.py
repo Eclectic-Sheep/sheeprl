@@ -23,7 +23,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import (
     SequencePlayer,
-    build_buffer,
+    build_store,
     imagine,
     sample_batches_of_iteration,
     value_loss_fn,
@@ -34,7 +34,7 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.metric import MetricAggregator
@@ -436,7 +436,7 @@ class P2EDV1Exploration(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[P2EDV1ExplorationState, EnvIndependentReplayBuffer]:
+    ) -> Tuple[P2EDV1ExplorationState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -466,7 +466,7 @@ class P2EDV1Exploration(Algorithm):
             critic_exploration_optimizer=optimizer(cfg.algo.critic.optimizer, critic_exploration),
         )
         self.schedule = schedule
-        return state, build_buffer(fabric, cfg, log_dir, dry_run_size=2)
+        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
     def policy(self, state: P2EDV1ExplorationState) -> PlayerDV1:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""
@@ -479,7 +479,7 @@ class P2EDV1Exploration(Algorithm):
         policy.actor = get_single_device_fabric(self.fabric).setup_module(unwrap_fabric(state.actor_task))
         return policy
 
-    def load_store(self, saved: Any, store: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
         # A buffer saved before `is_first` was stored
         return add_is_first(super().load_store(saved, store))
 
@@ -501,7 +501,7 @@ class P2EDV1Exploration(Algorithm):
         )
 
     def batches(
-        self, state: P2EDV1ExplorationState, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: P2EDV1ExplorationState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         yield from sample_batches_of_iteration(self, buffer, n_steps, iteration)
 

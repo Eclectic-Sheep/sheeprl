@@ -15,13 +15,14 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler
 
 from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import TransitionSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
@@ -85,7 +86,7 @@ class ReplayPlayer:
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step(self, env: EnvRunner, buffer: ReplayBuffer) -> None:
+    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
         num_envs = env.num_envs
         if self.schedule.warmup(env.policy_step):
             actions = env.random_actions()
@@ -117,26 +118,22 @@ class ReplayPlayer:
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
 
 
-def sample_batches(
-    fabric: Fabric,
-    cfg: Dict[str, Any],
-    buffer: ReplayBuffer,
-    n_samples: int,
-    sample_next_obs: bool = False,
-    online: bool = False,
-) -> Dict[str, Tensor]:
-    """Sample `n_samples` rows from the buffer of this process, on its device: every process trains on its own data,
-    as the Dreamers do, and `update` averages the gradients over the processes. With `online`, the rows start with the
-    steps added since the last sample (`buffer.online`)."""
-    sample = buffer.sample_tensors(
-        batch_size=n_samples,
-        sample_next_obs=sample_next_obs,
-        dtype=None,
-        device=fabric.device,
-        from_numpy=cfg.buffer.from_numpy,
-        online=online,
-    )  # [1, N_Samples, ...]
-    return {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
+def build_store(
+    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, obs_keys: Tuple[str, ...] = ("observations",)
+) -> ReplayStore:
+    """The replay buffer of this process: `buffer.size` steps split among the environments of all the processes (1 in
+    a dry run), sampled one step at a time (`TransitionSampler`, with the next observations with
+    `buffer.sample_next_obs` and the online queue with `buffer.online`). Every process trains on its own data, as the
+    Dreamers do, and `update` averages the gradients over the processes."""
+    storage = ReplayBuffer(
+        cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
+        cfg.env.num_envs,
+        obs_keys=obs_keys,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+    )
+    sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
+    return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
 
 
 def train(
@@ -219,7 +216,7 @@ class SAC(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[SACState, ReplayBuffer]:
+    ) -> Tuple[SACState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         mlp_keys = cfg.algo.mlp_keys.encoder
@@ -255,15 +252,8 @@ class SAC(Algorithm):
         state = SACState(
             agent=agent, qf_optimizer=qf_optimizer, actor_optimizer=actor_optimizer, alpha_optimizer=alpha_optimizer
         )
-        buffer = ReplayBuffer(
-            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
-            cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            seed=cfg.seed + fabric.global_rank,
-        )
         self.schedule = schedule
-        return state, buffer
+        return state, build_store(fabric, cfg, log_dir)
 
     def policy(self, state: SACState) -> SACPlayer:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
@@ -276,26 +266,13 @@ class SAC(Algorithm):
         return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule, dtype=self.buffer_dtype)
 
     def batches(
-        self, state: SACState, buffer: ReplayBuffer, n_steps: int, iteration: int
+        self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        cfg = self.cfg
-        fabric = self.fabric
         # `train` updates the target critics in one iteration out of
         # `target_network_frequency // policy_steps_per_iter + 1`
         self.iteration = iteration
-
-        # Sample the batches of all the gradient steps at once
-        data = sample_batches(
-            fabric,
-            cfg,
-            buffer,
-            n_steps * cfg.algo.per_rank_batch_size,
-            sample_next_obs=cfg.buffer.sample_next_obs,
-            online=cfg.buffer.online,
-        )
-        batch_size = cfg.algo.per_rank_batch_size
-        for batch_idxes in BatchSampler(range(n_steps * batch_size), batch_size=batch_size, drop_last=False):
-            yield {k: v[batch_idxes] for k, v in data.items()}
+        # The batches of all the gradient steps, sampled at once
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size)
 
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         metrics = train(

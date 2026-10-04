@@ -7,7 +7,6 @@ the exploration actor (`algo.player.actor_type`) until the training starts, then
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
 
@@ -18,13 +17,13 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
 from sheeprl.algos.dreamer_v3.agent import PlayerDV3
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -90,7 +89,7 @@ class P2EDV3Finetuning(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[P2EDV3FinetuningState, EnvIndependentReplayBuffer]:
+    ) -> Tuple[P2EDV3FinetuningState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.is_continuous = isinstance(action_space, gym.spaces.Box)
@@ -154,13 +153,8 @@ class P2EDV3Finetuning(Algorithm):
             ),
         )
         # One buffer of sequences per environment, sampled independently
-        buffer = EnvIndependentReplayBuffer(
-            env_buffer_size(fabric, cfg, dry_run_size=4),
-            n_envs=cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + fabric.global_rank,
+        buffer = sequential_store(
+            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=4), cfg.algo.per_rank_sequence_length
         )
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop)
@@ -203,12 +197,12 @@ class P2EDV3Finetuning(Algorithm):
         )
 
     def batches(
-        self, state: P2EDV3FinetuningState, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: P2EDV3FinetuningState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # From the first training on, the task actor plays
         self.task_policy(state)
-        yield from sample_batches(self.fabric, cfg, buffer, n_steps)
+        yield from buffer.batches(n_steps, cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: P2EDV3FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg

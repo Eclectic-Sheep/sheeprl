@@ -21,7 +21,6 @@ Compared with DreamerV3 of the 2023 paper (`sheeprl.algos.dreamer_v3`), besides 
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -36,14 +35,15 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, PlayerDV3_5, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, test
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer, get_tensor
+from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
@@ -442,21 +442,13 @@ def update_target_critic(critic: nn.Module, target_critic: nn.Module, tau: float
     torch._foreach_lerp_(target_params, [p.to(t.dtype) for p, t in zip(critic.parameters(), target_params)], tau)
 
 
-def sample_sequences(
-    rb: EnvIndependentReplayBuffer,
-    batch_size: int,
-    sequence_length: int,
-    n_samples: int,
-    device: torch.device,
-    from_numpy: bool = False,
-    online: bool = False,
-) -> Tuple[Dict[str, Tensor], np.ndarray]:
+def sample_sequences(store: ReplayStore, batch_size: int, n_samples: int) -> Tuple[Dict[str, Tensor], np.ndarray]:
     """`n_samples` batches of sequences, of shape `[n_samples, sequence_length, batch_size, ...]` and in the dtypes of
-    the buffer, on `device`, but the identifiers of their steps (`STEP_ID_KEY`), on the CPU. With `online`, the batches
-    start with the sequences of the online queue of the buffer."""
-    sample = rb.sample(batch_size=batch_size, sequence_length=sequence_length, n_samples=n_samples, online=online)
+    the buffer, on the device of `store`, but the identifiers of their steps (`STEP_ID_KEY`), on the CPU. With
+    `buffer.online`, the batches start with the sequences of the online queue of the buffer."""
+    sample = store.sample(batch_size, n_samples, numpy_keys=(STEP_ID_KEY,))
     step_ids = sample.pop(STEP_ID_KEY)
-    return {k: get_tensor(v, device=device, from_numpy=from_numpy) for k, v in sample.items()}, step_ids
+    return sample, step_ids
 
 
 def write_latent_states(
@@ -528,9 +520,9 @@ class LatentSequencePlayer(SequencePlayer):
         # The steps added to the buffer of every environment, from the buffer (of a resumed run) at the first step
         self.counters: Optional[np.ndarray] = None
 
-    def step_columns(self, buffer: EnvIndependentReplayBuffer, num_envs: int) -> Dict[str, np.ndarray]:
+    def step_columns(self, buffer: ReplayStore, num_envs: int) -> Dict[str, np.ndarray]:
         if self.counters is None:
-            self.counters = step_counters(buffer)
+            self.counters = step_counters(buffer.storage)
         stochastic_state = self.policy.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
         columns = {
             "deter": self.policy.recurrent_state.half().cpu().numpy(),
@@ -569,7 +561,7 @@ class DreamerV3_5(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[DreamerV3_5State, EnvIndependentReplayBuffer]:
+    ) -> Tuple[DreamerV3_5State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -602,15 +594,7 @@ class DreamerV3_5(Algorithm):
         sampling_cfg = dotdict(copy.deepcopy(cfg.as_dict()))
         sampling_cfg.algo.per_rank_sequence_length = self.sampled_length
         self.buffer_size = env_buffer_size(fabric, sampling_cfg, dry_run_size=2)
-        buffer = EnvIndependentReplayBuffer(
-            self.buffer_size,
-            n_envs=cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + fabric.global_rank,
-        )
-        return state, buffer
+        return state, sequential_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length)
 
     def policy(self, state: DreamerV3_5State) -> PlayerDV3_5:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -623,27 +607,19 @@ class DreamerV3_5(Algorithm):
         return LatentSequencePlayer(self.fabric, self.cfg, self.policy(state), self.actions_dim, self.is_continuous)
 
     def batches(
-        self, state: DreamerV3_5State, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: DreamerV3_5State, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # The batches are sampled a few at a time: the latent states computed on them (`train_step`) are written back in
         # the buffer before the next ones are sampled
         for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
             n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
-            sample, step_ids = sample_sequences(
-                buffer,
-                cfg.algo.per_rank_batch_size,
-                self.sampled_length,
-                n_samples,
-                self.fabric.device,
-                from_numpy=cfg.buffer.from_numpy,
-                online=cfg.buffer.online,
-            )
+            sample, step_ids = sample_sequences(buffer, cfg.algo.per_rank_batch_size, n_samples)
             self.latent_updates: List[Tuple[np.ndarray, Tensor, Tensor]] = []
             for i in range(n_samples):
                 self.step_ids = step_ids[i, self.context :]
                 yield {k: v[i] for k, v in sample.items()}
-            write_latent_states(buffer, self.latent_updates, self.buffer_size)
+            write_latent_states(buffer.storage, self.latent_updates, self.buffer_size)
 
     def train_step(self, state: DreamerV3_5State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg

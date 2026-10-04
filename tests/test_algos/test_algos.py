@@ -842,13 +842,14 @@ def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(stand
     # With `buffer.online`, the batches of the training are sampled with the online queue of the replay buffer
     if os.environ["LT_DEVICES"] != "1":
         pytest.skip("The sampling is checked in the process of rank 0")
-    from sheeprl.data import buffers
+    from sheeprl.data import samplers
 
     online = []
 
     def recording(sample):
         def recording_sample(self, *args, **kwargs):
-            online.append(kwargs.get("online", False))
+            # The online queue of the sampler, unless the call overrides it
+            online.append(self.online if kwargs.get("online") is None else kwargs["online"])
             return sample(self, *args, **kwargs)
 
         return recording_sample
@@ -863,14 +864,14 @@ def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(stand
         f"root_dir={root_dir}",
         f"run_name=test_{exp}_online",
     ]
-    buffer_classes = (
-        buffers.ReplayBuffer,
-        buffers.SequentialReplayBuffer,
-        buffers.EnvIndependentReplayBuffer,
-        buffers.EpisodeBuffer,
+    sampler_classes = (
+        samplers.TransitionSampler,
+        samplers.SequenceSampler,
+        samplers.EnvIndependentSampler,
+        samplers.EpisodeSampler,
     )
     with contextlib.ExitStack() as stack:
-        for cls in buffer_classes:
+        for cls in sampler_classes:
             stack.enter_context(mock.patch.object(cls, "sample", recording(cls.sample)))
         stack.enter_context(mock.patch.object(sys, "argv", args))
         run()

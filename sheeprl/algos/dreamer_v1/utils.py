@@ -13,6 +13,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import unwrap_fabric
@@ -42,7 +43,7 @@ AGGREGATOR_KEYS = {
 MODELS_TO_REGISTER = {"world_model", "actor", "critic"}
 
 
-def add_is_first(rb: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+def add_is_first(rb: ReplayStore | EnvIndependentReplayBuffer) -> ReplayStore | EnvIndependentReplayBuffer:
     """Complete a replay buffer saved before DreamerV1 stored `is_first` (a resumed run, or a finetuning that loads the
     buffer of its exploration, would fail to add rows with it).
 
@@ -50,7 +51,8 @@ def add_is_first(rb: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
     (`terminated` or `truncated`: the next row holds the first observation of the new episode), or when it is the first
     row of a buffer not filled yet.
     """
-    for buffer in rb.buffer:
+    # The storage of a store
+    for buffer in getattr(rb, "storage", rb).buffer:
         if buffer.empty or "is_first" in buffer.buffer:
             continue
         terminated, truncated = (

@@ -17,14 +17,14 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
-from sheeprl.algos.dreamer_v1.dreamer_v1 import SequencePlayer, build_buffer, sample_batches_of_iteration, train
+from sheeprl.algos.dreamer_v1.dreamer_v1 import SequencePlayer, build_store, sample_batches_of_iteration, train
 from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import exploration_amounts
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric
@@ -88,7 +88,7 @@ class P2EDV1Finetuning(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[P2EDV1FinetuningState, EnvIndependentReplayBuffer]:
+    ) -> Tuple[P2EDV1FinetuningState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -115,7 +115,7 @@ class P2EDV1Finetuning(Algorithm):
             actor_task_optimizer=optimizer(cfg.algo.actor.optimizer, actor_task),
             critic_task_optimizer=optimizer(cfg.algo.critic.optimizer, critic_task),
         )
-        buffer = build_buffer(fabric, cfg, log_dir, dry_run_size=4)
+        buffer = build_store(fabric, cfg, log_dir, dry_run_size=4)
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop):
         # its models and optimizers
@@ -142,7 +142,7 @@ class P2EDV1Finetuning(Algorithm):
                 p.data = agent_p.data
         return policy
 
-    def load_store(self, saved: Any, store: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
         # A buffer saved before `is_first` was stored
         return add_is_first(super().load_store(saved, store))
 
@@ -163,7 +163,7 @@ class P2EDV1Finetuning(Algorithm):
         )
 
     def batches(
-        self, state: P2EDV1FinetuningState, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: P2EDV1FinetuningState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         # From the first training on, the task actor plays
         self.task_policy(state)

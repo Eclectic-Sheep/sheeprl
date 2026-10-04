@@ -2,6 +2,7 @@
 ones, and the target critics move towards the critics with the formula of the loop over their weights."""
 
 import copy
+from types import SimpleNamespace
 
 import gymnasium as gym
 import hydra
@@ -130,16 +131,18 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, algo)
                     aggregator.update(name, value)
             else:
 
-                class Buffer:
-                    def sample_tensors(self, batch_size, **kwargs):
-                        n = batch_size // B
-                        return {k: v.repeat(n, *([1] * (v.dim() - 1)))[None] for k, v in data.items()}
+                class Store:
+                    # Every batch is `data` (`ReplayStore.sample`); the actor's sampler shares the generator
+                    sampler = SimpleNamespace(rng=None, queue=None)
+
+                    def sample(self, batch_size, n_samples=1, **kwargs):
+                        return {k: v[None].repeat(n_samples, *([1] * v.dim())) for k, v in data.items()}
 
                 # Two gradient steps of DroQ: two updates of the critics, then one of the actor
                 droq_algo = droq.DroQ(fabric, cfg)
                 actor_optimizer, qf_optimizer, alpha_optimizer = optimizers
                 state = sac.SACState(agent, qf_optimizer, actor_optimizer, alpha_optimizer)
-                for step, batch in enumerate(droq_algo.batches(state, Buffer(), 2, 1)):
+                for step, batch in enumerate(droq_algo.batches(state, Store(), 2, 1)):
                     for name, value in droq_algo.train_step(state, batch, step).items():
                         aggregator.update(name, value)
         results.append((losses, grads))

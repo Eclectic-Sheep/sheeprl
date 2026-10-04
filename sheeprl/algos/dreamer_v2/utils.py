@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence
 
 import gymnasium as gym
 import hydra
@@ -13,6 +13,8 @@ from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.data.samplers import EnvIndependentSampler, EpisodeSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
@@ -104,26 +106,6 @@ def build_optimizer(optimizer_cfg: Dict[str, Any], params: Any) -> torch.optim.O
 MAX_SAMPLED_BATCHES = 16
 
 
-def sample_batches(
-    fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
-) -> Iterator[Dict[str, Tensor]]:
-    """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
-    time: with `buffer.online`, they start with the sequences of the online queue of the buffer."""
-    for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
-        n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
-        sample = buffer.sample_tensors(
-            batch_size=cfg.algo.per_rank_batch_size,
-            sequence_length=cfg.algo.per_rank_sequence_length,
-            n_samples=n_samples,
-            dtype=None,
-            device=fabric.device,
-            from_numpy=cfg.buffer.from_numpy,
-            online=cfg.buffer.online,
-        )  # [N_Samples, Sequence_Length, Batch_Size, ...]
-        for i in range(n_samples):
-            yield {k: v[i].float() for k, v in sample.items()}
-
-
 def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
     """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
     processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
@@ -140,39 +122,54 @@ def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> i
     return size
 
 
-def build_buffer(
-    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
-) -> EnvIndependentReplayBuffer | EpisodeBuffer:
+def sequential_store(
+    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, buffer_size: int, sequence_length: int
+) -> ReplayStore:
+    """One buffer of `buffer_size` steps per environment, sampled in sequences of `sequence_length` steps of a single
+    environment (`EnvIndependentSampler`, with the online queue with `buffer.online`)."""
+    storage = EnvIndependentReplayBuffer(
+        buffer_size,
+        n_envs=cfg.env.num_envs,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        buffer_cls=SequentialReplayBuffer,
+    )
+    sampler = EnvIndependentSampler(
+        cfg.env.num_envs, sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank
+    )
+    return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
+
+
+def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> ReplayStore:
     """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
     whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`.
 
     Every process holds `buffer.size // world_size` steps: in a sequential buffer they are split among the environments
     of the process, while the episodes of all the environments of the process share the episode buffer. In a dry run
-    the buffers hold `dry_run_size` steps.
+    the buffers hold `dry_run_size` steps. Every process samples its buffer with a generator of its own.
     """
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-    memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
-        return EnvIndependentReplayBuffer(
-            env_buffer_size(fabric, cfg, dry_run_size),
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=memmap_dir,
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + fabric.global_rank,
+        return sequential_store(
+            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size), cfg.algo.per_rank_sequence_length
         )
     elif buffer_type == "episode":
-        return EpisodeBuffer(
+        storage = EpisodeBuffer(
             cfg.buffer.size // fabric.world_size if not cfg.dry_run else dry_run_size,
             minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
             n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            prioritize_ends=cfg.buffer.prioritize_ends,
+            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
             memmap=cfg.buffer.memmap,
-            memmap_dir=memmap_dir,
+            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         )
+        sampler = EpisodeSampler(
+            cfg.algo.per_rank_sequence_length,
+            prioritize_ends=cfg.buffer.prioritize_ends,
+            online=cfg.buffer.online,
+            seed=cfg.seed + fabric.global_rank,
+        )
+        return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
     raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
 
 

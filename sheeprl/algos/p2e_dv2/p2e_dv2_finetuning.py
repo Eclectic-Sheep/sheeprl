@@ -17,10 +17,10 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys, train
-from sheeprl.algos.dreamer_v2.utils import build_buffer, build_optimizer, sample_batches, test
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, build_store, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -86,7 +86,7 @@ class P2EDV2Finetuning(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[P2EDV2FinetuningState, EnvIndependentReplayBuffer | EpisodeBuffer]:
+    ) -> Tuple[P2EDV2FinetuningState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -114,7 +114,7 @@ class P2EDV2Finetuning(Algorithm):
             actor_task_optimizer=optimizer(cfg.algo.actor.optimizer, actor_task),
             critic_task_optimizer=optimizer(cfg.algo.critic.optimizer, critic_task),
         )
-        buffer = build_buffer(fabric, cfg, log_dir, dry_run_size=4)
+        buffer = build_store(fabric, cfg, log_dir, dry_run_size=4)
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop):
         # its models and optimizers
@@ -159,13 +159,13 @@ class P2EDV2Finetuning(Algorithm):
     def batches(
         self,
         state: P2EDV2FinetuningState,
-        buffer: EnvIndependentReplayBuffer | EpisodeBuffer,
+        buffer: ReplayStore,
         n_steps: int,
         iteration: int,
     ) -> Iterator[Dict[str, Tensor]]:
         # From the first training on, the task actor plays
         self.task_policy(state)
-        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: P2EDV2FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps

@@ -3,7 +3,6 @@ trained also to reconstruct them through a decoder. Written on the shared traini
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Tuple, Union
 
@@ -16,15 +15,14 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler
 
 from sheeprl.algos.sac.loss import critic_loss, policy_loss
-from sheeprl.algos.sac.sac import sample_batches
+from sheeprl.algos.sac.sac import build_store
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
@@ -120,7 +118,7 @@ class ReplayPlayer:
     def images_as_channels(self, obs: Dict[str, np.ndarray], num_envs: int) -> Dict[str, np.ndarray]:
         return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in self.cnn_keys else v for k, v in obs.items()}
 
-    def step(self, env: EnvRunner, buffer: ReplayBuffer) -> None:
+    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
         num_envs = env.num_envs
         obs = self.images_as_channels(env.obs, num_envs)
         if self.schedule.warmup(env.policy_step):
@@ -257,7 +255,7 @@ class SACAE(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[SACAEState, ReplayBuffer]:
+    ) -> Tuple[SACAEState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         if not isinstance(obs_space, gym.spaces.Dict):
@@ -307,17 +305,9 @@ class SACAE(Algorithm):
             encoder_optimizer=encoder_optimizer,
             decoder_optimizer=decoder_optimizer,
         )
-        buffer = ReplayBuffer(
-            cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
-            cfg.env.num_envs,
-            device=fabric.device if cfg.buffer.memmap else "cpu",
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-            seed=cfg.seed + fabric.global_rank,
-        )
         self.schedule = schedule
-        return state, buffer
+        obs_keys = tuple(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)
+        return state, build_store(fabric, cfg, log_dir, obs_keys=obs_keys)
 
     def policy(self, state: SACAEState) -> SACAEPlayer:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
@@ -330,23 +320,11 @@ class SACAE(Algorithm):
         return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule)
 
     def batches(
-        self, state: SACAEState, buffer: ReplayBuffer, n_steps: int, iteration: int
+        self, state: SACAEState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        cfg = self.cfg
         # The batches of the gradient steps are sampled `MAX_SAMPLED_BATCHES` at a time: the images of all the ones of
         # the first training (with the pretraining) don't fit in the memory
-        for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
-            n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first) * cfg.algo.per_rank_batch_size
-            data = sample_batches(
-                self.fabric,
-                cfg,
-                buffer,
-                n_samples,
-                sample_next_obs=cfg.buffer.sample_next_obs,
-                online=cfg.buffer.online,
-            )
-            for batch_idxes in BatchSampler(range(n_samples), batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
-                yield {k: v[batch_idxes] for k, v in data.items()}
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: SACAEState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         metrics = train(

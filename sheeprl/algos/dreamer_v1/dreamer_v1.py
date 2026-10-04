@@ -8,7 +8,6 @@ to finetune, the two phases of a gradient step (`world_model_learning`, `behavio
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
 
@@ -27,9 +26,9 @@ from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstructio
 from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer as DV2SequencePlayer
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
-from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches, test
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store, test
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
@@ -480,27 +479,21 @@ def train(
     return metrics
 
 
-def build_buffer(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> EnvIndependentReplayBuffer:
+def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> ReplayStore:
     """One buffer of sequences per environment."""
-    return EnvIndependentReplayBuffer(
-        env_buffer_size(fabric, cfg, dry_run_size),
-        n_envs=cfg.env.num_envs,
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        buffer_cls=SequentialReplayBuffer,
-        seed=cfg.seed + fabric.global_rank,
+    return sequential_store(
+        fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size), cfg.algo.per_rank_sequence_length
     )
 
 
 def sample_batches_of_iteration(
-    algo: Algorithm, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+    algo: Algorithm, buffer: ReplayStore, n_steps: int, iteration: int
 ) -> Iterator[Dict[str, Tensor]]:
     """The batches of the `n_steps` gradient steps of an iteration. Before the last one, `algo.exploration_step` is
     set to the policy steps played at the end of the iteration (`None` before the others): the training steps log the
     amount of exploration noise once per iteration, after its gradient steps."""
     algo.exploration_step = None
-    for i, batch in enumerate(sample_batches(algo.fabric, algo.cfg, buffer, n_steps)):
+    for i, batch in enumerate(buffer.batches(n_steps, algo.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)):
         if i == n_steps - 1:
             algo.exploration_step = iteration * algo.schedule.policy_steps_per_iter
         yield batch
@@ -523,7 +516,7 @@ class DreamerV1(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[DreamerV1State, EnvIndependentReplayBuffer]:
+    ) -> Tuple[DreamerV1State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -552,13 +545,13 @@ class DreamerV1(Algorithm):
             critic_optimizer=critic_optimizer,
         )
         self.schedule = schedule
-        return state, build_buffer(fabric, cfg, log_dir, dry_run_size=2)
+        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
     def policy(self, state: DreamerV1State) -> PlayerDV1:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def load_store(self, saved: Any, store: EnvIndependentReplayBuffer) -> EnvIndependentReplayBuffer:
+    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
         # A buffer saved before `is_first` was stored
         return add_is_first(super().load_store(saved, store))
 
@@ -579,7 +572,7 @@ class DreamerV1(Algorithm):
         )
 
     def batches(
-        self, state: DreamerV1State, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: DreamerV1State, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         yield from sample_batches_of_iteration(self, buffer, n_steps, iteration)
 

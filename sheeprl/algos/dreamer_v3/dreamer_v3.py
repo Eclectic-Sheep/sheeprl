@@ -8,7 +8,6 @@ Written on the shared training loop of `sheeprl.core`: `DreamerV3` says how to b
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
@@ -23,12 +22,18 @@ from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.utils import actor_objective, env_buffer_size, reinforce_weight, sample_batches
+from sheeprl.algos.dreamer_v2.utils import (
+    MAX_SAMPLED_BATCHES,
+    actor_objective,
+    env_buffer_size,
+    reinforce_weight,
+    sequential_store,
+)
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
@@ -101,7 +106,7 @@ class SequencePlayer:
         # The row written at the next step; created from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: EnvRunner, buffer: EnvIndependentReplayBuffer) -> None:
+    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -150,13 +155,10 @@ class SequencePlayer:
             for i, agent_roe in enumerate(step.info["restart_on_exception"]):
                 if agent_roe and not dones[i]:
                     # The last observation stored for the restarted environment ends its episode
-                    last_inserted_idx = (buffer.buffer[i]._pos - 1) % buffer.buffer[i].buffer_size
-                    buffer.buffer[i]["terminated"][last_inserted_idx] = np.zeros_like(
-                        buffer.buffer[i]["terminated"][last_inserted_idx]
-                    )
-                    buffer.buffer[i]["truncated"][last_inserted_idx] = np.ones_like(
-                        buffer.buffer[i]["truncated"][last_inserted_idx]
-                    )
+                    env_buffer = buffer.storage.buffer[i]
+                    last_inserted_idx = (env_buffer._pos - 1) % env_buffer.buffer_size
+                    env_buffer["terminated"][last_inserted_idx] = 0
+                    env_buffer["truncated"][last_inserted_idx] = 1
                     # The observation returned after the restart starts a new episode
                     step_data["is_first"][:, i] = np.ones_like(step_data["is_first"][:, i])
                     restarted_envs.append(i)
@@ -194,7 +196,7 @@ class SequencePlayer:
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step_columns(self, buffer: EnvIndependentReplayBuffer, num_envs: int) -> Dict[str, np.ndarray]:
+    def step_columns(self, buffer: ReplayStore, num_envs: int) -> Dict[str, np.ndarray]:
         """More columns of the row of the step, written after the actions are chosen; none by default."""
         return {}
 
@@ -768,7 +770,7 @@ class DreamerV3(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[DreamerV3State, EnvIndependentReplayBuffer]:
+    ) -> Tuple[DreamerV3State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.is_continuous = isinstance(action_space, gym.spaces.Box)
@@ -832,13 +834,8 @@ class DreamerV3(Algorithm):
             moments=moments,
         )
         # One buffer of sequences per environment, sampled independently
-        buffer = EnvIndependentReplayBuffer(
-            env_buffer_size(fabric, cfg, dry_run_size=2),
-            n_envs=cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-            seed=cfg.seed + fabric.global_rank,
+        buffer = sequential_store(
+            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
         )
         self.schedule = schedule
         return state, buffer
@@ -864,9 +861,9 @@ class DreamerV3(Algorithm):
         )
 
     def batches(
-        self, state: DreamerV3State, buffer: EnvIndependentReplayBuffer, n_steps: int, iteration: int
+        self, state: DreamerV3State, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: DreamerV3State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg

@@ -23,16 +23,16 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
+    MAX_SAMPLED_BATCHES,
     actor_objective,
-    build_buffer,
     build_optimizer,
+    build_store,
     compute_lambda_values,
-    sample_batches,
     test,
 )
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
@@ -509,7 +509,7 @@ class P2EDV2Exploration(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[P2EDV2ExplorationState, EnvIndependentReplayBuffer | EpisodeBuffer]:
+    ) -> Tuple[P2EDV2ExplorationState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
         self.actions_dim, self.is_continuous = actions_dim_of(action_space)
@@ -547,7 +547,7 @@ class P2EDV2Exploration(Algorithm):
             critic_exploration_optimizer=optimizer(cfg.algo.critic.optimizer, critic_exploration),
         )
         self.schedule = schedule
-        return state, build_buffer(fabric, cfg, log_dir, dry_run_size=4)
+        return state, build_store(fabric, cfg, log_dir, dry_run_size=4)
 
     def policy(self, state: P2EDV2ExplorationState) -> PlayerDV2:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""
@@ -580,11 +580,11 @@ class P2EDV2Exploration(Algorithm):
     def batches(
         self,
         state: P2EDV2ExplorationState,
-        buffer: EnvIndependentReplayBuffer | EpisodeBuffer,
+        buffer: ReplayStore,
         n_steps: int,
         iteration: int,
     ) -> Iterator[Dict[str, Tensor]]:
-        yield from sample_batches(self.fabric, self.cfg, buffer, n_steps)
+        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
 
     def train_step(self, state: P2EDV2ExplorationState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         # The target critics are copies of the critics, every `critic.per_rank_target_network_update_freq` gradient

@@ -11,15 +11,15 @@ import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
 from torch import Tensor
-from torch.utils.data import BatchSampler
 
 from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.agent import SACPlayer
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
-from sheeprl.algos.sac.sac import SAC, SACState, sample_batches
+from sheeprl.algos.sac.sac import SAC, SACState
 from sheeprl.algos.sac.utils import test
 from sheeprl.core import autocast, run, update
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import TransitionSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 
@@ -58,28 +58,20 @@ class DroQ(SAC):
         return build_agent(self.fabric, self.cfg, obs_space, action_space)
 
     def batches(
-        self, state: SACState, buffer: ReplayBuffer, n_steps: int, iteration: int
+        self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        cfg = self.cfg
-        batch_size = cfg.algo.per_rank_batch_size
+        batch_size = self.cfg.algo.per_rank_batch_size
         # The batches of the critics for all the gradient steps, then the one of the actor, sampled before training.
         # The new transitions of the online queue (`buffer.online`) go to the critics: the batch of the actor is sampled
-        # uniformly
-        critic_data = sample_batches(
-            self.fabric,
-            cfg,
-            buffer,
-            n_steps * batch_size,
-            sample_next_obs=cfg.buffer.sample_next_obs,
-            online=cfg.buffer.online,
-        )
-        actor_data = sample_batches(self.fabric, cfg, buffer, batch_size)
-        critic_batches = list(BatchSampler(range(n_steps * batch_size), batch_size=batch_size, drop_last=False))
-        for i, batch_idxes in enumerate(critic_batches):
-            batch = {k: v[batch_idxes] for k, v in critic_data.items()}
-            if i == len(critic_batches) - 1:
+        # uniformly, without the next observations, by a sampler that shares the generator of the critics' one
+        critic_data = buffer.sample(batch_size, n_steps)
+        actor_sampler = TransitionSampler(rng=buffer.sampler.rng, queue=buffer.sampler.queue)
+        actor_observations = buffer.sample(batch_size, sampler=actor_sampler)["observations"][0].float()
+        for i in range(n_steps):
+            batch = {k: v[i].float() for k, v in critic_data.items()}
+            if i == n_steps - 1:
                 # The actor and the entropy coefficient are updated once, after the last critic update
-                batch["actor_observations"] = actor_data["observations"]
+                batch["actor_observations"] = actor_observations
             yield batch
 
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
