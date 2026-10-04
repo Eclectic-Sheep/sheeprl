@@ -92,6 +92,9 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         cadence.log(env.policy_step, iteration, schedule)
         cadence.checkpoint(state, schedule, env.policy_step, iteration, store if save_buffer else None)
 
+    # Every process returns once all of them have trained: the process of rank 0 doesn't go on (to test the agent, or
+    # to end the run and remove its files) while the others still train (and write in their files)
+    fabric.barrier()
     env.close()
     return state, log_dir, env.policy_step
 
