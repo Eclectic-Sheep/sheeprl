@@ -43,7 +43,11 @@ def test_normalize_tensor_of_one_element():
     # The last minibatch of a rollout can hold a single advantage: it has no standard deviation (it was NaN)
     torch.testing.assert_close(normalize_tensor(torch.tensor([[2.5]])), torch.tensor([[2.5]]))
     mask = torch.tensor([[True], [False]])
-    torch.testing.assert_close(normalize_tensor(torch.tensor([[2.5], [1.0]]), mask=mask), torch.tensor([2.5]))
+    torch.testing.assert_close(normalize_tensor(torch.tensor([[2.5], [1.0]]), mask=mask)[mask], torch.tensor([2.5]))
+    # The statistics are the ones of the selected elements only, and the shape is the one of the tensor
+    normalized = normalize_tensor(torch.tensor([[1.0], [7.0], [3.0]]), mask=torch.tensor([[True], [False], [True]]))
+    assert normalized.shape == (3, 1)
+    torch.testing.assert_close(normalized[[0, 2], 0], normalize_tensor(torch.tensor([1.0, 3.0])))
     normalized = normalize_tensor(torch.tensor([[1.0], [3.0]]))
     torch.testing.assert_close(normalized.mean(), torch.tensor(0.0))
 

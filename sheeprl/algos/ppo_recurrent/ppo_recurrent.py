@@ -164,6 +164,11 @@ def split_in_sequences(data: Dict[str, Tensor], sequence_length: int) -> Dict[st
     return padded
 
 
+def masked_mean(tensor: Tensor, mask: Tensor) -> Tensor:
+    """The mean of the elements of `tensor` selected by `mask`."""
+    return torch.where(mask, tensor, 0).sum() / mask.sum()
+
+
 def ppo_recurrent_loss(
     agent: RecurrentPPOAgent,
     obs: Dict[str, Tensor],
@@ -193,12 +198,13 @@ def ppo_recurrent_loss(
         actions=torch.split(actions, actions_dim, dim=-1),
         mask=mask,
     )
-    normalized_advantages = advantages[mask]
-    if normalize_advantages and len(normalized_advantages) > 1:
-        normalized_advantages = normalize_tensor(normalized_advantages)
-    pg_loss = policy_loss(new_logprobs[mask], logprobs[mask], normalized_advantages, clip_coef, "mean")
-    v_loss = value_loss(new_values[mask], values[mask], returns[mask], clip_coef, clip_vloss, "mean")
-    ent_loss = entropy_loss(entropies[mask], entropy_reduction)
+    # The steps of the sequences are selected by masked sums, not by indexing them: the shapes don't depend on the data
+    if normalize_advantages:
+        advantages = normalize_tensor(advantages, mask=mask)
+    pg_loss = masked_mean(policy_loss(new_logprobs, logprobs, advantages, clip_coef, "none"), mask)
+    v_loss = masked_mean(value_loss(new_values, values, returns, clip_coef, clip_vloss, "none"), mask)
+    entropies = entropy_loss(entropies, "none")
+    ent_loss = masked_mean(entropies, mask) if entropy_reduction == "mean" else torch.where(mask, entropies, 0).sum()
     # Equation (9) in the paper
     return pg_loss + vf_coef * v_loss + ent_coef * ent_loss, pg_loss, v_loss, ent_loss
 
