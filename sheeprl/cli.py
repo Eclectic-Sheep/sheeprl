@@ -3,7 +3,7 @@ import os
 import pathlib
 import warnings
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 import hydra
 import torch
@@ -17,6 +17,25 @@ from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict, print_config
+
+
+def finalizing_loggers(func: Callable) -> Callable:
+    """`func(fabric, ...)`, then the loggers of `fabric` finalized with the status of the run (`success` or `failed`):
+    their last metrics (e.g. the return of the test of the agent, logged at the end) are written to their files when
+    `func` returns, not when the writers of the loggers are closed (or garbage-collected) later. Only the process of
+    rank 0 has loggers."""
+
+    def wrapper(fabric: Fabric, *args, **kwargs):
+        status = "failed"
+        try:
+            result = func(fabric, *args, **kwargs)
+            status = "success"
+            return result
+        finally:
+            for logger in fabric.loggers:
+                logger.finalize(status)
+
+    return wrapper
 
 
 def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
@@ -182,7 +201,7 @@ def run_algorithm(cfg: Dict[str, Any]):
 
         return wrapper
 
-    fabric.launch(reproducible(command), cfg, **kwargs)
+    fabric.launch(finalizing_loggers(reproducible(command)), cfg, **kwargs)
 
 
 def eval_algorithm(cfg: DictConfig):
@@ -251,7 +270,7 @@ def eval_algorithm(cfg: DictConfig):
             return wrapper
 
         command = no_grad(command)
-    fabric.launch(command, cfg, state)
+    fabric.launch(finalizing_loggers(command), cfg, state)
 
 
 def check_configs(cfg: Dict[str, Any]):
@@ -410,4 +429,4 @@ def registration(cfg: DictConfig):
             f"in the `./sheeprl/algos/{algo_name}/utils.py` file."
         )
 
-    fabric.launch(register_model_from_checkpoint, cfg, state, log_models_from_checkpoint)
+    fabric.launch(finalizing_loggers(register_model_from_checkpoint), cfg, state, log_models_from_checkpoint)
