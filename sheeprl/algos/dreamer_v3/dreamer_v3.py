@@ -413,30 +413,25 @@ def world_model_learning(
     return posteriors, recurrent_states, metrics
 
 
-def imagine(
+def imagine_trajectories(
     world_model: WorldModel,
     actor: nn.Module,
-    critic: nn.Module,
     posteriors: Tensor,
     recurrent_states: Tensor,
-    terminated: Tensor,
     *,
     horizon: int,
-    gamma: float,
-    lmbda: float,
     action_clip: float = 0.0,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor, and estimate
-    their lambda-values. Can be compiled (`algo.compile`).
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor. Can be compiled
+    (`algo.compile`).
 
     Args:
         action_clip: the magnitude the recurrent model clips the continuous actions to (`clip_actions`), 0 for the
-            discrete ones. The returned actions are the samples of the actor, as DreamerV3 clips them in its RSSM:
-            REINFORCE takes their log-probabilities.
+            discrete ones.
 
     Returns:
-        The imagined latent states and actions, the values predicted by the critic, the lambda-values and the
-        discounts of the imagined steps.
+        The imagined latent states, the imagined actions (the samples of the actor, whose log-probabilities REINFORCE
+        takes) and the same actions clipped as the recurrent model takes them (DreamerV3 clips them in its RSSM).
     """
     stoch_state_size = posteriors.shape[-2] * posteriors.shape[-1]
     recurrent_state_size = recurrent_states.shape[-1]
@@ -446,6 +441,7 @@ def imagine(
     actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
     imagined_trajectories = [imagined_latent_state]
     imagined_actions = [actions]
+    clipped_actions = [clip_actions(actions, action_clip)]
 
     # The imagination goes like this, with H=3:
     # Actions:           a'0      a'1      a'2     a'4
@@ -462,15 +458,44 @@ def imagine(
     # Imagine trajectories in the latent space
     for i in range(1, horizon + 1):
         imagined_prior, recurrent_state = world_model.rssm.imagination(
-            imagined_prior, recurrent_state, clip_actions(actions, action_clip)
+            imagined_prior, recurrent_state, clipped_actions[-1]
         )
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
         actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
         imagined_trajectories.append(imagined_latent_state)
         imagined_actions.append(actions)
-    imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
-    imagined_actions = torch.cat(imagined_actions, dim=0)
+        clipped_actions.append(clip_actions(actions, action_clip))
+    return (
+        torch.cat(imagined_trajectories, dim=0),
+        torch.cat(imagined_actions, dim=0),
+        torch.cat(clipped_actions, dim=0),
+    )
+
+
+def imagine(
+    world_model: WorldModel,
+    actor: nn.Module,
+    critic: nn.Module,
+    posteriors: Tensor,
+    recurrent_states: Tensor,
+    terminated: Tensor,
+    *,
+    horizon: int,
+    gamma: float,
+    lmbda: float,
+    action_clip: float = 0.0,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor
+    (`imagine_trajectories`), and estimate their lambda-values. Can be compiled (`algo.compile`).
+
+    Returns:
+        The imagined latent states and actions, the values predicted by the critic, the lambda-values and the
+        discounts of the imagined steps.
+    """
+    imagined_trajectories, imagined_actions, _ = imagine_trajectories(
+        world_model, actor, posteriors, recurrent_states, horizon=horizon, action_clip=action_clip
+    )
 
     # Predict values, rewards and continues
     predicted_values = TwoHotEncodingDistribution(critic(imagined_trajectories), dims=1).mean
@@ -516,12 +541,38 @@ def actor_loss(
     # Values:       [v'0]   [v'1]    [v'2]     v'3
     # Lambda-values:        [l'1]    [l'2]    [l'3]
     # Entropies:    [e'0]   [e'1]    [e'2]
-    policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
-
     baseline = predicted_values[:-1]
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
+    return actor_advantage_loss(
+        actor,
+        imagined_trajectories,
+        imagined_actions,
+        advantage,
+        discount,
+        objective_mix=objective_mix,
+        is_continuous=is_continuous,
+        actions_dim=actions_dim,
+        ent_coef=ent_coef,
+    )
+
+
+def actor_advantage_loss(
+    actor: nn.Module,
+    imagined_trajectories: Tensor,
+    imagined_actions: Tensor,
+    advantage: Tensor,
+    discount: Tensor,
+    *,
+    objective_mix: Optional[float],
+    is_continuous: bool,
+    actions_dim: Sequence[int],
+    ent_coef: float,
+) -> Tensor:
+    """The loss of the actor from the advantages of the imagined steps (`actor_loss`). Can be compiled
+    (`algo.compile`)."""
+    policies: Sequence[Distribution] = actor(imagined_trajectories.detach())[1]
 
     def reinforce() -> Tensor:
         return (
