@@ -336,15 +336,16 @@ class SACAE(Algorithm):
         # The batches of the gradient steps are sampled `MAX_SAMPLED_BATCHES` at a time: the images of all the ones of
         # the first training (with the pretraining) don't fit in the memory
         for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
-            data, sampler = sample_batches(
+            n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first) * cfg.algo.per_rank_batch_size
+            data = sample_batches(
                 self.fabric,
                 cfg,
                 buffer,
-                min(MAX_SAMPLED_BATCHES, n_steps - first) * cfg.algo.per_rank_batch_size,
+                n_samples,
                 sample_next_obs=cfg.buffer.sample_next_obs,
                 online=cfg.buffer.online,
             )
-            for batch_idxes in BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
+            for batch_idxes in BatchSampler(range(n_samples), batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
                 yield {k: v[batch_idxes] for k, v in data.items()}
 
     def train_step(self, state: SACAEState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:

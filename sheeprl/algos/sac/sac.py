@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -15,7 +15,7 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler, DistributedSampler
+from torch.utils.data import BatchSampler
 
 from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
@@ -124,10 +124,10 @@ def sample_batches(
     n_samples: int,
     sample_next_obs: bool = False,
     online: bool = False,
-) -> Tuple[Dict[str, Tensor], Iterable[int]]:
-    """Sample `n_samples` rows from the buffer of every process and return them with the indices this process trains
-    on: all of them with one process; with several, its share of the rows of all the processes. With `online`, the
-    rows start with the steps added since the last sample (`buffer.online`)."""
+) -> Dict[str, Tensor]:
+    """Sample `n_samples` rows from the buffer of this process, on its device: every process trains on its own data,
+    as the Dreamers do, and `update` averages the gradients over the processes. With `online`, the rows start with the
+    steps added since the last sample (`buffer.online`)."""
     sample = buffer.sample_tensors(
         batch_size=n_samples,
         sample_next_obs=sample_next_obs,
@@ -136,20 +136,7 @@ def sample_batches(
         from_numpy=cfg.buffer.from_numpy,
         online=online,
     )  # [1, N_Samples, ...]
-    if fabric.world_size == 1:
-        data = {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
-        return data, range(n_samples)
-    data = fabric.all_gather(sample)  # [World_Size, 1, N_Samples, ...]
-    data = {k: v.float().reshape(-1, *sample[k].shape[2:]) for k, v in data.items()}
-    sampler = DistributedSampler(
-        list(range(n_samples * fabric.world_size)),
-        num_replicas=fabric.world_size,
-        rank=fabric.global_rank,
-        shuffle=True,
-        seed=cfg.seed,
-        drop_last=False,
-    )
-    return data, sampler
+    return {k: v.float().reshape(-1, *v.shape[2:]) for k, v in sample.items()}
 
 
 def train(
@@ -298,7 +285,7 @@ class SAC(Algorithm):
         self.iteration = iteration
 
         # Sample the batches of all the gradient steps at once
-        data, sampler = sample_batches(
+        data = sample_batches(
             fabric,
             cfg,
             buffer,
@@ -306,7 +293,8 @@ class SAC(Algorithm):
             sample_next_obs=cfg.buffer.sample_next_obs,
             online=cfg.buffer.online,
         )
-        for batch_idxes in BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False):
+        batch_size = cfg.algo.per_rank_batch_size
+        for batch_idxes in BatchSampler(range(n_steps * batch_size), batch_size=batch_size, drop_last=False):
             yield {k: v[batch_idxes] for k, v in data.items()}
 
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
