@@ -19,7 +19,7 @@ from hydra.utils import get_class, instantiate
 from lightning import Fabric
 from omegaconf import OmegaConf
 from torch import nn
-from torch.distributions import Bernoulli, Independent, Normal, TanhTransform, TransformedDistribution
+from torch.distributions import Bernoulli, Independent, Normal, TransformedDistribution
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
@@ -28,6 +28,7 @@ from sheeprl.algos.dreamer_v1.loss import reconstruction_loss, state_kl
 from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
 from sheeprl.utils import compile as compile_utils
+from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.utils import dotdict
 
 from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
@@ -323,7 +324,8 @@ IMAGES = gym.spaces.Dict({"rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype
 @pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
 def test_the_continuous_actions_come_from_a_tanh_normal_of_the_initial_std(exp):
     # They came from a truncated normal, whose std couldn't go below 0.1: in the official implementation from a
-    # tanh-transformed normal whose std is `init_std` when the network outputs zero, at least 1e-4
+    # tanh-transformed normal whose std is `init_std` when the network outputs zero, at least 1e-4. The tanh is the one
+    # of its `TanhBijector`, whose inverse clips to the largest float32 below 1
     cfg = dreamer_v1_cfg(exp)
     actor_cfg = cfg.algo.actor
     assert (actor_cfg.init_std, actor_cfg.min_std, cfg.distribution.type) == (5.0, 1e-4, "auto")
@@ -341,7 +343,7 @@ def test_the_continuous_actions_come_from_a_tanh_normal_of_the_initial_std(exp):
     nn.init.zeros_(actor.mlp_heads[0].bias)
     _, (dist,) = actor(torch.randn(3, 4))
     assert isinstance(dist.base_dist, TransformedDistribution)
-    assert [type(t) for t in dist.base_dist.transforms] == [TanhTransform]
+    assert [type(t) for t in dist.base_dist.transforms] == [SafeTanhTransform]
     torch.testing.assert_close(dist.base_dist.base_dist.loc, torch.zeros(3, 2))
     torch.testing.assert_close(dist.base_dist.base_dist.scale, torch.full((3, 2), 5.0 + 1e-4))
 
