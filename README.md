@@ -550,15 +550,15 @@ For the buffer implementation, we choose to use a wrapper around a dictionary of
 
 To enable a simple way to work with numpy memory-mapped arrays, we implemented the `sheeprl.utils.memmap.MemmapArray`, a container that handles the memory-mapped arrays.
 
-This flexibility makes it very simple to implement, with the classes `ReplayBuffer`, `SequentialReplayBuffer`, `EpisodeBuffer`, and `EnvIndependentReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
+Every algorithm stores its steps in a single kind of storage, the `ReplayBuffer`: the steps of every environment, with a write pointer per environment (`add` with `env_idxes` writes some environments only, e.g. the first steps of the ones that ended an episode). What the training reads from it is decided by the samplers of `sheeprl.data.samplers`, which draw the steps of the samples with their own random number generator and let the buffer gather them:
 
-The buffers are storages: what the training reads from them is decided by the samplers of `sheeprl.data.samplers`, which draw the steps of the samples with their own random number generator and let the buffer gather them:
-
-- `TransitionSampler`: single steps of a `ReplayBuffer` (SAC, DroQ, SAC-AE);
-- `SequenceSampler`: sequences of consecutive steps of a `ReplayBuffer`;
-- `EnvIndependentSampler`: steps or sequences of an `EnvIndependentReplayBuffer`, every one from a single environment (the Dreamers, Plan2Explore);
-- `EpisodeSampler`: sequences inside the episodes of an `EpisodeBuffer` (DreamerV2 with `buffer.type=episode`);
+- `TransitionSampler`: single steps (SAC, DroQ, SAC-AE);
+- `SequenceSampler`: sequences of consecutive steps;
+- `EnvIndependentSampler`: steps or sequences, every one from a single environment, drawn independently (the Dreamers, Plan2Explore);
+- `EpisodeSampler`: sequences inside the episodes that ended, with their ends prioritized with `buffer.prioritize_ends` (DreamerV2 with `buffer.type=episode`);
 - `EpochSampler`: the minibatches of the epochs of an on-policy update (PPO, A2C, PPO-recurrent).
+
+The classes `SequentialReplayBuffer`, `EnvIndependentReplayBuffer` and `EpisodeBuffer` are kept for their `sample` methods and for the checkpoints of the previous versions, which are converted to the single storage when they are loaded.
 
 The off-policy algorithms train on a `sheeprl.data.store.ReplayStore`: a storage and a sampler, whose batches go to the device of the training. The store is saved in the checkpoints with its sampler, whose generator a resumed run continues. With `buffer.prefetch` the next batches are sampled in a thread while the training uses the current ones, and with `buffer.on_device` the storage is kept in the memory of the device, where its batches are gathered (see the [configs howto](./howto/configs.md#buffer)).
 

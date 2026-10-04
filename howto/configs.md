@@ -444,7 +444,7 @@ The last three parameters are used only by the off-policy algorithms:
 
 - `online`: the batches start with the steps added since the previous ones, the oldest first, and only the rest of them is sampled uniformly (the online queue of DreamerV3): every step is trained on soon after it is played.
 - `prefetch`: the next batches are sampled in a thread while the training uses the current ones, and moved to the device on a CUDA stream of their own; the first ones of an iteration are sampled during the training of the previous one. It pays off when the samples are large (images, sequences): e.g. about 1.17x faster end to end for SAC-AE on pixels, 1.05x for DreamerV3 on Atari, nothing for SAC on states.
-- `on_device`: the replay buffer is kept in the memory of the device of the training, where its batches are gathered, with no copy from the CPU (`memmap` is then ignored). It must fit in the free memory of the device when it is created. The episode buffer of DreamerV2 (`buffer.type=episode`) stays on the CPU.
+- `on_device`: the replay buffer is kept in the memory of the device of the training, where its batches are gathered, with no copy from the CPU (`memmap` is then ignored). It must fit in the free memory of the device when it is created.
 
 ### Environment
 
