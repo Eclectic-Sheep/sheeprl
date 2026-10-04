@@ -3,9 +3,9 @@
 import torch
 
 
-def recording(module, monkeypatch):
+def recording(module, monkeypatch, *modules):
     """An aggregator recording the losses and a list recording the gradients of every update of `module.train` (they
-    stay in the weights after the step of the optimizer)."""
+    stay in the weights after the step of the optimizer), also of the ones of the functions of `modules` it calls."""
     losses, grads = [], []
     update = module.update
 
@@ -22,7 +22,8 @@ def recording(module, monkeypatch):
         def update(self, name, value):
             losses.append((name, value.detach().clone()))
 
-    monkeypatch.setattr(module, "update", recording_update)
+    for m in (module, *modules):
+        monkeypatch.setattr(m, "update", recording_update)
     return Aggregator(), losses, grads
 
 

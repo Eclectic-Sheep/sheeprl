@@ -207,7 +207,8 @@ def test_the_actors_are_trained_with_the_configured_objective(module, args, expe
         ("dreamer_v2", "sheeprl.algos.dreamer_v2.dreamer_v2"),
         ("p2e_dv2_exploration", "sheeprl.algos.p2e_dv2.p2e_dv2_exploration"),
         ("dreamer_v3", "sheeprl.algos.dreamer_v3.dreamer_v3"),
-        ("p2e_dv3_exploration", "sheeprl.algos.p2e_dv3.p2e_dv3_exploration"),
+        # Both actors of P2E-DV3 learn with the loss of DreamerV3
+        ("p2e_dv3_exploration", "sheeprl.algos.dreamer_v3.dreamer_v3"),
     ],
 )
 def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):

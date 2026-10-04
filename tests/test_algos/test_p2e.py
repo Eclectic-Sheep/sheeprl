@@ -14,7 +14,10 @@ import pytest
 import torch
 
 from sheeprl import ROOT_DIR
+from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.imports import _IS_WINDOWS
+
+from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
 P2E_ARGS = [
     "hydra/job_logging=disabled",
@@ -199,3 +202,105 @@ def test_the_p2e_dv3_exploration_trains_the_decoupled_rssm():
         )
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("version", ["1", "2", "3"])
+def test_the_exploration_losses_compile_into_single_graphs(monkeypatch, version, continuous):
+    # With `algo.compile.enabled`, every loss of the exploration and of the task behaviour is traced into a single
+    # graph, without reading a tensor on the host
+    monkeypatch.setattr(compile_utils, "_COMPILED", {})
+    compile = torch.compile
+
+    def single_graph(fn, mode=None):
+        graph = compile(fn, backend="eager", fullgraph=True)
+
+        def traced(*args, **kwargs):
+            with monkeypatch.context() as patch:
+                no_host_reads(patch)
+                return graph(*args, **kwargs)
+
+        return traced
+
+    monkeypatch.setattr(torch, "compile", single_graph)
+    root_dir = f"pytest_p2e_dv{version}_single_graphs_{continuous}"
+    # Compiled as in a new process: Dynamo makes dynamic the arguments that changed between the compilations of the
+    # earlier tests (e.g. the clipping of the actions, 0 for the discrete ones), which a run keeps constant
+    torch._dynamo.reset()
+    try:
+        run_p2e(
+            [
+                f"exp=p2e_dv{version}_exploration",
+                f"env.id={'continuous' if continuous else 'discrete'}_dummy",
+                f"algo.per_rank_sequence_length={'1' if version == '3' else '2'}",
+                "algo.compile.enabled=True",
+            ],
+            root_dir,
+        )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+        torch._dynamo.reset()
+    assert len(compile_utils._COMPILED) > 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
+@pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("version", ["1", "2", "3"])
+def test_the_compiled_exploration_losses_are_the_eager_ones(monkeypatch, version, continuous):
+    # The same weights, the same batch and the same random numbers: the same losses and gradients of three gradient
+    # steps of the exploration (the CUDA graphs are recorded at the second and replayed at the third), with and
+    # without `torch.compile`. The exploration and the task behaviours, and the exploration critics of P2E-DV3, run
+    # the same compiled losses with modules of their own
+    module = importlib.import_module(f"sheeprl.algos.p2e_dv{version}.p2e_dv{version}_exploration")
+    called = [importlib.import_module("sheeprl.algos.dreamer_v3.dreamer_v3")] if version == "3" else []
+    module_train = module.train
+    same_random_numbers(monkeypatch)
+    args = [
+        f"exp=p2e_dv{version}_exploration",
+        f"env.id={'continuous' if continuous else 'discrete'}_dummy",
+        "fabric.accelerator=cuda",
+        "float32_matmul_precision=highest",
+        "torch_backends_cudnn_benchmark=False",
+        "dry_run=False",
+        "checkpoint.save_last=False",
+        "algo.total_steps=12",
+        "algo.learning_starts=8",
+        "algo.replay_ratio=0.5",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=4",
+        "algo.horizon=3",
+    ]
+    if version != "1":
+        # The objective of the actor mixes the dynamics and REINFORCE
+        args.append("algo.actor.objective_mix=0.5")
+    results = []
+    for enabled in (False, True):
+        monkeypatch.setattr(compile_utils, "_COMPILED", {})
+        root_dir = f"pytest_p2e_dv{version}_compiled_{continuous}_{enabled}"
+        with monkeypatch.context() as patch:
+            aggregator, losses, grads = recording(module, patch, *called)
+
+            recorded = []
+
+            def three_steps(*args, **kwargs):
+                # The first gradient step of the run is taken three times on its batch: the later ones aren't
+                # recorded
+                if recorded:
+                    metrics = module_train(*args, **kwargs)
+                    del grads[recorded[0] :]
+                    return metrics
+                for _ in range(3):
+                    metrics = module_train(*args, **kwargs)
+                    for name, value in metrics.items():
+                        aggregator.update(name, value)
+                recorded.append(len(grads))
+                return metrics
+
+            patch.setattr(module, "train", three_steps)
+            try:
+                run_p2e([*args, f"algo.compile.enabled={enabled}"], root_dir)
+            finally:
+                shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+        assert (len(compile_utils._COMPILED) > 0) == enabled
+        results.append((losses, grads))
+    assert_same_step(*results)
