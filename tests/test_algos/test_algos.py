@@ -878,8 +878,17 @@ def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(stand
     assert True in online
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
-def test_p2e_dv3(standard_args, env_id, start_time):
+@pytest.mark.parametrize(
+    "env_id, objective_mix",
+    [
+        ("discrete_dummy", "null"),
+        ("multidiscrete_dummy", "null"),
+        ("continuous_dummy", "null"),
+        # The continuous actions of both actors learned by REINFORCE
+        ("continuous_dummy", "1"),
+    ],
+)
+def test_p2e_dv3(standard_args, env_id, objective_mix, start_time):
     if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
         # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
         pytest.skip("With 2 processes only the continuous actions")
@@ -913,6 +922,7 @@ def test_p2e_dv3(standard_args, env_id, start_time):
         "checkpoint.save_last=True",
         "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
+        f"algo.actor.objective_mix={objective_mix}",
     ]
 
     with mock.patch.object(sys, "argv", args):

@@ -767,6 +767,15 @@ class PlayerDV3(nn.Module):
         return actions
 
 
+def clip_actions(actions: Tensor, action_clip: float) -> Tensor:
+    """The continuous `actions` divided by their magnitude where it exceeds `action_clip` (when greater than 0), with
+    the gradient of the division stopped, as DreamerV3 clips the actions that its recurrent model takes."""
+    if action_clip > 0.0:
+        action_clip = torch.full_like(actions, action_clip)
+        actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
+    return actions
+
+
 class Actor(nn.Module):
     """
     The wrapper class of the Dreamer_v2 Actor model.
@@ -857,7 +866,7 @@ class Actor(nn.Module):
         self._action_clip = action_clip
 
     def forward(
-        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, clip: bool = True
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -869,6 +878,9 @@ class Actor(nn.Module):
                 Default to False.
             mask (Dict[str, Tensor], optional): the mask to use on the actions.
                 Default to None.
+            clip (bool): whether to clip the continuous actions to `action_clip` (`clip_actions`); without, the
+                samples of the distribution, whose log-probabilities REINFORCE takes.
+                Default to True.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
@@ -899,9 +911,8 @@ class Actor(nn.Module):
                 sample = actions_dist.sample((100,))
                 best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
                 actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
-            if self._action_clip > 0.0:
-                action_clip = torch.full_like(actions, self._action_clip)
-                actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
+            if clip:
+                actions = clip_actions(actions, self._action_clip)
             actions = [actions]
             actions_dist = [actions_dist]
         else:
@@ -960,7 +971,7 @@ class MinedojoActor(Actor):
         )
 
     def forward(
-        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, clip: bool = True
     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
         """
         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
@@ -972,6 +983,8 @@ class MinedojoActor(Actor):
                 Default to False.
             mask (Dict[str, Tensor], optional): the mask to apply to the actions.
                 Default to None.
+            clip (bool): unused, the actions are discrete.
+                Default to True.
 
         Returns:
             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).

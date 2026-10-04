@@ -8,7 +8,7 @@ import copy
 import os
 import warnings
 from functools import partial
-from typing import Any, Dict, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -21,8 +21,8 @@ from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
-from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent
+from sheeprl.algos.dreamer_v2.utils import actor_objective, env_buffer_size, reinforce_weight, sample_batches
+from sheeprl.algos.dreamer_v3.agent import WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
@@ -269,9 +269,15 @@ def imagine(
     horizon: int,
     gamma: float,
     lmbda: float,
+    action_clip: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor, and estimate
     their lambda-values. Can be compiled (`algo.compile`).
+
+    Args:
+        action_clip: the magnitude the recurrent model clips the continuous actions to (`clip_actions`), 0 for the
+            discrete ones. The returned actions are the samples of the actor, as DreamerV3 clips them in its RSSM:
+            REINFORCE takes their log-probabilities.
 
     Returns:
         The imagined latent states and actions, the values predicted by the critic, the lambda-values and the
@@ -282,7 +288,7 @@ def imagine(
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+    actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
     imagined_trajectories = [imagined_latent_state]
     imagined_actions = [actions]
 
@@ -300,10 +306,12 @@ def imagine(
 
     # Imagine trajectories in the latent space
     for i in range(1, horizon + 1):
-        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_prior, recurrent_state = world_model.rssm.imagination(
+            imagined_prior, recurrent_state, clip_actions(actions, action_clip)
+        )
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
         imagined_trajectories.append(imagined_latent_state)
         imagined_actions.append(actions)
     imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
@@ -336,12 +344,14 @@ def actor_loss(
     offset: Tensor,
     invscale: Tensor,
     *,
+    objective_mix: Optional[float],
     is_continuous: bool,
     actions_dim: Sequence[int],
     ent_coef: float,
 ) -> Tensor:
     """The loss of the actor (Eq. 11 in the paper), from the imagined trajectories and the normalization of the
-    returns (`offset`, `invscale`). Can be compiled (`algo.compile`)."""
+    returns (`offset`, `invscale`): the dynamics backpropagation of the advantages and REINFORCE, mixed by
+    `objective_mix` (`actor_objective`), with the entropy of the policies. Can be compiled (`algo.compile`)."""
     # Given the following diagram, with H=3
     # Actions:          [a'0]    [a'1]    [a'2]    a'3
     #                    ^ \      ^ \      ^ \     ^
@@ -357,10 +367,9 @@ def actor_loss(
     normed_lambda_values = (lambda_values - offset) / invscale
     normed_baseline = (baseline - offset) / invscale
     advantage = normed_lambda_values - normed_baseline
-    if is_continuous:
-        objective = advantage
-    else:
-        objective = (
+
+    def reinforce() -> Tensor:
+        return (
             torch.stack(
                 [
                     p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
@@ -370,6 +379,8 @@ def actor_loss(
             ).sum(dim=-1)
             * advantage.detach()
         )
+
+    objective = actor_objective(objective_mix, is_continuous, advantage, reinforce)
     # The tanh-normal policies have no analytic entropy: it is estimated from samples
     entropy = ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
     return -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
@@ -413,10 +424,12 @@ def behaviour_learning(
         clipping (`actor_grads`, `critic_grads`).
     """
     metrics = {}
-    # The actor learns the discrete actions by REINFORCE, from the imagined actions and the lambda-values without
-    # their gradients: the imagination needs a computational graph only for the continuous actions (dynamics
-    # backpropagation)
-    with autocast_cache_scope(fabric), torch.set_grad_enabled(is_continuous):
+    # The actor learns by REINFORCE, from the imagined actions and the lambda-values without their gradients, and by
+    # the dynamics backpropagation of the lambda-values, mixed by `algo.actor.objective_mix` (by default the dynamics
+    # for the continuous actions, REINFORCE for the discrete ones): the imagination needs a computational graph only
+    # for the dynamics backpropagation
+    objective_mix = cfg.algo.actor.objective_mix
+    with autocast_cache_scope(fabric), torch.set_grad_enabled(reinforce_weight(objective_mix, is_continuous) < 1):
         imagined_trajectories, imagined_actions, predicted_values, lambda_values, discount = compiled(
             imagine, fabric, cfg
         )(
@@ -429,6 +442,7 @@ def behaviour_learning(
             horizon=cfg.algo.horizon,
             gamma=cfg.algo.gamma,
             lmbda=cfg.algo.lmbda,
+            action_clip=float(cfg.algo.actor.action_clip) if is_continuous else 0.0,
         )
     with autocast_cache_scope(fabric):
         # The normalization of the returns, from their percentiles (not compiled: it updates its state in place)
@@ -442,6 +456,7 @@ def behaviour_learning(
             discount,
             offset,
             invscale,
+            objective_mix=objective_mix,
             is_continuous=is_continuous,
             actions_dim=tuple(int(dim) for dim in actions_dim),
             ent_coef=cfg.algo.actor.ent_coef,

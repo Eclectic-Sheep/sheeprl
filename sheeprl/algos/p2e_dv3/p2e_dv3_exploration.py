@@ -14,8 +14,8 @@ from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent
 
-from sheeprl.algos.dreamer_v2.utils import env_buffer_size, sample_batches
-from sheeprl.algos.dreamer_v3.agent import WorldModel
+from sheeprl.algos.dreamer_v2.utils import actor_objective, env_buffer_size, sample_batches
+from sheeprl.algos.dreamer_v3.agent import WorldModel, clip_actions
 from sheeprl.algos.dreamer_v3.dreamer_v3 import behaviour_learning, world_model_learning
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -141,21 +141,29 @@ def train(
         imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
         recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        # the imagined states and actions are concatenated at the end of the imagination
+        # the imagined states and actions are concatenated at the end of the imagination: the samples of the actor,
+        # whose log-probabilities REINFORCE takes, and the continuous ones clipped as the recurrent model and the
+        # ensembles take them (DreamerV3 clips them in its RSSM)
+        action_clip = float(cfg.algo.actor.action_clip) if is_continuous else 0.0
         imagined_trajectories = [imagined_latent_state]
-        actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
+        actions = torch.cat(actor_exploration(imagined_latent_state.detach(), clip=False)[0], dim=-1)
         imagined_actions = [actions]
+        clipped_actions = [clip_actions(actions, action_clip)]
 
         # imagine trajectories in the latent space
         for i in range(1, cfg.algo.horizon + 1):
-            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+            imagined_prior, recurrent_state = world_model.rssm.imagination(
+                imagined_prior, recurrent_state, clipped_actions[-1]
+            )
             imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
             imagined_trajectories.append(imagined_latent_state)
-            actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
+            actions = torch.cat(actor_exploration(imagined_latent_state.detach(), clip=False)[0], dim=-1)
             imagined_actions.append(actions)
+            clipped_actions.append(clip_actions(actions, action_clip))
         imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
         imagined_actions = torch.cat(imagined_actions, dim=0)
+        clipped_actions = torch.cat(clipped_actions, dim=0)
 
         advantages = []
         weights_sum = sum([c["weight"] for c in critics_exploration.values()])
@@ -172,7 +180,7 @@ def train(
                 # implementation: with continuous actions the exploration actor is trained by backpropagating
                 # the lambda-values, intrinsic rewards included, through the dynamics
                 next_state_embedding = torch.stack(
-                    [ens(torch.cat((imagined_trajectories, imagined_actions), -1)) for ens in ensembles], dim=0
+                    [ens(torch.cat((imagined_trajectories, clipped_actions), -1)) for ens in ensembles], dim=0
                 )
 
                 # next_state_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
@@ -204,10 +212,9 @@ def train(
             discount = torch.cumprod(continues * cfg.algo.gamma, dim=0) / cfg.algo.gamma
 
         policies: Sequence[Distribution] = actor_exploration(imagined_trajectories.detach())[1]
-        if is_continuous:
-            objective = advantage
-        else:
-            objective = (
+
+        def reinforce() -> Tensor:
+            return (
                 torch.stack(
                     [
                         p.log_prob(imgnd_act.detach()).unsqueeze(-1)[:-1]
@@ -217,6 +224,9 @@ def train(
                 ).sum(dim=-1)
                 * advantage.detach()
             )
+
+        # The dynamics backpropagation of the advantages and REINFORCE, mixed by `algo.actor.objective_mix`
+        objective = actor_objective(cfg.algo.actor.objective_mix, is_continuous, advantage, reinforce)
         # The tanh-normal policies have no analytic entropy: it is estimated from samples
         entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(dim=-1)
 

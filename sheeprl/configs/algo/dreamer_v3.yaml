@@ -129,6 +129,12 @@ world_model:
 actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
+  # The weight of the REINFORCE gradients in the objective, the rest being the dynamics backpropagation. null: the
+  # dynamics for continuous actions, REINFORCE for discrete ones (`actor_grad_cont: backprop` and `actor_grad_disc:
+  # reinforce` of DreamerV3). The dynamics backpropagation doesn't differentiate the predicted terminations (the mode
+  # of the continue model): set it to 1 when the returns depend on the actions mostly through the terminations, e.g.
+  # a constant reward until the episode ends
+  objective_mix: null
   min_std: 0.1
   max_std: 1.0
   init_std: 2.0
