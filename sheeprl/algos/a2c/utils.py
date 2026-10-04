@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Sequence
 
+import gymnasium as gym
 import numpy as np
 import torch
 from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOPlayer
-from sheeprl.algos.ppo.utils import log_models_from_checkpoint  # noqa: F401 (A2C trains the agent of PPO)
 from sheeprl.utils.env import make_env
+from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+
+if TYPE_CHECKING:
+    from mlflow.models.model import ModelInfo
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
 MODELS_TO_REGISTER = {"agent"}
@@ -52,3 +56,16 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, po
     if cfg.metric.log_level > 0:
         fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
+
+
+def log_models_from_checkpoint(
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+) -> Sequence["ModelInfo"]:
+    if not _IS_MLFLOW_AVAILABLE:
+        raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
+    from sheeprl.algos.a2c.a2c import A2C
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
+
+    return log_trained_models(
+        fabric, env, cfg, state, A2C(fabric, cfg.to_log), lambda trained: {"agent": trained.agent}
+    )

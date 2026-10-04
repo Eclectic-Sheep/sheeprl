@@ -22,6 +22,7 @@ from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -139,6 +140,10 @@ class P2EDV2Finetuning(Algorithm):
                 p.data = agent_p.data
         return policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
+        # The task actor plays
+        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+
     def player(self, state: P2EDV2FinetuningState) -> SequencePlayer:
         # No random actions
         return SequencePlayer(
@@ -165,8 +170,7 @@ class P2EDV2Finetuning(Algorithm):
     def train_step(self, state: P2EDV2FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps
         if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
-            for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
-                tcp.data.copy_(cp.data)
+            ema_(state.target_critic_task, state.critic_task, 1)
         metrics = train(
             self.fabric,
             state.world_model,
@@ -188,9 +192,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     algo = P2EDV2Finetuning(fabric, cfg, exploration_cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
-    # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.task_policy(state), fabric, cfg, log_dir, "few-shot", policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step, test_name="few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

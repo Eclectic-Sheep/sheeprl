@@ -161,40 +161,14 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.dreamer_v1.dreamer_v1 import DreamerV1
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    from sheeprl.algos.dreamer_v1.agent import build_agent
-
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    world_model, actor, critic, _ = build_agent(
+    return log_trained_models(
         fabric,
-        actions_dim,
-        is_continuous,
+        env,
         cfg,
-        env.observation_space,
-        state["world_model"],
-        state["actor"],
-        state["critic"],
+        state,
+        DreamerV1(fabric, cfg.to_log),
+        lambda trained: {"world_model": trained.world_model, "actor": trained.actor, "critic": trained.critic},
     )
-
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(
-            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
-        )
-        model_info["actor"] = mlflow.pytorch.log_model(
-            unwrap_fabric(actor), name="actor", serialization_format="pickle"
-        )
-        model_info["critic"] = mlflow.pytorch.log_model(
-            unwrap_fabric(critic), name="critic", serialization_format="pickle"
-        )
-        mlflow.log_dict(cfg.to_log, "config.json")
-    return model_info

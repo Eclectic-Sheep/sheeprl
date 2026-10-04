@@ -275,6 +275,9 @@ class PPORecurrent(Algorithm):
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
         return self._policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
+
     def player(self, state: PPORecurrentState) -> RecurrentRolloutPlayer:
         return RecurrentRolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
@@ -381,7 +384,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models

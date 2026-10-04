@@ -39,6 +39,7 @@ from sheeprl.utils.distribution import (
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
@@ -70,7 +71,14 @@ class SequencePlayer:
 
     With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
     `policy` (`PlayerDV3`), whose recurrent state is reset at the start of every episode.
+
+    A subclass can write more columns in the rows (`step_columns`, `reset_columns`), and the rewards and the episode
+    flags with another dtype (`dtype`), e.g. the `LatentSequencePlayer` of DreamerV3.5.
     """
+
+    # The dtype of the rewards, of the episode flags and of the zero actions of the last rows of the episodes; `None`
+    # keeps the ones of the environments
+    dtype: Optional[np.dtype] = None
 
     def __init__(
         self,
@@ -99,9 +107,9 @@ class SequencePlayer:
         if self.step_data is None:
             # The first observations start the episodes
             self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
-            self.step_data["rewards"] = np.zeros((1, num_envs, 1))
-            self.step_data["truncated"] = np.zeros((1, num_envs, 1))
-            self.step_data["terminated"] = np.zeros((1, num_envs, 1))
+            self.step_data["rewards"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
+            self.step_data["truncated"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
+            self.step_data["terminated"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
             self.step_data["is_first"] = np.ones_like(self.step_data["terminated"])
             self.policy.init_states()
         step_data = self.step_data
@@ -130,6 +138,7 @@ class SequencePlayer:
                 real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         step_data["actions"] = actions.reshape((1, num_envs, -1))
+        step_data.update(self.step_columns(buffer, num_envs))
         buffer.add(step_data, validate_args=cfg.buffer.validate_args)
 
         step = env.step(real_actions)
@@ -156,9 +165,9 @@ class SequencePlayer:
 
         for k in self.obs_keys:
             step_data[k] = step.next_obs[k][np.newaxis]
-        rewards = step.rewards.reshape((1, num_envs, -1))
-        step_data["terminated"] = step.terminated.reshape((1, num_envs, -1))
-        step_data["truncated"] = step.truncated.reshape((1, num_envs, -1))
+        rewards = self.cast(step.rewards.reshape((1, num_envs, -1)))
+        step_data["terminated"] = self.cast(step.terminated.reshape((1, num_envs, -1)))
+        step_data["truncated"] = self.cast(step.truncated.reshape((1, num_envs, -1)))
         step_data["rewards"] = np.tanh(rewards) if cfg.env.clip_rewards else rewards
 
         # The episodes that have just ended get a last row with their final observation; the next row, the first
@@ -170,9 +179,10 @@ class SequencePlayer:
             reset_data = {k: final_obs[k].astype(step.next_obs[k].dtype, copy=False)[np.newaxis] for k in self.obs_keys}
             reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
             reset_data["truncated"] = step_data["truncated"][:, dones_idxes]
-            reset_data["actions"] = np.zeros((1, reset_envs, np.sum(self.actions_dim)))
+            reset_data["actions"] = np.zeros((1, reset_envs, int(np.sum(self.actions_dim))), dtype=self.dtype)
             reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
             reset_data["is_first"] = np.zeros_like(reset_data["terminated"])
+            reset_data.update(self.reset_columns(dones_idxes))
             buffer.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
 
             step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
@@ -180,6 +190,17 @@ class SequencePlayer:
             step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
             step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
             self.policy.init_states(dones_idxes)
+
+    def cast(self, value: np.ndarray) -> np.ndarray:
+        return value if self.dtype is None else value.astype(self.dtype)
+
+    def step_columns(self, buffer: EnvIndependentReplayBuffer, num_envs: int) -> Dict[str, np.ndarray]:
+        """More columns of the row of the step, written after the actions are chosen; none by default."""
+        return {}
+
+    def reset_columns(self, env_idxes: Sequence[int]) -> Dict[str, np.ndarray]:
+        """More columns of the last rows of the episodes ended in the environments `env_idxes`; none by default."""
+        return {}
 
 
 def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -775,6 +796,9 @@ class DreamerV3(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
+
     def player(self, state: DreamerV3State) -> SequencePlayer:
         # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
         random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
@@ -799,8 +823,7 @@ class DreamerV3(Algorithm):
         # exponential moving average with `critic.tau`; at the first gradient step, a copy
         if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
             tau = 1 if step == 0 else cfg.algo.critic.tau
-            for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
-                tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
+            ema_(state.target_critic, state.critic, tau)
         metrics = train(
             self.fabric,
             state.world_model,
@@ -825,7 +848,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, greedy=False, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

@@ -40,6 +40,7 @@ from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
@@ -72,6 +73,11 @@ class SequencePlayer:
     `policy` (`PlayerDV2`), whose recurrent state is reset at the start of every episode.
     """
 
+    # The actions of the policy with its exploration noise (`get_exploration_actions` of DreamerV1)
+    exploration_noise: bool = False
+    # In a dry run, the first observations also end the episodes (for the episode buffer)
+    dry_run_episodes: bool = True
+
     def __init__(
         self,
         fabric: Fabric,
@@ -101,7 +107,7 @@ class SequencePlayer:
             self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
             self.step_data["terminated"] = np.zeros((1, num_envs, 1))
             self.step_data["truncated"] = np.zeros((1, num_envs, 1))
-            if cfg.dry_run:
+            if cfg.dry_run and self.dry_run_episodes:
                 self.step_data["truncated"] = self.step_data["truncated"] + 1
                 self.step_data["terminated"] = self.step_data["terminated"] + 1
             self.step_data["actions"] = np.zeros((1, num_envs, sum(self.actions_dim)))
@@ -127,7 +133,14 @@ class SequencePlayer:
         else:
             torch_obs = prepare_obs(self.fabric, env.obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=num_envs)
             mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-            real_actions = actions = self.policy.get_actions(torch_obs, mask=mask if len(mask) > 0 else None)
+            if self.exploration_noise:
+                # The noise depends on the policy steps played at the end of this step
+                policy_step = env.policy_step + num_envs * self.fabric.world_size
+                real_actions = actions = self.policy.get_exploration_actions(
+                    torch_obs, mask=mask if len(mask) > 0 else None, step=policy_step
+                )
+            else:
+                real_actions = actions = self.policy.get_actions(torch_obs, mask=mask if len(mask) > 0 else None)
             actions = torch.cat(actions, -1).view(num_envs, -1).cpu().numpy()
             if self.is_continuous:
                 real_actions = torch.stack(real_actions, -1).cpu().numpy()
@@ -138,7 +151,7 @@ class SequencePlayer:
         step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
         step = env.step(real_actions)
         dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
-        if cfg.dry_run and cfg.buffer.type.lower() == "episode":
+        if cfg.dry_run and self.dry_run_episodes and cfg.buffer.type.lower() == "episode":
             dones = np.ones_like(dones)
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation
@@ -687,6 +700,9 @@ class DreamerV2(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
+
     def player(self, state: DreamerV2State) -> SequencePlayer:
         # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
         random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
@@ -708,8 +724,7 @@ class DreamerV2(Algorithm):
     def train_step(self, state: DreamerV2State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         # The target critic is a copy of the critic, every `critic.per_rank_target_network_update_freq` gradient steps
         if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
-            for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
-                tcp.data.copy_(cp.data)
+            ema_(state.target_critic, state.critic, 1)
         metrics = train(
             self.fabric,
             state.world_model,
@@ -732,7 +747,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

@@ -2,7 +2,7 @@
 Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/common.py
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, Union
 
 import torch
 from torch import Tensor, nn
@@ -221,3 +221,17 @@ def cnn_forward(
     flatten_input = input.reshape(-1, *input_dim)
     model_out = model(flatten_input)
     return model_out.reshape(*batch_shapes, *output_dim)
+
+
+@torch.no_grad()
+def ema_(target: Union[nn.Module, Iterable[Tensor]], source: Union[nn.Module, Iterable[Tensor]], tau: float) -> None:
+    """Move the weights of `target` (e.g. a target network) towards the ones of `source`: `tau * source + (1 - tau) *
+    target`, for all the weights at once and with the roundings of that expression; with `tau=1`, a copy."""
+    targets = list(target.parameters() if isinstance(target, nn.Module) else target)
+    sources = list(source.parameters() if isinstance(source, nn.Module) else source)
+    if tau == 1:
+        torch._foreach_copy_(targets, sources)
+        return
+    updates = torch._foreach_mul(sources, tau)
+    torch._foreach_mul_(targets, 1 - tau)
+    torch._foreach_add_(targets, updates)

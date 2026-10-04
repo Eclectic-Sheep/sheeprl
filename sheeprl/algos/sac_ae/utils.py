@@ -120,26 +120,14 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.sac_ae.sac_ae import SACAE
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    from sheeprl.algos.sac_ae.agent import build_agent
-
-    # Create the models
-    agent, encoder, decoder, _ = build_agent(
-        fabric, cfg, env.observation_space, env.action_space, state["agent"], state["encoder"], state["decoder"]
+    return log_trained_models(
+        fabric,
+        env,
+        cfg,
+        state,
+        SACAE(fabric, cfg.to_log),
+        lambda trained: {"agent": trained.agent, "encoder": trained.encoder, "decoder": trained.decoder},
     )
-
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(
-            unwrap_fabric(agent), name="agent", serialization_format="pickle"
-        )
-        model_info["encoder"] = mlflow.pytorch.log_model(
-            unwrap_fabric(encoder), name="encoder", serialization_format="pickle"
-        )
-        model_info["decoder"] = mlflow.pytorch.log_model(
-            unwrap_fabric(decoder), name="decoder", serialization_format="pickle"
-        )
-        mlflow.log_dict(cfg.to_log, "config.json")
-    return model_info

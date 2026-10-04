@@ -12,6 +12,7 @@ from torch import Tensor
 from sheeprl.algos.sac.agent import SACActor, SACPlayer
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+from sheeprl.utils.model import ema_
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -201,11 +202,7 @@ class DROQAgent(nn.Module):
 
     @torch.no_grad()
     def qfs_target_ema(self, critic_idx: int) -> None:
-        # `tau * critic + (1 - tau) * target` for all the weights at once, with the same roundings
-        targets = list(self.qfs_target[critic_idx].parameters())
-        updates = torch._foreach_mul(list(self.qfs_unwrapped[critic_idx].parameters()), self._tau)
-        torch._foreach_mul_(targets, 1 - self._tau)
-        torch._foreach_add_(targets, updates)
+        ema_(self.qfs_target[critic_idx], self.qfs_unwrapped[critic_idx], self._tau)
 
 
 def build_agent(

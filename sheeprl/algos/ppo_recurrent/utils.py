@@ -11,10 +11,9 @@ from torch import Tensor
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo.utils import normalize_obs
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer, build_agent
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -81,23 +80,9 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.ppo_recurrent.ppo_recurrent import PPORecurrent
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
+    return log_trained_models(
+        fabric, env, cfg, state, PPORecurrent(fabric, cfg.to_log), lambda trained: {"agent": trained.agent}
     )
-    agent, _ = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
-
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(
-            unwrap_fabric(agent), name="agent", serialization_format="pickle"
-        )
-        mlflow.log_dict(cfg.to_log, "config.json")
-    return model_info

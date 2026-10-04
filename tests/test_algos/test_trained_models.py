@@ -286,19 +286,27 @@ def test_evaluation_plays_the_trained_models(name):
     ckpt_path = train(name, root_dir)
     saved = torch.load(ckpt_path, weights_only=False)
 
-    evaluate = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
+    importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
     played: List[torch.nn.Module] = []
 
     def test(policy, *args, **kwargs):
         played.append(policy)
 
+    # The test of the algorithms (`Algorithm.test`), in their modules
+    algorithm_modules = [
+        module
+        for module_name, module in list(sys.modules.items())
+        if module_name.startswith("sheeprl.algos.") and not module_name.endswith(".utils") and hasattr(module, "test")
+    ]
     try:
-        with (
-            mock.patch.object(evaluate, "test", test),
-            mock.patch.object(
-                sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
-            ),
-        ):
+        with contextlib.ExitStack() as stack:
+            for module in algorithm_modules:
+                stack.enter_context(mock.patch.object(module, "test", test))
+            stack.enter_context(
+                mock.patch.object(
+                    sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
+                )
+            )
             evaluation()
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)

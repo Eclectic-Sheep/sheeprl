@@ -280,7 +280,7 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     # The evaluation of a P2E-DV3 checkpoint must play the task actor stored in the checkpoint
     import torch
 
-    from sheeprl.algos.p2e_dv3 import evaluate as p2e_dv3_evaluate
+    from sheeprl.algos.p2e_dv3 import p2e_dv3_exploration
     from sheeprl.cli import evaluation
 
     root_dir = "pytest_test_evaluate_p2e_dv3"
@@ -328,7 +328,8 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
 
     players = []
-    with mock.patch.object(p2e_dv3_evaluate, "test", lambda player, *args, **kwargs: players.append(player)):
+    # The test of the algorithm (`P2EDV3Exploration.test`)
+    with mock.patch.object(p2e_dv3_exploration, "test", lambda player, *args, **kwargs: players.append(player)):
         with mock.patch.object(
             sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False", "seed=42"]
         ):

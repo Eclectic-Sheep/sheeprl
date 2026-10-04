@@ -35,6 +35,7 @@ from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
+from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -514,6 +515,10 @@ class P2EDV2Exploration(Algorithm):
         policy.actor = get_single_device_fabric(self.fabric).setup_module(unwrap_fabric(state.actor_task))
         return policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
+        # The task actor plays
+        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+
     def player(self, state: P2EDV2ExplorationState) -> SequencePlayer:
         # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
         random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
@@ -540,12 +545,8 @@ class P2EDV2Exploration(Algorithm):
         # The target critics are copies of the critics, every `critic.per_rank_target_network_update_freq` gradient
         # steps
         if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
-            for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
-                tcp.data.copy_(cp.data)
-            for cp, tcp in zip(
-                state.critic_exploration.module.parameters(), state.target_critic_exploration.parameters()
-            ):
-                tcp.data.copy_(cp.data)
+            ema_(state.target_critic_task, state.critic_task, 1)
+            ema_(state.target_critic_exploration, state.critic_exploration, 1)
         metrics = train(
             self.fabric,
             state.world_model,
@@ -575,9 +576,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     algo = P2EDV2Exploration(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
-    # task test zero-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.task_policy(state), fabric, cfg, log_dir, "zero-shot", policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step, test_name="zero-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

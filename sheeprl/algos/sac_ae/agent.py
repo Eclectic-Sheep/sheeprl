@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from math import prod
-from typing import Any, Dict, Iterable, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import hydra
@@ -17,7 +17,7 @@ from torch import Size, Tensor
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
-from sheeprl.utils.model import cnn_forward
+from sheeprl.utils.model import cnn_forward, ema_
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -446,19 +446,11 @@ class SACAEAgent(nn.Module):
 
     @torch.no_grad()
     def critic_target_ema(self) -> None:
-        _ema(self.critic_unwrapped.qfs.parameters(), self.critic_target.qfs.parameters(), self._tau)
+        ema_(self.critic_target.qfs, self.critic_unwrapped.qfs, self._tau)
 
     @torch.no_grad()
     def critic_encoder_target_ema(self) -> None:
-        _ema(self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters(), self._encoder_tau)
-
-
-def _ema(params: Iterable[Tensor], targets: Iterable[Tensor], tau: float) -> None:
-    """`tau * param + (1 - tau) * target` for all the weights at once, with the same roundings."""
-    targets = list(targets)
-    updates = torch._foreach_mul(list(params), tau)
-    torch._foreach_mul_(targets, 1 - tau)
-    torch._foreach_add_(targets, updates)
+        ema_(self.critic_target.encoder, self.critic_unwrapped.encoder, self._encoder_tau)
 
 
 class SACAEPlayer(nn.Module):

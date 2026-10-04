@@ -323,6 +323,9 @@ class SACAE(Algorithm):
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
+
     def player(self, state: SACAEState) -> ReplayPlayer:
         return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule)
 
@@ -368,7 +371,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac_ae.utils import log_models

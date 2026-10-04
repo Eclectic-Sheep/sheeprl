@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import warnings
 from typing import Any, Dict, Tuple
@@ -18,7 +19,7 @@ from sheeprl.core.schedule import TrainSchedule
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import phase_timer, training_timer
-from sheeprl.utils.utils import save_configs
+from sheeprl.utils.utils import dotdict, save_configs
 
 
 def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str, int]:
@@ -112,7 +113,16 @@ def load_trained_state(
         # The warnings of the schedule are about the logging and checkpoint intervals of a training
         warnings.simplefilter("ignore")
         schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, off_policy=algo.off_policy)
-    with tempfile.TemporaryDirectory() as store_dir:
-        state, _ = algo.build(observation_space, action_space, schedule, store_dir)
+    # The store of the collected data is built as in a dry run (small and in memory): the size of the one of the
+    # training could exceed the memory, or the disk
+    training_cfg = algo.cfg
+    algo.cfg = dotdict(copy.deepcopy(training_cfg.as_dict()))
+    algo.cfg.dry_run = True
+    algo.cfg.buffer.memmap = False
+    try:
+        with tempfile.TemporaryDirectory() as store_dir:
+            state, _ = algo.build(observation_space, action_space, schedule, store_dir)
+    finally:
+        algo.cfg = training_cfg
     state.load_state_dict(checkpoint)
     return state

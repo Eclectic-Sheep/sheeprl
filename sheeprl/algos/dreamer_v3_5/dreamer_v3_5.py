@@ -37,11 +37,12 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size
+from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, PlayerDV3_5, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
-from sheeprl.algos.dreamer_v3_5.utils import Moments, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
+from sheeprl.algos.dreamer_v3_5.utils import Moments, test
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer, get_tensor
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
@@ -510,109 +511,44 @@ class DreamerV3_5State(TrainState):
     moments: Moments
 
 
-class LatentSequencePlayer:
-    """Plays the policy in the environments from the first step and writes in the replay buffer the sequences the
-    agent learns from, as `SequencePlayer` of DreamerV3 does, with the latent states of the player (`LATENT_KEYS`) and
-    the identifier of every step (`STEP_ID_KEY`: the environment and the steps added to its buffer before it), where
-    the trainings write back the latent states they compute (`write_latent_states`)."""
+class LatentSequencePlayer(SequencePlayer):
+    """The player of DreamerV3 (`sheeprl.algos.dreamer_v3.dreamer_v3.SequencePlayer`), from the first step, with the
+    latent states of the policy (`LATENT_KEYS`) and the identifier of every step (`STEP_ID_KEY`: the environment and the
+    steps added to its buffer before it) in the rows, where the trainings write back the latent states they compute
+    (`write_latent_states`). The rewards and the episode flags are float32."""
+
+    dtype = np.float32
 
     def __init__(
         self, fabric: Fabric, cfg: Dict[str, Any], policy: PlayerDV3_5, actions_dim: Sequence[int], is_continuous: bool
     ) -> None:
-        self.fabric = fabric
-        self.cfg = cfg
-        self.policy = policy
-        self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        super().__init__(fabric, cfg, policy, None, actions_dim, is_continuous, random_warmup=False)
         self.stochastic_size = cfg.algo.world_model.stochastic_size
         self.stoch_dtype = np.uint8 if cfg.algo.world_model.discrete_size <= 256 else np.int64
-        # The row written at the next step and the steps added to the buffer of every environment; created at the first
-        # step, from the first observations and from the buffer (of a resumed run)
-        self.step_data: Optional[Dict[str, np.ndarray]] = None
+        # The steps added to the buffer of every environment, from the buffer (of a resumed run) at the first step
         self.counters: Optional[np.ndarray] = None
 
-    def step(self, env: EnvRunner, buffer: EnvIndependentReplayBuffer) -> None:
-        cfg = self.cfg
-        num_envs = env.num_envs
-        env_ids = np.arange(num_envs)
-        if self.step_data is None:
-            self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
-            self.step_data["rewards"] = np.zeros((1, num_envs, 1), dtype=np.float32)
-            self.step_data["truncated"] = np.zeros((1, num_envs, 1), dtype=np.float32)
-            self.step_data["terminated"] = np.zeros((1, num_envs, 1), dtype=np.float32)
-            self.step_data["is_first"] = np.ones_like(self.step_data["terminated"])
+    def step_columns(self, buffer: EnvIndependentReplayBuffer, num_envs: int) -> Dict[str, np.ndarray]:
+        if self.counters is None:
             self.counters = step_counters(buffer)
-            self.policy.init_states()
-        step_data, counters = self.step_data, self.counters
+        stochastic_state = self.policy.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
+        columns = {
+            "deter": self.policy.recurrent_state.half().cpu().numpy(),
+            "stoch": stochastic_state.cpu().numpy().astype(self.stoch_dtype),
+            STEP_ID_KEY: np.stack((np.arange(num_envs), self.counters), -1)[np.newaxis],
+        }
+        self.counters += 1
+        return columns
 
-        # The latent states of the player go in the replay buffer with the step
-        torch_obs = prepare_obs(self.fabric, env.obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=num_envs)
-        mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-        actions = self.policy.get_actions(torch_obs, mask=mask or None)
-        latent_states = (
-            self.policy.recurrent_state.half(),
-            self.policy.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1),
-        )
-        if self.is_continuous:
-            real_actions = torch.stack(actions, dim=-1).cpu().numpy()
-        else:
-            real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
-        step_data["actions"] = torch.cat(actions, -1).cpu().numpy().reshape((1, num_envs, -1))
-        step_data["deter"] = latent_states[0].cpu().numpy()
-        step_data["stoch"] = latent_states[1].cpu().numpy().astype(self.stoch_dtype)
-        step_data[STEP_ID_KEY] = np.stack((env_ids, counters), -1)[np.newaxis]
-        buffer.add(step_data, validate_args=cfg.buffer.validate_args)
-        counters += 1
-
-        step = env.step(real_actions)
-        dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
-
-        step_data["is_first"] = np.zeros_like(step_data["terminated"])
-        if "restart_on_exception" in step.info:
-            restarted_envs = []
-            for i, agent_roe in enumerate(step.info["restart_on_exception"]):
-                if agent_roe and not dones[i]:
-                    # The last observation stored for the restarted environment ends its episode
-                    last_inserted_idx = (counters[i] - 1) % buffer.buffer[i].buffer_size
-                    buffer.buffer[i]["terminated"][last_inserted_idx] = 0
-                    buffer.buffer[i]["truncated"][last_inserted_idx] = 1
-                    # The observation returned after the restart starts a new episode
-                    step_data["is_first"][:, i] = 1
-                    restarted_envs.append(i)
-            if len(restarted_envs) > 0:
-                self.policy.init_states(restarted_envs)
-
-        for k in self.obs_keys:
-            step_data[k] = step.next_obs[k][np.newaxis]
-        rewards = step.rewards.reshape((1, num_envs, -1)).astype(np.float32)
-        step_data["terminated"] = step.terminated.reshape((1, num_envs, -1)).astype(np.float32)
-        step_data["truncated"] = step.truncated.reshape((1, num_envs, -1)).astype(np.float32)
-        step_data["rewards"] = np.tanh(rewards) if cfg.env.clip_rewards else rewards
-
-        dones_idxes = dones.nonzero()[0].tolist()
-        reset_envs = len(dones_idxes)
-        if reset_envs > 0:
-            # The last observations of the episodes, with no action and no latent state (the next steps start new
-            # episodes, from zeros)
-            final_obs = step.final_obs(dones_idxes, self.obs_keys)
-            reset_data = {k: final_obs[k].astype(step.next_obs[k].dtype, copy=False)[np.newaxis] for k in self.obs_keys}
-            reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
-            reset_data["truncated"] = step_data["truncated"][:, dones_idxes]
-            reset_data["actions"] = np.zeros((1, reset_envs, int(np.sum(self.actions_dim))), dtype=np.float32)
-            reset_data["rewards"] = step_data["rewards"][:, dones_idxes]
-            reset_data["is_first"] = np.zeros_like(reset_data["terminated"])
-            reset_data["deter"] = np.zeros((1, reset_envs, step_data["deter"].shape[-1]), dtype=np.float16)
-            reset_data["stoch"] = np.zeros((1, reset_envs, self.stochastic_size), dtype=self.stoch_dtype)
-            reset_data[STEP_ID_KEY] = np.stack((env_ids[dones_idxes], counters[dones_idxes]), -1)[np.newaxis]
-            buffer.add(reset_data, dones_idxes, validate_args=cfg.buffer.validate_args)
-            counters[dones_idxes] += 1
-
-            step_data["rewards"][:, dones_idxes] = np.zeros_like(reset_data["rewards"])
-            step_data["terminated"][:, dones_idxes] = np.zeros_like(step_data["terminated"][:, dones_idxes])
-            step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
-            step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
-            self.policy.init_states(dones_idxes)
+    def reset_columns(self, env_idxes: Sequence[int]) -> Dict[str, np.ndarray]:
+        # No latent state: the next steps start new episodes, from zeros
+        columns = {
+            "deter": np.zeros((1, len(env_idxes), self.step_data["deter"].shape[-1]), dtype=np.float16),
+            "stoch": np.zeros((1, len(env_idxes), self.stochastic_size), dtype=self.stoch_dtype),
+            STEP_ID_KEY: np.stack((np.asarray(env_idxes), self.counters[env_idxes]), -1)[np.newaxis],
+        }
+        self.counters[env_idxes] += 1
+        return columns
 
 
 class DreamerV3_5(Algorithm):
@@ -680,6 +616,9 @@ class DreamerV3_5(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
+
     def player(self, state: DreamerV3_5State) -> LatentSequencePlayer:
         return LatentSequencePlayer(self.fabric, self.cfg, self.policy(state), self.actions_dim, self.is_continuous)
 
@@ -733,7 +672,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, greedy=False, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

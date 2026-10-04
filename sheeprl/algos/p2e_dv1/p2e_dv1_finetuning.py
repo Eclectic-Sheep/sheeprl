@@ -146,6 +146,10 @@ class P2EDV1Finetuning(Algorithm):
         # A buffer saved before `is_first` was stored
         return add_is_first(super().load_store(saved, store))
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
+        # The task actor plays
+        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+
     def player(self, state: P2EDV1FinetuningState) -> SequencePlayer:
         # No random actions
         return SequencePlayer(
@@ -187,9 +191,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     algo = P2EDV1Finetuning(fabric, cfg, exploration_cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
-    # task test few-shot
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.task_policy(state), fabric, cfg, log_dir, "few-shot", policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step, test_name="few-shot")
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

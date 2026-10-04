@@ -6,9 +6,7 @@ import gymnasium as gym
 from lightning import Fabric
 
 from sheeprl.algos.dreamer_v1.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV1
-from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -57,60 +55,23 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import P2EDV1Exploration
+    from sheeprl.algos.p2e_dv1.p2e_dv1_finetuning import P2EDV1Finetuning
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    (
-        world_model,
-        ensembles,
-        actor_task,
-        critic_task,
-        actor_exploration,
-        critic_exploration,
-        _,
-    ) = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        env.observation_space,
-        state["world_model"],
-        state["ensembles"] if "exploration" in cfg.algo.name else None,
-        state["actor_task"],
-        state["critic_task"],
-        state["actor_exploration"] if "exploration" in cfg.algo.name else None,
-        state["critic_exploration"] if "exploration" in cfg.algo.name else None,
-    )
+    exploration = "exploration" in cfg.to_log.algo.name
 
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(
-            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
-        )
-        model_info["actor_task"] = mlflow.pytorch.log_model(
-            unwrap_fabric(actor_task), name="actor_task", serialization_format="pickle"
-        )
-        model_info["critic_task"] = mlflow.pytorch.log_model(
-            unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
-        )
-        if "exploration" in cfg.algo.name:
-            model_info["ensembles"] = mlflow.pytorch.log_model(
-                unwrap_fabric(ensembles), name="ensembles", serialization_format="pickle"
-            )
-            model_info["actor_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(actor_exploration), name="actor_exploration", serialization_format="pickle"
-            )
-            model_info["critic_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(critic_exploration), name="critic_exploration", serialization_format="pickle"
-            )
-        mlflow.log_dict(cfg.to_log, "config.json")
+    def models(trained: Any) -> Dict[str, Any]:
+        models = {
+            "world_model": trained.world_model,
+            "actor_task": trained.actor_task,
+            "critic_task": trained.critic_task,
+        }
+        if exploration:
+            models["ensembles"] = trained.ensembles
+            models["actor_exploration"] = trained.actor_exploration
+            models["critic_exploration"] = trained.critic_exploration
+        return models
 
-    return model_info
+    algorithm = P2EDV1Exploration if exploration else P2EDV1Finetuning
+    return log_trained_models(fabric, env, cfg, state, algorithm(fabric, cfg.to_log), models)

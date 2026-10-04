@@ -133,6 +133,11 @@ class Algorithm:
         by older versions."""
         return load_replay_buffer(self.fabric, saved, store)
 
+    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
+        """Play a test episode with the trained policy and log its return at `policy_step`: at the end of the training
+        (with `algo.run_test`) and to evaluate a checkpoint (`sheeprl.core.evaluation.evaluate`)."""
+        raise NotImplementedError
+
     def player(self, state: TrainState) -> Player:
         """Return the object that plays the current policy in the environments."""
         raise NotImplementedError
