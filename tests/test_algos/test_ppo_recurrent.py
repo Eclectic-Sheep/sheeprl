@@ -292,3 +292,46 @@ def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
         sizes.append(sorted(set(valid)))
     # The minibatches of a rollout had different sizes (the last one of every epoch smaller), padded to one
     assert all(len(s) > 1 for s in sizes)
+
+
+@pytest.mark.parametrize("reset_on_done", [False, True])
+def test_the_refreshed_recurrent_states_are_the_ones_of_the_player_with_its_weights(reset_on_done):
+    # `algo.refresh_recurrent_states` unrolls the recurrent states of the rollout again with the current weights: with
+    # the weights that played it, the states the player stored, reset after the end of the episodes as it does
+    from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
+
+    cfg = config(
+        ["exp=ppo_recurrent", "env.num_envs=3", "algo.mlp_keys.encoder=[state]", "algo.rnn.lstm.hidden_size=8"]
+    )
+    obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (5,), np.float32)})
+    torch.manual_seed(0)
+    agent, player = build_agents(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    T, N = 12, 3
+    generator = torch.Generator().manual_seed(1)
+    obs = torch.randn(T, N, 5, generator=generator)
+    dones = (torch.rand(T, N, 1, generator=generator) < 0.2).float()
+    states = (torch.randn(1, N, 8, generator=generator), torch.randn(1, N, 8, generator=generator))
+    prev_actions = torch.zeros(1, N, 3)
+    stored = {"prev_hx": [], "prev_cx": [], "prev_actions": []}
+    with torch.no_grad():
+        for t in range(T):
+            stored["prev_hx"].append(states[0])
+            stored["prev_cx"].append(states[1])
+            stored["prev_actions"].append(prev_actions)
+            actions, _, _, states = player({"state": obs[t : t + 1]}, prev_actions=prev_actions, prev_states=states)
+            actions = torch.cat(actions, dim=-1)
+            # As the rollout player
+            prev_actions = (1 - dones[t : t + 1]) * actions
+            if reset_on_done:
+                states = tuple((1 - dones[t : t + 1]) * s for s in states)
+    stored = {k: torch.cat(v) for k, v in stored.items()}
+    prev_hx, prev_cx = ppo_recurrent.recurrent_states(
+        agent,
+        {"state": obs},
+        stored["prev_actions"],
+        dones,
+        (stored["prev_hx"][:1], stored["prev_cx"][:1]),
+        reset_on_done,
+    )
+    torch.testing.assert_close(prev_hx, stored["prev_hx"])
+    torch.testing.assert_close(prev_cx, stored["prev_cx"])
