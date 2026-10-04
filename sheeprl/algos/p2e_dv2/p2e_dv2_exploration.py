@@ -8,7 +8,7 @@ the same experience (zero-shot). The player is the one of Dreamer-V2 (`sheeprl.a
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Sequence, Tuple
+from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import torch
@@ -33,8 +33,10 @@ from sheeprl.algos.dreamer_v2.utils import (
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
+from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric
@@ -64,6 +66,227 @@ class P2EDV2ExplorationState(TrainState):
     critic_exploration_optimizer: Optimizer
 
 
+def world_model_loss(
+    world_model: WorldModel,
+    data: Dict[str, Tensor],
+    *,
+    cnn_keys: Tuple[str, ...],
+    mlp_keys: Tuple[str, ...],
+    stochastic_size: int,
+    discrete_size: int,
+    recurrent_state_size: int,
+    use_continues: bool,
+    gamma: float,
+    kl_balancing_alpha: float,
+    kl_free_nats: float,
+    kl_free_avg: bool,
+    kl_regularizer: float,
+    discount_scale_factor: float,
+) -> Tuple[Tensor, Tensor, Tensor, Dict[str, Tensor]]:
+    """The loss of the world model of DreamerV2 on a batch of sequences, whose reward and continue models learn from
+    the latent states without changing them: the latent states learn only to reconstruct the observations. Can be
+    compiled (`algo.compile`).
+
+    Returns:
+        The loss, the posteriors and the recurrent states of the batch, and the terms of the loss with the logits of the
+        posteriors and of the priors.
+    """
+    sequence_length, batch_size = data["actions"].shape[:2]
+    device = data["actions"].device
+    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
+    batch_obs.update({k: data[k] for k in mlp_keys})
+    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
+    posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
+    # The outputs of every step are concatenated at the end of the unroll: writing them in place into preallocated
+    # tensors makes the backward pass copy the gradient of the whole tensor at every step
+    recurrent_states = []
+    priors_logits = []
+    posteriors = []
+    posteriors_logits = []
+    embedded_obs = world_model.encoder(batch_obs)
+    for i in range(0, sequence_length):
+        recurrent_state, posterior, _, posterior_logits, prior_logits = world_model.rssm.dynamic(
+            posterior,
+            recurrent_state,
+            data["actions"][i : i + 1],
+            embedded_obs[i : i + 1],
+            data["is_first"][i : i + 1],
+        )
+        recurrent_states.append(recurrent_state)
+        priors_logits.append(prior_logits)
+        posteriors.append(posterior)
+        posteriors_logits.append(posterior_logits)
+    recurrent_states = torch.cat(recurrent_states, dim=0)
+    priors_logits = torch.cat(priors_logits, dim=0)
+    posteriors = torch.cat(posteriors, dim=0)
+    posteriors_logits = torch.cat(posteriors_logits, dim=0)
+    latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
+
+    decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
+    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
+    if use_continues:
+        pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
+        continues_targets = (1 - data["terminated"]) * gamma
+    else:
+        pc = continues_targets = None
+
+    priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
+    posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
+    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+        po,
+        batch_obs,
+        pr,
+        data["rewards"],
+        priors_logits,
+        posteriors_logits,
+        kl_balancing_alpha,
+        kl_free_nats,
+        kl_free_avg,
+        kl_regularizer,
+        pc,
+        continues_targets,
+        discount_scale_factor,
+    )
+    losses = {
+        "kl": kl,
+        "state_loss": state_loss,
+        "reward_loss": reward_loss,
+        "observation_loss": observation_loss,
+        "continue_loss": continue_loss,
+        "posteriors_logits": posteriors_logits,
+        "priors_logits": priors_logits,
+    }
+    return rec_loss, posteriors, recurrent_states, losses
+
+
+def ensemble_loss(ensembles: nn.ModuleList, posteriors: Tensor, recurrent_states: Tensor, actions: Tensor) -> Tensor:
+    """The loss of the ensembles, each predicting the next posterior from the latent state and the action. Can be
+    compiled (`algo.compile`)."""
+    sequence_length, batch_size = actions.shape[:2]
+    loss = 0.0
+    for ens in ensembles:
+        out = ens(
+            torch.cat(
+                (
+                    posteriors.view(*posteriors.shape[:-2], -1).detach(),
+                    recurrent_states.detach(),
+                    actions.detach(),
+                ),
+                -1,
+            )
+        )[:-1]
+        next_obs_embedding_dist = Independent(Normal(out, 1), 1)
+        loss -= next_obs_embedding_dist.log_prob(posteriors.view(sequence_length, batch_size, -1).detach()[1:]).mean()
+    return loss
+
+
+def behaviour_imagine(
+    world_model: WorldModel,
+    actor: _FabricModule,
+    target_critic: nn.Module,
+    ensembles: Optional[nn.ModuleList],
+    posteriors: Tensor,
+    recurrent_states: Tensor,
+    terminated: Tensor,
+    *,
+    horizon: int,
+    use_continues: bool,
+    gamma: float,
+    lmbda: float,
+    intrinsic_reward_multiplier: float,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """The trajectories imagined from the latent states of the batch with `actor`, rewarded by the disagreement of the
+    `ensembles` (the exploration) or by the reward model (the task, without ensembles), and their lambda-values from the
+    target critic. Can be compiled (`algo.compile`).
+
+    Returns:
+        The imagined trajectories and actions, the values of the target critic, the lambda-values, the discounts of the
+        actor and critic losses, and the rewards.
+    """
+    stoch_state_size = posteriors.shape[-2] * posteriors.shape[-1]
+    recurrent_state_size = recurrent_states.shape[-1]
+    imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
+    recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
+    imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+    imagined_trajectories = [imagined_latent_state]
+    imagined_actions = [torch.zeros(1, imagined_prior.shape[1], sum(actor.actions_dim), device=posteriors.device)]
+    for i in range(1, horizon + 1):
+        actions = torch.cat(actor(imagined_latent_state.detach())[0], dim=-1)
+        imagined_actions.append(actions)
+        imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
+        imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
+        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
+        imagined_trajectories.append(imagined_latent_state)
+    imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
+    imagined_actions = torch.cat(imagined_actions, dim=0)
+    predicted_target_values = target_critic(imagined_trajectories)
+    if ensembles is not None:
+        # The intrinsic reward: the disagreement of the ensembles on the next posterior
+        next_obs_embedding = torch.stack(
+            [ens(torch.cat((imagined_trajectories, imagined_actions), -1)) for ens in ensembles], dim=0
+        )
+        rewards = next_obs_embedding.var(0).mean(-1, keepdim=True) * intrinsic_reward_multiplier
+    else:
+        rewards = world_model.reward_model(imagined_trajectories)
+    if use_continues:
+        continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
+        true_continue = (1 - terminated).flatten().reshape(1, -1, 1) * gamma
+        continues = torch.cat((true_continue, continues[1:]))
+    else:
+        continues = torch.ones_like(rewards.detach()) * gamma
+    lambda_values = compute_lambda_values(
+        rewards[:-1],
+        predicted_target_values[:-1],
+        continues[:-1],
+        bootstrap=predicted_target_values[-1:],
+        horizon=horizon,
+        lmbda=lmbda,
+    )
+    with torch.no_grad():
+        discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
+    return imagined_trajectories, imagined_actions, predicted_target_values, lambda_values, discount, rewards
+
+
+def behaviour_actor_loss(
+    actor: _FabricModule,
+    imagined_trajectories: Tensor,
+    imagined_actions: Tensor,
+    predicted_target_values: Tensor,
+    lambda_values: Tensor,
+    discount: Tensor,
+    *,
+    objective_mix: Optional[float],
+    is_continuous: bool,
+    actions_dim: Tuple[int, ...],
+    ent_coef: float,
+) -> Tensor:
+    """The loss of an actor (Eq. 6 of DreamerV2): the dynamics backpropagation of the lambda-values and REINFORCE, mixed
+    by `objective_mix`, with the entropy of the policies. Can be compiled (`algo.compile`)."""
+    policies: Sequence[Distribution] = actor(imagined_trajectories[:-2].detach())[1]
+
+    def reinforce() -> Tensor:
+        advantage = (lambda_values[1:] - predicted_target_values[:-2]).detach()
+        logprobs = [
+            p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
+            for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
+        ]
+        return torch.stack(logprobs, -1).sum(-1) * advantage
+
+    objective = actor_objective(objective_mix, is_continuous, lambda_values[1:], reinforce)
+    # The tanh-normal policies have no analytic entropy: it is estimated from samples
+    entropy = ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(-1)
+    return -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+
+
+def behaviour_critic_loss(
+    critic: _FabricModule, imagined_trajectories: Tensor, lambda_values: Tensor, discount: Tensor
+) -> Tensor:
+    """The loss of a critic (Eq. 5 of DreamerV2), on the imagined trajectories. Can be compiled (`algo.compile`)."""
+    qv = Independent(Normal(critic(imagined_trajectories.detach())[:-1], 1), 1)
+    return -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values.detach()))
+
+
 def train(
     fabric: Fabric,
     world_model: WorldModel,
@@ -84,236 +307,90 @@ def train(
     critic_exploration_optimizer: _FabricOptimizer,
     is_continuous: bool,
     actions_dim: Sequence[int],
-) -> None:
-    """Runs one-step update of the agent.
+) -> Dict[str, Tensor]:
+    """One gradient step of Plan2Explore on DreamerV2 (Algorithm 1 of the paper): the world model, the ensembles, the
+    exploration actor and critic (with the intrinsic rewards), the task actor and critic (zero-shot). The losses are
+    compiled when `algo.compile.enabled` is set.
 
-    In particular, it updates the agent as specified by Algorithm 1 in
-    [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
-
-    The algorithm is made by different phases:
-    1. Dynamic Learning: see Algorithm 1 in
-        [Dream to Control: Learning Behaviors by Latent Imagination](https://arxiv.org/abs/1912.01603)
-    2. Ensemble Learning: learn the ensemble models as described in
-        [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
-        The ensemble models give the novelty of the state visited by the agent.
-    3. Behaviour Learning Exploration: the agent learns to explore the environment,
-        having as reward only the intrinsic reward, computed from the ensembles.
-    4. Behaviour Learning Task (zero-shot): the agent learns to solve the task,
-        the experiences it uses to learn it are the ones collected during the exploration:
-        - Imagine trajectories in the latent space from each latent state
-        s_t up to the horizon H: s'_(t+1), ..., s'_(t+H).
-        - Predict rewards and values in the imagined trajectories.
-        - Compute lambda targets (Eq. 6 in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603))
-        - Update the actor and the critic
-
-    This method is based on [sheeprl.algos.dreamer_v1.dreamer_v1](sheeprl.algos.dreamer_v1.dreamer_v1) algorithm,
-    extending it to implement the
-    [Planning to Explore via Self-Supervised World Models](https://arxiv.org/abs/2005.05960).
-
-    Args:
-        fabric (Fabric): the fabric instance.
-        world_model (WorldModel): the world model wrapped with Fabric.
-        actor_task (_FabricModule): the actor for solving the task.
-        critic_task (_FabricModule): the critic for solving the task.
-        target_critic_task (nn.Module): the target critic for solving the task.
-        world_optimizer (_FabricOptimizer): the world optimizer.
-        actor_task_optimizer (_FabricOptimizer): the actor optimizer for solving the task.
-        critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
-        data (Dict[str, Tensor]): the batch of data to use for training.
-        cfg (DictConfig): the configs.
-        ensembles (_FabricModule): the ensemble models.
-        ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
-        actor_exploration (_FabricModule): the actor for exploration.
-        critic_exploration (_FabricModule): the critic for exploration.
-        target_critic_exploration (nn.Module): the target critic for exploration.
-        actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
-        critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
-        is_continuous (bool): whether or not are continuous actions.
-        actions_dim (Sequence[int]): the actions dimension.
+    Returns:
+        The metrics of the step.
     """
-    metrics: Dict[str, Tensor] = {}
-    batch_size = cfg.algo.per_rank_batch_size
-    sequence_length = cfg.algo.per_rank_sequence_length
-    recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
-    stochastic_size = cfg.algo.world_model.stochastic_size
-    discrete_size = cfg.algo.world_model.discrete_size
-    device = fabric.device
     data = {k: data[k] for k in data.keys()}
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cfg.algo.cnn_keys.encoder}
-    batch_obs.update({k: data[k] for k in cfg.algo.mlp_keys.encoder})
+    # Every sequence starts from the zero state, as an episode does
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
+    mark_gradient_step(fabric, cfg)
+    world_model_cfg = cfg.algo.world_model
+    use_continues = bool(world_model_cfg.use_continues and world_model.continue_model)
 
     # Dynamic Learning
-    recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
-    posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
-
     # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
     with autocast_cache_scope(fabric):
-        # The outputs of every step are concatenated at the end of the unroll: writing them in place into
-        # preallocated tensors makes the backward pass copy the gradient of the whole tensor at every step
-        recurrent_states = []
-        priors = []
-        priors_logits = []
-        posteriors = []
-        posteriors_logits = []
-
-        # embedded observations from the environment
-        embedded_obs = world_model.encoder(batch_obs)
-
-        for i in range(0, sequence_length):
-            recurrent_state, posterior, prior, posterior_logits, prior_logits = world_model.rssm.dynamic(
-                posterior,
-                recurrent_state,
-                data["actions"][i : i + 1],
-                embedded_obs[i : i + 1],
-                data["is_first"][i : i + 1],
-            )
-            recurrent_states.append(recurrent_state)
-            priors.append(prior)
-            priors_logits.append(prior_logits)
-            posteriors.append(posterior)
-            posteriors_logits.append(posterior_logits)
-        recurrent_states = torch.cat(recurrent_states, dim=0)
-        priors = torch.cat(priors, dim=0)
-        priors_logits = torch.cat(priors_logits, dim=0)
-        posteriors = torch.cat(posteriors, dim=0)
-        posteriors_logits = torch.cat(posteriors_logits, dim=0)
-
-        # concatenate the posteriors with the recurrent states on the last dimension
-        # latent_states has dimension
-        # (sequence_length, batch_size, recurrent_state_size + stochastic_size * discrete_size)
-        latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
-
-        # compute predictions for the observations
-        decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-
-        # compute the distribution over the reconstructed observations
-        po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
-
-        # compute the distribution over the rewards
-        pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
-
-        # compute the distribution over the terminal steps, if required
-        if cfg.algo.world_model.use_continues and world_model.continue_model:
-            pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
-            continues_targets = (1 - data["terminated"]) * cfg.algo.gamma
-        else:
-            pc = continues_targets = None
-
-        # Reshape posterior and prior logits to shape [B, T, 32, 32]
-        priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
-        posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
-
-        # world model optimization step
-        rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-            po,
-            batch_obs,
-            pr,
-            data["rewards"],
-            priors_logits,
-            posteriors_logits,
-            cfg.algo.world_model.kl_balancing_alpha,
-            cfg.algo.world_model.kl_free_nats,
-            cfg.algo.world_model.kl_free_avg,
-            cfg.algo.world_model.kl_regularizer,
-            pc,
-            continues_targets,
-            cfg.algo.world_model.discount_scale_factor,
+        rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
+            world_model,
+            data,
+            cnn_keys=tuple(cfg.algo.cnn_keys.encoder),
+            mlp_keys=tuple(cfg.algo.mlp_keys.encoder),
+            stochastic_size=world_model_cfg.stochastic_size,
+            discrete_size=world_model_cfg.discrete_size,
+            recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
+            use_continues=use_continues,
+            gamma=cfg.algo.gamma,
+            kl_balancing_alpha=world_model_cfg.kl_balancing_alpha,
+            kl_free_nats=world_model_cfg.kl_free_nats,
+            kl_free_avg=world_model_cfg.kl_free_avg,
+            kl_regularizer=world_model_cfg.kl_regularizer,
+            discount_scale_factor=world_model_cfg.discount_scale_factor,
         )
-    world_grad = update(
-        fabric, rec_loss, world_optimizer, cfg.algo.world_model.clip_gradients, error_if_nonfinite=False
-    )
+    world_grad = update(fabric, rec_loss, world_optimizer, world_model_cfg.clip_gradients, error_if_nonfinite=False)
 
     # Ensemble Learning
     with autocast_cache_scope(fabric):
-        loss = 0.0
-        for ens in ensembles:
-            out = ens(
-                torch.cat(
-                    (
-                        posteriors.view(*posteriors.shape[:-2], -1).detach(),
-                        recurrent_states.detach(),
-                        data["actions"].detach(),
-                    ),
-                    -1,
-                )
-            )[:-1]
-            next_obs_embedding_dist = Independent(Normal(out, 1), 1)
-            loss -= next_obs_embedding_dist.log_prob(
-                posteriors.view(sequence_length, batch_size, -1).detach()[1:]
-            ).mean()
+        loss = compiled(ensemble_loss, fabric, cfg)(ensembles, posteriors, recurrent_states, data["actions"])
     ensemble_grad = update(
         fabric, loss, ensemble_optimizer, cfg.algo.ensembles.clip_gradients, error_if_nonfinite=False
     )
 
-    # Behaviour Learning Exploration
+    behaviour = dict(
+        horizon=cfg.algo.horizon,
+        use_continues=use_continues,
+        gamma=cfg.algo.gamma,
+        lmbda=cfg.algo.lmbda,
+        intrinsic_reward_multiplier=cfg.algo.intrinsic_reward_multiplier,
+    )
+    actor_kwargs = dict(
+        objective_mix=cfg.algo.actor.objective_mix,
+        is_continuous=is_continuous,
+        actions_dim=tuple(int(dim) for dim in actions_dim),
+        ent_coef=cfg.algo.actor.ent_coef,
+    )
+    # Behaviour Learning Exploration (the same compiled functions as the task: other modules, other graphs)
     with autocast_cache_scope(fabric):
-        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size * discrete_size)
-        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        # the imagined states and actions are concatenated at the end of the imagination
-        imagined_trajectories = [imagined_latent_state]
-        imagined_actions = [torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1], device=device)]
-
-        # imagine trajectories in the latent space
-        for i in range(1, cfg.algo.horizon + 1):
-            actions = torch.cat(actor_exploration(imagined_latent_state.detach())[0], dim=-1)
-            imagined_actions.append(actions)
-            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-            imagined_prior = imagined_prior.view(1, -1, stochastic_size * discrete_size)
-            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-            imagined_trajectories.append(imagined_latent_state)
-        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
-        imagined_actions = torch.cat(imagined_actions, dim=0)
-        predicted_target_values_exploration = target_critic_exploration(imagined_trajectories)
-
-        # Predict intrinsic reward
-        # The intrinsic reward is not detached from the imagined trajectories, as in the reference
-        # implementation: with continuous actions the exploration actor is trained by backpropagating
-        # the lambda-values, intrinsic rewards included, through the dynamics
-        next_obs_embedding = torch.stack(
-            [ens(torch.cat((imagined_trajectories, imagined_actions), -1)) for ens in ensembles], dim=0
+        (
+            imagined_trajectories,
+            imagined_actions,
+            predicted_target_values_exploration,
+            lambda_values_exploration,
+            discount,
+            intrinsic_reward,
+        ) = compiled(behaviour_imagine, fabric, cfg)(
+            world_model,
+            actor_exploration,
+            target_critic_exploration,
+            ensembles,
+            posteriors,
+            recurrent_states,
+            data["terminated"],
+            **behaviour,
         )
-
-        # next_obs_embedding -> N_ensemble x Horizon x Batch_size*Seq_len x Obs_embedding_size
-        intrinsic_reward = next_obs_embedding.var(0).mean(-1, keepdim=True) * cfg.algo.intrinsic_reward_multiplier
-
-        if cfg.algo.world_model.use_continues and world_model.continue_model:
-            continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-            true_continue = (1 - data["terminated"]).flatten().reshape(1, -1, 1) * cfg.algo.gamma
-            continues = torch.cat((true_continue, continues[1:]))
-        else:
-            continues = torch.ones_like(intrinsic_reward.detach()) * cfg.algo.gamma
-
-        lambda_values_exploration = compute_lambda_values(
-            intrinsic_reward[:-1],
-            predicted_target_values_exploration[:-1],
-            continues[:-1],
-            bootstrap=predicted_target_values_exploration[-1:],
-            horizon=cfg.algo.horizon,
-            lmbda=cfg.algo.lmbda,
+        policy_loss_exploration = compiled(behaviour_actor_loss, fabric, cfg)(
+            actor_exploration,
+            imagined_trajectories,
+            imagined_actions,
+            predicted_target_values_exploration,
+            lambda_values_exploration,
+            discount,
+            **actor_kwargs,
         )
-
-        with torch.no_grad():
-            discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
-
-        policies: Sequence[Distribution] = actor_exploration(imagined_trajectories[:-2].detach())[1]
-
-        def reinforce() -> Tensor:
-            advantage = (lambda_values_exploration[1:] - predicted_target_values_exploration[:-2]).detach()
-            logprobs = [
-                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-            ]
-            return torch.stack(logprobs, -1).sum(-1) * advantage
-
-        # Dynamics backpropagation (the lambda-values) and REINFORCE
-        objective = actor_objective(
-            cfg.algo.actor.objective_mix, is_continuous, lambda_values_exploration[1:], reinforce
-        )
-        # The tanh-normal policies have no analytic entropy: it is estimated from samples
-        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(-1)
-        policy_loss_exploration = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
     actor_exploration_grad = update(
         fabric,
         policy_loss_exploration,
@@ -321,10 +398,10 @@ def train(
         cfg.algo.actor.clip_gradients,
         error_if_nonfinite=False,
     )
-
     with autocast_cache_scope(fabric):
-        qv = Independent(Normal(critic_exploration(imagined_trajectories.detach())[:-1], 1), 1)
-        value_loss_exploration = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values_exploration.detach()))
+        value_loss_exploration = compiled(behaviour_critic_loss, fabric, cfg)(
+            critic_exploration, imagined_trajectories, lambda_values_exploration, discount
+        )
     critic_exploration_grad = update(
         fabric,
         value_loss_exploration,
@@ -338,105 +415,73 @@ def train(
 
     # Behaviour Learning Task
     with autocast_cache_scope(fabric):
-        imagined_prior = posteriors.detach().reshape(1, -1, stochastic_size * discrete_size)
-        recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
-        imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        # the imagined states and actions are concatenated at the end of the imagination
-        imagined_trajectories = [imagined_latent_state]
-        imagined_actions = [torch.zeros(1, batch_size * sequence_length, data["actions"].shape[-1], device=device)]
-
-        # imagine trajectories in the latent space
-        for i in range(1, cfg.algo.horizon + 1):
-            actions = torch.cat(actor_task(imagined_latent_state.detach())[0], dim=-1)
-            imagined_actions.append(actions)
-            imagined_prior, recurrent_state = world_model.rssm.imagination(imagined_prior, recurrent_state, actions)
-            imagined_prior = imagined_prior.view(1, -1, stochastic_size * discrete_size)
-            imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-            imagined_trajectories.append(imagined_latent_state)
-        imagined_trajectories = torch.cat(imagined_trajectories, dim=0)
-        imagined_actions = torch.cat(imagined_actions, dim=0)
-
-        predicted_target_values_task = target_critic_task(imagined_trajectories)
-        predicted_rewards = world_model.reward_model(imagined_trajectories)
-        if cfg.algo.world_model.use_continues and world_model.continue_model:
-            continues = logits_to_probs(logits=world_model.continue_model(imagined_trajectories), is_binary=True)
-            true_continue = (1 - data["terminated"]).reshape(1, -1, 1) * cfg.algo.gamma
-            continues = torch.cat((true_continue, continues[1:]))
-        else:
-            continues = torch.ones_like(predicted_rewards.detach()) * cfg.algo.gamma
-
-        lambda_values_task = compute_lambda_values(
-            predicted_rewards[:-1],
-            predicted_target_values_task[:-1],
-            continues[:-1],
-            bootstrap=predicted_target_values_task[-1:],
-            horizon=cfg.algo.horizon,
-            lmbda=cfg.algo.lmbda,
+        (
+            imagined_trajectories,
+            imagined_actions,
+            predicted_target_values_task,
+            lambda_values_task,
+            discount,
+            _,
+        ) = compiled(behaviour_imagine, fabric, cfg)(
+            world_model,
+            actor_task,
+            target_critic_task,
+            None,
+            posteriors,
+            recurrent_states,
+            data["terminated"],
+            **behaviour,
         )
-
-        with torch.no_grad():
-            discount = torch.cumprod(torch.cat((torch.ones_like(continues[:1]), continues[:-1]), 0), 0)
-
-        policies: Sequence[Distribution] = actor_task(imagined_trajectories[:-2].detach())[1]
-
-        def reinforce() -> Tensor:
-            advantage = (lambda_values_task[1:] - predicted_target_values_task[:-2]).detach()
-            logprobs = [
-                p.log_prob(imgnd_act[1:-1].detach()).unsqueeze(-1)
-                for p, imgnd_act in zip(policies, torch.split(imagined_actions, actions_dim, -1))
-            ]
-            return torch.stack(logprobs, -1).sum(-1) * advantage
-
-        # Dynamics backpropagation (the lambda-values) and REINFORCE
-        objective = actor_objective(cfg.algo.actor.objective_mix, is_continuous, lambda_values_task[1:], reinforce)
-        # The tanh-normal policies have no analytic entropy: it is estimated from samples
-        entropy = cfg.algo.actor.ent_coef * torch.stack([policy_entropy(p) for p in policies], -1).sum(-1)
-        policy_loss_task = -torch.mean(discount[:-2] * (objective + entropy.unsqueeze(-1)))
+        policy_loss_task = compiled(behaviour_actor_loss, fabric, cfg)(
+            actor_task,
+            imagined_trajectories,
+            imagined_actions,
+            predicted_target_values_task,
+            lambda_values_task,
+            discount,
+            **actor_kwargs,
+        )
     actor_task_grad = update(
         fabric, policy_loss_task, actor_task_optimizer, cfg.algo.actor.clip_gradients, error_if_nonfinite=False
     )
-
     with autocast_cache_scope(fabric):
-        qv = Independent(
-            Normal(critic_task(imagined_trajectories.detach())[:-1], 1),
-            1,
+        value_loss_task = compiled(behaviour_critic_loss, fabric, cfg)(
+            critic_task, imagined_trajectories, lambda_values_task, discount
         )
-        value_loss_task = -torch.mean(discount[:-1, ..., 0] * qv.log_prob(lambda_values_task.detach()))
     critic_task_grad = update(
         fabric, value_loss_task, critic_task_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
     )
-    metrics["Loss/world_model_loss"] = rec_loss.detach()
-    metrics["Loss/observation_loss"] = observation_loss.detach()
-    metrics["Loss/reward_loss"] = reward_loss.detach()
-    metrics["Loss/state_loss"] = state_loss.detach()
-    metrics["Loss/continue_loss"] = continue_loss.detach()
-    metrics["State/kl"] = kl.mean().detach()
-    metrics["State/post_entropy"] = (
-        Independent(OneHotCategorical(logits=posteriors_logits.detach()), 1).entropy().mean().detach()
-    )
-    metrics["State/prior_entropy"] = (
-        Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach()
-    )
-    metrics["Loss/ensemble_loss"] = loss.detach()
-    metrics["Rewards/intrinsic"] = intrinsic_reward.detach().mean()
-    metrics["Values_exploration/predicted_values"] = predicted_target_values_exploration.detach().mean()
-    metrics["Values_exploration/lambda_values"] = lambda_values_exploration.detach().mean()
-    metrics["Loss/policy_loss_exploration"] = policy_loss_exploration.detach()
-    metrics["Loss/value_loss_exploration"] = value_loss_exploration.detach()
-    metrics["Loss/policy_loss_task"] = policy_loss_task.detach()
-    metrics["Loss/value_loss_task"] = value_loss_task.detach()
-    if world_grad is not None:
-        metrics["Grads/world_model"] = world_grad.detach()
-    if ensemble_grad is not None:
-        metrics["Grads/ensemble"] = ensemble_grad.detach()
-    if actor_exploration_grad is not None:
-        metrics["Grads/actor_exploration"] = actor_exploration_grad.detach()
-    if critic_exploration_grad is not None:
-        metrics["Grads/critic_exploration"] = critic_exploration_grad.detach()
-    if actor_task_grad is not None:
-        metrics["Grads/actor_task"] = actor_task_grad.detach()
-    if critic_task_grad is not None:
-        metrics["Grads/critic_task"] = critic_task_grad.detach()
+
+    metrics = {
+        "Loss/world_model_loss": rec_loss.detach(),
+        "Loss/observation_loss": losses["observation_loss"].detach(),
+        "Loss/reward_loss": losses["reward_loss"].detach(),
+        "Loss/state_loss": losses["state_loss"].detach(),
+        "Loss/continue_loss": losses["continue_loss"].detach(),
+        "State/kl": losses["kl"].mean().detach(),
+        "Loss/ensemble_loss": loss.detach(),
+        "Rewards/intrinsic": intrinsic_reward.detach().mean(),
+        "Values_exploration/predicted_values": predicted_target_values_exploration.detach().mean(),
+        "Values_exploration/lambda_values": lambda_values_exploration.detach().mean(),
+        "Loss/policy_loss_exploration": policy_loss_exploration.detach(),
+        "Loss/value_loss_exploration": value_loss_exploration.detach(),
+        "Loss/policy_loss_task": policy_loss_task.detach(),
+        "Loss/value_loss_task": value_loss_task.detach(),
+    }
+    if not MetricAggregator.disabled:
+        for name, logits in (("post", losses["posteriors_logits"]), ("prior", losses["priors_logits"])):
+            entropy = Independent(OneHotCategorical(logits=logits.detach()), 1).entropy()
+            metrics[f"State/{name}_entropy"] = entropy.mean().detach()
+    for name, grad in (
+        ("Grads/world_model", world_grad),
+        ("Grads/ensemble", ensemble_grad),
+        ("Grads/actor_exploration", actor_exploration_grad),
+        ("Grads/critic_exploration", critic_exploration_grad),
+        ("Grads/actor_task", actor_task_grad),
+        ("Grads/critic_task", critic_task_grad),
+    ):
+        if grad is not None:
+            metrics[name] = grad.detach()
 
     # Reset everything
     actor_exploration_optimizer.zero_grad(set_to_none=True)
