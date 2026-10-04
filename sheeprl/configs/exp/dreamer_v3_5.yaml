@@ -26,6 +26,8 @@ checkpoint:
 buffer:
   size: 1000000
   checkpoint: True
+  # The batches start with the sequences of the new steps (the `replay.online` of the official configuration)
+  online: True
 
 metric:
   aggregator:

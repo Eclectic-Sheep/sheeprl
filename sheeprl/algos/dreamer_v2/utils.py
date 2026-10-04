@@ -109,7 +109,7 @@ def sample_batches(
     fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
 ) -> Iterator[Dict[str, Tensor]]:
     """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
-    time."""
+    time: with `buffer.online`, they start with the sequences of the online queue of the buffer."""
     for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
         n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
         sample = buffer.sample_tensors(
@@ -119,6 +119,7 @@ def sample_batches(
             dtype=None,
             device=fabric.device,
             from_numpy=cfg.buffer.from_numpy,
+            online=cfg.buffer.online,
         )  # [N_Samples, Sequence_Length, Batch_Size, ...]
         for i in range(n_samples):
             yield {k: v[i].float() for k, v in sample.items()}

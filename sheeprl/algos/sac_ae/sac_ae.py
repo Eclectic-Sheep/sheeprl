@@ -446,6 +446,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                             n_steps * cfg.algo.per_rank_batch_size,
                             sample_next_obs=cfg.buffer.sample_next_obs,
                             from_numpy=cfg.buffer.from_numpy,
+                            online=cfg.buffer.online,
                         )  # [1, G*B]
                         # [World, 1, G*B] with several processes, [1, G*B] with one (no dimension of the processes)
                         gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)

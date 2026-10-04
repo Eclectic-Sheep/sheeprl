@@ -3,3 +3,7 @@ memmap: True
 validate_args: False
 from_numpy: False
 checkpoint: True  # Used only for off-policy algorithms
+# Off-policy algorithms: the batches start with the steps added since the previous ones (in sequences of the sampled
+# length), the oldest first, and only the rest of them is sampled uniformly from the buffer, so that every step is
+# trained on soon after it is played (the online queue of DreamerV3)
+online: False

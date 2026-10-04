@@ -192,7 +192,7 @@ def test_replay_buffer_get_sample_empty_error():
     n_envs = 1
     rb = ReplayBuffer(buf_size, n_envs)
     with pytest.raises(RuntimeError, match="The buffer has not been initialized"):
-        rb._get_samples(np.zeros((1,)), sample_next_obs=True)
+        rb._get_samples(np.zeros((1,), dtype=np.intp), np.zeros((1,), dtype=np.intp), 1, 1, sample_next_obs=True)
 
 
 def test_replay_buffer_sample_next_obs_not_full():

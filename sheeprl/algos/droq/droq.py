@@ -63,11 +63,13 @@ def train(
     per_rank_gradient_steps: int,
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
-    # We sample one time to reduce the communications between processes
+    # We sample one time to reduce the communications between processes. The new transitions of the online queue
+    # (`buffer.online`) go to the critic: the batch of the actor is sampled uniformly
     sample = rb.sample_tensors(
         per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
         sample_next_obs=cfg.buffer.sample_next_obs,
         from_numpy=cfg.buffer.from_numpy,
+        online=cfg.buffer.online,
     )
     critic_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
     for k, v in critic_data.items():
