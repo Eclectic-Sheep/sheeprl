@@ -13,7 +13,7 @@ from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import EnvIndependentSampler, EpisodeSampler
+from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
@@ -127,7 +127,7 @@ def sequential_store(
 ) -> ReplayStore:
     """A buffer of `buffer_size` steps per environment, every environment written at its own row (its first steps after
     the end of an episode), sampled in sequences of `sequence_length` steps of a single environment
-    (`EnvIndependentSampler`, with the online queue with `buffer.online`)."""
+    (`SequenceSampler`, with the online queue with `buffer.online`)."""
     storage = ReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
@@ -136,9 +136,7 @@ def sequential_store(
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         device=fabric.device if cfg.buffer.on_device else None,
     )
-    sampler = EnvIndependentSampler(
-        cfg.env.num_envs, sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank
-    )
+    sampler = SequenceSampler(sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
     return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
 
 

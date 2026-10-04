@@ -10,14 +10,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from sheeprl.data.samplers import (
-    EnvIndependentSampler,
-    EpisodeBufferSampler,
-    EpisodeQueue,
-    OnlineQueue,
-    SequenceSampler,
-    TransitionSampler,
-)
+from sheeprl.data.samplers import EpisodeBufferSampler, EpisodeQueue, OnlineQueue, SequenceSampler, TransitionSampler
 from sheeprl.utils.memmap import MemmapArray
 from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT, TORCH_TO_NUMPY_DTYPE_DICT
 
@@ -152,11 +145,6 @@ class ReplayBuffer:
     @property
     def _added(self) -> int:
         return self._lockstep(self._env_added)
-
-    def env_view(self, env: int) -> "_EnvView":
-        """The environment `env` as a buffer of one environment, for the samplers of the environments (its rows are
-        gathered from this buffer)."""
-        return _EnvView(self, env)
 
     @property
     def n_envs(self) -> int:
@@ -686,12 +674,12 @@ class SequentialReplayBuffer(ReplayBuffer):
 
 
 class EnvIndependentReplayBuffer(ReplayBuffer):
-    """A `ReplayBuffer` sampled by `EnvIndependentSampler`: every step or sequence of its samples comes from a single
-    environment, drawn independently, then from the rows of that environment (written at its own row: see the
-    `env_idxes` of `add`).
+    """A `ReplayBuffer` sampled from one environment at a time: every step or sequence of its samples comes from a
+    single environment (`TransitionSampler` and `SequenceSampler` draw an environment, then its rows, when the
+    environments are written at their own rows: see the `env_idxes` of `add`).
 
     It is kept for its `sample` and for the checkpoints of sheeprl up to 0.8.2, which hold a buffer per environment
-    (converted to a single storage when they are loaded).
+    (merged in a single storage when they are loaded).
 
     Args:
         buffer_size (int): the steps of every environment.
@@ -705,8 +693,7 @@ class EnvIndependentReplayBuffer(ReplayBuffer):
             "readwrite", "write". Defaults to "r+".
         buffer_cls (Type[ReplayBuffer], optional): how `sample` reads the environments: steps (`ReplayBuffer`) or
             sequences (`SequentialReplayBuffer`). Defaults to ReplayBuffer.
-        seed (int | np.random.SeedSequence | None, optional): the seed from which the independent random number
-            generators of `sample` (the one of the environments and the one of every environment) are derived.
+        seed (int | np.random.SeedSequence | None, optional): the seed of the random number generator of `sample`.
             Defaults to None.
         kwargs: additional keyword arguments of `ReplayBuffer` (`device`).
     """
@@ -723,15 +710,7 @@ class EnvIndependentReplayBuffer(ReplayBuffer):
         seed: int | np.random.SeedSequence | None = None,
         **kwargs,
     ):
-        if n_envs <= 0:
-            raise ValueError(f"The number of environments must be greater than zero, got: {n_envs}")
-        seed_sequences = np.random.SeedSequence(seed).spawn(n_envs + 1)
-        super().__init__(
-            buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, seed=seed_sequences[-1], **kwargs
-        )
-        # The generators and the online queues of the environments in `sample`
-        self._env_rngs = [np.random.default_rng(s) for s in seed_sequences[:-1]]
-        self._env_online = [OnlineQueue() for _ in range(n_envs)]
+        super().__init__(buffer_size, n_envs, obs_keys, memmap, memmap_dir, memmap_mode, seed=seed, **kwargs)
         self._concat_along_axis = buffer_cls.batch_axis
 
     def sample(
@@ -743,18 +722,17 @@ class EnvIndependentReplayBuffer(ReplayBuffer):
         online: bool = False,
         **kwargs,
     ) -> Dict[str, np.ndarray]:
-        """Samples data from the buffer (`EnvIndependentSampler`, with the generators and the online queues of the
-        buffer). The returned samples are sampled given the 'buffer_cls' class used to initialize the buffer:
-        sequences for a `SequentialReplayBuffer`, steps for a `ReplayBuffer`.
+        """Samples data from the buffer (`TransitionSampler` or `SequenceSampler`, with the generator and the online
+        queue of the buffer). The returned samples are sampled given the 'buffer_cls' class used to initialize the
+        buffer: sequences for a `SequentialReplayBuffer`, steps for a `ReplayBuffer`.
 
         Args:
             batch_size (int): The number of samples to draw from the buffer.
             sample_next_obs (bool): Whether to sample the next observation or the current observation.
             clone (bool): Whether to clone the data or return a reference to the original data.
             n_samples (int): The number of samples to draw for each batch element.
-            online (bool): whether the samples start with the elements of the online queues of the environments, the
-                oldest first (the ones that start first, in the order of their environments), and only the rest of
-                them is sampled uniformly (see `OnlineQueue`). Defaults to False.
+            online (bool): whether the samples start with the elements of the online queue, the oldest first, and
+                only the rest of them is sampled uniformly (see `OnlineQueue`). Defaults to False.
             **kwargs: Additional keyword arguments of the underlying buffer's `sample` method (`sequence_length`).
 
         Returns:
@@ -762,32 +740,27 @@ class EnvIndependentReplayBuffer(ReplayBuffer):
             [n_samples, sequence_length, batch_size, ...] if 'buffer_cls' is a 'SequentialReplayBuffer',
             otherwise [n_samples, batch_size, ...] if 'buffer_cls' is a 'ReplayBuffer'.
         """
-        sequence_length = kwargs.get("sequence_length", 1) if self._concat_along_axis == 2 else None
-        env_samplers = [
-            (
-                TransitionSampler(sample_next_obs, rng=rng, queue=queue)
-                if sequence_length is None
-                else SequenceSampler(sequence_length, sample_next_obs, rng=rng, queue=queue)
+        if self._concat_along_axis == 2:
+            sampler = SequenceSampler(
+                kwargs.get("sequence_length", 1), sample_next_obs, online, rng=self._rng, queue=self._online
             )
-            for rng, queue in zip(self._env_rngs, self._env_online)
-        ]
-        sampler = EnvIndependentSampler(
-            self._n_envs, sequence_length, sample_next_obs, online, rng=self._rng, env_samplers=env_samplers
-        )
+        else:
+            sampler = TransitionSampler(sample_next_obs, online, rng=self._rng, queue=self._online)
         return sampler.sample(self, batch_size, n_samples, clone=clone)
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         if isinstance(state.get("_buf"), list):
             state = _merge_env_buffers(state)
+        # The generators and the online queues of the environments of sheeprl 0.8.3 (unused)
+        state.pop("_env_rngs", None)
+        state.pop("_env_online", None)
         super().__setstate__(state)
-        # The online queues aren't checkpointed: they restart empty, with the steps added after the loading
-        self._env_online = [OnlineQueue(self._env_added[i : i + 1].copy()) for i in range(self._n_envs)]
 
 
 def _merge_env_buffers(state: Dict[str, Any]) -> Dict[str, Any]:
     """The state of an `EnvIndependentReplayBuffer` of sheeprl up to 0.8.2, which held a buffer per environment, as the
     one of a single storage: the arrays of the environments side by side (memory-mapped in the parent directory of
-    the ones of the environments, if they were), with their rows and their generators."""
+    the ones of the environments, if they were), with their rows."""
     buffers: List[ReplayBuffer] = state["_buf"]
     first = buffers[0]
     n_envs, buffer_size = len(buffers), state["_buffer_size"]
@@ -821,7 +794,6 @@ def _merge_env_buffers(state: Dict[str, Any]) -> Dict[str, Any]:
         "_env_pos": np.array([b._env_pos[0] for b in buffers], dtype=np.int64),
         "_env_full": np.array([b._env_full[0] for b in buffers], dtype=bool),
         "_env_added": np.array([b._env_added[0] for b in buffers], dtype=np.int64),
-        "_env_rngs": [b._rng for b in buffers],
         "_concat_along_axis": state["_concat_along_axis"],
     }
 
@@ -1333,18 +1305,3 @@ def _check_free_memory(device: torch.device, needed: int) -> None:
                 f"The replay buffer needs {needed / 2**30:.2f} GB on {device}, but {free / 2**30:.2f} GB are "
                 "free: keep it in the memory of the CPU (`buffer.on_device=False`) or make it smaller (`buffer.size`)"
             )
-
-
-class _EnvView:
-    """An environment of a `ReplayBuffer`, as a buffer of one environment: its row, whether it was filled and its steps
-    added, which its sampler reads (`EnvIndependentSampler`)."""
-
-    n_envs = 1
-    lockstep = True
-
-    def __init__(self, buffer: ReplayBuffer, env: int) -> None:
-        self.buffer_size = buffer.buffer_size
-        self._pos = int(buffer._env_pos[env])
-        self.full = self._full = bool(buffer._env_full[env])
-        self._added = int(buffer._env_added[env])
-        self.env_added = buffer._env_added[env : env + 1].copy()

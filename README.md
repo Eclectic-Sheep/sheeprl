@@ -553,8 +553,7 @@ To enable a simple way to work with numpy memory-mapped arrays, we implemented t
 Every algorithm stores its steps in a single kind of storage, the `ReplayBuffer`: the steps of every environment, with a write pointer per environment (`add` with `env_idxes` writes some environments only, e.g. the first steps of the ones that ended an episode). What the training reads from it is decided by the samplers of `sheeprl.data.samplers`, which draw the steps of the samples with their own random number generator and let the buffer gather them:
 
 - `TransitionSampler`: single steps (SAC, DroQ, SAC-AE);
-- `SequenceSampler`: sequences of consecutive steps;
-- `EnvIndependentSampler`: steps or sequences, every one from a single environment, drawn independently (the Dreamers, Plan2Explore);
+- `SequenceSampler`: sequences of consecutive steps of a single environment (the Dreamers, Plan2Explore);
 - `EpisodeSampler`: sequences inside the episodes that ended, with their ends prioritized with `buffer.prioritize_ends` (DreamerV2 with `buffer.type=episode`);
 - `EpochSampler`: the minibatches of the epochs of an on-policy update (PPO, A2C, PPO-recurrent).
 
