@@ -300,6 +300,11 @@ def check_configs(cfg: Dict[str, Any]):
         cfg.model_manager.disabled = True
     if cfg.algo.learning_starts is not None and cfg.algo.learning_starts < 0:
         raise ValueError("The `algo.learning_starts` parameter must be greater or equal to zero.")
+    if cfg.algo.get("compile") is not None and not isinstance(cfg.algo.compile, dict):
+        raise ValueError(
+            f"Invalid value '{cfg.algo.compile}' for the `algo.compile` parameter: it must be a mapping with the "
+            "`enabled` and `mode` keys. Enable the compilation with `algo.compile.enabled=True`."
+        )
 
     if cfg.env.action_repeat < 1:
         cfg.env.action_repeat = 1
