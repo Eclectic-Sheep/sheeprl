@@ -505,7 +505,7 @@ Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
 An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
-- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data: a `Rollout` for the on-policy algorithms, a `ReplayStore` (a replay buffer and its sampler) for the off-policy ones.
+- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore` (a `ReplayBuffer` and its sampler): a `Rollout`, whose `EpochSampler` draws the minibatches of an update, for the on-policy algorithms.
 - `player()`: returns the object that plays the current policy in the environments and writes what happens in the store.
 - `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
 - `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.

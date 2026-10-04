@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -21,8 +20,6 @@ from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, all_reduce_gradients, autocast, run
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -165,14 +162,7 @@ class A2C(Algorithm):
         scheduler = PolynomialLR(optimizer, total_iters=schedule.total_iters, power=1.0) if cfg.algo.anneal_lr else None
 
         state = A2CState(agent=agent, optimizer=optimizer, scheduler=scheduler)
-        buffer = ReplayBuffer(
-            cfg.buffer.size,
-            cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{self.fabric.global_rank}"),
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        )
-        return state, Rollout(buffer)
+        return state, Rollout.build(self.fabric, cfg, log_dir, cfg.buffer.size)
 
     def policy(self, state: A2CState) -> PPOPlayer:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -189,7 +179,7 @@ class A2C(Algorithm):
     ) -> Iterator[List[Dict[str, Tensor]]]:
         """One batch per iteration: the minibatches of the whole rollout, whose gradients `train_step` accumulates."""
         cfg = self.cfg
-        data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
+        data = rollout.read()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
@@ -217,15 +207,8 @@ class A2C(Algorithm):
             # Flatten [Rollout_Steps, Num_Envs]
             data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        sampler = EpochSampler(
-            cfg.algo.per_rank_batch_size,
-            self.fabric.world_size,
-            self.fabric.global_rank,
-            seed=cfg.seed,
-            distributed=cfg.buffer.share_data,
-        )
-        n = next(iter(data.values())).shape[0]
-        yield [{k: v[batch_idxes] for k, v in data.items()} for batch_idxes, _ in sampler.epochs(n, 1)]
+        # One batch: the minibatches of the rollout, whose gradients `train_step` accumulates
+        yield list(rollout.minibatches(data, 1))
 
     def train_step(self, state: A2CState, minibatches: List[Dict[str, Tensor]], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo

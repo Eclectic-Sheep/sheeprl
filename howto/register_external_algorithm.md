@@ -56,14 +56,12 @@ import torch
 from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.utils.data import BatchSampler, RandomSampler
 
 from my_awesome_algo.agent import build_agent
 from my_awesome_algo.loss import policy_loss, value_loss
 from my_awesome_algo.utils import normalize_obs, prepare_obs, test
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, setup_module, update
-from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae
 
@@ -122,14 +120,9 @@ class ExtSOTA(Algorithm):
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
 
-        buffer = ReplayBuffer(
-            cfg.algo.rollout_steps,
-            cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{self.fabric.global_rank}"),
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        )
-        return ExtSOTAState(agent=agent, optimizer=optimizer), Rollout(buffer)
+        # The steps of a rollout, in a ReplayBuffer, and the EpochSampler of the minibatches of its update
+        rollout = Rollout.build(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
+        return ExtSOTAState(agent=agent, optimizer=optimizer), rollout
 
     def policy(self, state: ExtSOTAState) -> PPOPlayer:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
@@ -143,7 +136,7 @@ class ExtSOTA(Algorithm):
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-        data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device)
+        data = rollout.read()
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
@@ -164,14 +157,8 @@ class ExtSOTA(Algorithm):
 
         # [Rollout_Steps, Num_Envs, ...] -> [Rollout_Steps * Num_Envs, ...]
         data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
-        sampler = BatchSampler(
-            RandomSampler(range(cfg.algo.rollout_steps * cfg.env.num_envs)),
-            batch_size=cfg.algo.per_rank_batch_size,
-            drop_last=False,
-        )
-        for _ in range(cfg.algo.update_epochs):
-            for indices in sampler:
-                yield {k: v[indices] for k, v in data.items()}
+        # The minibatches of the epochs, shuffled at every epoch
+        yield from rollout.minibatches(data, cfg.algo.update_epochs)
 
     def train_step(self, state: ExtSOTAState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo

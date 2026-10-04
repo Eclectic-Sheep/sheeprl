@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
 
@@ -20,8 +19,6 @@ from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -170,14 +167,7 @@ class PPO(Algorithm):
         self.ent_coef = torch.tensor(float(cfg.algo.ent_coef), device=self.fabric.device)
 
         state = PPOState(agent=agent, optimizer=optimizer)
-        buffer = ReplayBuffer(
-            cfg.buffer.size,
-            cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{self.fabric.global_rank}"),
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        )
-        return state, Rollout(buffer)
+        return state, Rollout.build(self.fabric, cfg, log_dir, cfg.buffer.size)
 
     def policy(self, state: PPOState) -> PPOPlayer:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -197,7 +187,7 @@ class PPO(Algorithm):
         anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
         self.clip_coef.fill_(cfg.algo.clip_coef)
         self.ent_coef.fill_(cfg.algo.ent_coef)
-        data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
+        data = rollout.read()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
@@ -224,15 +214,7 @@ class PPO(Algorithm):
             # Flatten [Rollout_Steps, Num_Envs]
             data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        sampler = EpochSampler(
-            cfg.algo.per_rank_batch_size,
-            self.fabric.world_size,
-            self.fabric.global_rank,
-            seed=cfg.seed,
-            distributed=cfg.buffer.share_data,
-        )
-        for batch_idxes, _ in sampler.epochs(next(iter(data.values())).shape[0], cfg.algo.update_epochs):
-            yield {k: v[batch_idxes] for k, v in data.items()}
+        yield from rollout.minibatches(data, cfg.algo.update_epochs)
 
     def train_step(self, state: PPOState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo

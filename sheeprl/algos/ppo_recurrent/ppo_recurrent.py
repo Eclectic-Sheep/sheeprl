@@ -4,7 +4,6 @@ build, play and train; `sheeprl.core.loop.run` does the rest."""
 from __future__ import annotations
 
 import copy
-import os
 import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -22,8 +21,6 @@ from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import EpochSampler
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -36,13 +33,14 @@ class PPORecurrentState(TrainState):
     optimizer: Optimizer
 
 
-@dataclass
 class RecurrentRollout(Rollout):
     """The rollout of PPO-recurrent. With the observations that follow its last step, the actions and the recurrent
     states of that step give the value that bootstraps the returns."""
 
-    actions: Optional[Tensor] = None
-    states: Optional[Tuple[Tensor, Tensor]] = None
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.actions: Optional[Tensor] = None
+        self.states: Optional[Tuple[Tensor, Tensor]] = None
 
 
 class RecurrentRolloutPlayer:
@@ -300,14 +298,7 @@ class PPORecurrent(Algorithm):
 
         state = PPORecurrentState(agent=agent, optimizer=optimizer)
         # One rollout, whatever `buffer.size`
-        buffer = ReplayBuffer(
-            cfg.algo.rollout_steps,
-            cfg.env.num_envs,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{self.fabric.global_rank}"),
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        )
-        return state, RecurrentRollout(buffer)
+        return state, RecurrentRollout.build(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
 
     def policy(self, state: PPORecurrentState) -> RecurrentPPOPlayer:
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
@@ -327,7 +318,7 @@ class PPORecurrent(Algorithm):
         anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
         self.clip_coef.fill_(cfg.algo.clip_coef)
         self.ent_coef.fill_(cfg.algo.ent_coef)
-        data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
+        data = rollout.read()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
@@ -397,7 +388,9 @@ class PPORecurrent(Algorithm):
                     cfg.algo.per_rank_sequence_length,
                 )
                 sequences["prev_hx"], sequences["prev_cx"] = refreshed["prev_hx"], refreshed["prev_cx"]
-            for idxes, size in EpochSampler(batch_size).epochs(num_sequences, 1, pad_to=padded_size or None):
+            for idxes, size in rollout.sampler.epochs(
+                num_sequences, 1, pad_to=padded_size or None, batch_size=batch_size
+            ):
                 batch = {k: v[:, idxes] for k, v in sequences.items()}
                 batch["mask"][:, size:] = False
                 yield batch

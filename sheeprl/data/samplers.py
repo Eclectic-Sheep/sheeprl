@@ -441,10 +441,16 @@ class EpochSampler:
         self.distributed = distributed
 
     def epochs(
-        self, n: int, epochs: int, first_epoch: int = 0, pad_to: Optional[int] = None
+        self,
+        n: int,
+        epochs: int,
+        first_epoch: int = 0,
+        pad_to: Optional[int] = None,
+        batch_size: Optional[int] = None,
     ) -> Iterator[Tuple[List[int], int]]:
         """The minibatches of `epochs` epochs over `n` elements, from the epoch `first_epoch` (which shuffles the
-        elements of the processes): their elements, padded to `pad_to`, and the number of the ones not padded."""
+        elements of the processes): their elements, padded to `pad_to`, and the number of the ones not padded.
+        `batch_size` overrides the one of the sampler (e.g. a share of a number of elements that changes)."""
         from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
 
         indexes = list(range(n))
@@ -454,7 +460,7 @@ class EpochSampler:
             )
         else:
             sampler = RandomSampler(indexes)
-        batches = BatchSampler(sampler, batch_size=self.batch_size, drop_last=False)
+        batches = BatchSampler(sampler, batch_size=batch_size or self.batch_size, drop_last=False)
         for epoch in range(first_epoch, first_epoch + epochs):
             if self.distributed:
                 sampler.set_epoch(epoch)
