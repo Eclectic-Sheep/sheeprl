@@ -335,3 +335,51 @@ def test_the_refreshed_recurrent_states_are_the_ones_of_the_player_with_its_weig
     )
     torch.testing.assert_close(prev_hx, stored["prev_hx"])
     torch.testing.assert_close(prev_cx, stored["prev_cx"])
+
+
+def test_a_ppo_recurrent_training_refreshes_the_recurrent_states(monkeypatch):
+    # With `algo.refresh_recurrent_states`, every epoch after the first one unrolls the states of the rollout again;
+    # the rollout stores the previous actions in double precision, which the LSTM refused
+    import os
+    import shutil
+    import sys
+    from unittest import mock
+
+    from sheeprl.cli import run
+
+    refreshes = []
+    recurrent_states = ppo_recurrent.recurrent_states
+
+    def recording_recurrent_states(*args, **kwargs):
+        refreshes.append(recurrent_states(*args, **kwargs))
+        return refreshes[-1]
+
+    monkeypatch.setattr(ppo_recurrent, "recurrent_states", recording_recurrent_states)
+    root_dir = "pytest_ppo_recurrent_refreshed_states"
+    argv = [
+        "sheeprl.py",
+        "hydra/job_logging=disabled",
+        "hydra/hydra_logging=disabled",
+        "exp=ppo_recurrent",
+        "dry_run=True",
+        "env.num_envs=2",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "checkpoint.save_last=False",
+        "algo.run_test=False",
+        "algo.refresh_recurrent_states=True",
+        "algo.rollout_steps=8",
+        "algo.per_rank_sequence_length=4",
+        "algo.update_epochs=3",
+        f"root_dir={root_dir}",
+    ]
+    try:
+        with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(sys, "argv", argv):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The epochs after the first one, from the states of the 8 steps of the 2 environments
+    assert len(refreshes) == 2
+    assert all(tuple(s.shape) == (8, 2, 64) for states in refreshes for s in states)
