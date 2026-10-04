@@ -475,8 +475,14 @@ def write_latent_states(
         rows, last = np.unique(rows[::-1], return_index=True)
         last = len(deter) - 1 - last
         buffer = rb.buffer[env]
-        buffer["deter"][rows, 0] = deter[last]
-        buffer["stoch"][rows, 0] = stoch[last]
+        if buffer.device is not None:
+            # A buffer in the memory of a device
+            rows = torch.as_tensor(rows, device=buffer.device)
+            buffer["deter"][rows, 0] = torch.as_tensor(deter[last], device=buffer.device)
+            buffer["stoch"][rows, 0] = torch.as_tensor(stoch[last], device=buffer.device)
+        else:
+            buffer["deter"][rows, 0] = deter[last]
+            buffer["stoch"][rows, 0] = stoch[last]
 
 
 def step_counters(rb: EnvIndependentReplayBuffer) -> np.ndarray:
@@ -485,7 +491,9 @@ def step_counters(rb: EnvIndependentReplayBuffer) -> np.ndarray:
     counters = np.zeros(rb.n_envs, dtype=np.int64)
     for i, buffer in enumerate(rb.buffer):
         if not buffer.empty:
-            counters[i] = int(np.asarray(buffer[STEP_ID_KEY])[..., 1].max()) + 1
+            step_ids = buffer[STEP_ID_KEY]
+            step_ids = step_ids.cpu().numpy() if torch.is_tensor(step_ids) else np.asarray(step_ids)
+            counters[i] = int(step_ids[..., 1].max()) + 1
     return counters
 
 

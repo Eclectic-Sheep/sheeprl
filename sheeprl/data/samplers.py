@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 if TYPE_CHECKING:
     from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
@@ -394,9 +395,12 @@ class EnvIndependentSampler(Sampler):
             )
             for k, v in env_samples.items():
                 if k not in samples:
-                    samples[k] = np.empty((n, *v.shape[1:]), dtype=v.dtype)
+                    # NumPy arrays, or tensors of buffers in the memory of a device
+                    samples[k] = (
+                        v.new_empty((n, *v.shape[1:])) if torch.is_tensor(v) else np.empty((n, *v.shape[1:]), v.dtype)
+                    )
                 # Write them where they were drawn
-                samples[k][positions] = v
+                samples[k][torch.as_tensor(positions, device=v.device) if torch.is_tensor(v) else positions] = v
         # The queued sequences leave the queues once the uniform ones are drawn: a sample that fails leaves them as they
         # are
         for env in np.unique(queued_envs):

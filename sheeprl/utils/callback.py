@@ -76,7 +76,7 @@ class CheckpointCallback:
         rb = getattr(rb, "storage", rb)
         if isinstance(rb, ReplayBuffer):
             # clone the true done
-            state = rb["truncated"][(rb._pos - 1) % rb.buffer_size, :].copy()
+            state = _copy(rb["truncated"][(rb._pos - 1) % rb.buffer_size, :])
             # substitute the last done with all True values (all the environment are truncated)
             rb["truncated"][(rb._pos - 1) % rb.buffer_size, :] = 1
             # A memory-mapped buffer is saved by reference to its files, where the truncation is undone after the
@@ -85,7 +85,7 @@ class CheckpointCallback:
         elif isinstance(rb, EnvIndependentReplayBuffer):
             state = []
             for b in rb.buffer:
-                state.append(b["truncated"][(b._pos - 1) % b.buffer_size, :].copy())
+                state.append(_copy(b["truncated"][(b._pos - 1) % b.buffer_size, :]))
                 b["truncated"][(b._pos - 1) % b.buffer_size, :] = 1
                 b._checkpoint_truncation = b.is_memmap
         elif isinstance(rb, EpisodeBuffer):
@@ -124,3 +124,8 @@ class CheckpointCallback:
         if len(ckpts) > self.keep_last:
             to_delete = ckpts[: -self.keep_last]
             [f.unlink() for f in to_delete]
+
+
+def _copy(row: Any) -> Any:
+    """A copy of a row of a buffer: a NumPy array, or a tensor of a buffer in the memory of a device."""
+    return row.clone() if isinstance(row, Tensor) else row.copy()

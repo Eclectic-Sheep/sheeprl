@@ -129,8 +129,9 @@ def build_store(
         cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
         cfg.env.num_envs,
         obs_keys=obs_keys,
-        memmap=cfg.buffer.memmap,
+        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        device=fabric.device if cfg.buffer.on_device else None,
     )
     sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
     return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)

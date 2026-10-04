@@ -131,9 +131,10 @@ def sequential_store(
         buffer_size,
         n_envs=cfg.env.num_envs,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        memmap=cfg.buffer.memmap,
+        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
         buffer_cls=SequentialReplayBuffer,
+        device=fabric.device if cfg.buffer.on_device else None,
     )
     sampler = EnvIndependentSampler(
         cfg.env.num_envs, sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank
@@ -155,6 +156,11 @@ def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size:
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size), cfg.algo.per_rank_sequence_length
         )
     elif buffer_type == "episode":
+        if cfg.buffer.on_device:
+            raise ValueError(
+                "The episode buffer (`buffer.type=episode`) is kept in the memory of the CPU: "
+                "set `buffer.on_device=False`"
+            )
         storage = EpisodeBuffer(
             cfg.buffer.size // fabric.world_size if not cfg.dry_run else dry_run_size,
             minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,

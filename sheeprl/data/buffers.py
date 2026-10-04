@@ -19,7 +19,7 @@ from sheeprl.data.samplers import (
     TransitionSampler,
 )
 from sheeprl.utils.memmap import MemmapArray
-from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT
+from sheeprl.utils.utils import NUMPY_TO_TORCH_DTYPE_DICT, TORCH_TO_NUMPY_DTYPE_DICT
 
 
 class ReplayBuffer:
@@ -34,11 +34,14 @@ class ReplayBuffer:
         memmap_dir: str | os.PathLike | None = None,
         memmap_mode: str = "r+",
         seed: int | np.random.SeedSequence | None = None,
+        device: str | torch.device | None = None,
         **kwargs,
     ):
         """A standard replay buffer implementation. Internally this is represented by a
         dictionary mapping string to numpy arrays. The first dimension of the arrays is the
-        buffer size, while the second dimension is the number of environments.
+        buffer size, while the second dimension is the number of environments. With `device`, the arrays are tensors
+        in the memory of that device (e.g. a GPU), gathered there (`gather`): the steps are copied there as they are
+        added.
 
         Args:
             buffer_size (int): the buffer size.
@@ -53,8 +56,14 @@ class ReplayBuffer:
                 Defaults to "r+".
             seed (int | np.random.SeedSequence | None, optional): the seed of the random number generator
                 used to sample from the buffer. Defaults to None.
+            device (str | torch.device | None, optional): the device whose memory holds the buffer, which is then not
+                memory-mapped: when its storage is created (at the first `add`), it must fit in the free memory of the
+                device. Defaults to None (NumPy arrays in the memory of the CPU).
             kwargs: additional keyword arguments.
         """
+        if device is not None and memmap:
+            raise ValueError("A replay buffer in the memory of a device can't be memory-mapped")
+        self._device = torch.device(device) if device is not None else None
         if buffer_size <= 0:
             raise ValueError(f"The buffer size must be greater than zero, got: {buffer_size}")
         if n_envs <= 0:
@@ -113,6 +122,11 @@ class ReplayBuffer:
     @property
     def is_memmap(self) -> bool:
         return self._memmap
+
+    @property
+    def device(self) -> Optional[torch.device]:
+        """The device whose memory holds the buffer, `None` for the memory of the CPU."""
+        return self._device
 
     def __len__(self) -> int:
         return self.buffer_size
@@ -182,7 +196,20 @@ class ReplayBuffer:
         else:
             data_to_store = data
             idxes = (self._pos + np.arange(data_len)) % self._buffer_size
-        if self._memmap and self.empty:
+        if self._device is not None:
+            # Normal tensors, also when the steps are played in inference mode: the buffer is changed outside of it too
+            with torch.inference_mode(False):
+                if self.empty:
+                    self._allocate_on_device(data_to_store)
+                idxes = torch.as_tensor(idxes, device=self._device)
+                for k, v in data_to_store.items():
+                    # Cast to the dtype of the buffer, as NumPy does
+                    value = torch.as_tensor(v, device=self._device).to(self.buffer[k].dtype)
+                    # The leading dimensions of size one are dropped, as NumPy does when it broadcasts (`_check_add`)
+                    while value.dim() > self.buffer[k].dim() and value.shape[0] == 1:
+                        value = value[0]
+                    self.buffer[k][idxes] = value
+        elif self._memmap and self.empty:
             for k, v in data_to_store.items():
                 self.buffer[k] = MemmapArray(
                     filename=Path(self._memmap_dir / f"{k}.memmap"),
@@ -202,6 +229,38 @@ class ReplayBuffer:
             self._full = True
         self._pos = next_pos
         self._added += data_len
+
+    def to(self, device: str | torch.device | None) -> "ReplayBuffer":
+        """The buffer in the memory of `device` (`None`: NumPy arrays in the memory of the CPU), e.g. a buffer loaded
+        from a checkpoint (on the CPU) in a run that keeps it on a device, or the other way around. A memory-mapped
+        buffer moved to a device is no longer memory-mapped."""
+        device = torch.device(device) if device is not None else None
+        if not self.empty and device is not None:
+            needed = sum(int(np.prod(v.shape)) * np.dtype(_numpy_dtype(v)).itemsize for v in self._buf.values())
+            _check_free_memory(device, needed)
+        with torch.inference_mode(False):
+            for k, v in self._buf.items():
+                if device is None:
+                    self._buf[k] = v.cpu().numpy() if torch.is_tensor(v) else v
+                else:
+                    self._buf[k] = torch.as_tensor(v.array if isinstance(v, MemmapArray) else v).to(device)
+        if device is not None:
+            self._memmap = False
+        self._device = device
+        return self
+
+    def _allocate_on_device(self, data: Dict[str, np.ndarray]) -> None:
+        """Create the tensors of the buffer on its device, for the keys of `data`, if they fit in its free memory."""
+        specs = {
+            k: ((self._buffer_size, self._n_envs, *np.shape(v)[2:]), NUMPY_TO_TORCH_DTYPE_DICT[np.asarray(v).dtype])
+            for k, v in data.items()
+        }
+        needed = sum(
+            int(np.prod(shape)) * torch.empty((), dtype=dtype).element_size() for shape, dtype in specs.values()
+        )
+        _check_free_memory(self._device, needed)
+        for k, (shape, dtype) in specs.items():
+            self._buf[k] = torch.empty(shape, dtype=dtype, device=self._device)
 
     def _check_add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None:
         """Raise the errors that adding `data` would raise, before anything is written: an add that fails leaves the
@@ -306,6 +365,8 @@ class ReplayBuffer:
         # Up to sheeprl 0.8.0 the buffers didn't count the steps added: only their remainder by the buffer size, the
         # position of the next one, matters
         state.setdefault("_added", state["_pos"] + (state["_buffer_size"] if state["_full"] else 0))
+        # Up to sheeprl 0.8.2 the buffers were in the memory of the CPU
+        state.setdefault("_device", None)
         # The online queue isn't checkpointed: it restarts empty, with the steps added after the loading (up to sheeprl
         # 0.8.2 it was kept in `_online_origin` and `_online_next`)
         state.pop("_online_origin", None)
@@ -328,6 +389,8 @@ class ReplayBuffer:
         if self.empty:
             raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
         self._apply_checkpoint_truncation()
+        if self._device is not None:
+            return self._gather_on_device(rows, env_idxes, sequence_length, sample_next_obs)
         if sequence_length is None:
             samples: Dict[str, np.ndarray] = {}
             flattened_idxes = (rows * self.n_envs + env_idxes).flat
@@ -360,6 +423,24 @@ class ReplayBuffer:
                 samples[f"next_{k}"] = np.reshape(flattened_next_v, shape + flattened_next_v.shape[1:])
                 if clone:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
+        return samples
+
+    def _gather_on_device(
+        self, rows: np.ndarray, env_idxes: np.ndarray, sequence_length: Optional[int], sample_next_obs: bool
+    ) -> Dict[str, Tensor]:
+        """`gather` on the device: the same steps, as tensors (new ones, as with `clone`)."""
+        rows = torch.as_tensor(rows, device=self._device)
+        env_idxes = torch.as_tensor(env_idxes, device=self._device)
+        if sequence_length is not None:
+            rows = (rows.reshape(-1, 1) + torch.arange(sequence_length, device=self._device)) % self._buffer_size
+            env_idxes = env_idxes.reshape(-1, 1).expand_as(rows)
+        next_rows = (rows + 1) % self._buffer_size
+        samples = {}
+        for k, v in self.buffer.items():
+            samples[k] = v[rows, env_idxes]
+            # As `gather`: the next steps of the observation keys for the steps, of every key for the sequences
+            if sample_next_obs and (sequence_length is not None or k in self._obs_keys):
+                samples[f"next_{k}"] = v[next_rows, env_idxes]
         return samples
 
     @torch.no_grad()
@@ -409,6 +490,18 @@ class ReplayBuffer:
         return self.buffer.get(key)
 
     def __setitem__(self, key: str, value: np.ndarray | np.memmap | MemmapArray) -> None:
+        if self._device is not None and isinstance(value, (np.ndarray, MemmapArray, Tensor)):
+            if self.empty:
+                raise RuntimeError("The buffer has not been initialized. Try to add some data first.")
+            if tuple(value.shape[:2]) != (self._buffer_size, self._n_envs):
+                raise RuntimeError(
+                    "'value' must have at least two dimensions of dimension [buffer_size, n_envs, ...]. "
+                    f"Shape of 'value' is {value.shape}"
+                )
+            value = value.array if isinstance(value, MemmapArray) else value
+            with torch.inference_mode(False):
+                self.buffer.update({key: torch.as_tensor(value, device=self._device).clone()})
+            return
         if not isinstance(value, (np.ndarray, MemmapArray)):
             raise ValueError(
                 "The value to be set must be an instance of 'np.ndarray', 'np.memmap' "
@@ -594,6 +687,17 @@ class EnvIndependentReplayBuffer:
     @property
     def is_memmap(self) -> Sequence[bool]:
         return tuple([b.is_memmap for b in self.buffer])
+
+    @property
+    def device(self) -> Optional[torch.device]:
+        """The device whose memory holds the buffers of the environments, `None` for the memory of the CPU."""
+        return self._buf[0].device
+
+    def to(self, device: str | torch.device | None) -> "EnvIndependentReplayBuffer":
+        """The buffers of the environments in the memory of `device` (see `ReplayBuffer.to`)."""
+        for b in self._buf:
+            b.to(device)
+        return self
 
     def __len__(self) -> int:
         return self.buffer_size
@@ -838,6 +942,16 @@ class EpisodeBuffer:
     @property
     def obs_keys(self) -> Sequence[str]:
         return self._obs_keys
+
+    @property
+    def device(self) -> None:
+        """The episodes are in the memory of the CPU."""
+        return None
+
+    def to(self, device: str | torch.device | None) -> "EpisodeBuffer":
+        if device is not None:
+            raise ValueError("The episode buffer is kept in the memory of the CPU")
+        return self
 
     @property
     def n_envs(self) -> int:
@@ -1185,6 +1299,10 @@ def get_tensor(
     device: str | torch.dtype = "cpu",
     from_numpy: bool = False,
 ) -> Tensor:
+    if isinstance(array, Tensor):
+        # Already a tensor (of a buffer in the memory of a device)
+        array = array.to(device=device, dtype=dtype)
+        return array.clone() if clone else array
     if isinstance(array, MemmapArray):
         array = array.array
     if clone:
@@ -1201,3 +1319,18 @@ def get_tensor(
             device=device,
         )
     return torch_v
+
+
+def _numpy_dtype(array: Any) -> np.dtype:
+    return TORCH_TO_NUMPY_DTYPE_DICT[array.dtype] if torch.is_tensor(array) else array.dtype
+
+
+def _check_free_memory(device: torch.device, needed: int) -> None:
+    """Raise if `needed` bytes don't fit in the free memory of the GPU `device`."""
+    if device.type == "cuda":
+        free = torch.cuda.mem_get_info(device)[0]
+        if needed > free:
+            raise RuntimeError(
+                f"The replay buffer needs {needed / 2**30:.2f} GB on {device}, but {free / 2**30:.2f} GB are "
+                "free: keep it in the memory of the CPU (`buffer.on_device=False`) or make it smaller (`buffer.size`)"
+            )

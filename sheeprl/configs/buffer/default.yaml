@@ -11,3 +11,7 @@ online: False
 # device on a CUDA stream of their own; the first ones of every iteration during the training of the previous one, from
 # the steps written until then (DreamerV3.5, which samples while it trains to write the latent states back, doesn't)
 prefetch: False
+# Off-policy algorithms with a replay buffer of steps (not of episodes): the buffer is kept in the memory of the device of
+# the training, where its batches are gathered (no copy from the CPU, nothing to prefetch); `memmap` is then ignored. The
+# buffer must fit in the free memory of the device when it is created
+on_device: False

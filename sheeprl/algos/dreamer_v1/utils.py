@@ -56,7 +56,7 @@ def add_is_first(rb: ReplayStore | EnvIndependentReplayBuffer) -> ReplayStore | 
         if buffer.empty or "is_first" in buffer.buffer:
             continue
         terminated, truncated = (
-            value.array if isinstance(value, MemmapArray) else value
+            value.array if isinstance(value, MemmapArray) else value.cpu().numpy() if torch.is_tensor(value) else value
             for value in (buffer["terminated"], buffer["truncated"])
         )
         is_first = np.roll(np.logical_or(terminated, truncated), 1, axis=0)

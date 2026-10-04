@@ -106,9 +106,21 @@ class ReplayStore:
         with self._lock:
             samples = sampler.sample(self.storage, batch_size, n_samples, online=online)
         return {
-            k: v if k in numpy_keys else get_tensor(v, device=self.device, from_numpy=self.from_numpy)
+            k: (
+                (v.cpu().numpy() if torch.is_tensor(v) else v)
+                if k in numpy_keys
+                else get_tensor(v, device=self.device, from_numpy=self.from_numpy)
+            )
             for k, v in samples.items()
         }
+
+    @property
+    def on_device(self) -> bool:
+        """Whether the storage is in the memory of a device (`ReplayBuffer` with `device`): its batches are gathered
+        there, and there is nothing to prefetch."""
+        buffers = getattr(self.storage, "buffer", None)
+        buffers = buffers if isinstance(buffers, tuple) else (self.storage,)
+        return any(getattr(b, "device", None) is not None for b in buffers)
 
     def batches(self, n_steps: int, batch_size: int, max_sampled: Optional[int] = None) -> Iterator[Dict[str, Tensor]]:
         """The batches of `n_steps` gradient steps, in single precision, sampled `max_sampled` at a time (all at once
@@ -119,11 +131,12 @@ class ReplayStore:
         to be as this one, drawn from the steps written until now (the training doesn't write any)."""
         chunk = n_steps if max_sampled is None else max_sampled
         sizes = [min(chunk, n_steps - first) for first in range(0, n_steps, chunk)]
+        prefetch = self.prefetch and not self.on_device
         for i, n_samples in enumerate(sizes):
-            sample = self._take_prefetched(batch_size, n_samples) if self.prefetch else None
+            sample = self._take_prefetched(batch_size, n_samples) if prefetch else None
             if sample is None:
                 sample = self.sample(batch_size, n_samples)
-            if self.prefetch:
+            if prefetch:
                 self._start_prefetch(batch_size, sizes[i + 1] if i + 1 < len(sizes) else sizes[0])
             for j in range(n_samples):
                 yield {k: v[j].float() for k, v in sample.items()}
@@ -192,5 +205,6 @@ class ReplayStore:
         self.wait()
         self.sampler.continue_from(source)
         self.sampler.reset_online(storage)
-        self.storage = storage
+        # Where this run keeps it (the checkpoints are loaded in the memory of the CPU)
+        self.storage = storage.to(getattr(self.storage, "device", None))
         return self
