@@ -27,10 +27,9 @@ from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
-from sheeprl.core import Algorithm, Metrics, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
-from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -66,7 +65,6 @@ def train(
     actor_task_optimizer: _FabricOptimizer,
     critic_task_optimizer: _FabricOptimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
@@ -109,7 +107,6 @@ def train(
         actor_task_optimizer (_FabricOptimizer): the actor optimizer for solving the task.
         critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
         data (Dict[str, Tensor]): the batch of data to use for training.
-        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
         ensembles (_FabricModule): the ensemble models.
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
@@ -118,6 +115,7 @@ def train(
         actor_exploration_optimizer (_FabricOptimizer): the optimizer of the actor for exploration.
         critic_exploration_optimizer (_FabricOptimizer): the optimizer of the critic for exploration.
     """
+    metrics: Dict[str, Tensor] = {}
     batch_size = cfg.algo.per_rank_batch_size
     sequence_length = cfg.algo.per_rank_sequence_length
     recurrent_state_size = cfg.algo.world_model.recurrent_model.recurrent_state_size
@@ -332,35 +330,34 @@ def train(
     critic_task_grad = update(
         fabric, value_loss_task, critic_task_optimizer, cfg.algo.critic.clip_gradients, error_if_nonfinite=False
     )
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", observation_loss.detach())
-        aggregator.update("Loss/reward_loss", reward_loss.detach())
-        aggregator.update("Loss/state_loss", state_loss.detach())
-        aggregator.update("Loss/continue_loss", continue_loss.detach())
-        aggregator.update("State/kl", kl.mean().detach())
-        aggregator.update("State/post_entropy", posteriors_dist.entropy().mean().detach())
-        aggregator.update("State/prior_entropy", priors_dist.entropy().mean().detach())
-        aggregator.update("Loss/ensemble_loss", loss.detach().cpu())
-        aggregator.update("Values_exploration/predicted_values", predicted_values_exploration.detach().cpu().mean())
-        aggregator.update("Values_exploration/lambda_values", lambda_values_exploration.detach().cpu().mean())
-        aggregator.update("Rewards/intrinsic", intrinsic_reward.detach().cpu().mean())
-        aggregator.update("Loss/policy_loss_exploration", policy_loss_exploration.detach())
-        aggregator.update("Loss/value_loss_exploration", value_loss_exploration.detach())
-        aggregator.update("Loss/policy_loss_task", policy_loss_task.detach())
-        aggregator.update("Loss/value_loss_task", value_loss_task.detach())
-        if world_grad:
-            aggregator.update("Grads/world_model", world_grad.detach())
-        if ensemble_grad:
-            aggregator.update("Grads/ensemble", ensemble_grad.detach())
-        if actor_exploration_grad:
-            aggregator.update("Grads/actor_exploration", actor_exploration_grad.detach())
-        if critic_exploration_grad:
-            aggregator.update("Grads/critic_exploration", critic_exploration_grad.detach())
-        if actor_task_grad:
-            aggregator.update("Grads/actor_task", actor_task_grad.detach())
-        if critic_task_grad:
-            aggregator.update("Grads/critic_task", critic_task_grad.detach())
+    metrics["Loss/world_model_loss"] = rec_loss.detach()
+    metrics["Loss/observation_loss"] = observation_loss.detach()
+    metrics["Loss/reward_loss"] = reward_loss.detach()
+    metrics["Loss/state_loss"] = state_loss.detach()
+    metrics["Loss/continue_loss"] = continue_loss.detach()
+    metrics["State/kl"] = kl.mean().detach()
+    metrics["State/post_entropy"] = posteriors_dist.entropy().mean().detach()
+    metrics["State/prior_entropy"] = priors_dist.entropy().mean().detach()
+    metrics["Loss/ensemble_loss"] = loss.detach()
+    metrics["Values_exploration/predicted_values"] = predicted_values_exploration.detach().mean()
+    metrics["Values_exploration/lambda_values"] = lambda_values_exploration.detach().mean()
+    metrics["Rewards/intrinsic"] = intrinsic_reward.detach().mean()
+    metrics["Loss/policy_loss_exploration"] = policy_loss_exploration.detach()
+    metrics["Loss/value_loss_exploration"] = value_loss_exploration.detach()
+    metrics["Loss/policy_loss_task"] = policy_loss_task.detach()
+    metrics["Loss/value_loss_task"] = value_loss_task.detach()
+    if world_grad is not None:
+        metrics["Grads/world_model"] = world_grad.detach()
+    if ensemble_grad is not None:
+        metrics["Grads/ensemble"] = ensemble_grad.detach()
+    if actor_exploration_grad is not None:
+        metrics["Grads/actor_exploration"] = actor_exploration_grad.detach()
+    if critic_exploration_grad is not None:
+        metrics["Grads/critic_exploration"] = critic_exploration_grad.detach()
+    if actor_task_grad is not None:
+        metrics["Grads/actor_task"] = actor_task_grad.detach()
+    if critic_task_grad is not None:
+        metrics["Grads/critic_task"] = critic_task_grad.detach()
 
     # Reset everything
     actor_exploration_optimizer.zero_grad(set_to_none=True)
@@ -369,6 +366,7 @@ def train(
     critic_task_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
     ensemble_optimizer.zero_grad(set_to_none=True)
+    return metrics
 
 
 class P2EDV1Exploration(Algorithm):
@@ -455,8 +453,7 @@ class P2EDV1Exploration(Algorithm):
         yield from sample_batches_of_iteration(self, buffer, n_steps, iteration)
 
     def train_step(self, state: P2EDV1ExplorationState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.world_model,
             state.actor_task,
@@ -465,7 +462,6 @@ class P2EDV1Exploration(Algorithm):
             state.actor_task_optimizer,
             state.critic_task_optimizer,
             batch,
-            metrics,
             self.cfg,
             ensembles=state.ensembles,
             ensemble_optimizer=state.ensemble_optimizer,
@@ -475,8 +471,8 @@ class P2EDV1Exploration(Algorithm):
             critic_exploration_optimizer=state.critic_exploration_optimizer,
         )
         if self.exploration_step is not None:
-            metrics.values.update(exploration_amounts(state, self.exploration_step))
-        return metrics.values
+            metrics.update(exploration_amounts(state, self.exploration_step))
+        return metrics
 
 
 def exploration_amounts(state: TrainState, policy_step: int) -> Dict[str, float]:

@@ -88,22 +88,6 @@ def load_module_state_dict(module: nn.Module, state: Dict[str, Tensor]) -> None:
             target.copy_(state[name])
 
 
-class Metrics:
-    """The metrics of one gradient step, collected from a training function that logs them in a `MetricAggregator`
-    (`aggregator.update(name, value)`): `train_step` passes it as the aggregator and returns `values`."""
-
-    disabled = False
-
-    def __init__(self) -> None:
-        self.values: Dict[str, Tensor] = {}
-
-    def __contains__(self, name: str) -> bool:
-        return True
-
-    def update(self, name: str, value: Tensor) -> None:
-        self.values[name] = value
-
-
 class Player(Protocol):
     """Plays in the environments. Built by `Algorithm.player` from the current training state."""
 

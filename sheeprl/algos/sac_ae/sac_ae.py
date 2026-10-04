@@ -23,12 +23,11 @@ from sheeprl.algos.sac.sac import sample_batches
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 
 # The most gradient steps whose batches are sampled (and moved to the device) at once
@@ -164,10 +163,10 @@ def train(
     encoder_optimizer: Optimizer,
     decoder_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     cumulative_per_rank_gradient_steps: int,
     cfg: Dict[str, Any],
 ):
+    metrics: Dict[str, Tensor] = {}
     normalized_next_obs = {}
     normalized_obs = {}
     for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
@@ -193,8 +192,7 @@ def train(
             cfg.algo.gamma,
         )
     update(fabric, qf_loss, qf_optimizer)
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss", qf_loss)
+    metrics["Loss/value_loss"] = qf_loss
 
     # Update the target networks with EMA
     if cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq == 0:
@@ -211,9 +209,8 @@ def train(
         alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
         update(fabric, alpha_loss, alpha_optimizer)
 
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/policy_loss", actor_loss)
-            aggregator.update("Loss/alpha_loss", alpha_loss)
+        metrics["Loss/policy_loss"] = actor_loss
+        metrics["Loss/alpha_loss"] = alpha_loss
 
     # Update the decoder
     if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
@@ -236,8 +233,8 @@ def train(
             params=[*encoder.parameters(), *decoder.parameters()],
         )
         decoder_optimizer.step()
-        if aggregator and not aggregator.disabled:
-            aggregator.update("Loss/reconstruction_loss", reconstruction_loss)
+        metrics["Loss/reconstruction_loss"] = reconstruction_loss
+    return metrics
 
 
 class SACAE(Algorithm):
@@ -348,8 +345,7 @@ class SACAE(Algorithm):
                 yield {k: v[batch_idxes] for k, v in data.items()}
 
     def train_step(self, state: SACAEState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.agent,
             state.encoder,
@@ -360,11 +356,10 @@ class SACAE(Algorithm):
             state.encoder_optimizer,
             state.decoder_optimizer,
             batch,
-            metrics,
             step,
             self.cfg,
         )
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

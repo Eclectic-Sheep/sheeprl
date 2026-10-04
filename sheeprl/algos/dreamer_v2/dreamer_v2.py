@@ -34,7 +34,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     sample_batches,
     test,
 )
-from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -450,7 +450,6 @@ def train(
     actor_optimizer: Optimizer,
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
     actions_dim: Sequence[int],
 ) -> None:
@@ -498,10 +497,10 @@ def train(
         actor_optimizer (Optimizer): the actor optimizer.
         critic_optimizer (Optimizer): the critic optimizer.
         data (Dict[str, Tensor]): the batch of data to use for training.
-        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
         actions_dim (Sequence[int]): the actions dimension.
     """
+    metrics: Dict[str, Tensor] = {}
 
     # The environment interaction goes like this:
     # Actions:       0   a1       a2       a3
@@ -523,7 +522,7 @@ def train(
     world_model_cfg = cfg.algo.world_model
     # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
     with autocast_cache_scope(fabric):
-        rec_loss, posteriors, recurrent_states, metrics = compiled(world_model_loss, fabric, cfg)(
+        rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
             cnn_keys=tuple(cfg.algo.cnn_keys.encoder),
@@ -538,7 +537,7 @@ def train(
             kl_free_avg=world_model_cfg.kl_free_avg,
             kl_regularizer=world_model_cfg.kl_regularizer,
             discount_scale_factor=world_model_cfg.discount_scale_factor,
-            entropies=bool(aggregator and not aggregator.disabled),
+            entropies=not MetricAggregator.disabled,
         )
     world_model_grads = update(
         fabric, rec_loss, world_optimizer, world_model_cfg.clip_gradients, error_if_nonfinite=False
@@ -580,28 +579,29 @@ def train(
     )
 
     # Log metrics
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/world_model_loss", rec_loss.detach())
-        aggregator.update("Loss/observation_loss", metrics["observation_loss"])
-        aggregator.update("Loss/reward_loss", metrics["reward_loss"])
-        aggregator.update("Loss/state_loss", metrics["state_loss"])
-        aggregator.update("Loss/continue_loss", metrics["continue_loss"])
-        aggregator.update("State/kl", metrics["kl"])
-        aggregator.update("State/post_entropy", metrics["post_entropy"])
-        aggregator.update("State/prior_entropy", metrics["prior_entropy"])
-        aggregator.update("Loss/policy_loss", policy_loss.detach())
-        aggregator.update("Loss/value_loss", value_loss.detach())
-        if world_model_grads:
-            aggregator.update("Grads/world_model", world_model_grads.mean().detach())
-        if actor_grads:
-            aggregator.update("Grads/actor", actor_grads.mean().detach())
-        if critic_grads:
-            aggregator.update("Grads/critic", critic_grads.mean().detach())
+    metrics["Loss/world_model_loss"] = rec_loss.detach()
+    metrics["Loss/observation_loss"] = losses["observation_loss"]
+    metrics["Loss/reward_loss"] = losses["reward_loss"]
+    metrics["Loss/state_loss"] = losses["state_loss"]
+    metrics["Loss/continue_loss"] = losses["continue_loss"]
+    metrics["State/kl"] = losses["kl"]
+    if "post_entropy" in losses:
+        metrics["State/post_entropy"] = losses["post_entropy"]
+        metrics["State/prior_entropy"] = losses["prior_entropy"]
+    metrics["Loss/policy_loss"] = policy_loss.detach()
+    metrics["Loss/value_loss"] = value_loss.detach()
+    if world_model_grads is not None:
+        metrics["Grads/world_model"] = world_model_grads.mean().detach()
+    if actor_grads is not None:
+        metrics["Grads/actor"] = actor_grads.mean().detach()
+    if critic_grads is not None:
+        metrics["Grads/critic"] = critic_grads.mean().detach()
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
+    return metrics
 
 
 def check_keys(fabric: Fabric, cfg: Dict[str, Any], obs_space: gym.spaces.Dict) -> None:
@@ -710,8 +710,7 @@ class DreamerV2(Algorithm):
         if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
             for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
                 tcp.data.copy_(cp.data)
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.world_model,
             state.actor,
@@ -721,11 +720,10 @@ class DreamerV2(Algorithm):
             state.actor_optimizer,
             state.critic_optimizer,
             batch,
-            metrics,
             self.cfg,
             self.actions_dim,
         )
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

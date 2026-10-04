@@ -19,7 +19,7 @@ from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys, train
 from sheeprl.algos.dreamer_v2.utils import build_buffer, build_optimizer, sample_batches, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
-from sheeprl.core import Algorithm, Metrics, TrainSchedule, TrainState, load_replay_buffer, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
@@ -167,8 +167,7 @@ class P2EDV2Finetuning(Algorithm):
         if step % self.cfg.algo.critic.per_rank_target_network_update_freq == 0:
             for cp, tcp in zip(state.critic_task.module.parameters(), state.target_critic_task.parameters()):
                 tcp.data.copy_(cp.data)
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.world_model,
             state.actor_task,
@@ -178,11 +177,10 @@ class P2EDV2Finetuning(Algorithm):
             state.actor_task_optimizer,
             state.critic_task_optimizer,
             batch,
-            metrics,
             self.cfg,
             actions_dim=self.actions_dim,
         )
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

@@ -23,7 +23,7 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import exploration_amounts
-from sheeprl.core import Algorithm, Metrics, TrainSchedule, TrainState, load_replay_buffer, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
@@ -166,8 +166,7 @@ class P2EDV1Finetuning(Algorithm):
         yield from sample_batches_of_iteration(self, buffer, n_steps, iteration)
 
     def train_step(self, state: P2EDV1FinetuningState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.world_model,
             state.actor_task,
@@ -176,12 +175,11 @@ class P2EDV1Finetuning(Algorithm):
             state.actor_task_optimizer,
             state.critic_task_optimizer,
             batch,
-            metrics,
             self.cfg,
         )
         if self.exploration_step is not None:
-            metrics.values.update(exploration_amounts(state, self.exploration_step))
-        return metrics.values
+            metrics.update(exploration_amounts(state, self.exploration_step))
+        return metrics
 
 
 @register_algorithm()

@@ -187,7 +187,7 @@ def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
         "truncated": torch.zeros(T, B, 1),
         "is_first": torch.zeros(T, B, 1),
     }
-    train(fabric, world_model, actor, critic, target_critic, *optimizers, data, None, cfg, False, [3], moments)
+    train(fabric, world_model, actor, critic, target_critic, *optimizers, data, cfg, False, [3], moments)
     initial_states = fabric.all_gather(world_model.rssm.initial_recurrent_state.detach())
     return torch.equal(initial_states[0], initial_states[1])
 
@@ -328,18 +328,6 @@ def test_the_kl_of_the_latents_is_the_one_of_pytorch():
     torch.testing.assert_close(categorical_kl(p, q), expected, rtol=0, atol=0)
 
 
-class RecordingAggregator:
-    """A stand-in for the metric aggregator, which keeps the values of the last gradient step."""
-
-    disabled = False
-
-    def __init__(self):
-        self.values = {}
-
-    def update(self, name, value):
-        self.values[name] = value
-
-
 def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuous=False):
     """A small DreamerV3 on images and vectors, with 3 discrete actions (2 continuous ones with `continuous`), its
     player, a batch for it, and its gradient step."""
@@ -400,9 +388,8 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
     batch = {k: v.to(fabric.device) for k, v in batch.items()}
 
     def train_step():
-        aggregator = RecordingAggregator()
         data = {k: v.clone() for k, v in batch.items()}
-        dreamer_v3.train(
+        return dreamer_v3.train(
             fabric,
             world_model,
             actor,
@@ -410,13 +397,11 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
             target_critic,
             *optimizers,
             data,
-            aggregator,
             cfg,
             continuous,
             actions_dim,
             moments,
         )
-        return aggregator.values
 
     return cfg, world_model, player, train_step
 

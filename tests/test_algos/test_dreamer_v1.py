@@ -431,7 +431,7 @@ def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch
     }
     batch["terminated"][-1, 0] = 1
     optimizers = [torch.optim.Adam(m.parameters()) for m in (world_model, actor, critic)]
-    dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, None, cfg)
+    dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, cfg)
     steps = posteriors[:-1] if use_continues else posteriors
     torch.testing.assert_close(starts[0], torch.cat(steps).reshape(1, -1, posteriors[0].shape[-1]))
 
@@ -541,6 +541,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, conti
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(dreamer_v1, patch)
             torch.manual_seed(1)
-            dreamer_v1.train(fabric, *models, *optimizers, data, aggregator, cfg)
+            for name, value in dreamer_v1.train(fabric, *models, *optimizers, data, cfg).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

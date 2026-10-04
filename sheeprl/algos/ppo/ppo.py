@@ -136,6 +136,9 @@ class PPO(Algorithm):
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
         self.total_iters = schedule.total_iters
+        # The annealed coefficients of the iteration as tensors: a compiled step doesn't recompile when they change
+        self.clip_coef = torch.tensor(float(cfg.algo.clip_coef), device=self.fabric.device)
+        self.ent_coef = torch.tensor(float(cfg.algo.ent_coef), device=self.fabric.device)
 
         state = PPOState(agent=agent, optimizer=optimizer)
         buffer = ReplayBuffer(
@@ -160,6 +163,8 @@ class PPO(Algorithm):
         cfg = self.cfg
         # The learning rate and the coefficients of the iteration
         anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
+        self.clip_coef.fill_(cfg.algo.clip_coef)
+        self.ent_coef.fill_(cfg.algo.ent_coef)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -215,13 +220,13 @@ class PPO(Algorithm):
             advantages = batch["advantages"]
             if cfg.normalize_advantages:
                 advantages = normalize_tensor(advantages)
-            pg_loss = policy_loss(logprobs, batch["logprobs"], advantages, cfg.clip_coef, cfg.loss_reduction)
+            pg_loss = policy_loss(logprobs, batch["logprobs"], advantages, self.clip_coef, cfg.loss_reduction)
             v_loss = value_loss(
-                values, batch["values"], batch["returns"], cfg.clip_coef, cfg.clip_vloss, cfg.loss_reduction
+                values, batch["values"], batch["returns"], self.clip_coef, cfg.clip_vloss, cfg.loss_reduction
             )
             ent_loss = entropy_loss(entropy, cfg.loss_reduction)
             # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
+            loss = pg_loss + cfg.vf_coef * v_loss + self.ent_coef * ent_loss
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
         return {
             "Loss/policy_loss": pg_loss.detach(),

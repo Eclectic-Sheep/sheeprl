@@ -126,7 +126,8 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, algo)
             aggregator, losses, grads = recording(module, patch)
             torch.manual_seed(1)
             if algo == "sac":
-                sac.train(fabric, agent, *optimizers, copy.copy(data), aggregator, 0, cfg, 1)
+                for name, value in sac.train(fabric, agent, *optimizers, copy.copy(data), 0, cfg, 1).items():
+                    aggregator.update(name, value)
             else:
 
                 class Buffer:
@@ -234,6 +235,7 @@ def test_the_compiled_losses_of_sac_ae_are_the_ones_of_the_eager_losses(monkeypa
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(sac_ae, patch)
             torch.manual_seed(1)
-            sac_ae.train(fabric, *models, *optimizers, copy.copy(data), aggregator, 0, cfg)
+            for name, value in sac_ae.train(fabric, *models, *optimizers, copy.copy(data), 0, cfg).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

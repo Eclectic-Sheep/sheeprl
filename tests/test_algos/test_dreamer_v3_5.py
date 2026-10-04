@@ -39,18 +39,6 @@ from sheeprl.utils.utils import dotdict, symexp
 from .compiled import same_random_numbers
 
 
-class RecordingAggregator:
-    """A stand-in for the metric aggregator, which keeps the values of the last gradient step."""
-
-    disabled = False
-
-    def __init__(self):
-        self.values = {}
-
-    def update(self, name, value):
-        self.values[name] = value
-
-
 def most_likely_latents(monkeypatch: pytest.MonkeyPatch) -> None:
     """The latent states and the actions taken as the most likely ones instead of sampled (with the straight-through
     gradients of the latent states)."""
@@ -306,8 +294,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     batch = {k: v.to(fabric.device) for k, v in batch.items()}
 
     def train_step():
-        aggregator = RecordingAggregator()
-        latents = dreamer_v3_5.train(
+        return dreamer_v3_5.train(
             fabric,
             cfg,
             world_model,
@@ -317,10 +304,8 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
             optimizer,
             moments,
             {k: v.clone() for k, v in batch.items()},
-            aggregator,
             actions_dim,
         )
-        return aggregator.values, latents
 
     return cfg, (world_model, actor, critic, target_critic), player, train_step
 

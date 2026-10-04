@@ -27,7 +27,7 @@ from sheeprl.algos.dreamer_v2.utils import actor_objective, env_buffer_size, rei
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -623,7 +623,6 @@ def train(
     actor_optimizer: Optimizer,
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     cfg: Dict[str, Any],
     is_continuous: bool,
     actions_dim: Sequence[int],
@@ -642,7 +641,6 @@ def train(
         actor_optimizer (Optimizer): the actor optimizer.
         critic_optimizer (Optimizer): the critic optimizer.
         data (Dict[str, Tensor]): the batch of data to use for training.
-        aggregator (MetricAggregator, optional): the aggregator to print the metrics.
         cfg (DictConfig): the configs.
         is_continuous (bool): whether or not the environment is continuous.
         actions_dim (Sequence[int]): the actions dimension.
@@ -667,20 +665,18 @@ def train(
     )
 
     # Log metrics
-    if aggregator and not aggregator.disabled:
-        for name, value in metrics.items():
-            aggregator.update(name, value)
-        aggregator.update("Loss/policy_loss", behaviour["policy_loss"])
-        aggregator.update("Loss/value_loss", behaviour["value_loss"])
-        if "actor_grads" in behaviour:
-            aggregator.update("Grads/actor", behaviour["actor_grads"])
-        if "critic_grads" in behaviour:
-            aggregator.update("Grads/critic", behaviour["critic_grads"])
+    metrics["Loss/policy_loss"] = behaviour["policy_loss"]
+    metrics["Loss/value_loss"] = behaviour["value_loss"]
+    if "actor_grads" in behaviour:
+        metrics["Grads/actor"] = behaviour["actor_grads"]
+    if "critic_grads" in behaviour:
+        metrics["Grads/critic"] = behaviour["critic_grads"]
 
     # Reset everything
     actor_optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
+    return metrics
 
 
 class DreamerV3(Algorithm):
@@ -805,8 +801,7 @@ class DreamerV3(Algorithm):
             tau = 1 if step == 0 else cfg.algo.critic.tau
             for cp, tcp in zip(state.critic.module.parameters(), state.target_critic.parameters()):
                 tcp.data.copy_(tau * cp.data + (1 - tau) * tcp.data)
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.world_model,
             state.actor,
@@ -816,13 +811,12 @@ class DreamerV3(Algorithm):
             state.actor_optimizer,
             state.critic_optimizer,
             batch,
-            metrics,
             cfg,
             self.is_continuous,
             self.actions_dim,
             state.moments,
         )
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

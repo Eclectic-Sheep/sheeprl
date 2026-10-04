@@ -20,11 +20,10 @@ from torch.utils.data import BatchSampler, DistributedSampler
 from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 
 
@@ -160,11 +159,11 @@ def train(
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     iteration: int,
     cfg: Dict[str, Any],
     policy_steps_per_iter: int,
 ):
+    metrics: Dict[str, Tensor] = {}
     # The losses are compiled when `algo.compile.enabled` is set
     mark_gradient_step(fabric, cfg)
 
@@ -194,10 +193,10 @@ def train(
     alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
     update(fabric, alpha_loss, alpha_optimizer)
 
-    if aggregator and not aggregator.disabled:
-        aggregator.update("Loss/value_loss", qf_loss)
-        aggregator.update("Loss/policy_loss", actor_loss)
-        aggregator.update("Loss/alpha_loss", alpha_loss)
+    metrics["Loss/value_loss"] = qf_loss
+    metrics["Loss/policy_loss"] = actor_loss
+    metrics["Loss/alpha_loss"] = alpha_loss
+    return metrics
 
 
 class SAC(Algorithm):
@@ -308,20 +307,18 @@ class SAC(Algorithm):
             yield {k: v[batch_idxes] for k, v in data.items()}
 
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
-        metrics = Metrics()
-        train(
+        metrics = train(
             self.fabric,
             state.agent,
             state.actor_optimizer,
             state.qf_optimizer,
             state.alpha_optimizer,
             batch,
-            metrics,
             self.iteration,
             self.cfg,
             self.schedule.policy_steps_per_iter,
         )
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

@@ -517,6 +517,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, conti
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(dreamer_v2, patch)
             torch.manual_seed(1)
-            dreamer_v2.train(fabric, *models, *optimizers, data, aggregator, cfg, actions_dim)
+            for name, value in dreamer_v2.train(fabric, *models, *optimizers, data, cfg, actions_dim).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

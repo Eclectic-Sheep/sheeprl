@@ -41,7 +41,7 @@ from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, PlayerDV3_5, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Metrics, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer, get_tensor
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
@@ -328,9 +328,8 @@ def train(
     optimizer: Optimizer,
     moments: Moments,
     data: Dict[str, Tensor],
-    aggregator: MetricAggregator | None,
     actions_dim: Sequence[int],
-) -> Optional[Tuple[Tensor, Tensor]]:
+) -> Tuple[Dict[str, Tensor], Optional[Tuple[Tensor, Tensor]]]:
     """One gradient step of the agent on a batch of sequences (time first): the world model, the actor and the critic
     together, on the sum of their losses.
 
@@ -380,7 +379,7 @@ def train(
             recurrent_state,
             posterior,
             **world_model_loss_kwargs(cfg),
-            entropies=aggregator is not None and not aggregator.disabled,
+            entropies=not MetricAggregator.disabled,
         )
         with torch.no_grad():
             imagined_latent_states, imagined_actions, values, slow_values, returns, weights = compiled(
@@ -425,17 +424,14 @@ def train(
         )
     update(fabric, wm_loss + ac_loss, optimizer)
 
-    if aggregator and not aggregator.disabled:
-        metrics.update(ac_metrics)
-        grads = [p.grad for group in optimizer.param_groups for p in group["params"] if p.grad is not None]
-        metrics["Grads/agent"] = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(grads)))
-        for name, value in metrics.items():
-            aggregator.update(name, value)
+    metrics.update(ac_metrics)
+    grads = [p.grad for group in optimizer.param_groups for p in group["params"] if p.grad is not None]
+    metrics["Grads/agent"] = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(grads)))
 
     if context > 0:
         classes = posteriors.unflatten(-1, (stochastic_size, discrete_size)).argmax(-1)
-        return recurrent_states.half(), classes.to(torch.uint8) if discrete_size <= 256 else classes
-    return None
+        return metrics, (recurrent_states.half(), classes.to(torch.uint8) if discrete_size <= 256 else classes)
+    return metrics, None
 
 
 @torch.no_grad()
@@ -712,8 +708,7 @@ class DreamerV3_5(Algorithm):
 
     def train_step(self, state: DreamerV3_5State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg
-        metrics = Metrics()
-        latents = train(
+        metrics, latents = train(
             self.fabric,
             cfg,
             state.world_model,
@@ -723,14 +718,13 @@ class DreamerV3_5(Algorithm):
             state.optimizer,
             state.moments,
             batch,
-            metrics,
             self.actions_dim,
         )
         if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
             update_target_critic(state.critic, state.target_critic, cfg.algo.critic.tau)
         if latents is not None:
             self.latent_updates.append((self.step_ids, *latents))
-        return metrics.values
+        return metrics
 
 
 @register_algorithm()

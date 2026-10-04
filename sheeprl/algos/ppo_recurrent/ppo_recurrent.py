@@ -216,6 +216,9 @@ class PPORecurrent(Algorithm):
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
         self.total_iters = schedule.total_iters
+        # The annealed coefficients of the iteration as tensors: a compiled step doesn't recompile when they change
+        self.clip_coef = torch.tensor(float(cfg.algo.clip_coef), device=self.fabric.device)
+        self.ent_coef = torch.tensor(float(cfg.algo.ent_coef), device=self.fabric.device)
 
         state = PPORecurrentState(agent=agent, optimizer=optimizer)
         # One rollout, whatever `buffer.size`
@@ -241,6 +244,8 @@ class PPORecurrent(Algorithm):
         cfg = self.cfg
         # The learning rate and the coefficients of the iteration
         anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
+        self.clip_coef.fill_(cfg.algo.clip_coef)
+        self.ent_coef.fill_(cfg.algo.ent_coef)
         data = rollout.buffer.to_tensor(dtype=None, device=self.fabric.device, from_numpy=cfg.buffer.from_numpy)
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
@@ -307,13 +312,15 @@ class PPORecurrent(Algorithm):
             normalized_advantages = batch["advantages"][mask]
             if cfg.normalize_advantages and len(normalized_advantages) > 1:
                 normalized_advantages = normalize_tensor(normalized_advantages)
-            pg_loss = policy_loss(logprobs[mask], batch["logprobs"][mask], normalized_advantages, cfg.clip_coef, "mean")
+            pg_loss = policy_loss(
+                logprobs[mask], batch["logprobs"][mask], normalized_advantages, self.clip_coef, "mean"
+            )
             v_loss = value_loss(
-                values[mask], batch["values"][mask], batch["returns"][mask], cfg.clip_coef, cfg.clip_vloss, "mean"
+                values[mask], batch["values"][mask], batch["returns"][mask], self.clip_coef, cfg.clip_vloss, "mean"
             )
             ent_loss = entropy_loss(entropies[mask], cfg.loss_reduction)
             # Equation (9) in the paper
-            loss = pg_loss + cfg.vf_coef * v_loss + cfg.ent_coef * ent_loss
+            loss = pg_loss + cfg.vf_coef * v_loss + self.ent_coef * ent_loss
             if "loss_weight" in batch:
                 loss = loss * batch["loss_weight"]
         update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
