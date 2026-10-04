@@ -28,7 +28,8 @@ def test_a_memory_mapped_checkpoint_keeps_the_truncation_of_its_last_step(tmp_pa
     cls = EnvIndependentReplayBuffer if env_independent else ReplayBuffer
     rb = cls(4, 2, memmap=True, memmap_dir=tmp_path)
     rb.add({"obs": np.arange(6).reshape(3, 2, 1), "truncated": np.zeros((3, 2, 1))})
-    buffers = rb.buffer if env_independent else [rb]
+    # A single storage, also the one of the independent environments
+    buffers = [rb]
     callback = CheckpointCallback()
     state = callback._ckpt_rb(rb)
     checkpoint = pickle.dumps(rb)
@@ -37,5 +38,5 @@ def test_a_memory_mapped_checkpoint_keeps_the_truncation_of_its_last_step(tmp_pa
     loaded = pickle.loads(checkpoint)
     # Loading writes nothing (the run that saved the checkpoint can still be running)
     assert all(np.asarray(b.buffer["truncated"])[2, :, 0].tolist() == [0] * b.n_envs for b in buffers)
-    loaded_buffers = loaded.buffer if env_independent else [loaded]
+    loaded_buffers = [loaded]
     assert all(b["truncated"][2, :, 0].tolist() == [1] * b.n_envs for b in loaded_buffers)
