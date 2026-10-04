@@ -211,3 +211,84 @@ def test_the_compiled_ppo_recurrent_loss_is_the_eager_loss(monkeypatch):
         grads = [[None if p.grad is None else p.grad.detach().clone() for p in state.agent.parameters()]]
         results.append((losses, grads))
     assert_same_step(*results)
+
+
+def test_a_minibatch_padded_with_sequences_out_of_the_mask_has_the_same_loss():
+    # Compiled, the minibatches are padded with copies of their first sequence out of the mask (`batches`): the same
+    # losses and gradients as the minibatch alone
+    results = []
+    for padded in (False, True):
+        _, algorithm, state, batch = small_ppo_recurrent()
+        if padded:
+            size = batch["mask"].shape[1]
+            idxes = list(range(size)) + [0] * (ppo_recurrent.SEQUENCES_MULTIPLE - size)
+            batch = {k: v[:, idxes] for k, v in batch.items()}
+            batch["mask"][:, size:] = False
+        metrics = algorithm.train_step(state, batch, 0)
+        losses = [(name, value.detach().clone().reshape(-1)) for name, value in metrics.items()]
+        grads = [[None if p.grad is None else p.grad.detach().clone() for p in state.agent.parameters()]]
+        results.append((losses, grads))
+    assert_same_step(*results)
+
+
+def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
+    # The number of sequences changes with the episodes that end in the rollout, and so did the size of the
+    # minibatches, the last one of every epoch smaller: compiled with CUDA graphs, every new size was a new recording.
+    # Compiled, all the minibatches of a rollout have the size rounded up to a multiple of `SEQUENCES_MULTIPLE`, padded
+    # with sequences out of the mask
+    import os
+    import shutil
+    import sys
+    from unittest import mock
+
+    from sheeprl.cli import run
+
+    monkeypatch.setattr(ppo_recurrent, "compiled", lambda fn, fabric, cfg, **kwargs: fn)
+    rollouts = []
+    batches = ppo_recurrent.PPORecurrent.batches
+
+    def recording_batches(self, *args, **kwargs):
+        rollouts.append([])
+        for batch in batches(self, *args, **kwargs):
+            rollouts[-1].append(batch["mask"].clone())
+            yield batch
+
+    monkeypatch.setattr(ppo_recurrent.PPORecurrent, "batches", recording_batches)
+    root_dir = "pytest_ppo_recurrent_padded_minibatches"
+    argv = [
+        "sheeprl.py",
+        "hydra/job_logging=disabled",
+        "hydra/hydra_logging=disabled",
+        "exp=ppo_recurrent",
+        "env.num_envs=4",
+        "env.sync_env=True",
+        "env.capture_video=False",
+        "fabric.accelerator=cpu",
+        "metric.log_level=0",
+        "checkpoint.save_last=False",
+        "algo.run_test=False",
+        "algo.compile.enabled=True",
+        "algo.rollout_steps=64",
+        "algo.per_rank_sequence_length=8",
+        "algo.per_rank_num_batches=3",
+        "algo.update_epochs=2",
+        "algo.total_steps=768",
+        f"root_dir={root_dir}",
+    ]
+    try:
+        with mock.patch.dict(os.environ, {"LT_DEVICES": "1"}), mock.patch.object(sys, "argv", argv):
+            run()
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert len(rollouts) == 3
+    sizes = []
+    for masks in rollouts:
+        (shape,) = {mask.shape for mask in masks}
+        assert shape[1] % ppo_recurrent.SEQUENCES_MULTIPLE == 0
+        valid = [int(mask.any(0).sum()) for mask in masks]
+        for mask, n in zip(masks, valid):
+            # The sequences of the minibatch, then the padding
+            assert mask[:, :n].any(0).all() and not mask[:, n:].any()
+        sizes.append(sorted(set(valid)))
+    # The minibatches of a rollout had different sizes (the last one of every epoch smaller), padded to one
+    assert all(len(s) > 1 for s in sizes)
