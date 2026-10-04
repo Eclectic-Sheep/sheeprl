@@ -239,6 +239,62 @@ def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_ac
         assert actor._action_clip == 0.3
 
 
+def test_the_actions_of_the_actor_are_its_samples_clipped():
+    # The imagination takes the samples of the actor (`clip=False`) and clips them where the recurrent model takes
+    # them: the actions that the actor returns
+    actor = dv3_agent.Actor(
+        latent_state_size=4,
+        actions_dim=[2],
+        is_continuous=True,
+        distribution_cfg={"type": "auto"},
+        init_std=2.0,
+        min_std=0.1,
+        max_std=1.0,
+        dense_units=8,
+        mlp_layers=1,
+        action_clip=1.0,
+    )
+    state = torch.randn(64, 4)
+    torch.manual_seed(0)
+    actions = actor(state)[0][0]
+    torch.manual_seed(0)
+    samples = actor(state, clip=False)[0][0]
+    assert (samples.abs() > 1).any()
+    assert actions.abs().max() <= 1
+    torch.testing.assert_close(dv3_agent.clip_actions(samples, 1.0), actions)
+
+
+@pytest.mark.parametrize(
+    "continuous, objective_mix, graph",
+    [(True, None, True), (True, 0.5, True), (True, 1.0, False), (False, None, False), (False, 0.0, True)],
+)
+def test_the_actor_learns_by_the_dynamics_and_by_reinforce_as_objective_mix_mixes_them(
+    monkeypatch, continuous, objective_mix, graph
+):
+    # By default (null) the continuous actions learn by the dynamics backpropagation, the discrete ones by REINFORCE
+    # (`actor_grad_cont: backprop`, `actor_grad_disc: reinforce` of DreamerV3). The imagination needs a graph only for
+    # the dynamics, and its actions are the samples of the actor, whose log-probabilities REINFORCE takes
+    recorded = {}
+    imagine = dreamer_v3.imagine
+
+    def recording_imagine(*args, **kwargs):
+        recorded["graph"] = torch.is_grad_enabled()
+        outputs = imagine(*args, **kwargs)
+        recorded["actions"] = outputs[1]
+        return outputs
+
+    monkeypatch.setattr(dreamer_v3, "imagine", recording_imagine)
+    mix = "null" if objective_mix is None else objective_mix
+    _, _, player, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
+    before = [p.detach().clone() for p in player.actor.parameters()]
+    metrics = train_step()
+    assert recorded["graph"] is graph
+    if continuous:
+        assert (recorded["actions"].abs() > 1).any()
+    assert torch.isfinite(torch.as_tensor(metrics["Loss/policy_loss"]))
+    assert any(not torch.equal(b, a) for b, a in zip(before, player.actor.parameters()))
+
+
 def test_the_representation_model_computes_the_part_of_the_observations_once():
     # The first layer of the representation model takes the recurrent state and the embedded observation: the part of
     # the observations can be computed for a whole sequence at once
@@ -284,9 +340,9 @@ class RecordingAggregator:
         self.values[name] = value
 
 
-def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
-    """A small DreamerV3 on images and vectors, with 3 discrete actions, its player, a batch for it, and its gradient
-    step."""
+def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuous=False):
+    """A small DreamerV3 on images and vectors, with 3 discrete actions (2 continuous ones with `continuous`), its
+    player, a batch for it, and its gradient step."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
@@ -314,8 +370,9 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
             "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
         }
     )
+    actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, player = build_agent(fabric, [3], False, cfg, obs_space)
+    world_model, actor, critic, target_critic, player = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
     )
@@ -330,7 +387,11 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
     batch = {
         "rgb": torch.randint(0, 256, (T, B, 3, 64, 64), generator=generator).float(),
         "state": torch.randn(T, B, 5, generator=generator),
-        "actions": nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=generator), 3).float(),
+        "actions": (
+            torch.rand(T, B, 2, generator=generator) * 2 - 1
+            if continuous
+            else nn.functional.one_hot(torch.randint(0, 3, (T, B), generator=generator), 3).float()
+        ),
         "rewards": torch.randn(T, B, 1, generator=generator),
         "terminated": torch.zeros(T, B, 1),
         "truncated": torch.zeros(T, B, 1),
@@ -342,7 +403,18 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true"):
         aggregator = RecordingAggregator()
         data = {k: v.clone() for k, v in batch.items()}
         dreamer_v3.train(
-            fabric, world_model, actor, critic, target_critic, *optimizers, data, aggregator, cfg, False, [3], moments
+            fabric,
+            world_model,
+            actor,
+            critic,
+            target_critic,
+            *optimizers,
+            data,
+            aggregator,
+            cfg,
+            continuous,
+            actions_dim,
+            moments,
         )
         return aggregator.values
 

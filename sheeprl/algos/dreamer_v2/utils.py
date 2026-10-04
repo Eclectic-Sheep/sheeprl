@@ -177,15 +177,22 @@ def build_buffer(
     raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
 
 
+def reinforce_weight(objective_mix: Optional[float], is_continuous: bool) -> float:
+    """The weight of REINFORCE in the objective of the actor (`algo.actor.objective_mix`), the rest being the dynamics
+    backpropagation. `None`: 0 for continuous actions and 1 for discrete ones, as DreamerV2 (`actor_grad: auto`) and
+    DreamerV3 (`actor_grad_cont: backprop`, `actor_grad_disc: reinforce`) do."""
+    if objective_mix is None:
+        return 0.0 if is_continuous else 1.0
+    return objective_mix
+
+
 def actor_objective(
     objective_mix: Optional[float], is_continuous: bool, dynamics: Tensor, reinforce: Callable[[], Tensor]
 ) -> Tensor:
-    """The objective of the DreamerV2 actor: `objective_mix` times the REINFORCE objective (`reinforce()`) plus
-    `1 - objective_mix` times the dynamics backpropagation (`dynamics`, the lambda-values). `None` (the default of
-    `algo.actor.objective_mix`): the dynamics for continuous actions, REINFORCE for discrete ones, as DreamerV2 does
-    (`actor_grad: auto`)."""
-    if objective_mix is None:
-        objective_mix = 0.0 if is_continuous else 1.0
+    """The objective of the DreamerV2 and DreamerV3 actors: `objective_mix` times the REINFORCE objective
+    (`reinforce()`) plus `1 - objective_mix` times the dynamics backpropagation (`dynamics`, the lambda-values, or their
+    advantages). `None` (the default of `algo.actor.objective_mix`): see `reinforce_weight`."""
+    objective_mix = reinforce_weight(objective_mix, is_continuous)
     if objective_mix == 0:
         return dynamics
     if objective_mix == 1:
