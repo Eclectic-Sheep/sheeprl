@@ -3,12 +3,25 @@ draws the batches of the training from it (`sheeprl.data.samplers`)."""
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, Iterator, Optional, Sequence
 
+import numpy as np
 import torch
 from torch import Tensor
 
 from sheeprl.data.buffers import get_tensor
+
+
+class _Prefetch:
+    """The batches sampled for the next call of `ReplayStore.batches`, by a thread: ready once `thread` ends."""
+
+    def __init__(self, batch_size: int, n_samples: int) -> None:
+        self.batch_size, self.n_samples = batch_size, n_samples
+        self.samples: Optional[Dict[str, Tensor]] = None
+        self.event: Optional[torch.cuda.Event] = None
+        self.error: Optional[BaseException] = None
+        self.thread: Optional[threading.Thread] = None
 
 
 class ReplayStore:
@@ -19,22 +32,65 @@ class ReplayStore:
     resumed run draws the batches that the run would have drawn without stopping (the online queue restarts empty,
     with the steps added after the loading).
 
+    With `prefetch`, when the training of an iteration has used its batches (`batches`), a thread samples the first
+    ones of the next iteration while the environments are stepped: they are gathered before the steps of the next
+    iteration are written (`add` waits for them), then moved to the device, from pinned memory on a CUDA stream of
+    their own. The batches of an iteration are then sampled from the steps written until the end of the training of
+    the previous one, and the sampling (of the CPU) and the copy to the device overlap the interaction with the
+    environments.
+
     Args:
         storage: where the steps are written (`add`) and read from.
         sampler: what is read: it draws the steps of the samples, which the storage gathers.
         device: the device of the sampled batches.
         from_numpy: whether the samples are converted with `torch.from_numpy` (`buffer.from_numpy`).
+        prefetch: whether the batches of the next iteration are sampled in the background (`buffer.prefetch`).
     """
 
-    def __init__(self, storage: Any, sampler: Any, device: str | torch.device = "cpu", from_numpy: bool = False):
+    def __init__(
+        self,
+        storage: Any,
+        sampler: Any,
+        device: str | torch.device = "cpu",
+        from_numpy: bool = False,
+        prefetch: bool = False,
+    ):
         self.storage = storage
         self.sampler = sampler
         self.device = torch.device(device)
         self.from_numpy = from_numpy
+        self.prefetch = prefetch
+        self._init_transient()
+
+    def _init_transient(self) -> None:
+        # Held while the storage or the generator of the sampler are used: by the prefetching thread until its batches
+        # are gathered
+        self._lock = threading.Lock()
+        self._prefetched: Optional[_Prefetch] = None
+        self._stream: Optional[torch.cuda.Stream] = None
+
+    def __getstate__(self) -> Dict[str, Any]:
+        # A checkpoint waits for the batches being prefetched: the generator of the sampler is saved after them
+        self.wait()
+        state = self.__dict__.copy()
+        for k in ("_lock", "_prefetched", "_stream"):
+            state.pop(k)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        state.setdefault("prefetch", False)
+        self.__dict__.update(state)
+        self._init_transient()
 
     def add(self, *args, **kwargs) -> None:
-        """Write steps in the storage (its `add`)."""
-        self.storage.add(*args, **kwargs)
+        """Write steps in the storage (its `add`), once the batches being prefetched are gathered."""
+        with self._lock:
+            self.storage.add(*args, **kwargs)
+
+    def wait(self) -> None:
+        """Wait for the batches being prefetched: then the storage can be read and changed directly."""
+        if self._prefetched is not None and self._prefetched.thread is not None:
+            self._prefetched.thread.join()
 
     def sample(
         self,
@@ -48,7 +104,8 @@ class ReplayStore:
         `numpy_keys`, left as NumPy arrays on the CPU. `online` overrides the one of the sampler, and `sampler` the
         sampler (e.g. one that shares its generator, to sample in another way)."""
         sampler = self.sampler if sampler is None else sampler
-        samples = sampler.sample(self.storage, batch_size, n_samples, online=online)
+        with self._lock:
+            samples = sampler.sample(self.storage, batch_size, n_samples, online=online)
         return {
             k: v if k in numpy_keys else get_tensor(v, device=self.device, from_numpy=self.from_numpy)
             for k, v in samples.items()
@@ -56,13 +113,69 @@ class ReplayStore:
 
     def batches(self, n_steps: int, batch_size: int, max_sampled: Optional[int] = None) -> Iterator[Dict[str, Tensor]]:
         """The batches of `n_steps` gradient steps, in single precision, sampled `max_sampled` at a time (all at once
-        when `None`): the samples of many gradient steps (e.g. of a pretraining) may not fit in the memory."""
+        when `None`): the samples of many gradient steps (e.g. of a pretraining) may not fit in the memory. With
+        `prefetch`, the first ones are the ones prefetched at the end of the previous call, if they are as many."""
         chunk = n_steps if max_sampled is None else max_sampled
         for first in range(0, n_steps, chunk):
             n_samples = min(chunk, n_steps - first)
-            sample = self.sample(batch_size, n_samples)
+            sample = self._take_prefetched(batch_size, n_samples) if first == 0 else None
+            if sample is None:
+                sample = self.sample(batch_size, n_samples)
             for i in range(n_samples):
                 yield {k: v[i].float() for k, v in sample.items()}
+        if self.prefetch and n_steps > 0:
+            # The next call is expected to be as this one
+            self._start_prefetch(batch_size, min(chunk, n_steps))
+
+    def _start_prefetch(self, batch_size: int, n_samples: int) -> None:
+        prefetched = _Prefetch(batch_size, n_samples)
+        # The lock is taken here, before anything else can use the storage or the generator, and released by the
+        # thread once its batches are gathered: the sampling happens at this point of the run, whatever the timing
+        self._lock.acquire()
+        prefetched.thread = threading.Thread(target=self._prefetch, args=(prefetched,), daemon=True)
+        self._prefetched = prefetched
+        prefetched.thread.start()
+
+    def _prefetch(self, prefetched: _Prefetch) -> None:
+        try:
+            try:
+                samples = self.sampler.sample(self.storage, prefetched.batch_size, prefetched.n_samples)
+            finally:
+                self._lock.release()
+            if self.device.type == "cuda":
+                if self._stream is None:
+                    self._stream = torch.cuda.Stream(self.device)
+                with torch.cuda.stream(self._stream):
+                    prefetched.samples = {
+                        k: torch.from_numpy(np.ascontiguousarray(v)).pin_memory().to(self.device, non_blocking=True)
+                        for k, v in samples.items()
+                    }
+                    prefetched.event = torch.cuda.Event()
+                    prefetched.event.record(self._stream)
+            else:
+                prefetched.samples = {
+                    k: get_tensor(v, device=self.device, from_numpy=self.from_numpy) for k, v in samples.items()
+                }
+        except BaseException as e:  # raised by the training, when it takes the batches
+            prefetched.error = e
+
+    def _take_prefetched(self, batch_size: int, n_samples: int) -> Optional[Dict[str, Tensor]]:
+        """The prefetched batches, if they are `n_samples` batches of `batch_size` elements (else they are dropped)."""
+        prefetched, self._prefetched = self._prefetched, None
+        if prefetched is None:
+            return None
+        prefetched.thread.join()
+        if prefetched.error is not None:
+            raise prefetched.error
+        if (prefetched.batch_size, prefetched.n_samples) != (batch_size, n_samples):
+            return None
+        if prefetched.event is not None:
+            stream = torch.cuda.current_stream(self.device)
+            stream.wait_event(prefetched.event)
+            # The memory of the batches, allocated on the stream of the prefetching, is used on the current one
+            for v in prefetched.samples.values():
+                v.record_stream(stream)
+        return prefetched.samples
 
     def load(self, saved: Any) -> "ReplayStore":
         """This store with the storage of `saved`, a store from a checkpoint, and its sampler continuing the generators
@@ -75,6 +188,7 @@ class ReplayStore:
                 f"The checkpoint holds a replay buffer of type {type(storage).__name__}, "
                 f"but this run uses a {type(self.storage).__name__}"
             )
+        self.wait()
         self.sampler.continue_from(source)
         self.sampler.reset_online(storage)
         self.storage = storage

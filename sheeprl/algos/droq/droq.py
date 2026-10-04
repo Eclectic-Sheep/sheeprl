@@ -64,11 +64,11 @@ class DroQ(SAC):
         # The batches of the critics for all the gradient steps, then the one of the actor, sampled before training.
         # The new transitions of the online queue (`buffer.online`) go to the critics: the batch of the actor is sampled
         # uniformly, without the next observations, by a sampler that shares the generator of the critics' one
-        critic_data = buffer.sample(batch_size, n_steps)
         actor_sampler = TransitionSampler(rng=buffer.sampler.rng, queue=buffer.sampler.queue)
-        actor_observations = buffer.sample(batch_size, sampler=actor_sampler)["observations"][0].float()
-        for i in range(n_steps):
-            batch = {k: v[i].float() for k, v in critic_data.items()}
+        for i, batch in enumerate(buffer.batches(n_steps, batch_size)):
+            if i == 0:
+                # After the batches of the critics, which `batches` samples (or prefetched) all at once
+                actor_observations = buffer.sample(batch_size, sampler=actor_sampler)["observations"][0].float()
             if i == n_steps - 1:
                 # The actor and the entropy coefficient are updated once, after the last critic update
                 batch["actor_observations"] = actor_observations

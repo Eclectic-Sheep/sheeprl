@@ -138,7 +138,7 @@ def sequential_store(
     sampler = EnvIndependentSampler(
         cfg.env.num_envs, sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank
     )
-    return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
+    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
 
 
 def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> ReplayStore:
@@ -169,7 +169,7 @@ def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size:
             online=cfg.buffer.online,
             seed=cfg.seed + fabric.global_rank,
         )
-        return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
+        return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
     raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
 
 

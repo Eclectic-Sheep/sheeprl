@@ -133,7 +133,7 @@ def build_store(
         memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
     )
     sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
-    return ReplayStore(storage, sampler, fabric.device, from_numpy=cfg.buffer.from_numpy)
+    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
 
 
 def train(

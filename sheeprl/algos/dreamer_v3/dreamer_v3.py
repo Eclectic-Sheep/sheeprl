@@ -155,6 +155,7 @@ class SequencePlayer:
             for i, agent_roe in enumerate(step.info["restart_on_exception"]):
                 if agent_roe and not dones[i]:
                     # The last observation stored for the restarted environment ends its episode
+                    buffer.wait()
                     env_buffer = buffer.storage.buffer[i]
                     last_inserted_idx = (env_buffer._pos - 1) % env_buffer.buffer_size
                     env_buffer["terminated"][last_inserted_idx] = 0

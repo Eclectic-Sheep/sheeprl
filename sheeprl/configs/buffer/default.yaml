@@ -7,3 +7,7 @@ checkpoint: True  # Used only for off-policy algorithms
 # length), the oldest first, and only the rest of them is sampled uniformly from the buffer, so that every step is
 # trained on soon after it is played (the online queue of DreamerV3)
 online: False
+# Off-policy algorithms: the first batches of every iteration are sampled at the end of the training of the previous one,
+# in a thread, while the environments are stepped: from the steps written until then, moved to the device on a CUDA
+# stream of their own (the batches sampled during the training, e.g. the ones written back by DreamerV3.5, aren't)
+prefetch: False

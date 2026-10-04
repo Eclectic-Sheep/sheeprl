@@ -31,6 +31,8 @@ class CheckpointCallback:
         replay_buffer: Optional[Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
         if replay_buffer is not None:
+            # The batches being prefetched by a `ReplayStore` are gathered first
+            getattr(replay_buffer, "wait", lambda: None)()
             rb_state = self._ckpt_rb(replay_buffer)
             state["rb"] = replay_buffer
             if fabric.world_size > 1:

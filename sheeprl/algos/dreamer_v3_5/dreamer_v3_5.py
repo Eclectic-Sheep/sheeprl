@@ -522,6 +522,7 @@ class LatentSequencePlayer(SequencePlayer):
 
     def step_columns(self, buffer: ReplayStore, num_envs: int) -> Dict[str, np.ndarray]:
         if self.counters is None:
+            buffer.wait()
             self.counters = step_counters(buffer.storage)
         stochastic_state = self.policy.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
         columns = {
