@@ -32,12 +32,11 @@ class ReplayStore:
     resumed run draws the batches that the run would have drawn without stopping (the online queue restarts empty,
     with the steps added after the loading).
 
-    With `prefetch`, when the training of an iteration has used its batches (`batches`), a thread samples the first
-    ones of the next iteration while the environments are stepped: they are gathered before the steps of the next
-    iteration are written (`add` waits for them), then moved to the device, from pinned memory on a CUDA stream of
-    their own. The batches of an iteration are then sampled from the steps written until the end of the training of
-    the previous one, and the sampling (of the CPU) and the copy to the device overlap the interaction with the
-    environments.
+    With `prefetch`, while the training uses the batches of a sample (`batches`), a thread samples the next ones: the
+    next ones of the iteration, or the first ones of the next iteration, which are gathered before its steps are
+    written (`add` waits for them). They are moved to the device from pinned memory, on a CUDA stream of their own. The
+    first batches of an iteration are then sampled from the steps written until the training of the previous one, and
+    the sampling (on the CPU) and the copy to the device overlap the training (on the device).
 
     Args:
         storage: where the steps are written (`add`) and read from.
@@ -113,19 +112,21 @@ class ReplayStore:
 
     def batches(self, n_steps: int, batch_size: int, max_sampled: Optional[int] = None) -> Iterator[Dict[str, Tensor]]:
         """The batches of `n_steps` gradient steps, in single precision, sampled `max_sampled` at a time (all at once
-        when `None`): the samples of many gradient steps (e.g. of a pretraining) may not fit in the memory. With
-        `prefetch`, the first ones are the ones prefetched at the end of the previous call, if they are as many."""
+        when `None`): the samples of many gradient steps (e.g. of a pretraining) may not fit in the memory.
+
+        With `prefetch`, once the batches of a sample are taken, the next sample is prefetched while the training uses
+        them: the next one of this call, drawn as without prefetching, or the first one of the next call, expected
+        to be as this one, drawn from the steps written until now (the training doesn't write any)."""
         chunk = n_steps if max_sampled is None else max_sampled
-        for first in range(0, n_steps, chunk):
-            n_samples = min(chunk, n_steps - first)
-            sample = self._take_prefetched(batch_size, n_samples) if first == 0 else None
+        sizes = [min(chunk, n_steps - first) for first in range(0, n_steps, chunk)]
+        for i, n_samples in enumerate(sizes):
+            sample = self._take_prefetched(batch_size, n_samples) if self.prefetch else None
             if sample is None:
                 sample = self.sample(batch_size, n_samples)
-            for i in range(n_samples):
-                yield {k: v[i].float() for k, v in sample.items()}
-        if self.prefetch and n_steps > 0:
-            # The next call is expected to be as this one
-            self._start_prefetch(batch_size, min(chunk, n_steps))
+            if self.prefetch:
+                self._start_prefetch(batch_size, sizes[i + 1] if i + 1 < len(sizes) else sizes[0])
+            for j in range(n_samples):
+                yield {k: v[j].float() for k, v in sample.items()}
 
     def _start_prefetch(self, batch_size: int, n_samples: int) -> None:
         prefetched = _Prefetch(batch_size, n_samples)
