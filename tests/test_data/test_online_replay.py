@@ -93,6 +93,17 @@ def test_the_online_queues_of_the_environments_are_taken_oldest_first(buffer_cls
     assert rb.sample(5, online=True, **kwargs)["value"].shape == rb.sample(5, **kwargs)["value"].shape
 
 
+def test_a_failed_sample_leaves_the_online_queue_as_it_was():
+    # The environment 1 has no steps: a sample that draws it fails after the queued transitions of the environment 0
+    # have been chosen, which must stay in the queue
+    rb = EnvIndependentReplayBuffer(10, 2, buffer_cls=ReplayBuffer, seed=0)
+    add_steps(rb, 0, 3, envs=[0])
+    with pytest.raises(ValueError, match="No sample has been added"):
+        rb.sample(8, online=True)
+    add_steps(rb, 0, 1, envs=[1])
+    assert rb.sample(4, online=True)["value"][0, :, 0].tolist() == [0, 1, 10, 20]
+
+
 def episode(values, rb: EpisodeBuffer) -> None:
     """Add an episode of the steps of values `values`, which ends with its last step."""
     n = len(values)
