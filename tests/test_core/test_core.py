@@ -415,3 +415,52 @@ def test_env_step_final_obs_reads_the_last_observations_of_the_ended_episodes():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert np.array_equal(step.final_obs([1, 2], ["state"])["state"], np.array([[7.0, 7.0], [9.0, 9.0]]))
+
+
+def test_every_process_returns_from_the_training_once_all_of_them_trained(monkeypatch, tmp_path):
+    # The process of rank 0 returned while the other ones still trained: a test removed the files that another process
+    # of DreamerV3.5 was writing (its buffer), and Lightning killed the worker of the tests when that process failed
+    import sys
+
+    from lightning.fabric import Fabric
+
+    from sheeprl.algos.ppo import ppo
+    from sheeprl.cli import run
+
+    events = []
+    barrier, train_step = Fabric.barrier, ppo.PPO.train_step
+
+    def recording_barrier(self, *args, **kwargs):
+        events.append("barrier")
+        return barrier(self, *args, **kwargs)
+
+    def recording_train_step(self, *args, **kwargs):
+        events.append("train")
+        return train_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(Fabric, "barrier", recording_barrier)
+    monkeypatch.setattr(ppo.PPO, "train_step", recording_train_step)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LT_DEVICES", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sheeprl.py",
+            "hydra/job_logging=disabled",
+            "hydra/hydra_logging=disabled",
+            "exp=ppo",
+            "dry_run=True",
+            "env.num_envs=2",
+            "env.sync_env=True",
+            "env.capture_video=False",
+            "fabric.accelerator=cpu",
+            "metric.log_level=0",
+            "checkpoint.save_last=False",
+            "algo.run_test=False",
+            "algo.rollout_steps=4",
+            "algo.per_rank_batch_size=4",
+        ],
+    )
+    run()
+    assert "train" in events and events[-1] == "barrier"
