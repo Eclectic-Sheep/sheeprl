@@ -474,3 +474,33 @@ def test_setitem_error():
         rb["wrong_buffer_size"] = np.zeros((buf_size + 3, n_envs, 1))
         rb["wrong_n_envs"] = np.zeros((buf_size, n_envs - 1, 1))
         rb["wrong_dims"] = np.zeros((10,))
+
+
+@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
+@pytest.mark.parametrize("size", [1, 2, 5])
+@pytest.mark.parametrize("first", [0, 1, 2, 5, 6])
+@pytest.mark.parametrize("extra", [1, 3, 6])
+def test_an_add_of_more_steps_than_the_buffer_keeps_the_last_ones(buffer_cls, size, first, extra):
+    # The last `size` steps are kept in the rows they would take if added one at a time: an add of more steps than the
+    # buffer into a buffer with data crashed
+    rb = buffer_cls(size, 2)
+    value = lambda start, n: (np.arange(start, start + n).reshape(-1, 1, 1) * 10 + np.arange(2).reshape(1, 2, 1))
+    if first:
+        rb.add({"a": value(0, first)})
+    rb.add({"a": value(first, size + extra)})
+    total = first + size + extra
+    assert rb.full and rb._pos == total % size and rb._added == total
+    for step in range(total - size, total):
+        np.testing.assert_array_equal(rb["a"][step % size, :, 0], [step * 10, step * 10 + 1])
+
+
+def test_a_failed_add_leaves_the_buffer_as_it_was():
+    # The key 'b' is not in the buffer: the key 'a' was written in the oldest row before the add failed
+    rb = ReplayBuffer(3, 1)
+    rb.add({"a": np.arange(3).reshape(-1, 1, 1)})
+    with pytest.raises(KeyError, match="The buffer has no key 'b'"):
+        rb.add({"a": np.full((1, 1, 1), 99), "b": np.zeros((1, 1, 1))})
+    with pytest.raises(ValueError, match="cannot be written in rows of shape"):
+        rb.add({"a": np.full((2, 1, 2), 99)})
+    np.testing.assert_array_equal(rb["a"][:, 0, 0], [0, 1, 2])
+    assert rb._pos == 0 and rb._added == 3
