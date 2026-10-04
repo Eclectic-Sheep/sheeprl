@@ -65,7 +65,8 @@ class TrainSchedule:
             # The buffer is filled for `learning_starts` iterations, training at the end of the last one: from the
             # start of the run, or, when a resumed run doesn't find its buffer in the checkpoint, from where it resumes.
             # The algorithms that sample sequences of steps of every environment wait for the first ones to be played
-            sequence_length = cfg.algo.get("per_rank_sequence_length") or 0
+            # (with the steps of their context, e.g. DreamerV3.5's `algo.replay_context`)
+            sequence_length = (cfg.algo.get("per_rank_sequence_length") or 0) + (cfg.algo.get("replay_context") or 0)
             fill_iters = max(self.learning_starts, -(-sequence_length // steps_per_iteration), 1)
             if fill_iters > max(self.learning_starts, 1) and not cfg.dry_run:
                 warnings.warn(
