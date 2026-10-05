@@ -31,7 +31,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor
+from sheeprl.utils.utils import gae_function, normalize_tensor
 
 
 @dataclass
@@ -149,6 +149,7 @@ class PPO(Algorithm):
                 f"to the rollout steps ({cfg.algo.rollout_steps})"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
+        self.gae = gae_function(cfg.algo.gae_method)
         # The values the annealed coefficients start from
         self.initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
         self.initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
@@ -208,7 +209,7 @@ class PPO(Algorithm):
             }
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = self.policy(state).get_values(next_obs)
-            returns, advantages = gae(
+            returns, advantages = self.gae(
                 data["rewards"],
                 data["values"],
                 data["dones"],

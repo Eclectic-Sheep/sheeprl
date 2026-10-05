@@ -312,8 +312,9 @@ class ReplayBuffer:
     def _check_add(
         self, data: Dict[str, np.ndarray], validate_args: bool = False, n_envs: Optional[int] = None
     ) -> None:
-        """Raise the errors that adding `data` would raise, before anything is written: an add that fails leaves the
-        buffer as it was."""
+        """With `validate_args`, raise the errors that adding `data` would raise, before anything is written: an add
+        that fails then leaves the buffer as it was. Without it nothing is checked: the checks cost as much as the
+        write of a step, and a wrong add still raises, from the write (after the keys before the wrong one)."""
         if validate_args:
             if not isinstance(data, dict):
                 raise ValueError(
@@ -345,6 +346,8 @@ class ReplayBuffer:
                         )
                     last_key = current_key
                     last_batch_shape = current_batch_shape
+        if not validate_args:
+            return
         data_len = next(iter(data.values())).shape[0]
         rows = min(data_len, self._buffer_size)
         for k, v in data.items():

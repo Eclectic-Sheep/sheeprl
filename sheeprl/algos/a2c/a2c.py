@@ -32,7 +32,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor
+from sheeprl.utils.utils import gae_function, normalize_tensor
 
 
 @dataclass
@@ -148,6 +148,7 @@ class A2C(Algorithm):
                 f"to the rollout steps ({cfg.algo.rollout_steps})"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
+        self.gae = gae_function(cfg.algo.gae_method)
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
@@ -199,7 +200,7 @@ class A2C(Algorithm):
                 self.fabric, rollout.context["next_obs"], cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
             )
             next_values = self.policy(state).get_values(next_obs)
-            returns, advantages = gae(
+            returns, advantages = self.gae(
                 data["rewards"].to(torch.float64),
                 data["values"],
                 data["dones"],

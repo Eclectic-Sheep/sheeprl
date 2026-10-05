@@ -33,7 +33,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae, normalize_tensor
+from sheeprl.utils.utils import gae_function, normalize_tensor
 
 
 @dataclass
@@ -269,6 +269,7 @@ class PPORecurrent(Algorithm):
                 "with recurrent PPO only gradients are shared"
             )
         self.steps_per_iteration = cfg.algo.rollout_steps
+        self.gae = gae_function(cfg.algo.gae_method)
         # The values the annealed coefficients start from
         self.initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
         self.initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
@@ -333,7 +334,7 @@ class PPORecurrent(Algorithm):
             next_values, _ = self.policy(state).get_values(
                 next_obs, rollout.context["actions"], rollout.context["states"]
             )
-            returns, advantages = gae(
+            returns, advantages = self.gae(
                 data["rewards"].to(torch.float64),
                 data["values"],
                 data["dones"],

@@ -494,12 +494,12 @@ def test_an_add_of_more_steps_than_the_buffer_keeps_the_last_ones(size, first, e
 
 
 def test_a_failed_add_leaves_the_buffer_as_it_was():
-    # The key 'b' is not in the buffer: the key 'a' was written in the oldest row before the add failed
+    # With `validate_args`, the key 'b' not in the buffer fails the add before the key 'a' is written in the oldest row
     rb = ReplayBuffer(3, 1)
     rb.add({"a": np.arange(3).reshape(-1, 1, 1)})
     with pytest.raises(KeyError, match="The buffer has no key 'b'"):
-        rb.add({"a": np.full((1, 1, 1), 99), "b": np.zeros((1, 1, 1))})
+        rb.add({"a": np.full((1, 1, 1), 99), "b": np.zeros((1, 1, 1))}, validate_args=True)
     with pytest.raises(ValueError, match="cannot be written in rows of shape"):
-        rb.add({"a": np.full((2, 1, 2), 99)})
+        rb.add({"a": np.full((2, 1, 2), 99)}, validate_args=True)
     np.testing.assert_array_equal(rb["a"][:, 0, 0], [0, 1, 2])
     assert rb._pos == 0 and rb._added == 3

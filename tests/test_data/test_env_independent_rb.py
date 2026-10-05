@@ -158,10 +158,10 @@ def test_env_independent_samples_come_whole_from_one_environment(sequence_length
 
 
 def test_a_failed_add_leaves_every_environment_as_it_was():
-    # The environment 1 has no key 'b': the environment 0, empty, was written before the add of the environment 1 failed
+    # With `validate_args`, the key 'b' of the environment 1 fails the add before the environment 0, empty, is written
     rb = ReplayBuffer(5, 2)
     rb.add({"a": np.zeros((1, 1, 1))}, [1])
     with pytest.raises(KeyError, match="The buffer has no key 'b'"):
-        rb.add({"a": np.ones((1, 2, 1)), "b": np.ones((1, 2, 1))})
+        rb.add({"a": np.ones((1, 2, 1)), "b": np.ones((1, 2, 1))}, validate_args=True)
     assert rb.env_added.tolist() == [0, 1]
     assert rb.positions[1] == 1 and rb["a"][0, 1, 0] == 0
