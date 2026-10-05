@@ -4,6 +4,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 ROOT_DIR = os.path.dirname(__file__)
+# The code compiled by `torch.compile` (`algo.compile`) is cached in the home of the user, where it survives the
+# reboots (by default PyTorch caches it in `/tmp`, often cleared at boot): the runs that compile the same code reuse it.
+# Set before the algorithms are imported, which already create the directory of the cache
+os.environ.setdefault(
+    "TORCHINDUCTOR_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "sheeprl", "torchinductor")
+)
 
 
 from sheeprl.utils.imports import _IS_TORCH_GREATER_EQUAL_2_0
