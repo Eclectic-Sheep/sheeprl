@@ -76,6 +76,9 @@ def test_the_losses_compile_into_single_graphs_without_synchronizations(monkeypa
     # compiled ones (23% slower with CUDA graphs)
     _, _, agent, _, data = small_agent(algo)
     no_host_reads(monkeypatch)
+    # The distributions without the validation of their arguments, as in training (the CLI turns it off): the default
+    # of PyTorch validates them, with checks that `torch.compile` doesn't trace
+    monkeypatch.setattr(torch.distributions.Distribution, "_validate_args", False)
     obs, actions, rewards = data["observations"], data["actions"], data["rewards"]
     next_obs, terminated = data["next_observations"], data["terminated"]
     graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
@@ -189,6 +192,8 @@ def small_sac_ae(overrides=(), accelerator="cpu"):
 def test_the_losses_of_sac_ae_compile_into_single_graphs_without_synchronizations(monkeypatch):
     _, _, (agent, encoder, decoder), _, data = small_sac_ae()
     no_host_reads(monkeypatch)
+    # Without the validation of the arguments of the distributions, as in training
+    monkeypatch.setattr(torch.distributions.Distribution, "_validate_args", False)
     obs, next_obs = {"rgb": data["rgb"] / 255}, {"rgb": data["next_rgb"] / 255}
     graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
     graph(sac_ae.critic_loss_fn)(agent, obs, next_obs, data["actions"], data["rewards"], data["terminated"], 0.99)
