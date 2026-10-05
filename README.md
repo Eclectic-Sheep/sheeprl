@@ -505,7 +505,7 @@ Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
 An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
-- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore` (a `ReplayBuffer` and its sampler): a `Rollout`, whose `EpochSampler` draws the minibatches of an update, for the on-policy algorithms.
+- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore`: a `ReplayBuffer` and its sampler (for the on-policy algorithms, the `EpochSampler` of the minibatches of an update of their rollout: `sheeprl.core.rollout_store`).
 - `player()`: returns the object that plays the current policy in the environments and writes what happens in the store.
 - `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
 - `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.
@@ -557,15 +557,13 @@ Every algorithm stores its steps in a single kind of storage, the `ReplayBuffer`
 - `EpisodeSampler`: sequences inside the episodes that ended, with their ends prioritized with `buffer.prioritize_ends` (DreamerV2 with `buffer.type=episode`);
 - `EpochSampler`: the minibatches of the epochs of an on-policy update (PPO, A2C, PPO-recurrent).
 
-The classes `SequentialReplayBuffer`, `EnvIndependentReplayBuffer` and `EpisodeBuffer` are kept for their `sample` methods and for the checkpoints of the previous versions, which are converted to the single storage when they are loaded.
-
 The off-policy algorithms train on a `sheeprl.data.store.ReplayStore`: a storage and a sampler, whose batches go to the device of the training. The store is saved in the checkpoints with its sampler, whose generator a resumed run continues. With `buffer.prefetch` the next batches are sampled in a thread while the training uses the current ones, and with `buffer.on_device` the storage is kept in the memory of the device, where its batches are gathered (see the [configs howto](./howto/configs.md#buffer)).
 
 ### :mag: Technical details
 
 The shape of the Numpy arrays in the dictionary is `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
 
-The on-policy algorithms (A2C, PPO and PPO Recurrent) store their rollout in a `ReplayBuffer` with `T` equal to `algo.rollout_steps` and `B` equal to `env.num_envs`, wrapped in a `sheeprl.core.Rollout`. For A2C and PPO, `buffer.size` must be equal to `algo.rollout_steps`.
+The on-policy algorithms (A2C, PPO and PPO Recurrent) store their rollout in a `ReplayBuffer` with `T` equal to `algo.rollout_steps` and `B` equal to `env.num_envs`, in a `ReplayStore` (`sheeprl.core.rollout_store`). For A2C and PPO, `buffer.size` must be equal to `algo.rollout_steps`.
 
 ## :bow: Contributing
 

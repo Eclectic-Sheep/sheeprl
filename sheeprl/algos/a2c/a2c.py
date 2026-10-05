@@ -19,7 +19,17 @@ from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, all_reduce_gradients, autocast, run
+from sheeprl.core import (
+    Algorithm,
+    EnvRunner,
+    ReplayStore,
+    TrainSchedule,
+    TrainState,
+    all_reduce_gradients,
+    autocast,
+    rollout_store,
+    run,
+)
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -45,7 +55,7 @@ class RolloutPlayer:
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: EnvRunner, rollout: Rollout) -> None:
+    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
 
@@ -84,7 +94,9 @@ class RolloutPlayer:
         if cfg.buffer.memmap:
             data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
             data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-        rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
+        rollout.add(data, validate_args=cfg.buffer.validate_args)
+        # The observations after the last step of the rollout bootstrap its returns
+        rollout.context["next_obs"] = step.next_obs
 
 
 def a2c_loss(
@@ -139,7 +151,7 @@ class A2C(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[A2CState, Rollout]:
+    ) -> Tuple[A2CState, ReplayStore]:
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
@@ -162,7 +174,7 @@ class A2C(Algorithm):
         scheduler = PolynomialLR(optimizer, total_iters=schedule.total_iters, power=1.0) if cfg.algo.anneal_lr else None
 
         state = A2CState(agent=agent, optimizer=optimizer, scheduler=scheduler)
-        return state, Rollout.build(self.fabric, cfg, log_dir, cfg.buffer.size)
+        return state, rollout_store(self.fabric, cfg, log_dir, cfg.buffer.size)
 
     def policy(self, state: A2CState) -> PPOPlayer:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -175,7 +187,7 @@ class A2C(Algorithm):
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
     def batches(
-        self, state: A2CState, rollout: Rollout, n_steps: Optional[int], iteration: int
+        self, state: A2CState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[List[Dict[str, Tensor]]]:
         """One batch per iteration: the minibatches of the whole rollout, whose gradients `train_step` accumulates."""
         cfg = self.cfg
@@ -184,7 +196,7 @@ class A2C(Algorithm):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = prepare_obs(
-                self.fabric, rollout.next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+                self.fabric, rollout.context["next_obs"], cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
             )
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = gae(

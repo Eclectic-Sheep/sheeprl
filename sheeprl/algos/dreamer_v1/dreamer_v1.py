@@ -23,7 +23,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import Actor, MinedojoActor, PlayerDV1, WorldModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
+from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer as DV2SequencePlayer
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store, test
@@ -550,10 +550,6 @@ class DreamerV1(Algorithm):
     def policy(self, state: DreamerV1State) -> PlayerDV1:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
-
-    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
-        # A buffer saved before `is_first` was stored
-        return add_is_first(super().load_store(saved, store))
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)

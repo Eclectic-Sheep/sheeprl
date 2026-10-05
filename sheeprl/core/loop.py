@@ -16,6 +16,7 @@ from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.runner import EnvRunner
 from sheeprl.core.schedule import TrainSchedule
+from sheeprl.core.store import load_replay_buffer
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import phase_timer, training_timer
@@ -63,7 +64,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     if checkpoint is not None:
         state.load_state_dict(checkpoint)
         if save_buffer:
-            store = algo.load_store(checkpoint["rb"], store)
+            store = load_replay_buffer(fabric, checkpoint["rb"], store)
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
     cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint, policy_step=schedule.policy_step)

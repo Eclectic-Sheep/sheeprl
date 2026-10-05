@@ -180,7 +180,18 @@ from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
 from sheeprl.algos.sota.utils import normalize_obs, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, setup_module, update
+from sheeprl.core import (
+    Algorithm,
+    EnvRunner,
+    ReplayStore,
+    TrainSchedule,
+    TrainState,
+    autocast,
+    rollout_store,
+    run,
+    setup_module,
+    update,
+)
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae
 
@@ -201,7 +212,7 @@ class RolloutPlayer:
         self.policy = policy
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: EnvRunner, rollout: Rollout) -> None:
+    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
         num_envs = env.num_envs
         obs = {k: env.obs[k] for k in self.obs_keys}
         torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cfg.algo.cnn_keys.encoder, num_envs=num_envs)
@@ -216,7 +227,9 @@ class RolloutPlayer:
         data["values"] = values.cpu().numpy()[np.newaxis]
         data["rewards"] = step.rewards.reshape(1, num_envs, 1).astype(np.float32)
         data["dones"] = dones.reshape(1, num_envs, 1).astype(np.uint8)
-        rollout.add(data, step.next_obs)
+        rollout.add(data)
+        # The observations after the last step of the rollout bootstrap its returns
+        rollout.context["next_obs"] = step.next_obs
 
 
 class SOTA(Algorithm):
@@ -229,7 +242,7 @@ class SOTA(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[SOTAState, Rollout]:
+    ) -> Tuple[SOTAState, ReplayStore]:
         cfg = self.cfg
         agent = build_agent(cfg, obs_space, action_space)
         # On the device, in the precision of the run, with the same initial weights on every process
@@ -240,7 +253,7 @@ class SOTA(Algorithm):
         optimizer = self.fabric.setup_optimizers(optimizer)
 
         # The steps of a rollout, in a ReplayBuffer, and the EpochSampler of the minibatches of its update
-        rollout = Rollout.build(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
+        rollout = rollout_store(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
         return SOTAState(agent=agent, optimizer=optimizer), rollout
 
     def policy(self, state: SOTAState) -> PPOPlayer:
@@ -251,7 +264,7 @@ class SOTA(Algorithm):
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
     def batches(
-        self, state: SOTAState, rollout: Rollout, n_steps: Optional[int], iteration: int
+        self, state: SOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
@@ -259,7 +272,7 @@ class SOTA(Algorithm):
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
-            next_obs = {k: rollout.next_obs[k] for k in obs_keys}
+            next_obs = {k: rollout.context["next_obs"][k] for k in obs_keys}
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(

@@ -22,8 +22,6 @@ import torch
 from lightning import Fabric
 from torch import Tensor, nn
 
-from sheeprl.core.store import load_replay_buffer
-
 if TYPE_CHECKING:
     from sheeprl.core.runner import EnvRunner
     from sheeprl.core.schedule import TrainSchedule
@@ -126,12 +124,6 @@ class Algorithm:
         When a run is resumed, the training loop restores the returned state from the checkpoint.
         """
         raise NotImplementedError
-
-    def load_store(self, saved: Any, store: Any) -> Any:
-        """The store of a resumed run of an off-policy algorithm, from the replay buffer `saved` in its checkpoint
-        (`buffer.checkpoint`), in place of the new `store` returned by `build`. Override it to convert the buffers saved
-        by older versions."""
-        return load_replay_buffer(self.fabric, saved, store)
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         """Play a test episode with the trained policy and log its return at `policy_step`: at the end of the training

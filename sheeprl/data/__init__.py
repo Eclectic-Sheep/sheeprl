@@ -1,4 +1,6 @@
-from sheeprl.data.buffers import EnvIndependentReplayBuffer as EnvIndependentReplayBuffer
-from sheeprl.data.buffers import EpisodeBuffer as EpisodeBuffer
 from sheeprl.data.buffers import ReplayBuffer as ReplayBuffer
-from sheeprl.data.buffers import SequentialReplayBuffer as SequentialReplayBuffer
+from sheeprl.data.samplers import EpisodeSampler as EpisodeSampler
+from sheeprl.data.samplers import EpochSampler as EpochSampler
+from sheeprl.data.samplers import SequenceSampler as SequenceSampler
+from sheeprl.data.samplers import TransitionSampler as TransitionSampler
+from sheeprl.data.store import ReplayStore as ReplayStore

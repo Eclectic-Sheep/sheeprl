@@ -20,7 +20,17 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
+from sheeprl.core import (
+    Algorithm,
+    EnvRunner,
+    ReplayStore,
+    TrainSchedule,
+    TrainState,
+    autocast,
+    rollout_store,
+    run,
+    update,
+)
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -31,16 +41,6 @@ class PPORecurrentState(TrainState):
     # Feature extractor, LSTM, actor and critic
     agent: RecurrentPPOAgent
     optimizer: Optimizer
-
-
-class RecurrentRollout(Rollout):
-    """The rollout of PPO-recurrent. With the observations that follow its last step, the actions and the recurrent
-    states of that step give the value that bootstraps the returns."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.actions: Optional[Tensor] = None
-        self.states: Optional[Tuple[Tensor, Tensor]] = None
 
 
 class RecurrentRolloutPlayer:
@@ -58,7 +58,7 @@ class RecurrentRolloutPlayer:
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
         self.prev_actions: Optional[np.ndarray] = None
 
-    def step(self, env: EnvRunner, rollout: RecurrentRollout) -> None:
+    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         device = self.fabric.device
@@ -118,8 +118,10 @@ class RecurrentRolloutPlayer:
         if cfg.buffer.memmap:
             data["returns"] = np.zeros_like(rewards)
             data["advantages"] = np.zeros_like(rewards)
-        rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
-        rollout.actions, rollout.states = torch_actions, states
+        rollout.add(data, validate_args=cfg.buffer.validate_args)
+        # The observations after the last step of the rollout bootstrap its returns
+        rollout.context["next_obs"] = step.next_obs
+        rollout.context["actions"], rollout.context["states"] = torch_actions, states
 
         # The next step starts a new episode where this one ended one
         self.prev_actions = (1 - dones) * actions
@@ -273,7 +275,7 @@ class PPORecurrent(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[PPORecurrentState, RecurrentRollout]:
+    ) -> Tuple[PPORecurrentState, ReplayStore]:
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
@@ -298,7 +300,7 @@ class PPORecurrent(Algorithm):
 
         state = PPORecurrentState(agent=agent, optimizer=optimizer)
         # One rollout, whatever `buffer.size`
-        return state, RecurrentRollout.build(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
+        return state, rollout_store(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
 
     def policy(self, state: PPORecurrentState) -> RecurrentPPOPlayer:
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
@@ -311,7 +313,7 @@ class PPORecurrent(Algorithm):
         return RecurrentRolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
     def batches(
-        self, state: PPORecurrentState, rollout: RecurrentRollout, n_steps: Optional[int], iteration: int
+        self, state: PPORecurrentState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # The learning rate and the coefficients of the iteration
@@ -324,11 +326,13 @@ class PPORecurrent(Algorithm):
         with torch.inference_mode():
             next_obs = {}
             for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
-                next_obs[k] = rollout.next_obs[k]
+                next_obs[k] = rollout.context["next_obs"][k]
                 if k in cfg.algo.cnn_keys.encoder:
                     next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-            next_values, _ = self.policy(state).get_values(next_obs, rollout.actions, rollout.states)
+            next_values, _ = self.policy(state).get_values(
+                next_obs, rollout.context["actions"], rollout.context["states"]
+            )
             returns, advantages = gae(
                 data["rewards"].to(torch.float64),
                 data["values"],

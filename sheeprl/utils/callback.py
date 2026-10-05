@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import os
 import pathlib
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional
 
 import numpy as np
 from lightning.fabric import Fabric
 from lightning.fabric.plugins.collectives import TorchCollective
 from torch import Tensor
 
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 
 
 class CheckpointCallback:
@@ -29,7 +29,7 @@ class CheckpointCallback:
         fabric: Fabric,
         ckpt_path: str,
         state: Dict[str, Any],
-        replay_buffer: Optional[Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
+        replay_buffer: Optional[Any] = None,
     ):
         if replay_buffer is not None:
             # The batches being prefetched by a `ReplayStore` are gathered first
@@ -54,62 +54,27 @@ class CheckpointCallback:
         if fabric.is_global_zero and self.keep_last:
             self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
 
-    def _ckpt_rb(
-        self, rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer
-    ) -> Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]]:
-        """Modify the replay buffer in order to be consistent for the checkpoint.
-        There could be 3 cases, depending on the buffers:
-
-        1. The `ReplayBuffer` or `SequentialReplayBuffer`: a done is inserted in the last pos because the
-            state of the environment is not saved in the checkpoint.
-        2. The `EnvIndependentReplayBuffer`: for each buffer, the done in the last position is set to True
-            (for the same reason of the point 1.).
-        3. The `EpisodeBuffer`: the open episodes are discarded  because the
-            state of the environment is not saved in the checkpoint.
-
-        Args:
-            rb (ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer): the buffer.
+    def _ckpt_rb(self, rb: Any) -> Any:
+        """Make the replay buffer (the `ReplayBuffer` of a `ReplayStore`) consistent for the checkpoint: the last step
+        of every environment is truncated, because the state of the environments is not saved in the checkpoint.
 
         Returns:
-            The original state of the buffer.
+            The true `truncated` of the last steps, to restore after the checkpoint (`_experiment_consistent_rb`).
         """
-        # A `ReplayStore` is saved with its sampler: its storage is the buffer
-        rb = getattr(rb, "storage", rb)
-        if isinstance(rb, ReplayBuffer):
-            # The last row of every environment: its true done is kept, then it is truncated (all the environments are
-            # truncated)
-            rows, envs = (rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)
-            state = _copy(rb["truncated"][rows, envs])
-            rb["truncated"][rows, envs] = 1
-            # A memory-mapped buffer is saved by reference to its files, where the truncation is undone after the
-            # checkpoint: the loaded buffer writes it again when it is used
-            rb._checkpoint_truncation = rb.is_memmap
-        elif isinstance(rb, EpisodeBuffer):
-            # remove open episodes from the buffer because the state of the environment is not saved
-            state = rb._open_episodes
-            rb._open_episodes = [[] for _ in range(rb.n_envs)]
+        rb: ReplayBuffer = getattr(rb, "storage", rb)
+        rows, envs = (rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)
+        state = _copy(rb["truncated"][rows, envs])
+        rb["truncated"][rows, envs] = 1
+        # A memory-mapped buffer is saved by reference to its files, where the truncation is undone after the
+        # checkpoint: the loaded buffer writes it again when it is used
+        rb._checkpoint_truncation = rb.is_memmap
         return state
 
-    def _experiment_consistent_rb(
-        self,
-        rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer,
-        state: Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]],
-    ):
-        """Restore the state of the buffer consistent with the execution of the experiment.
-        I.e., it undoes the changes in the _ckpt_rb function.
-
-        Args:
-            rb (ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer): the buffer.
-            state (Tensor | Sequence[Tensor] | Sequence[Sequence[Tensor]]): the original state of the buffer.
-        """
-        rb = getattr(rb, "storage", rb)
-        if isinstance(rb, ReplayBuffer):
-            # Reinsert the true dones of the last rows of the environments
-            rb["truncated"][(rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)] = state
-            rb._checkpoint_truncation = False
-        elif isinstance(rb, EpisodeBuffer):
-            # reinsert the open episodes to continue the training
-            rb._open_episodes = state
+    def _experiment_consistent_rb(self, rb: Any, state: Any) -> None:
+        """Restore the true `truncated` of the last steps, after the checkpoint (it undoes `_ckpt_rb`)."""
+        rb: ReplayBuffer = getattr(rb, "storage", rb)
+        rb["truncated"][(rb.positions - 1) % rb.buffer_size, np.arange(rb.n_envs)] = state
+        rb._checkpoint_truncation = False
 
     def _delete_old_checkpoints(self, ckpt_folder: pathlib.Path):
         ckpts = list(sorted(ckpt_folder.glob("*.ckpt"), key=os.path.getmtime))

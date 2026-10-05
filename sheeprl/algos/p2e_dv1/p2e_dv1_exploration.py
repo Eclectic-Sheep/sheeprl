@@ -29,7 +29,7 @@ from sheeprl.algos.dreamer_v1.dreamer_v1 import (
     value_loss_fn,
 )
 from sheeprl.algos.dreamer_v1.loss import actor_loss, reconstruction_loss
-from sheeprl.algos.dreamer_v1.utils import add_is_first, compute_lambda_values
+from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
@@ -478,10 +478,6 @@ class P2EDV1Exploration(Algorithm):
         policy.actor_type = "task"
         policy.actor = get_single_device_fabric(self.fabric).setup_module(unwrap_fabric(state.actor_task))
         return policy
-
-    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
-        # A buffer saved before `is_first` was stored
-        return add_is_first(super().load_store(saved, store))
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays

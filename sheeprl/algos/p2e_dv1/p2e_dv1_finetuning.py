@@ -18,7 +18,6 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequencePlayer, build_store, sample_batches_of_iteration, train
-from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
@@ -123,8 +122,7 @@ class P2EDV1Finetuning(Algorithm):
             exploration = fabric.load(cfg.checkpoint.exploration_ckpt_path, weights_only=False)
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:
-                # A buffer saved before `is_first` was stored
-                buffer = add_is_first(load_replay_buffer(fabric, exploration["rb"], buffer))
+                buffer = load_replay_buffer(fabric, exploration["rb"], buffer)
         self.schedule = schedule
         return state, buffer
 
@@ -141,10 +139,6 @@ class P2EDV1Finetuning(Algorithm):
             for agent_p, p in zip(state.actor_task.parameters(), policy.actor.parameters()):
                 p.data = agent_p.data
         return policy
-
-    def load_store(self, saved: Any, store: ReplayStore) -> ReplayStore:
-        # A buffer saved before `is_first` was stored
-        return add_is_first(super().load_store(saved, store))
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays

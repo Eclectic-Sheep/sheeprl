@@ -1,5 +1,5 @@
-"""The replay buffer of the off-policy algorithms: a storage, where the player writes the steps, and a sampler, which
-draws the batches of the training from it (`sheeprl.data.samplers`)."""
+"""Where every algorithm writes the steps it plays and reads what it trains on: a `ReplayBuffer`, where the player
+writes the steps, and a sampler, which draws the batches of the training from it (`sheeprl.data.samplers`)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer, get_tensor
+from sheeprl.data.buffers import get_tensor
 
 
 class _Prefetch:
@@ -25,12 +25,16 @@ class _Prefetch:
 
 
 class ReplayStore:
-    """A storage (`ReplayBuffer`, `EnvIndependentReplayBuffer` or `EpisodeBuffer`) read by a sampler, whose batches
-    are moved to `device`.
+    """A `ReplayBuffer` read by a sampler, whose batches are moved to `device`.
 
-    The store is saved in the checkpoints with its storage and its sampler, whose generator continues where it was: a
-    resumed run draws the batches that the run would have drawn without stopping (the online queue restarts empty,
-    with the steps added after the loading).
+    The off-policy algorithms sample their batches (`batches`, `sample`) from the steps of the whole training. The
+    on-policy algorithms read their rollout whole (`read`), compute from it what they train on (e.g. the advantages),
+    and draw the minibatches of its epochs from that with an `EpochSampler` (`minibatches`); the player keeps in
+    `context` what follows the last step of the rollout (e.g. the observations whose value bootstraps the returns).
+
+    The store of an off-policy algorithm is saved in the checkpoints with its storage and its sampler, whose generator
+    continues where it was: a resumed run draws the batches that the run would have drawn without stopping (the online
+    queue restarts empty, with the steps added after the loading).
 
     With `prefetch`, while the training uses the batches of a sample (`batches`), a thread samples the next ones: the
     next ones of the iteration, or the first ones of the next iteration, which are gathered before its steps are
@@ -39,7 +43,7 @@ class ReplayStore:
     the sampling (on the CPU) and the copy to the device overlap the training (on the device).
 
     Args:
-        storage: where the steps are written (`add`) and read from.
+        storage: the `ReplayBuffer` where the steps are written (`add`) and read from.
         sampler: what is read: it draws the steps of the samples, which the storage gathers.
         device: the device of the sampled batches.
         from_numpy: whether the samples are converted with `torch.from_numpy` (`buffer.from_numpy`).
@@ -59,6 +63,8 @@ class ReplayStore:
         self.device = torch.device(device)
         self.from_numpy = from_numpy
         self.prefetch = prefetch
+        # What follows the last step written, set by the player (e.g. the observations after a rollout)
+        self.context: Dict[str, Any] = {}
         self._init_transient()
 
     def _init_transient(self) -> None:
@@ -74,10 +80,10 @@ class ReplayStore:
         state = self.__dict__.copy()
         for k in ("_lock", "_prefetched", "_stream"):
             state.pop(k)
+        state["context"] = {}
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        state.setdefault("prefetch", False)
         self.__dict__.update(state)
         self._init_transient()
 
@@ -113,6 +119,19 @@ class ReplayStore:
             )
             for k, v in samples.items()
         }
+
+    def read(self) -> Dict[str, Tensor]:
+        """The steps of the storage, `[Buffer_Size, Num_Envs, ...]` (e.g. the whole rollout of an on-policy algorithm),
+        on the device, in their dtypes."""
+        return self.storage.to_tensor(dtype=None, device=self.device, from_numpy=self.from_numpy)
+
+    def minibatches(self, data: Dict[str, Tensor], epochs: int, dim: int = 0) -> Iterator[Dict[str, Tensor]]:
+        """The minibatches of `epochs` epochs over the elements of `data` along its dimension `dim` (e.g. the steps of a
+        flattened rollout, or its sequences), drawn by the sampler (an `EpochSampler`)."""
+        n = next(iter(data.values())).shape[dim]
+        for idxes, _ in self.sampler.epochs(n, epochs):
+            index = torch.as_tensor(idxes, device=next(iter(data.values())).device)
+            yield {k: v.index_select(dim, index) for k, v in data.items()}
 
     @property
     def on_device(self) -> bool:
@@ -189,33 +208,13 @@ class ReplayStore:
                 v.record_stream(stream)
         return prefetched.samples
 
-    def load(self, saved: Any) -> "ReplayStore":
-        """This store with the storage of `saved`, a store from a checkpoint, and its sampler continuing the generators
+    def load(self, saved: "ReplayStore") -> "ReplayStore":
+        """This store with the storage of `saved`, a store from a checkpoint, and its sampler continuing the generator
         of the sampler of `saved` (with its own configuration: e.g. a finetuning that loads the buffer of its
-        exploration samples it as configured). A checkpoint of sheeprl up to 0.8.2 holds the storage itself, whose
-        generators the sampler continues. The online queue restarts empty, with the steps added from now on."""
-        storage, source = (saved.storage, saved.sampler) if isinstance(saved, ReplayStore) else (saved, saved)
-        if isinstance(storage, EpisodeBuffer) and isinstance(self.storage, ReplayBuffer):
-            # The episodes of a checkpoint of sheeprl up to 0.8.2
-            storage = _write_episodes(storage, self.storage)
-        if not isinstance(storage, type(self.storage)):
-            raise RuntimeError(
-                f"The checkpoint holds a replay buffer of type {type(storage).__name__}, "
-                f"but this run uses a {type(self.storage).__name__}"
-            )
+        exploration samples it as configured). The online queue restarts empty, with the steps added from now on."""
         self.wait()
-        self.sampler.continue_from(source)
-        self.sampler.reset_online(storage)
+        self.sampler.continue_from(saved.sampler)
+        self.sampler.reset_online(saved.storage)
         # Where this run keeps it (the checkpoints are loaded in the memory of the CPU)
-        self.storage = storage.to(getattr(self.storage, "device", None))
+        self.storage = saved.storage.to(self.storage.device)
         return self
-
-
-def _write_episodes(episodes: EpisodeBuffer, storage: ReplayBuffer) -> ReplayBuffer:
-    """The episodes of an `EpisodeBuffer` (of sheeprl up to 0.8.2) written in `storage`, the oldest first, every one in
-    the environment with the fewest steps: the buffer of episodes of every process became a buffer of steps of every
-    environment, sampled by `EpisodeSampler`."""
-    for episode in episodes.buffer:
-        env = int(np.argmin(storage.env_added))
-        storage.add({k: np.asarray(v)[:, np.newaxis] for k, v in episode.items()}, env_idxes=[env])
-    return storage

@@ -18,7 +18,17 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, Rollout, TrainSchedule, TrainState, autocast, run, update
+from sheeprl.core import (
+    Algorithm,
+    EnvRunner,
+    ReplayStore,
+    TrainSchedule,
+    TrainState,
+    autocast,
+    rollout_store,
+    run,
+    update,
+)
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae, normalize_tensor
@@ -41,7 +51,7 @@ class RolloutPlayer:
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: EnvRunner, rollout: Rollout) -> None:
+    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
 
@@ -81,7 +91,9 @@ class RolloutPlayer:
         if cfg.buffer.memmap:
             data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
             data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-        rollout.add(data, step.next_obs, validate_args=cfg.buffer.validate_args)
+        rollout.add(data, validate_args=cfg.buffer.validate_args)
+        # The observations after the last step of the rollout bootstrap its returns
+        rollout.context["next_obs"] = step.next_obs
 
 
 def ppo_loss(
@@ -143,7 +155,7 @@ class PPO(Algorithm):
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
-    ) -> Tuple[PPOState, Rollout]:
+    ) -> Tuple[PPOState, ReplayStore]:
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
@@ -167,7 +179,7 @@ class PPO(Algorithm):
         self.ent_coef = torch.tensor(float(cfg.algo.ent_coef), device=self.fabric.device)
 
         state = PPOState(agent=agent, optimizer=optimizer)
-        return state, Rollout.build(self.fabric, cfg, log_dir, cfg.buffer.size)
+        return state, rollout_store(self.fabric, cfg, log_dir, cfg.buffer.size)
 
     def policy(self, state: PPOState) -> PPOPlayer:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -180,7 +192,7 @@ class PPO(Algorithm):
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
 
     def batches(
-        self, state: PPOState, rollout: Rollout, n_steps: Optional[int], iteration: int
+        self, state: PPOState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # The learning rate and the coefficients of the iteration
@@ -191,7 +203,9 @@ class PPO(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = {k: rollout.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
+            next_obs = {
+                k: rollout.context["next_obs"][k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+            }
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = gae(
