@@ -257,7 +257,9 @@ def unwrap_fabric(model: _FabricModule | nn.Module) -> nn.Module:
 
 
 def save_configs(cfg: dotdict, log_dir: str):
-    OmegaConf.save(cfg.as_dict(), os.path.join(log_dir, "config.yaml"), resolve=True)
+    from sheeprl.utils import fs
+
+    fs.save_yaml(cfg.as_dict(), fs.join(log_dir, "config.yaml"))
 
 
 class Ratio:

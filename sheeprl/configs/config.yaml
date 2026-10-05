@@ -56,3 +56,6 @@ cublas_workspace_config: null  # Possible values are: ":4096:8" or ":16:8"
 exp_name: ${algo.name}_${env.id}
 run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
 root_dir: ${algo.name}/${env.id}
+# Where the runs are logged (`<log_root>/<root_dir>/<run_name>`): a local directory, or the URL of a remote filesystem
+# reached by every node of a training (fsspec, e.g. `s3://bucket/runs`, with its package installed: e.g. `s3fs`)
+log_root: logs/runs

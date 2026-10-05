@@ -7,3 +7,4 @@ precision: "32-true"
 callbacks:
   - _target_: sheeprl.utils.callback.CheckpointCallback
     keep_last: "${checkpoint.keep_last}"
+    memmap_buffer: "${checkpoint.memmap_buffer}"

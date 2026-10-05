@@ -8,6 +8,8 @@ from lightning.fabric.loggers.logger import Logger
 from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.utilities.cloud_io import _is_dir, get_filesystem
 
+from sheeprl.utils import fs
+
 
 def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
@@ -17,7 +19,7 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
     logger = None
     if fabric.is_global_zero and cfg.metric.log_level > 0:
         if "tensorboard" in cfg.metric.logger._target_.lower():
-            root_dir = os.path.join("logs", "runs", cfg.root_dir)
+            root_dir = fs.join(cfg.log_root, cfg.root_dir)
             if root_dir != cfg.metric.logger.root_dir:
                 warnings.warn(
                     "The specified root directory for the TensorBoardLogger is different from the experiment one, "
@@ -36,8 +38,9 @@ def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
     return logger
 
 
-def get_log_dir(fabric: Fabric, root_dir: str, run_name: str) -> str:
-    """Return and, if necessary, create the log directory. If there are more than one processes,
+def get_log_dir(fabric: Fabric, root_dir: str, run_name: str, log_root: str = os.path.join("logs", "runs")) -> str:
+    """Return and, if necessary, create the log directory, `<log_root>/<root_dir>/<run_name>/version_<n>` (`log_root`
+    can be on a remote filesystem: e.g. `s3://bucket/runs`). If there are more than one processes,
     the rank-0 process shares the directory to the others.
 
     Args:
@@ -58,27 +61,27 @@ def get_log_dir(fabric: Fabric, root_dir: str, run_name: str) -> str:
             log_dir = fabric.logger.log_dir
         else:
             # Otherwise the rank-zero process creates the log_dir
-            save_dir = os.path.join("logs", "runs", root_dir, run_name)
-            fs = get_filesystem(root_dir)
+            save_dir = fs.join(log_root, root_dir, run_name)
+            filesystem = get_filesystem(save_dir)
             try:
-                listdir_info = fs.listdir(save_dir)
+                listdir_info = filesystem.listdir(save_dir)
                 existing_versions = []
                 for listing in listdir_info:
                     d = listing["name"]
-                    bn = os.path.basename(d)
-                    if _is_dir(fs, d) and bn.startswith("version_"):
+                    bn = fs.basename(d)
+                    if _is_dir(filesystem, d) and bn.startswith("version_"):
                         dir_ver = bn.split("_")[1].replace("/", "")
                         existing_versions.append(int(dir_ver))
                 if len(existing_versions) == 0:
                     version = 0
                 else:
                     version = max(existing_versions) + 1
-                log_dir = os.path.join(save_dir, f"version_{version}")
+                log_dir = fs.join(save_dir, f"version_{version}")
             except OSError:
                 warnings.warn("Missing logger folder: %s" % save_dir, UserWarning)
-                log_dir = os.path.join(save_dir, f"version_{0}")
+                log_dir = fs.join(save_dir, f"version_{0}")
 
-            os.makedirs(log_dir, exist_ok=True)
+            fs.makedirs(log_dir)
         if fabric.world_size > 1:
             world_collective.broadcast_object_list([log_dir], src=0)
     else:
