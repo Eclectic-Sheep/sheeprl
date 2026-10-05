@@ -11,6 +11,7 @@ from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
@@ -495,4 +496,6 @@ def build_agent(
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
     )
+    # The step of the player, compiled with `algo.compile` (`compiled_player`)
+    player.forward = compiled_player(player.forward, fabric, cfg)
     return agent, player
