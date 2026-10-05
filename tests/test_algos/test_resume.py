@@ -270,3 +270,34 @@ def test_on_policy_run_resumes(exp):
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert [os.path.basename(p) for p in resumed] == ["ckpt_32_0.ckpt"]
+
+
+def test_a_run_logged_on_a_remote_filesystem_resumes_without_its_local_files(tmp_path):
+    # The logs, the configuration and the checkpoints on a remote filesystem (here the memory one of fsspec), the
+    # memory-mapped buffer in a local directory: its checkpoint carries its data (`checkpoint.memmap_buffer=copy`), and
+    # a resume where its files are missing (e.g. on another node, without a shared filesystem) writes them again
+    import fsspec
+
+    from sheeprl.utils import fs
+
+    memory = fsspec.filesystem("memory")
+    root = "memory://pytest_remote_runs"
+    args = [
+        f"log_root={root}",
+        "root_dir=sac",
+        "buffer.checkpoint=True",
+        "buffer.memmap=True",
+        f"buffer.memmap_dir={tmp_path / 'node'}",
+        "checkpoint.memmap_buffer=copy",
+    ]
+    try:
+        train("sac", ["algo.total_steps=8", "run_name=first", *args])
+        (ckpt,) = [memory.unstrip_protocol(p) for p in memory.glob(f"{root}/sac/first/version_*/checkpoint/*.ckpt")]
+        assert memory.exists(fs.run_config(ckpt))
+        shutil.rmtree(tmp_path / "node")
+        resumed = train("sac", ["algo.total_steps=16", "run_name=resumed", f"checkpoint.resume_from={ckpt}", *args])
+    finally:
+        if memory.exists(root):
+            memory.rm(root, recursive=True)
+    # The training goes on in iterations 5 to 8, as without the interruption
+    assert resumed == (0, 4 * 2)
