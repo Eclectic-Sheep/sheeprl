@@ -8,6 +8,9 @@ name: ppo
 anneal_lr: False
 gamma: 0.99
 gae_lambda: 0.95
+# How GAE is computed: `loop`, step by step with NumPy on the CPU, or `log_scan`, in log2(rollout_steps) rounds
+# with PyTorch on the device (the same results but for the last bits)
+gae_method: loop
 update_epochs: 10
 loss_reduction: mean
 normalize_advantages: False
