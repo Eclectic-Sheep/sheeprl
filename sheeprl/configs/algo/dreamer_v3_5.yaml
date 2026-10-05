@@ -29,10 +29,12 @@ per_rank_sequence_length: 64
 replay_context: 1
 # Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start.
 # `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
+# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used).
+# `player` also compiles the step of the player: faster steps in the environments
 compile:
   enabled: False
   mode: reduce-overhead
+  player: True
 
 # Encoder and decoder keys
 cnn_keys:
