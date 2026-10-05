@@ -102,3 +102,20 @@ def test_the_buffers_of_a_checkpoint_are_in_a_file_per_process_loaded_when_index
     buffers = fs.BufferFiles(paths)
     assert isinstance(buffers, list) and len(buffers) == 2
     assert buffers[1] == {"rank": 1} and loaded == [paths[1]]
+
+
+def test_the_buffers_of_a_moved_log_directory_are_found_next_to_its_checkpoint(tmp_path):
+    import shutil
+
+    import torch
+
+    path = fs.buffer_path(str(tmp_path / "old" / "checkpoint" / "ckpt_8_0.ckpt"), 0)
+    fs.makedirs(fs.parent(path))
+    torch.save({"rank": 0}, path)
+    buffers = fs.BufferFiles([path])
+    shutil.move(tmp_path / "old", tmp_path / "new")
+    with pytest.raises(FileNotFoundError, match="checkpoint_buffers"):
+        buffers[0]
+    # Loaded with the checkpoint of the moved directory (`load_checkpoint`)
+    buffers.checkpoint_path = str(tmp_path / "new" / "checkpoint" / "ckpt_8_0.ckpt")
+    assert buffers[0] == {"rank": 0}

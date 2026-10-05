@@ -303,3 +303,26 @@ def test_a_run_logged_on_a_remote_filesystem_resumes_without_its_local_files(tmp
             memory.rm(root, recursive=True)
     # The training goes on in iterations 5 to 8, as without the interruption
     assert resumed == (0, 4 * 2)
+
+
+def test_a_run_resumes_from_its_moved_log_directory():
+    # The checkpoint references the files of the replay buffers by their paths: they are looked for next to it when
+    # the log directory was moved
+    root_dir = "pytest_resume_moved"
+    args = ["buffer.checkpoint=True", "buffer.memmap=False", f"root_dir={root_dir}"]
+    try:
+        train("sac", ["algo.total_steps=8", "run_name=first", *args])
+        shutil.move(os.path.join("logs", "runs", root_dir, "first"), os.path.join("logs", "runs", root_dir, "moved"))
+        resumed = train(
+            "sac",
+            [
+                "algo.total_steps=16",
+                "run_name=resumed",
+                f"checkpoint.resume_from={checkpoint_of(root_dir, 'moved')}",
+                *args,
+            ],
+        )
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    # The training goes on in iterations 5 to 8, as without the interruption
+    assert resumed == (0, 4 * 2)
