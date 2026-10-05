@@ -116,7 +116,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("SAC algorithm cannot allow to use images as observations, the CNN keys will be ignored")
