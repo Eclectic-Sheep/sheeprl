@@ -1,4 +1,3 @@
-import os
 import warnings
 from typing import Any, Dict
 
@@ -413,7 +412,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
+            ckpt_path = fs.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
