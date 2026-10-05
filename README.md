@@ -258,6 +258,8 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 
 ## How to use it
 
+> Upgrading from sheeprl 0.x? See [howto/migrate_to_v1.md](./howto/migrate_to_v1.md).
+
 ### Installation
 
 Three options exist for installing SheepRL
