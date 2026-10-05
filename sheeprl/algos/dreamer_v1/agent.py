@@ -618,6 +618,7 @@ def build_agent(
         min_std=cfg.algo.world_model.min_std,
     )
     # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
-    # states in its attributes
-    player.get_exploration_actions = compiled_player(player.get_exploration_actions, fabric, cfg, cuda_graphs=False)
+    # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with
+    # the policy step
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, player
