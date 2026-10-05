@@ -32,6 +32,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     test,
 )
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import fs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
@@ -483,7 +484,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     world_size = fabric.world_size
 
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64

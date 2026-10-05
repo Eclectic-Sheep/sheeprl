@@ -312,7 +312,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     world_size = fabric.world_size
 
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     # These arguments cannot be changed
     cfg.env.frame_stack = 1

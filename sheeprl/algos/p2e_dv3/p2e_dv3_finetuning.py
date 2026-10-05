@@ -1,5 +1,4 @@
 import copy
-import pathlib
 import warnings
 from typing import Any, Dict
 
@@ -33,14 +32,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
 
-    ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
+    ckpt_path = cfg.checkpoint.exploration_ckpt_path
     resume_from_checkpoint = cfg.checkpoint.resume_from is not None
 
     # Finetuning that was interrupted for some reason
     if resume_from_checkpoint:
-        state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from), weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
     else:
-        state = fabric.load(ckpt_path, weights_only=False)
+        state = fs.load_checkpoint(fabric, ckpt_path, weights_only=False)
 
     # All the models must be equal to the ones of the exploration phase
     cfg.algo.gamma = exploration_cfg.algo.gamma

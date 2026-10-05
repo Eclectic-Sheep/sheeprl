@@ -28,6 +28,7 @@ from sheeprl.algos.dreamer_v2.utils import (
 )
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import fs
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
@@ -437,7 +438,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     world_size = fabric.world_size
 
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     # These arguments cannot be changed
     cfg.env.screen_size = 64

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import pathlib
 import warnings
 from typing import Any, Dict
 
@@ -15,6 +14,7 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import train
 from sheeprl.algos.dreamer_v2.utils import build_buffer, build_optimizer, prepare_obs, sample_batches, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import fs
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
@@ -36,14 +36,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
 
-    ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
+    ckpt_path = cfg.checkpoint.exploration_ckpt_path
     resume_from_checkpoint = cfg.checkpoint.resume_from is not None
 
     # Finetuning that was interrupted for some reason
     if resume_from_checkpoint:
-        state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from), weights_only=False)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
     else:
-        state = fabric.load(ckpt_path, weights_only=False)
+        state = fs.load_checkpoint(fabric, ckpt_path, weights_only=False)
 
     # All the models must be equal to the ones of the exploration phase
     cfg.algo.gamma = exploration_cfg.algo.gamma
