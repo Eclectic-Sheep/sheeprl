@@ -268,6 +268,8 @@ def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
         "checkpoint.save_last=False",
         "algo.run_test=False",
         "algo.compile.enabled=True",
+        # The losses are not compiled (`compiled` above), nor the player: on the CPU Inductor needs a C++ compiler
+        "algo.compile.player=False",
         "algo.rollout_steps=64",
         "algo.per_rank_sequence_length=8",
         "algo.per_rank_num_batches=3",
