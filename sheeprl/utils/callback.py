@@ -55,6 +55,10 @@ class CheckpointCallback:
             # The checkpoint is written once the buffers of all the processes are
             fabric.barrier()
             state["rb"] = fs.BufferFiles([fs.buffer_path(ckpt_path, rank) for rank in range(fabric.world_size)])
+        # The version that saved the checkpoint: the checkpoints are not compatible across major versions
+        from sheeprl import __version__
+
+        state["sheeprl_version"] = __version__
         fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
