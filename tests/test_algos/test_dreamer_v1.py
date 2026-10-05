@@ -25,7 +25,6 @@ from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
 from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent, gru_step
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss, state_kl
-from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.distribution import SafeTanhTransform
@@ -256,44 +255,6 @@ def test_the_rows_mark_the_first_observations_of_the_episodes(exp):
     reset_rows = [(row, indices) for row, indices in other_rows if indices is not None]
     assert len(step_rows) == 7 and all(not row["is_first"].any() for row in step_rows)
     assert len(reset_rows) == 2 and all(row["is_first"].all() and indices == [0, 1] for row, indices in reset_rows)
-
-
-@pytest.mark.parametrize("memmap", [False, True])
-def test_a_buffer_saved_without_is_first_is_completed(memmap, tmp_path):
-    # The buffers of the runs before `is_first` was stored: resumed (or loaded by a finetuning), adding a row with it
-    # failed
-    from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
-
-    rb = EnvIndependentReplayBuffer(
-        6, n_envs=2, memmap=memmap, memmap_dir=tmp_path, buffer_cls=SequentialReplayBuffer, obs_keys=["state"]
-    )
-    # Environment 0 ends an episode at its second row, environment 1 at its third (truncated)
-    terminated = np.array([[0, 0], [1, 0], [0, 0], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
-    truncated = np.array([[0, 0], [0, 0], [0, 1], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
-    for t in range(4):
-        rb.add(
-            {
-                "state": np.zeros((1, 2, 3), np.float32),
-                "terminated": terminated[t],
-                "truncated": truncated[t],
-                "actions": np.zeros((1, 2, 1), np.float32),
-                "rewards": np.zeros((1, 2, 1), np.float32),
-            }
-        )
-    add_is_first(rb)
-    is_first = [np.asarray(rb["is_first"])[:4, env, 0].tolist() for env in range(2)]
-    assert is_first == [[1, 0, 1, 0], [1, 0, 0, 1]]
-    # Rows with it can be added
-    rb.add(
-        {
-            "state": np.zeros((1, 2, 3), np.float32),
-            "terminated": np.zeros((1, 2, 1), np.float32),
-            "truncated": np.zeros((1, 2, 1), np.float32),
-            "actions": np.zeros((1, 2, 1), np.float32),
-            "rewards": np.zeros((1, 2, 1), np.float32),
-            "is_first": np.ones((1, 2, 1), np.float32),
-        }
-    )
 
 
 def dreamer_v1_cfg(exp: str, overrides=()) -> Dict[str, Any]:

@@ -3,7 +3,7 @@ import pickle
 import numpy as np
 import pytest
 
-from sheeprl.data.buffers import EpisodeBuffer, ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import EpisodeSampler
 from sheeprl.data.store import ReplayStore
 
@@ -78,14 +78,3 @@ def test_the_index_of_the_episodes_is_rebuilt_from_a_checkpoint():
     loaded = pickle.loads(pickle.dumps(store))
     assert loaded.sampler._scanned is None
     assert set(np.unique(loaded.sample(32)["episode"].numpy())) == {0, 1}
-
-
-def test_the_episodes_of_an_episode_buffer_are_loaded_in_the_environments():
-    # A checkpoint of sheeprl up to 0.8.2: its episodes, the oldest first, in the environment with fewer steps
-    old = EpisodeBuffer(100, 2, n_envs=2)
-    for env, lengths in enumerate([[5, 9, 1], [4, 6, 1]]):
-        data = episodes_of(env, lengths, first_id=10 * env)
-        old.add({k: v for k, v in data.items()}, env_idxes=[env])
-    store = ReplayStore(ReplayBuffer(50, 2), EpisodeSampler(2, seed=0)).load(old)
-    assert store.storage.env_added.sum() == 5 + 9 + 4 + 6
-    assert set(np.unique(store.sample(64)["episode"].numpy())) == {0, 1, 10, 11}

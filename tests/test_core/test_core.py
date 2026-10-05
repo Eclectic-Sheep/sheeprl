@@ -16,6 +16,8 @@ from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.loop import phase_timer
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import TransitionSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict
 
@@ -268,13 +270,13 @@ def test_the_phases_are_timed_per_process(monkeypatch):
 
 
 def test_load_replay_buffer_takes_the_buffer_of_the_process(fabric):
-    buffer = ReplayBuffer(4, n_envs=1)
-    saved = [ReplayBuffer(4, n_envs=1)]
-    assert load_replay_buffer(fabric, saved, buffer) is saved[0]
+    store = lambda: ReplayStore(ReplayBuffer(4, n_envs=1), TransitionSampler(seed=0))
+    saved = [store()]
+    assert load_replay_buffer(fabric, saved, store()).storage is saved[0].storage
     # A single saved buffer is the one of every process
-    assert load_replay_buffer(fabric, saved[0], buffer) is saved[0]
+    assert load_replay_buffer(fabric, saved[0], store()).storage is saved[0].storage
     with pytest.raises(RuntimeError, match="2 replay buffer"):
-        load_replay_buffer(fabric, [ReplayBuffer(4, n_envs=1), ReplayBuffer(4, n_envs=1)], buffer)
+        load_replay_buffer(fabric, [store(), store()], store())
 
 
 class Parent(nn.Module):
@@ -469,7 +471,7 @@ def test_every_process_returns_from_the_training_once_all_of_them_trained(monkey
 def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path):
     # The steps of the rollout in its ReplayBuffer, read whole on the device; the minibatches of every epoch of its
     # update cover all the elements of what the training computes from them
-    from sheeprl.core import Rollout
+    from sheeprl.core import rollout_store
     from sheeprl.data.samplers import EpochSampler
 
     cfg = dotdict(
@@ -481,12 +483,13 @@ def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path
         }
     )
     fabric = Fabric(accelerator="cpu", devices=1)
-    rollout = Rollout.build(fabric, cfg, str(tmp_path), size=4)
+    rollout = rollout_store(fabric, cfg, str(tmp_path), size=4)
     assert isinstance(rollout.storage, ReplayBuffer) and isinstance(rollout.sampler, EpochSampler)
     for t in range(4):
-        rollout.add({"state": np.full((1, 2, 1), t, np.float32)}, next_obs={"state": np.full((2, 1), t + 1)})
+        rollout.add({"state": np.full((1, 2, 1), t, np.float32)})
+        rollout.context["next_obs"] = {"state": np.full((2, 1), t + 1)}
     data = rollout.read()
-    assert data["state"].shape == (4, 2, 1) and rollout.next_obs["state"][0, 0] == 4
+    assert data["state"].shape == (4, 2, 1) and rollout.context["next_obs"]["state"][0, 0] == 4
     flat = {"state": data["state"].flatten(0, 1)}
     torch.manual_seed(0)
     minibatches = list(rollout.minibatches(flat, epochs=2))

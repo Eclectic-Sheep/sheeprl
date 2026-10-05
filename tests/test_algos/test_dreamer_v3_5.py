@@ -32,7 +32,7 @@ from sheeprl.algos.dreamer_v3_5.agent import (
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, lambda_return, symexp_bins
 from sheeprl.algos.dreamer_v3_5.optim import LaProp
 from sheeprl.algos.dreamer_v3_5.utils import Moments
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import SequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
@@ -403,7 +403,7 @@ def test_the_continuous_actions_of_the_player_are_clipped():
     assert actions.abs().max() <= 1 and torch.equal(player.actions, actions)
 
 
-def add_steps(rb: EnvIndependentReplayBuffer, counters: np.ndarray, n: int) -> None:
+def add_steps(rb: ReplayBuffer, counters: np.ndarray, n: int) -> None:
     """Add `n` steps of every environment, with their identifiers (`dreamer_v3_5.STEP_ID_KEY`)."""
     for _ in range(n):
         rb.add(
@@ -417,8 +417,8 @@ def add_steps(rb: EnvIndependentReplayBuffer, counters: np.ndarray, n: int) -> N
 
 
 def test_the_latent_states_are_written_back_at_their_steps():
-    # The buffers of 5 steps go around: the steps of the sampled sequences are found from their identifiers
-    rb = EnvIndependentReplayBuffer(5, n_envs=2, buffer_cls=SequentialReplayBuffer, seed=0)
+    # The buffer of 5 steps goes around: the steps of the sampled sequences are found from their identifiers
+    rb = ReplayBuffer(5, n_envs=2)
     counters = np.zeros(2, np.int64)
     add_steps(rb, counters, 8)
     store = ReplayStore(rb, SequenceSampler(3, seed=0))
@@ -439,7 +439,7 @@ def test_the_latent_states_are_written_back_at_their_steps():
     assert written > 0
     # The steps added to every buffer, from the identifiers it holds
     assert np.array_equal(dreamer_v3_5.step_counters(rb), counters)
-    assert np.array_equal(dreamer_v3_5.step_counters(EnvIndependentReplayBuffer(5, n_envs=2)), [0, 0])
+    assert np.array_equal(dreamer_v3_5.step_counters(ReplayBuffer(5, n_envs=2)), [0, 0])
 
 
 def test_the_slow_critic_moves_towards_the_critic():

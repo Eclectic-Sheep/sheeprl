@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, ReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import SequenceSampler, TransitionSampler
 from sheeprl.data.store import ReplayStore
 
@@ -21,18 +21,19 @@ def steps(t, n_envs, rng):
 
 
 def buffers(kind, device):
-    kw = dict(obs_keys=("observations", "rgb"), device=device)
-    if kind == "transitions":
-        return ReplayBuffer(8, 2, **kw), lambda: TransitionSampler(True, True, seed=1)
-    if kind == "sequences":
-        return SequentialReplayBuffer(8, 2, **kw), lambda: SequenceSampler(3, True, True, seed=1)
-    cls = ReplayBuffer if kind == "env_transitions" else SequentialReplayBuffer
-    sampler = (
-        (lambda: TransitionSampler(True, True, seed=1))
-        if kind == "env_transitions"
-        else (lambda: SequenceSampler(3, True, True, seed=1))
-    )
-    return EnvIndependentReplayBuffer(8, 2, buffer_cls=cls, **kw), sampler
+    storage = ReplayBuffer(8, 2, obs_keys=("observations", "rgb"), device=device)
+    if kind.endswith("transitions"):
+        return storage, lambda: TransitionSampler(True, True, seed=1)
+    return storage, lambda: SequenceSampler(3, True, True, seed=1)
+
+
+def add(store, kind, t, rng):
+    """`t` steps of both environments, or `t` steps of the environment 0 and `t + 1` of the environment 1 (`env_*`)."""
+    if kind.startswith("env_"):
+        store.add(steps(t, 1, rng), env_idxes=[0])
+        store.add(steps(t + 1, 1, rng), env_idxes=[1])
+    else:
+        store.add(steps(t, 2, rng))
 
 
 @cuda
@@ -46,11 +47,11 @@ def test_a_buffer_on_the_gpu_samples_what_a_buffer_on_the_cpu_samples(kind):
         store = ReplayStore(storage, sampler(), device="cuda")
         samples[device] = []
         for t in (5, 3, 9):
-            store.add(steps(t, 2, rng))
+            add(store, kind, t, rng)
             samples[device].append(store.sample(2, 3))
         # Through a checkpoint
         store = pickle.loads(pickle.dumps(store))
-        store.add(steps(2, 2, rng))
+        add(store, kind, 2, rng)
         samples[device].append(store.sample(2, 3))
     for cpu, gpu in zip(samples[None], samples["cuda"]):
         assert cpu.keys() == gpu.keys()
