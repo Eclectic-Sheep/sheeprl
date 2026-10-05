@@ -23,6 +23,8 @@ from sheeprl.algos.dreamer_v3.utils import init_weights
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 
+from .compiled import same_random_numbers
+
 
 @pytest.mark.parametrize(
     "layer,fan_in,fan_out",
@@ -506,3 +508,29 @@ def test_the_player_shares_the_channels_last_weights_of_the_world_model():
     for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
         assert p.data_ptr() == agent_p.data_ptr()
     assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is compiled on the GPU")
+def test_the_compiled_player_plays_as_the_eager_one(monkeypatch):
+    # The same weights, observations and random numbers: the same actions and recurrent states, with and without
+    # `torch.compile` (without CUDA graphs: the player keeps its states in its attributes), also after the states of
+    # one of the environments are reset
+    same_random_numbers(monkeypatch)
+    played = []
+    for enabled in (False, True):
+        _, _, player, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
+        torch.manual_seed(1)
+        n = player.num_envs
+        obs = {"rgb": torch.rand(1, n, 3, 64, 64, device="cuda") - 0.5, "state": torch.randn(1, n, 5, device="cuda")}
+        player.init_states()
+        steps = []
+        with torch.inference_mode():
+            for t in range(4):
+                if t == 2:
+                    player.init_states([0])
+                actions = torch.cat(player.get_actions(obs), -1)
+                steps.append((actions.clone(), player.recurrent_state.clone()))
+        played.append(steps)
+    for (eager_actions, eager_states), (actions, states) in zip(*played):
+        torch.testing.assert_close(actions, eager_actions)
+        torch.testing.assert_close(states, eager_states, rtol=1e-4, atol=1e-5)
