@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence
 
 import gymnasium as gym
@@ -15,6 +14,7 @@ from torch.distributions import Independent, OneHotCategoricalStraightThrough
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.utils import fs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
@@ -133,7 +133,7 @@ def sequential_store(
         n_envs=cfg.env.num_envs,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         device=fabric.device if cfg.buffer.on_device else None,
     )
     sampler = SequenceSampler(sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank)

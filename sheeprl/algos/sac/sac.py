@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional, Tuple
@@ -23,6 +22,7 @@ from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, u
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.utils import fs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
@@ -130,7 +130,7 @@ def build_store(
         cfg.env.num_envs,
         obs_keys=obs_keys,
         memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         device=fabric.device if cfg.buffer.on_device else None,
     )
     sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)

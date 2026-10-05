@@ -8,7 +8,6 @@ set.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict
 
 from lightning import Fabric
@@ -16,6 +15,7 @@ from lightning import Fabric
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import EpochSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.utils import fs
 
 
 def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) -> ReplayStore:
@@ -26,7 +26,7 @@ def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) 
         size,
         cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
     )
     sampler = EpochSampler(
