@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Optional
 
 from lightning import Fabric
@@ -10,6 +9,7 @@ from torch import Tensor
 
 from sheeprl.core.algorithm import TrainState
 from sheeprl.core.schedule import TrainSchedule
+from sheeprl.utils import fs
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import timer
 
@@ -118,7 +118,7 @@ class Cadence:
         }
         if schedule.ratio is not None:
             ckpt["ratio"] = schedule.ratio.state_dict()
-        ckpt_path = os.path.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
+        ckpt_path = fs.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
         self.fabric.call(
             "on_checkpoint_coupled",
             fabric=self.fabric,
