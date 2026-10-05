@@ -1,17 +1,22 @@
 # @package _global_
 
-# DreamerV3 (Nature version) on Atari, with the 12M model (the official configuration has the 200M one:
-# `algo=dreamer_v3_5`)
+# DreamerV3 (Nature version) on Atari, as in the paper: 200M environment steps (frames) with an action repeat of 4,
+# 16 environments, a replay ratio of 32 and the 200M model
 
 defaults:
-  - override /algo: dreamer_v3_5_12M
+  - override /algo: dreamer_v3_5
   - override /env: atari
   - override /model_manager: dreamer_v3_5
   - _self_
 
+# Environment
+env:
+  num_envs: 16
+
 # Algorithm
 algo:
-  total_steps: 5000000
+  # The policy steps: the 200M environment steps divided by the action repeat
+  total_steps: 50_000_000
   per_rank_batch_size: 16
   per_rank_sequence_length: 64
   # The decoder reconstructs the observations of the encoder
@@ -24,7 +29,8 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 1000000
+  # The replay capacity of the paper
+  size: 5_000_000
   checkpoint: True
   # The batches start with the sequences of the new steps (the `replay.online` of the official configuration)
   online: True

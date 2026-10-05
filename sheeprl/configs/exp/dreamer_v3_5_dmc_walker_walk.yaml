@@ -1,10 +1,11 @@
 # @package _global_
 
-# DreamerV3 (Nature version) on the DeepMind Control Suite from pixels (the `dmc_vision` configuration of the official
-# implementation, with the 12M model instead of the 200M one: `algo=dreamer_v3_5` for it)
+# DreamerV3 (Nature version) on the DeepMind Control Suite from pixels (Visual Control), as in the paper: 1M environment
+# steps with an action repeat of 2, 16 environments, a replay ratio of 512 and the 12M model
 
 defaults:
   - dreamer_v3_5
+  - override /algo: dreamer_v3_5_12M
   - override /env: dmc
   - _self_
 
@@ -13,8 +14,8 @@ seed: 5
 
 # Environment
 env:
-  num_envs: 4
-  action_repeat: 1
+  num_envs: 16
+  action_repeat: 2
   max_episode_steps: -1
   wrapper:
     domain_name: walker
@@ -28,21 +29,23 @@ checkpoint:
 
 # Buffer
 buffer:
-  size: 1_000_000
+  # The whole run (the replay capacity of the paper is 5M)
+  size: 500_000
   checkpoint: True
   memmap: True
 
 # Algorithm
 algo:
-  total_steps: 1_000_000
+  # The policy steps: the 1M environment steps divided by the action repeat
+  total_steps: 500_000
   cnn_keys:
     encoder:
       - rgb
   mlp_keys:
     encoder: []
   learning_starts: 1024
-  # The `train_ratio` of 256 of the official configuration
-  replay_ratio: 0.25
+  # The replay ratio of 512 of the paper: 512 / (16 * 64) (the official configuration has 256)
+  replay_ratio: 0.5
 
 # Metric
 metric:

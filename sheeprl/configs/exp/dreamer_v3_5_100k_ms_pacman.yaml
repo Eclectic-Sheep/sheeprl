@@ -1,7 +1,7 @@
 # @package _global_
 
-# DreamerV3 (Nature version) on Atari 100k (the `atari100k` configuration of the official implementation, with the
-# 12M model instead of the 200M one: `algo=dreamer_v3_5` for it)
+# DreamerV3 (Nature version) on Atari 100k, as in the paper: 400K environment steps (frames) with an action repeat of 4,
+# 1 environment, a replay ratio of 128 and the 200M model
 
 defaults:
   - dreamer_v3_5
@@ -22,12 +22,14 @@ checkpoint:
 
 # Buffer
 buffer:
+  # The whole run (the replay capacity of the paper is 5M)
   size: 100000
   checkpoint: True
 
 # Algorithm
 algo:
+  # The policy steps: the 400K environment steps divided by the action repeat
   total_steps: 100000
   learning_starts: 1024
-  # The `train_ratio` of 256 of the official configuration
-  replay_ratio: 0.25
+  # The replay ratio of 128 of the paper: 128 / (16 * 64) (the official configuration has 256)
+  replay_ratio: 0.125

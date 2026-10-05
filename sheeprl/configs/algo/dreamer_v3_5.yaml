@@ -1,6 +1,7 @@
-# DreamerV3 of the Nature paper (Hafner et al., 2025), with the defaults of the official implementation
-# (https://github.com/danijar/dreamerv3/blob/main/dreamerv3/configs.yaml): the 200M model (`size200m`).
-# The other sizes are `dreamer_v3_5_<size>` (1M, 12M, 25M, 50M, 100M, 200M, 400M).
+# DreamerV3 of the Nature paper (Hafner et al., 2025), with the hyperparameters of the paper (Table 4, the same for
+# every benchmark): the defaults of the official implementation
+# (https://github.com/danijar/dreamerv3/blob/main/dreamerv3/configs.yaml) but the unimix of the actor.
+# The 200M model (`size200m`): the other sizes are `dreamer_v3_5_<size>` (1M, 12M, 25M, 50M, 100M, 200M, 400M).
 
 defaults:
   - default
@@ -122,9 +123,9 @@ actor:
   max_std: 1.0
   mlp_layers: 3
   dense_units: ${algo.dense_units}
-  # The share of the uniform distribution mixed into the categoricals of the discrete actions (the official
-  # implementation doesn't mix it)
-  unimix: 0.0
+  # The share of the uniform distribution mixed into the categoricals of the discrete actions: 1% as in the paper (the
+  # official implementation doesn't mix it: 0 to match it)
+  unimix: 0.01
   outscale: 0.01
 
   # The scale of the returns: the range between their percentiles, at least `max`
