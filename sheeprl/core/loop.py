@@ -17,6 +17,7 @@ from sheeprl.core.cadence import Cadence
 from sheeprl.core.runner import EnvRunner
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import load_replay_buffer
+from sheeprl.utils import fs
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import phase_timer, training_timer
@@ -34,7 +35,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     """
     checkpoint = None
     if cfg.checkpoint.resume_from:
-        checkpoint = fabric.load(cfg.checkpoint.resume_from, weights_only=False)
+        checkpoint = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
         cfg.algo.per_rank_batch_size = checkpoint["batch_size"] // fabric.world_size
 
     # The logger is created only on the rank-0 process

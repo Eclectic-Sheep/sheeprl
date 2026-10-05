@@ -137,16 +137,41 @@ class BufferFiles(list):
     """The replay buffers of the processes of a checkpoint, one file each (`buffer_path`), saved by every process
     instead of being gathered by the first one: a process loads only its own, when indexed
     (`state["rb"][fabric.global_rank]`). Iterated, it gives the paths of the files (as Fabric traverses a checkpoint).
-    """
+
+    A file missing at its path (e.g. the log directory was moved or copied elsewhere) is looked for in the
+    `checkpoint_buffers` folder next to the folder of the checkpoint it is loaded with (`load_checkpoint`)."""
+
+    checkpoint_path: str | None = None
 
     def __getitem__(self, idx: Any) -> Any:
         if isinstance(idx, slice):
             return [self._load(path) for path in super().__getitem__(idx)]
         return self._load(super().__getitem__(idx))
 
-    @staticmethod
-    def _load(path: str) -> Any:
+    def _load(self, path: str) -> Any:
         import torch
 
+        path = self._resolve(path)
         with get_filesystem(path).open(path, "rb") as f:
             return torch.load(f, weights_only=False)
+
+    def _resolve(self, path: str) -> str:
+        if get_filesystem(path).exists(path):
+            return path
+        if self.checkpoint_path is not None:
+            moved = join(parent(self.checkpoint_path, 2), "checkpoint_buffers", basename(path))
+            if get_filesystem(moved).exists(moved):
+                return moved
+        raise FileNotFoundError(
+            f"The replay buffer of the checkpoint is missing: '{path}'"
+            + (f", nor is it in '{moved}'" if self.checkpoint_path is not None else "")
+            + ". The `checkpoint_buffers` folder must be next to the folder of the checkpoint"
+        )
+
+
+def load_checkpoint(fabric: Any, path: str | os.PathLike, **kwargs: Any) -> Any:
+    """`fabric.load(path)`, whose replay buffers (`BufferFiles`) are also looked for next to `path`."""
+    state = fabric.load(str(path), **kwargs)
+    if isinstance(state, dict) and isinstance(state.get("rb"), BufferFiles):
+        state["rb"].checkpoint_path = str(path)
+    return state

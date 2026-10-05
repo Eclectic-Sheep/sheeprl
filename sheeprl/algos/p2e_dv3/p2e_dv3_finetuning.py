@@ -24,6 +24,7 @@ from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
 from sheeprl.data.store import ReplayStore
+from sheeprl.utils import fs
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -159,7 +160,7 @@ class P2EDV3Finetuning(Algorithm):
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop)
         if self.exploration_cfg is not None and not cfg.checkpoint.resume_from:
-            exploration = fabric.load(cfg.checkpoint.exploration_ckpt_path, weights_only=False)
+            exploration = fs.load_checkpoint(fabric, cfg.checkpoint.exploration_ckpt_path, weights_only=False)
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:
                 buffer = load_replay_buffer(fabric, exploration["rb"], buffer)
