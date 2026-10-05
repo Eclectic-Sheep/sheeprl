@@ -113,3 +113,35 @@ def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
             [torch.distributions.TanhTransform()],
         )
         torch.testing.assert_close(logprobs.double(), dist.log_prob(u.tanh()).sum(-1, keepdim=True), atol=1e-4, rtol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is replayed by CUDA graphs on the GPU")
+@pytest.mark.parametrize("is_continuous", [False, True])
+def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
+    # The same weights, observations and random numbers: the same actions, log-probabilities and values, with and
+    # without `torch.compile` and its CUDA graphs, whose outputs are copies (the next replay overwrites them)
+    from lightning import Fabric
+
+    from sheeprl.utils.compile import compiled_player
+
+    from .compiled import same_random_numbers
+
+    same_random_numbers(monkeypatch)
+    agent = build_agent(ortho_init=False, is_continuous=is_continuous).cuda()
+    cfg = dotdict(
+        {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
+    )
+    eager = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
+    compiled = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
+    compiled.forward = compiled_player(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
+    obs = {"state": torch.randn(4, 8, device="cuda")}
+    played = []
+    for module in (eager, compiled):
+        torch.manual_seed(1)
+        with torch.inference_mode():
+            played.append([module(obs) for _ in range(3)])
+    for (eager_actions, eager_logprobs, eager_values), (actions, logprobs, values) in zip(*played):
+        for a, e in zip(actions, eager_actions):
+            torch.testing.assert_close(a, e)
+        torch.testing.assert_close(logprobs, eager_logprobs, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(values, eager_values, rtol=1e-4, atol=1e-5)
