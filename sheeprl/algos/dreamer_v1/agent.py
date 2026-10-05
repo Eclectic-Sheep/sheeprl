@@ -20,6 +20,7 @@ from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 # The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
@@ -616,4 +617,7 @@ def build_agent(
         fabric_player.device,
         min_std=cfg.algo.world_model.min_std,
     )
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes
+    player.get_exploration_actions = compiled_player(player.get_exploration_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, player

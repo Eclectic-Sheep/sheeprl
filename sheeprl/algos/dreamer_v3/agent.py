@@ -34,6 +34,7 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
@@ -1341,4 +1342,7 @@ def build_agent(
         p.data = agent_p.data
     for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
         p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, target_critic, player

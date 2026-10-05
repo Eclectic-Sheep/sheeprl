@@ -18,10 +18,12 @@ per_rank_pretrain_steps: 0
 # Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a minute or so the
 # first time, then mostly reused from the cache of PyTorch).
 # `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
+# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used).
+# `player` also compiles the step of the player: faster steps in the environments
 compile:
   enabled: False
   mode: reduce-overhead
+  player: True
 
 # Model related parameters
 # Actor

@@ -11,6 +11,7 @@ from torch import Tensor
 
 from sheeprl.algos.sac.agent import SACActor, SACPlayer
 from sheeprl.models.models import MLP
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 LOG_STD_MAX = 2
@@ -278,4 +279,6 @@ def build_agent(
     # Tie weights between the agent and the player
     for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
         player_p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`)
+    player.forward = compiled_player(player.forward, fabric, cfg)
     return agent, player

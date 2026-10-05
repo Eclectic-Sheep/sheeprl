@@ -33,6 +33,7 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.models.models import MultiDecoder, MultiEncoder
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
@@ -1011,4 +1012,7 @@ def build_agent(
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
     )
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, target_critic, player

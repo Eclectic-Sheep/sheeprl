@@ -14,6 +14,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
 from sheeprl.utils.utils import safetanh
@@ -392,4 +393,6 @@ def build_agent(
         player_p.data = agent_p.data
     for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
         player_p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`)
+    player.forward = compiled_player(player.forward, fabric, cfg)
     return agent, player

@@ -22,6 +22,7 @@ from torch.distributions import (
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
+from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
@@ -1131,4 +1132,7 @@ def build_agent(
         p.data = agent_p.data
     for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
         p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, target_critic, player
