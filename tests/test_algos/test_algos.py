@@ -187,11 +187,13 @@ def test_sac_ae(standard_args, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-def test_a2c(standard_args, start_time):
+@pytest.mark.parametrize("gae_method", ["loop", "log_scan"])
+def test_a2c(standard_args, start_time, gae_method):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
     args = standard_args + [
         "exp=a2c",
+        f"algo.gae_method={gae_method}",
         f"algo.rollout_steps={os.environ['LT_DEVICES']}",
         "algo.per_rank_batch_size=1",
         f"root_dir={root_dir}",
@@ -254,12 +256,14 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+@pytest.mark.parametrize("gae_method", ["loop", "log_scan"])
 @pytest.mark.parametrize("env_id", ["CartPole-v1", "continuous_dummy"])
-def test_ppo_recurrent(standard_args, start_time, env_id):
+def test_ppo_recurrent(standard_args, start_time, env_id, gae_method):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
     args = standard_args + [
         "exp=ppo_recurrent",
+        f"algo.gae_method={gae_method}",
         "algo.rollout_steps=2",
         "algo.per_rank_batch_size=1",
         "algo.per_rank_sequence_length=2",

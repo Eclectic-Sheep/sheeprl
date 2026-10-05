@@ -26,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import gae, normalize_tensor, save_configs
+from sheeprl.utils.utils import gae_function, normalize_tensor, save_configs
 
 
 def train(
@@ -140,6 +140,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             "The script has been called with `buffer.share_data=True`: with recurrent PPO only gradients are shared"
         )
 
+    gae = gae_function(cfg.algo.gae_method)
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device

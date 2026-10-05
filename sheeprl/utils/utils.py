@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import rich.syntax
@@ -60,7 +60,14 @@ class dotdict(dict):
         return _copy
 
 
-@torch.no_grad()
+def _to_numpy(x: Tensor | np.ndarray) -> np.ndarray:
+    if not torch.is_tensor(x):
+        return np.asarray(x)
+    x = x.detach()
+    # NumPy has no bfloat16, whose values are exact in float32
+    return (x.float() if x.dtype == torch.bfloat16 else x).cpu().numpy()
+
+
 def gae(
     rewards: Tensor,
     values: Tensor,
@@ -71,6 +78,10 @@ def gae(
     gae_lambda: float,
 ) -> Tuple[Tensor, Tensor]:
     """Compute returns and advantages following https://arxiv.org/abs/1506.02438
+
+    The backward recursion is computed with NumPy on the CPU: on the small arrays of a rollout, an operation of NumPy
+    costs a fraction of one of PyTorch (or of a kernel launch). The TD errors of all the steps are computed at once, the
+    recursion with the same operations, in the same order, as step by step with PyTorch: the results are the same.
 
     Args:
         rewards (Tensor): all rewards collected from the last rollout
@@ -85,19 +96,80 @@ def gae(
         estimated returns
         estimated advantages
     """
-    lastgaelam = 0
-    nextvalues = next_value
-    not_dones = torch.logical_not(dones)
-    nextnonterminal = not_dones[-1]
-    advantages = torch.zeros_like(rewards)
+    device = rewards.device
+    rewards, values, dones, next_value = (_to_numpy(x) for x in (rewards, values, dones, next_value))
+    not_dones = np.logical_not(dones)
+    # The value and the not-done after every step: the last step is bootstrapped from `next_value`
+    nextvalues = np.concatenate((values[1:num_steps], next_value.reshape(1, *values.shape[1:])))
+    nextnonterminal = np.concatenate((not_dones[: num_steps - 1], not_dones[-1:]))
+    deltas = rewards[:num_steps] + nextvalues * nextnonterminal * gamma - values[:num_steps]
+    advantages = np.zeros_like(rewards)
+    # Of the dtype of the TD errors from the first step, as the recursion of PyTorch
+    lastgaelam = np.zeros_like(deltas[0])
     for t in reversed(range(num_steps)):
-        if t < num_steps - 1:
-            nextnonterminal = not_dones[t]
-            nextvalues = values[t + 1]
-        delta = rewards[t] + nextvalues * nextnonterminal * gamma - values[t]
-        advantages[t] = lastgaelam = delta + nextnonterminal * lastgaelam * gamma * gae_lambda
+        advantages[t] = lastgaelam = deltas[t] + nextnonterminal[t] * lastgaelam * gamma * gae_lambda
+    returns = advantages + values
+    return torch.from_numpy(returns).to(device), torch.from_numpy(advantages).to(device)
+
+
+@torch.no_grad()
+def log_scan_gae(
+    rewards: Tensor,
+    values: Tensor,
+    dones: Tensor,
+    next_value: Tensor,
+    num_steps: int,
+    gamma: float,
+    gae_lambda: float,
+) -> Tuple[Tensor, Tensor]:
+    """The returns and advantages of `gae`, computed with PyTorch on the device of the tensors, in log2(num_steps)
+    rounds over all the steps instead of one step at a time.
+
+    The advantages solve the linear recurrence `A[t] = delta[t] + c[t] * A[t + 1]`, with
+    `c[t] = gamma * gae_lambda * (1 - done[t])`, a suffix scan of an associative operator: after the round of shift `s`,
+    `A[t]` sums the TD errors of the steps from `t` to `t + 2s - 1` and `c[t]` is the product of their coefficients
+    (Hillis and Steele, 1986). The terms are summed in another order than step by step: the results differ from the ones
+    of `gae` in the last bits.
+
+    Args:
+        rewards (Tensor): all rewards collected from the last rollout
+        values (Tensor): all values collected from the last rollout
+        dones (Tensor): all dones collected from the last rollout
+        next_value (Tensor): estimated values for the next observations
+        num_steps (int): the number of steps played
+        gamma (float): discout factor
+        gae_lambda (float): lambda for GAE estimation
+
+    Returns:
+        estimated returns
+        estimated advantages
+    """
+    not_dones = torch.logical_not(dones)
+    # The value and the not-done after every step: the last step is bootstrapped from `next_value`
+    nextvalues = torch.cat((values[1:num_steps], next_value.reshape(1, *values.shape[1:])))
+    nextnonterminal = torch.cat((not_dones[: num_steps - 1], not_dones[-1:]))
+    deltas = rewards[:num_steps] + nextvalues * nextnonterminal * gamma - values[:num_steps]
+    coefs = nextnonterminal.to(deltas.dtype) * (gamma * gae_lambda)
+    shift = 1
+    while shift < num_steps:
+        # The right-hand sides are computed before they are written: the rounds read the values of the previous one
+        deltas[:-shift] = deltas[:-shift] + coefs[:-shift] * deltas[shift:]
+        coefs[:-shift] = coefs[:-shift] * coefs[shift:]
+        shift *= 2
+    advantages = torch.zeros_like(rewards)
+    advantages[:num_steps] = deltas
     returns = advantages + values
     return returns, advantages
+
+
+def gae_function(method: str) -> Callable[..., Tuple[Tensor, Tensor]]:
+    """The GAE of `algo.gae_method`: `loop`, the recursion step by step with NumPy on the CPU (`gae`, the same results
+    as the recursion of PyTorch), or `log_scan`, the scan in log2(num_steps) rounds with PyTorch on the device of the
+    rollout (`log_scan_gae`, the same results but for the last bits)."""
+    methods = {"loop": gae, "log_scan": log_scan_gae}
+    if method not in methods:
+        raise ValueError(f"`algo.gae_method` must be one of {list(methods)}, got '{method}'")
+    return methods[method]
 
 
 def init_weights(m: nn.Module):
