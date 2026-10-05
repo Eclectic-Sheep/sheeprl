@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Sequence
 
 import gymnasium as gym
@@ -13,6 +12,7 @@ from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
+from sheeprl.utils import fs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -152,7 +152,7 @@ def build_buffer(
     the buffers hold `dry_run_size` steps.
     """
     obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-    memmap_dir = os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}")
+    memmap_dir = fs.memmap_dir(cfg, log_dir, fabric.global_rank)
     buffer_type = cfg.buffer.type.lower()
     if buffer_type == "sequential":
         return EnvIndependentReplayBuffer(

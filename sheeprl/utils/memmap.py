@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Iterator, Tuple
 
 import numpy as np
 from numpy.typing import DTypeLike
@@ -14,6 +15,24 @@ from numpy.typing import DTypeLike
 
 def is_shared(array: np.ndarray) -> bool:
     return isinstance(array, np.ndarray) and hasattr(array, "_mmap")
+
+
+# Whether the memory-mapped arrays are pickled with their data (`copied_on_pickle`)
+_COPIED_ON_PICKLE = False
+
+
+@contextmanager
+def copied_on_pickle(enabled: bool = True) -> Iterator[None]:
+    """The memory-mapped arrays pickled in this context carry their data, not only the path of their file: unpickled
+    where the file is missing (e.g. on another node, without a shared filesystem), they write it again from their data
+    when they are first used. Where the file exists, they use it, as the arrays pickled outside this context (the run
+    that pickled them can still be writing in it)."""
+    global _COPIED_ON_PICKLE
+    previous, _COPIED_ON_PICKLE = _COPIED_ON_PICKLE, enabled
+    try:
+        yield
+    finally:
+        _COPIED_ON_PICKLE = previous
 
 
 class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
@@ -109,6 +128,16 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         """Return the memory-mapped array."""
         if not os.path.isfile(self._filename):
             self._array = None
+            data = self.__dict__.pop("_data", None)
+            if data is not None:
+                # Unpickled with its data (`copied_on_pickle`) where its file is missing: the file is written again
+                os.makedirs(os.path.dirname(self._filename), exist_ok=True)
+                restored = np.memmap(filename=self._filename, dtype=self._dtype, shape=self._shape, mode="w+")
+                restored[:] = data
+                restored.flush()
+                del restored
+        # The data of an array unpickled where its file exists is not used: the file is
+        self.__dict__.pop("_data", None)
         if self._array is None:
             self._array = np.memmap(
                 filename=self._filename,
@@ -234,6 +263,9 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         # Remove the unpicklable entries. The unpickled array never owns the file
         state["_array"] = None
         state["_has_ownership"] = False
+        state.pop("_data", None)
+        if _COPIED_ON_PICKLE:
+            state["_data"] = np.array(self.array)
         return state
 
     def __setstate__(self, state):

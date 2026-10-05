@@ -1,8 +1,6 @@
 import importlib
 import os
-import pathlib
 import warnings
-from pathlib import Path
 from typing import Any, Callable, Dict
 
 import hydra
@@ -12,6 +10,7 @@ from lightning.fabric.strategies import STRATEGY_REGISTRY, DDPStrategy, SingleDe
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.distributions import Distribution
 
+from sheeprl.utils import fs
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import algorithm_registry, evaluation_registry
@@ -39,8 +38,7 @@ def finalizing_loggers(func: Callable) -> Callable:
 
 
 def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
-    ckpt_path = pathlib.Path(cfg.checkpoint.resume_from)
-    old_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
+    old_cfg = fs.load_yaml(fs.run_config(cfg.checkpoint.resume_from))
     old_cfg = dotdict(OmegaConf.to_container(old_cfg, resolve=True, throw_on_missing=True))
     if old_cfg.env.id != cfg.env.id:
         raise ValueError(
@@ -121,8 +119,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     strategy = cfg.fabric.get("strategy", "auto")
     if "finetuning" in algo_name and "p2e" in module:
         # Load exploration configurations
-        ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
-        exploration_cfg = OmegaConf.load(ckpt_path.parent.parent / "config.yaml")
+        exploration_cfg = fs.load_yaml(fs.run_config(cfg.checkpoint.exploration_ckpt_path))
         exploration_cfg = dotdict(OmegaConf.to_container(exploration_cfg, resolve=True, throw_on_missing=True))
         if exploration_cfg.env.id != cfg.env.id:
             raise ValueError(
@@ -348,8 +345,8 @@ def run(cfg: DictConfig):
 @hydra.main(version_base="1.3", config_path="configs", config_name="eval_config")
 def evaluation(cfg: DictConfig):
     # Load the checkpoint configuration
-    checkpoint_path = Path(os.path.abspath(cfg.checkpoint_path))
-    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
+    checkpoint_path = cfg.checkpoint_path if fs.is_url(cfg.checkpoint_path) else os.path.abspath(cfg.checkpoint_path)
+    ckpt_cfg = fs.load_yaml(fs.run_config(checkpoint_path))
     ckpt_cfg.pop("seed", None)
 
     # Merge the two configs
@@ -364,20 +361,16 @@ def evaluation(cfg: DictConfig):
             "strategy": "auto",
             "accelerator": getattr(cfg.fabric, "accelerator", "auto"),
         }
-        cfg.root_dir = str(checkpoint_path.parent.parent.parent.parent)
+        cfg.root_dir = fs.parent(checkpoint_path, 4)
 
         # Merge configs
         ckpt_cfg.merge_with(cfg)
 
         # Update values after merge
-        run_name = Path(
-            os.path.join(
-                os.path.basename(checkpoint_path.parent.parent.parent),
-                os.path.basename(checkpoint_path.parent.parent),
-                "evaluation",
-            )
+        run_name = os.path.join(
+            fs.basename(fs.parent(checkpoint_path, 3)), fs.basename(fs.parent(checkpoint_path, 2)), "evaluation"
         )
-        ckpt_cfg.run_name = str(run_name)
+        ckpt_cfg.run_name = run_name
 
     # Check the validity of the configuration and run the evaluation
     check_configs_evaluation(ckpt_cfg)
@@ -388,8 +381,7 @@ def evaluation(cfg: DictConfig):
 def registration(cfg: DictConfig):
     from sheeprl.utils.mlflow import register_model_from_checkpoint
 
-    checkpoint_path = Path(cfg.checkpoint_path)
-    ckpt_cfg = OmegaConf.load(checkpoint_path.parent.parent / "config.yaml")
+    ckpt_cfg = fs.load_yaml(fs.run_config(cfg.checkpoint_path))
 
     # Merge the two configs
     with open_dict(cfg):

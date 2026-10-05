@@ -5,7 +5,6 @@ Adapted from the original implementation from https://github.com/danijar/dreamer
 from __future__ import annotations
 
 import copy
-import os
 import warnings
 from functools import partial
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -27,6 +26,7 @@ from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
 from sheeprl.envs.wrappers import RestartOnException
+from sheeprl.utils import fs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
@@ -569,7 +569,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
     fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
@@ -675,7 +675,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         buffer_size,
         n_envs=cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         buffer_cls=SequentialReplayBuffer,
         seed=cfg.seed + rank,
     )

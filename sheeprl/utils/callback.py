@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import pathlib
 from typing import Any, Dict, Optional, Sequence, Union
 
 from lightning.fabric import Fabric
@@ -9,6 +7,8 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from torch import Tensor
 
 from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, ReplayBuffer
+from sheeprl.utils import fs
+from sheeprl.utils.memmap import copied_on_pickle
 
 
 class CheckpointCallback:
@@ -20,8 +20,17 @@ class CheckpointCallback:
     When the buffer is added to the state of the checkpoint, it is assumed that the episode is truncated.
     """
 
-    def __init__(self, keep_last: int | None = None) -> None:
+    def __init__(self, keep_last: int | None = None, memmap_buffer: str = "reference") -> None:
+        """
+        Args:
+            keep_last: the number of checkpoints to keep, the latest ones (all of them when `None`).
+            memmap_buffer: how the memory-mapped replay buffers are saved (`checkpoint.memmap_buffer`): `reference`
+                saves the paths of their files, `copy` also their data (`sheeprl.utils.memmap.copied_on_pickle`).
+        """
+        if memmap_buffer not in ("reference", "copy"):
+            raise ValueError(f"`memmap_buffer` must be 'reference' or 'copy', got '{memmap_buffer}'")
         self.keep_last = keep_last
+        self.memmap_buffer = memmap_buffer
 
     def on_checkpoint_coupled(
         self,
@@ -30,26 +39,28 @@ class CheckpointCallback:
         state: Dict[str, Any],
         replay_buffer: Optional[Union["EnvIndependentReplayBuffer", "ReplayBuffer", "EpisodeBuffer"]] = None,
     ):
-        if replay_buffer is not None:
-            rb_state = self._ckpt_rb(replay_buffer)
-            state["rb"] = replay_buffer
-            if fabric.world_size > 1:
-                # We need to collect the buffers from all the ranks
-                # The collective it is needed because the `gather_object` function is not implemented in Fabric
-                checkpoint_collective = TorchCollective()
-                # gloo is the torch.distributed backend that works on cpu
-                checkpoint_collective.create_group(backend="gloo", ranks=list(range(fabric.world_size)))
-                gathered_rb = [None for _ in range(fabric.world_size)]
-                if fabric.global_rank == 0:
-                    checkpoint_collective.gather_object(replay_buffer, gathered_rb)
-                    state["rb"] = gathered_rb
-                else:
-                    checkpoint_collective.gather_object(replay_buffer, None)
-        fabric.save(ckpt_path, state)
+        # The memory-mapped buffers are pickled with their data with `memmap_buffer=copy`, also when gathered
+        with copied_on_pickle(self.memmap_buffer == "copy"):
+            if replay_buffer is not None:
+                rb_state = self._ckpt_rb(replay_buffer)
+                state["rb"] = replay_buffer
+                if fabric.world_size > 1:
+                    # We need to collect the buffers from all the ranks
+                    # The collective it is needed because the `gather_object` function is not implemented in Fabric
+                    checkpoint_collective = TorchCollective()
+                    # gloo is the torch.distributed backend that works on cpu
+                    checkpoint_collective.create_group(backend="gloo", ranks=list(range(fabric.world_size)))
+                    gathered_rb = [None for _ in range(fabric.world_size)]
+                    if fabric.global_rank == 0:
+                        checkpoint_collective.gather_object(replay_buffer, gathered_rb)
+                        state["rb"] = gathered_rb
+                    else:
+                        checkpoint_collective.gather_object(replay_buffer, None)
+            fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
         if fabric.is_global_zero and self.keep_last:
-            self._delete_old_checkpoints(pathlib.Path(ckpt_path).parent)
+            self._delete_old_checkpoints(fs.parent(ckpt_path))
 
     def _ckpt_rb(
         self, rb: ReplayBuffer | EnvIndependentReplayBuffer | EpisodeBuffer
@@ -114,8 +125,8 @@ class CheckpointCallback:
             # reinsert the open episodes to continue the training
             rb._open_episodes = state
 
-    def _delete_old_checkpoints(self, ckpt_folder: pathlib.Path):
-        ckpts = list(sorted(ckpt_folder.glob("*.ckpt"), key=os.path.getmtime))
-        if len(ckpts) > self.keep_last:
-            to_delete = ckpts[: -self.keep_last]
-            [f.unlink() for f in to_delete]
+    def _delete_old_checkpoints(self, ckpt_folder: str):
+        """Keep the last `keep_last` checkpoints of `ckpt_folder`, also on a remote filesystem (`sheeprl.utils.fs`)."""
+        ckpts = fs.checkpoints(ckpt_folder)
+        for ckpt in ckpts[: max(len(ckpts) - self.keep_last, 0)]:
+            fs.remove(ckpt, ckpt_folder)

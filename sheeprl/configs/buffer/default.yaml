@@ -1,5 +1,8 @@
 size: ???
 memmap: True
+# The local directory of the memory-mapped buffers (in the path of the log directory): by default the log directory of
+# the run, which must then be local. Set it when the runs are logged on a remote filesystem (`log_root`)
+memmap_dir: null
 validate_args: False
 from_numpy: False
 checkpoint: True  # Used only for off-policy algorithms
