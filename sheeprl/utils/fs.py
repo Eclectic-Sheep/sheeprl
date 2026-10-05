@@ -86,9 +86,13 @@ def checkpoints(folder: str | os.PathLike) -> List[str]:
     return sorted(paths, key=step)
 
 
-def remove(path: str | os.PathLike, folder: str | os.PathLike) -> None:
-    """Remove `path`, one of the files that `checkpoints(folder)` lists (on the filesystem of `folder`)."""
-    get_filesystem(str(folder)).rm(path)
+def remove_checkpoint(path: str, folder: str | os.PathLike) -> None:
+    """Remove the checkpoint `path`, one of `checkpoints(folder)`, and the files of its replay buffers."""
+    filesystem = get_filesystem(str(folder))
+    pattern = f"{_stem(posixpath.basename(path))}_buffer_rank_*.pt"
+    buffers = filesystem.glob(join(parent(folder), "checkpoint_buffers", pattern))
+    for file in (path, *buffers):
+        filesystem.rm(file)
 
 
 def memmap_dir(cfg: Any, log_dir: str, rank: int) -> str:
@@ -106,3 +110,43 @@ def memmap_dir(cfg: Any, log_dir: str, rank: int) -> str:
     else:
         base = os.path.join(str(base), relative(log_dir))
     return os.path.join(base, "memmap_buffer", f"rank_{rank}")
+
+
+def upload(local_path: str | os.PathLike, path: str | os.PathLike) -> None:
+    """Copy the local file `local_path` to `path` (e.g. on a remote filesystem)."""
+    get_filesystem(str(path)).put_file(str(local_path), str(path))
+
+
+def buffer_path(checkpoint_path: str | os.PathLike, rank: int) -> str:
+    """The file of the replay buffer of the process of `rank` saved with a checkpoint (`ckpt_<step>_<rank>.ckpt`):
+    `<log_dir>/checkpoint_buffers/ckpt_<step>_buffer_rank_<rank>.pt`, the same for every process (the folder of the
+    checkpoints keeps only them). Local paths are absolute, for a resume from another directory."""
+    name = f"{_stem(basename(checkpoint_path))}_buffer_rank_{rank}.pt"
+    path = join(parent(checkpoint_path, 2), "checkpoint_buffers", name)
+    return path if is_url(path) else os.path.abspath(path)
+
+
+def _stem(name: str) -> str:
+    """`ckpt_<step>` for the checkpoint `ckpt_<step>_<rank>.ckpt`."""
+    stem = name[: -len(".ckpt")] if name.endswith(".ckpt") else name
+    head, _, tail = stem.rpartition("_")
+    return head if head and tail.isdigit() else stem
+
+
+class BufferFiles(list):
+    """The replay buffers of the processes of a checkpoint, one file each (`buffer_path`), saved by every process
+    instead of being gathered by the first one: a process loads only its own, when indexed
+    (`state["rb"][fabric.global_rank]`). Iterated, it gives the paths of the files (as Fabric traverses a checkpoint).
+    """
+
+    def __getitem__(self, idx: Any) -> Any:
+        if isinstance(idx, slice):
+            return [self._load(path) for path in super().__getitem__(idx)]
+        return self._load(super().__getitem__(idx))
+
+    @staticmethod
+    def _load(path: str) -> Any:
+        import torch
+
+        with get_filesystem(path).open(path, "rb") as f:
+            return torch.load(f, weights_only=False)

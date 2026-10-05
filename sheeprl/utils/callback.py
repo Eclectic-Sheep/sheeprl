@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import numpy as np
+import torch
 from lightning.fabric import Fabric
-from lightning.fabric.plugins.collectives import TorchCollective
+from lightning.fabric.utilities.cloud_io import get_filesystem
 from torch import Tensor
 
 from sheeprl.data.buffers import ReplayBuffer
@@ -40,26 +41,21 @@ class CheckpointCallback:
         state: Dict[str, Any],
         replay_buffer: Optional[Any] = None,
     ):
-        # The memory-mapped buffers are pickled with their data with `memmap_buffer=copy`, also when gathered
-        with copied_on_pickle(self.memmap_buffer == "copy"):
-            if replay_buffer is not None:
-                # The batches being prefetched by a `ReplayStore` are gathered first
-                getattr(replay_buffer, "wait", lambda: None)()
-                rb_state = self._ckpt_rb(replay_buffer)
-                state["rb"] = replay_buffer
-                if fabric.world_size > 1:
-                    # We need to collect the buffers from all the ranks
-                    # The collective it is needed because the `gather_object` function is not implemented in Fabric
-                    checkpoint_collective = TorchCollective()
-                    # gloo is the torch.distributed backend that works on cpu
-                    checkpoint_collective.create_group(backend="gloo", ranks=list(range(fabric.world_size)))
-                    gathered_rb = [None for _ in range(fabric.world_size)]
-                    if fabric.global_rank == 0:
-                        checkpoint_collective.gather_object(replay_buffer, gathered_rb)
-                        state["rb"] = gathered_rb
-                    else:
-                        checkpoint_collective.gather_object(replay_buffer, None)
-            fabric.save(ckpt_path, state)
+        if replay_buffer is not None:
+            # The batches being prefetched by a `ReplayStore` are gathered first
+            getattr(replay_buffer, "wait", lambda: None)()
+            rb_state = self._ckpt_rb(replay_buffer)
+            # Every process saves its own buffer next to the checkpoint (`sheeprl.utils.fs.buffer_path`), instead of
+            # gathering them in the first one: the checkpoint references their files, and a resume loads only its own.
+            # The memory-mapped buffers are saved with their data with `memmap_buffer=copy`
+            path = fs.buffer_path(ckpt_path, fabric.global_rank)
+            fs.makedirs(fs.parent(path))
+            with copied_on_pickle(self.memmap_buffer == "copy"), get_filesystem(path).open(path, "wb") as f:
+                torch.save(replay_buffer, f)
+            # The checkpoint is written once the buffers of all the processes are
+            fabric.barrier()
+            state["rb"] = fs.BufferFiles([fs.buffer_path(ckpt_path, rank) for rank in range(fabric.world_size)])
+        fabric.save(ckpt_path, state)
         if replay_buffer is not None:
             self._experiment_consistent_rb(replay_buffer, rb_state)
         if fabric.is_global_zero and self.keep_last:
@@ -91,7 +87,7 @@ class CheckpointCallback:
         """Keep the last `keep_last` checkpoints of `ckpt_folder`, also on a remote filesystem (`sheeprl.utils.fs`)."""
         ckpts = fs.checkpoints(ckpt_folder)
         for ckpt in ckpts[: max(len(ckpts) - self.keep_last, 0)]:
-            fs.remove(ckpt, ckpt_folder)
+            fs.remove_checkpoint(ckpt, ckpt_folder)
 
 
 def _copy(row: Any) -> Any:

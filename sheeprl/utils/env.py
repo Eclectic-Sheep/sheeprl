@@ -1,4 +1,6 @@
 import os
+import shutil
+import tempfile
 import warnings
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
@@ -17,6 +19,7 @@ from sheeprl.envs.wrappers import (
     NormalizeAction,
     RewardAsObservationWrapper,
 )
+from sheeprl.utils import fs
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
 
 if _IS_ATARI_AVAILABLE:
@@ -68,6 +71,26 @@ def _is_wrapped_by(env: gym.Env, wrapper_cls: Type[gym.Wrapper]) -> bool:
             return True
         env = env.env
     return False
+
+
+class UploadedRecordVideo(gym.wrappers.RecordVideo):
+    """`RecordVideo` for a run logged on a remote filesystem (`log_root`): the videos are written in a local temporary
+    directory, then copied to `remote_folder` and removed, at the end of every recording."""
+
+    def __init__(self, env: gym.Env, remote_folder: str, **kwargs: Any) -> None:
+        super().__init__(env, tempfile.mkdtemp(prefix="sheeprl_videos_"), disable_logger=True, **kwargs)
+        self.remote_folder = remote_folder
+
+    def stop_recording(self) -> None:
+        super().stop_recording()
+        for name in os.listdir(self.video_folder):
+            local_path = os.path.join(self.video_folder, name)
+            fs.upload(local_path, fs.join(self.remote_folder, name))
+            os.remove(local_path)
+
+    def close(self) -> None:
+        super().close()
+        shutil.rmtree(self.video_folder, ignore_errors=True)
 
 
 def make_env(
@@ -282,9 +305,11 @@ def make_env(
         if cfg.env.capture_video and rank == 0 and vector_env_idx == 0 and run_name is not None:
             if cfg.env.grayscale:
                 env = GrayscaleRenderWrapper(env)
-            env = gym.wrappers.RecordVideo(
-                env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
-            )
+            video_folder = fs.join(run_name, prefix + "_videos" if prefix else "videos")
+            if fs.is_url(video_folder):
+                env = UploadedRecordVideo(env, video_folder)
+            else:
+                env = gym.wrappers.RecordVideo(env, video_folder, disable_logger=True)
         return env
 
     return thunk
