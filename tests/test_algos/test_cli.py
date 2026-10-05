@@ -379,3 +379,18 @@ def test_model_manager_is_disabled_when_no_model_can_be_registered():
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     fake_mlflow_utils.register_model.assert_not_called()
+
+
+@pytest.mark.parametrize("user_dir", [False, True])
+def test_the_compiled_code_is_cached_in_the_home_of_the_user(user_dir, tmp_path):
+    # PyTorch caches it in `/tmp`, often cleared at boot: a directory set by the user is kept
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "TORCHINDUCTOR_CACHE_DIR"}
+    cache_dir = str(tmp_path / "cache") if user_dir else None
+    if user_dir:
+        env["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
+    code = "import os, sheeprl; print(os.environ['TORCHINDUCTOR_CACHE_DIR'])"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout
+    expected = cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "sheeprl", "torchinductor")
+    assert out.strip() == expected
