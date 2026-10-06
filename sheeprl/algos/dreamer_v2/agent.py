@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -20,7 +20,8 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, prepare_obs
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
@@ -30,6 +31,9 @@ from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 LAYER_NORM_EPS = 1e-3
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
+
+if TYPE_CHECKING:
+    from sheeprl.core.runner import Environment
 
 
 class CNNEncoder(nn.Module):
@@ -761,6 +765,52 @@ class WorldModel(nn.Module):
         self.observation_model = observation_model
         self.reward_model = reward_model
         self.continue_model = continue_model
+
+
+class DreamerPolicy(Policy):
+    """The `Policy` of the Dreamers' policies, on their `get_actions` (which updates the latent states of the
+    environments) and `init_states`: the observations are moved to the device of `fabric` (the images `cnn_keys`
+    normalized), the actions are written one-hot for discrete actions (the environments take their indices), and the
+    action masks of the observations (`mask*`, e.g. MineDojo) mask the actions.
+
+    A subclass is an `nn.Module` with the attributes `fabric`, `cnn_keys`, `actions_dim` and `actor`.
+    """
+
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        num_envs = len(next(iter(obs.values())))
+        torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
+        actions = self.sample_actions(torch_obs, mask if len(mask) > 0 else None)
+        if self.actor.is_continuous:
+            env_actions = torch.stack(actions, dim=-1)
+        else:
+            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
+        return Act(env_actions.cpu().numpy(), {"actions": torch.cat(actions, -1).cpu().numpy()})
+
+    def sample_actions(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]]) -> Sequence[Tensor]:
+        """The actions of `act`, one tensor per action."""
+        return self.get_actions(obs, mask=mask)
+
+    def random(self, env: Environment) -> Act:
+        """Uniformly random actions; with action masks in the observations (MineDojo), the actions of the policy, since
+        random actions would ignore them."""
+        if any(k.startswith("mask") for k in env.obs):
+            return self.act(env.obs)
+        env_actions = actions = np.array(env.random_actions())
+        if not self.actor.is_continuous:
+            # One row per environment, one column per discrete action: one-hot each column
+            per_action = actions.reshape(env.num_envs, len(self.actions_dim)).T
+            actions = np.concatenate(
+                [
+                    F.one_hot(torch.as_tensor(act), act_dim).numpy()
+                    for act, act_dim in zip(per_action, self.actions_dim)
+                ],
+                axis=-1,
+            )
+        return Act(env_actions, {"actions": actions})
+
+    def reset(self, env_idxes: Optional[Sequence[int]] = None) -> None:
+        self.init_states(env_idxes)
 
 
 class DreamerV2Policy(nn.Module):

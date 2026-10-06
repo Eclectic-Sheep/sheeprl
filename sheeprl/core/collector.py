@@ -92,9 +92,9 @@ class Collector:
         else:
             act = self.policy.act(self.env.obs)
         step = self.env.step(act.env_actions)
-        self.writer.write(self.store, step, act)
-
+        # Before the writer, which can change the arrays of the step in place
         new_episodes = np.logical_or(np.logical_or(step.terminated, step.truncated), step.restarted).nonzero()[0]
+        self.writer.write(self.store, step, act)
         if len(new_episodes) > 0:
             self.policy.reset(new_episodes.tolist())
         schedule.policy_step += schedule.policy_steps_per_step

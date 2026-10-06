@@ -15,7 +15,6 @@ import gymnasium as gym
 import hydra
 import numpy as np
 import torch
-import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
@@ -31,8 +30,8 @@ from sheeprl.algos.dreamer_v2.utils import (
 )
 from sheeprl.algos.dreamer_v3.agent import Actor, DreamerV3Policy, MinedojoActor, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
-from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
+from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -67,91 +66,47 @@ class DreamerV3State(TrainState):
     moments: Moments
 
 
-class SequencePlayer(Player):
-    """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
+class SequenceWriter(Writer):
+    """Writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action played from it, and the reward, `terminated`, `truncated` and
     `is_first` of the step that led to it. When an episode ends, a last row holds its final observation (with a zero
     action) and the next row is the first one of the new episode.
 
-    With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
-    `policy` (`DreamerV3Policy`), whose recurrent state is reset at the start of every episode.
-
     A subclass can write more columns in the rows (`step_columns`, `reset_columns`), and the rewards and the episode
-    flags with another dtype (`dtype`), e.g. the `LatentSequencePlayer` of DreamerV3.5.
+    flags with another dtype (`dtype`), e.g. the `LatentSequenceWriter` of DreamerV3.5.
     """
 
     # The dtype of the rewards, of the episode flags and of the zero actions of the last rows of the episodes; `None`
     # keeps the ones of the environments
     dtype: Optional[np.dtype] = None
 
-    def __init__(
-        self,
-        fabric: Fabric,
-        cfg: Dict[str, Any],
-        policy: DreamerV3Policy,
-        schedule: TrainSchedule,
-        actions_dim: Sequence[int],
-        is_continuous: bool,
-        random_warmup: bool,
-    ) -> None:
-        self.fabric = fabric
+    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
-        self.policy = policy
-        self.schedule = schedule
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.random_warmup = random_warmup
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-        # The row written at the next step; created from the first observations of the environments
+        # The row of the next step; created from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
+    def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
-        num_envs = env.num_envs
+        num_envs = len(step.rewards)
         if self.step_data is None:
             # The first observations start the episodes
-            self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
+            self.step_data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
             self.step_data["rewards"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
             self.step_data["truncated"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
             self.step_data["terminated"] = np.zeros((1, num_envs, 1), dtype=self.dtype)
             self.step_data["is_first"] = np.ones_like(self.step_data["terminated"])
-            self.policy.init_states()
         step_data = self.step_data
 
-        # The actions are stored one-hot for discrete actions, while the environments take their indices
-        if self.random_warmup and self.schedule.warmup(self.schedule.policy_step):
-            real_actions = actions = np.array(env.random_actions())
-            if not self.is_continuous:
-                # One row per environment, one column per discrete action: one-hot each column
-                per_action = actions.reshape(num_envs, len(self.actions_dim)).T
-                actions = np.concatenate(
-                    [
-                        F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(per_action, self.actions_dim)
-                    ],
-                    axis=-1,
-                )
-        else:
-            torch_obs = prepare_obs(self.fabric, env.obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=num_envs)
-            mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-            real_actions = actions = self.policy.get_actions(torch_obs, mask=mask if len(mask) > 0 else None)
-            actions = torch.cat(actions, -1).cpu().numpy()
-            if self.is_continuous:
-                real_actions = torch.stack(real_actions, dim=-1).cpu().numpy()
-            else:
-                real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
-
-        step_data["actions"] = actions.reshape((1, num_envs, -1))
-        step_data.update(self.step_columns(buffer, num_envs))
+        step_data["actions"] = act.columns["actions"].reshape((1, num_envs, -1))
+        step_data.update(self.step_columns(buffer, act, num_envs))
         buffer.add(step_data, validate_args=cfg.buffer.validate_args)
 
-        step = env.step(real_actions)
         dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
-
         step_data["is_first"] = np.zeros_like(step_data["terminated"])
         if step.restarted.any():
-            restarted_envs = []
             for i, restarted in enumerate(step.restarted):
                 if restarted and not dones[i]:
                     # The last observation stored for the restarted environment ends its episode
@@ -162,9 +117,6 @@ class SequencePlayer(Player):
                     storage["truncated"][last_inserted_idx, i] = 1
                     # The observation returned after the restart starts a new episode
                     step_data["is_first"][:, i] = np.ones_like(step_data["is_first"][:, i])
-                    restarted_envs.append(i)
-            if len(restarted_envs) > 0:
-                self.policy.init_states(restarted_envs)
 
         for k in self.obs_keys:
             step_data[k] = step.next_obs[k][np.newaxis]
@@ -192,14 +144,12 @@ class SequencePlayer(Player):
             step_data["terminated"][:, dones_idxes] = np.zeros_like(step_data["terminated"][:, dones_idxes])
             step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
             step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
-            self.policy.init_states(dones_idxes)
-        return step
 
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step_columns(self, buffer: ReplayStore, num_envs: int) -> Dict[str, np.ndarray]:
-        """More columns of the row of the step, written after the actions are chosen; none by default."""
+    def step_columns(self, buffer: ReplayStore, act: Act, num_envs: int) -> Dict[str, np.ndarray]:
+        """More columns of the row of the step, from the actions `act`; none by default."""
         return {}
 
     def reset_columns(self, env_idxes: Sequence[int]) -> Dict[str, np.ndarray]:
@@ -839,7 +789,6 @@ class DreamerV3(Algorithm):
         buffer = sequential_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
         )
-        self.schedule = schedule
         return state, buffer
 
     def policy(self, state: DreamerV3State) -> DreamerV3Policy:
@@ -849,18 +798,8 @@ class DreamerV3(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
 
-    def player(self, state: DreamerV3State) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
-        random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup,
-        )
+    def writer(self, state: DreamerV3State, policy: DreamerV3Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV3State, buffer: ReplayStore, n_steps: int, iteration: int

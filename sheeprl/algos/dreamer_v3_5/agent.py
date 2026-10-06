@@ -31,7 +31,8 @@ from lightning.fabric import Fabric
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.agent import DreamerPolicy, WorldModel
+from sheeprl.core.collector import Act
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import setup_module
@@ -715,7 +716,7 @@ class Actor(nn.Module):
         return actions, dists
 
 
-class DreamerV3_5Policy(nn.Module):
+class DreamerV3_5Policy(nn.Module, DreamerPolicy):
     """The policy of DreamerV3 (Nature version): it keeps the latent states of the environments and chooses their
     actions. It shares the modules of the agent.
 
@@ -745,11 +746,15 @@ class DreamerV3_5Policy(nn.Module):
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 64,
+        fabric: Fabric | None = None,
+        cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
+        self.fabric = fabric
+        self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
         self.num_envs = num_envs
         self.stochastic_size = stochastic_size
@@ -758,6 +763,17 @@ class DreamerV3_5Policy(nn.Module):
         self.discrete_size = discrete_size
 
     @torch.no_grad()
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        """The actions of `DreamerPolicy.act`, with the latent states they were chosen from: the recurrent state
+        (`deter`, in float16) and the classes of the stochastic state (`stoch`)."""
+        act = super().act(obs)
+        num_envs = len(next(iter(obs.values())))
+        stochastic_state = self.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
+        act.columns["deter"] = self.recurrent_state.half().cpu().numpy()
+        stoch_dtype = np.uint8 if self.discrete_size <= 256 else np.int64
+        act.columns["stoch"] = stochastic_state.cpu().numpy().astype(stoch_dtype)
+        return act
+
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Zero the states and the actions of the environments `reset_envs` (default: all of them)."""
         if reset_envs is None or len(reset_envs) == 0:
@@ -1011,6 +1027,8 @@ def build_agent(
         recurrent_state_size,
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
+        fabric=fabric,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes

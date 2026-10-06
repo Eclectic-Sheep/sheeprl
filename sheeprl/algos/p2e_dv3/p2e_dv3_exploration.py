@@ -24,7 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, reinforce_weight, sequential_store
 from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy, WorldModel
 from sheeprl.algos.dreamer_v3.dreamer_v3 import (
-    SequencePlayer,
+    SequenceWriter,
     actor_advantage_loss,
     behaviour_learning,
     critic_loss,
@@ -524,7 +524,6 @@ class P2EDV3Exploration(Algorithm):
         buffer = sequential_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=4), cfg.algo.per_rank_sequence_length
         )
-        self.schedule = schedule
         return state, buffer
 
     def policy(self, state: P2EDV3ExplorationState) -> DreamerV3Policy:
@@ -542,18 +541,8 @@ class P2EDV3Exploration(Algorithm):
         # The task actor plays
         test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, greedy=False, policy_step=policy_step)
 
-    def player(self, state: P2EDV3ExplorationState) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except with the MineDojo actor
-        random_warmup = "minedojo" not in self.cfg.algo.actor.cls.lower()
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup,
-        )
+    def writer(self, state: P2EDV3ExplorationState, policy: DreamerV3Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: P2EDV3ExplorationState, buffer: ReplayStore, n_steps: int, iteration: int

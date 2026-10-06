@@ -21,7 +21,7 @@ from torch.distributions import (
 )
 from torch.distributions.utils import probs_to_logits
 
-from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.algos.dreamer_v2.agent import DreamerPolicy, WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import (
@@ -667,7 +667,7 @@ class DecoupledRSSM(RSSM):
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
-class DreamerV3Policy(nn.Module):
+class DreamerV3Policy(nn.Module, DreamerPolicy):
     """
     The model of the Dreamer_v3 policy.
 
@@ -700,11 +700,15 @@ class DreamerV3Policy(nn.Module):
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
+        fabric: Fabric | None = None,
+        cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
+        self.fabric = fabric
+        self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
         self.num_envs = num_envs
         self.stochastic_size = stochastic_size
@@ -1308,6 +1312,8 @@ def build_agent(
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        fabric=fabric_player,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
     # Setup models with Fabric

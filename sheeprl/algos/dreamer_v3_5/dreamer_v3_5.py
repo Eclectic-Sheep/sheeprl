@@ -36,12 +36,12 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
-from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer
+from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, test
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
+from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, run
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -511,36 +511,28 @@ class DreamerV3_5State(TrainState):
     moments: Moments
 
 
-class LatentSequencePlayer(SequencePlayer):
-    """The player of DreamerV3 (`sheeprl.algos.dreamer_v3.dreamer_v3.SequencePlayer`), from the first step, with the
-    latent states of the policy (`LATENT_KEYS`) and the identifier of every step (`STEP_ID_KEY`: the environment and the
-    steps added to its buffer before it) in the rows, where the trainings write back the latent states they compute
-    (`write_latent_states`). The rewards and the episode flags are float32."""
+class LatentSequenceWriter(SequenceWriter):
+    """The writer of DreamerV3 (`sheeprl.algos.dreamer_v3.dreamer_v3.SequenceWriter`), with the latent states of the
+    policy (`LATENT_KEYS`, from the columns of `DreamerV3_5Policy.act`) and the identifier of every step (`STEP_ID_KEY`:
+    the environment and the steps added to its buffer before it) in the rows, where the trainings write back the latent
+    states they compute (`write_latent_states`). The rewards and the episode flags are float32."""
 
     dtype = np.float32
 
-    def __init__(
-        self,
-        fabric: Fabric,
-        cfg: Dict[str, Any],
-        policy: DreamerV3_5Policy,
-        actions_dim: Sequence[int],
-        is_continuous: bool,
-    ) -> None:
-        super().__init__(fabric, cfg, policy, None, actions_dim, is_continuous, random_warmup=False)
+    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
+        super().__init__(cfg, actions_dim)
         self.stochastic_size = cfg.algo.world_model.stochastic_size
         self.stoch_dtype = np.uint8 if cfg.algo.world_model.discrete_size <= 256 else np.int64
         # The steps added to the buffer of every environment, from the buffer (of a resumed run) at the first step
         self.counters: Optional[np.ndarray] = None
 
-    def step_columns(self, buffer: ReplayStore, num_envs: int) -> Dict[str, np.ndarray]:
+    def step_columns(self, buffer: ReplayStore, act: Act, num_envs: int) -> Dict[str, np.ndarray]:
         if self.counters is None:
             buffer.wait()
             self.counters = step_counters(buffer.storage)
-        stochastic_state = self.policy.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
         columns = {
-            "deter": self.policy.recurrent_state.half().cpu().numpy(),
-            "stoch": stochastic_state.cpu().numpy().astype(self.stoch_dtype),
+            "deter": act.columns["deter"],
+            "stoch": act.columns["stoch"],
             STEP_ID_KEY: np.stack((np.arange(num_envs), self.counters), -1)[np.newaxis],
         }
         self.counters += 1
@@ -564,6 +556,8 @@ class DreamerV3_5(Algorithm):
     with one optimizer. The latent states computed by the trainings are written back in the buffer."""
 
     off_policy = True
+    # The policy plays from the first step
+    random_warmup = False
     restart_crashed_envs = True
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
@@ -617,8 +611,8 @@ class DreamerV3_5(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
 
-    def player(self, state: DreamerV3_5State) -> LatentSequencePlayer:
-        return LatentSequencePlayer(self.fabric, self.cfg, self.policy(state), self.actions_dim, self.is_continuous)
+    def writer(self, state: DreamerV3_5State, policy: DreamerV3_5Policy) -> LatentSequenceWriter:
+        return LatentSequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV3_5State, buffer: ReplayStore, n_steps: int, iteration: int
