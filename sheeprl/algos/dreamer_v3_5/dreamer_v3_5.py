@@ -34,7 +34,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
@@ -45,6 +45,7 @@ from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, env_buffer_s
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm

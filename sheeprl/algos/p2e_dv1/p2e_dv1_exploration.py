@@ -24,12 +24,13 @@ from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, imagine, sample_batches_of_iteration, value_loss_fn
 from sheeprl.algos.dreamer_v1.loss import actor_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
-from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm

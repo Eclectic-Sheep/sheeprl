@@ -32,6 +32,7 @@ from sheeprl.core import (
     update,
 )
 from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -171,13 +172,7 @@ class PPO(Algorithm):
         if cfg.metric.log_level > 0:
             self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
             self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-        is_continuous = isinstance(action_space, gym.spaces.Box)
-        is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-        actions_dim = tuple(
-            action_space.shape
-            if is_continuous
-            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-        )
+        actions_dim, is_continuous = actions_dim_of(action_space)
         agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")

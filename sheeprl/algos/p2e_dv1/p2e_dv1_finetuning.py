@@ -18,13 +18,14 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, sample_batches_of_iteration, train
-from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import exploration_amounts
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import unwrap_fabric

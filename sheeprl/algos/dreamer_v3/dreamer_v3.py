@@ -45,6 +45,7 @@ from sheeprl.utils.distribution import (
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.distribution import entropy as policy_entropy
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -729,13 +730,7 @@ class DreamerV3(Algorithm):
     ) -> Tuple[DreamerV3State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.is_continuous = isinstance(action_space, gym.spaces.Box)
-        is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-        self.actions_dim = tuple(
-            action_space.shape
-            if self.is_continuous
-            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-        )
+        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if (

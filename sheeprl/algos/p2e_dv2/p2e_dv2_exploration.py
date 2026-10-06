@@ -20,7 +20,7 @@ from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, actions_dim_of, check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
     MAX_SAMPLED_BATCHES,
@@ -34,6 +34,7 @@ from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, 
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_

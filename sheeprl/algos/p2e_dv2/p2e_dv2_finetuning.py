@@ -16,12 +16,13 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, actions_dim_of, check_keys, train
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys, train
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm

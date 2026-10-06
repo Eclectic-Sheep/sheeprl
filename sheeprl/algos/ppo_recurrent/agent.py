@@ -130,16 +130,12 @@ class RecurrentPPOAgent(nn.Module):
         mlp_keys: Sequence[str],
         is_continuous: bool,
         distribution_cfg: Dict[str, Any],
-        num_envs: int = 1,
         screen_size: int = 64,
-        device: Union[torch.device, str] = "cpu",
     ):
         super().__init__()
-        self.num_envs = num_envs
         self.actions_dim = actions_dim
         self.distribution_cfg = distribution_cfg
         self.rnn_hidden_size = rnn_cfg.lstm.hidden_size
-        self.device = torch.device(device) if isinstance(device, str) else device
 
         # Encoder
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
@@ -216,24 +212,6 @@ class RecurrentPPOAgent(nn.Module):
             ortho_init_linear_layers(actor_heads, gain=0.01)
         if critic_cfg.ortho_init:
             ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
-
-        # Initial recurrent states for both the actor and critic rnn
-        self._initial_states: Tensor = self.reset_hidden_states()
-
-    @property
-    def initial_states(self) -> Tuple[Tensor, Tensor]:
-        return self._initial_states
-
-    @initial_states.setter
-    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
-        self._initial_states = value
-
-    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
-        states = (
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-        )
-        return states
 
     def _get_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
@@ -342,21 +320,6 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         # The recurrent states and the actions preceding the next step of every environment, created at the first step
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
         self.prev_actions: Optional[np.ndarray] = None
-
-    @property
-    def initial_states(self) -> Tuple[Tensor, Tensor]:
-        return self._initial_states
-
-    @initial_states.setter
-    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
-        self._initial_states = value
-
-    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
-        states = (
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-        )
-        return states
 
     def _get_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None, greedy: bool = False
@@ -541,9 +504,7 @@ def build_agent(
         mlp_keys=cfg.algo.mlp_keys.encoder,
         is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
         screen_size=cfg.env.screen_size,
-        device=fabric.device,
     )
     if agent_state:
         agent.load_state_dict(agent_state)

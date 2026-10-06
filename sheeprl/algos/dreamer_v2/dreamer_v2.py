@@ -45,6 +45,7 @@ from sheeprl.core import (
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -596,22 +597,6 @@ def check_keys(fabric: Fabric, cfg: Dict[str, Any], obs_space: gym.spaces.Dict) 
         fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
         fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
         fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
-
-
-def actions_dim_of(action_space: gym.Space) -> Tuple[Tuple[int, ...], bool]:
-    """The dimensions of the actions (one per discrete action) and whether they are continuous, as Python integers:
-    `torch.compile` reads the NumPy ones (of `Discrete.n`) as tensors."""
-    is_continuous = isinstance(action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        int(dim)
-        for dim in (
-            action_space.shape
-            if is_continuous
-            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-        )
-    )
-    return actions_dim, is_continuous
 
 
 class DreamerV2(Algorithm):

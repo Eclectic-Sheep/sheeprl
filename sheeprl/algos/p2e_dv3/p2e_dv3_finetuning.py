@@ -25,6 +25,7 @@ from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
+from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -95,13 +96,7 @@ class P2EDV3Finetuning(Algorithm):
     ) -> Tuple[P2EDV3FinetuningState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.is_continuous = isinstance(action_space, gym.spaces.Box)
-        is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-        self.actions_dim = tuple(
-            action_space.shape
-            if self.is_continuous
-            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-        )
+        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if (
