@@ -809,7 +809,7 @@ class DreamerPolicy(Policy):
             )
         return Act(env_actions, {"actions": actions})
 
-    def reset(self, env_idxes: Optional[Sequence[int]] = None) -> None:
+    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
         self.init_states(env_idxes)
 
 

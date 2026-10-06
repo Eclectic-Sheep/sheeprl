@@ -40,9 +40,10 @@ class Policy(Protocol):
         the environments, without columns."""
         return Act(env.random_actions())
 
-    def reset(self, env_idxes: Optional[Sequence[int]] = None) -> None:
-        """Reset the state of the environments `env_idxes` (all of them if `None`), which start new episodes. A policy
-        without state does nothing."""
+    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
+        """Forget the memory of the policy (e.g. the recurrent state, the previous actions) for the environments
+        `env_idxes` (all of them if `None`), which start new episodes. It doesn't reset the environments: they start
+        their new episodes by themselves. A policy without memory does nothing."""
 
 
 class Writer(Protocol):
@@ -55,10 +56,10 @@ class Writer(Protocol):
 class Collector:
     """Plays `policy` in `env` and writes every step in `store` with `writer`.
 
-    Until `algo.learning_starts` the actions are random (`Policy.random`), when `random_warmup` is set. The state of
-    the policy is reset for the environments that start a new episode: whose episode has ended or which have been
-    created again after a crash (`EnvStep.restarted`). Every step counts the policy steps of the schedule and gives the
-    ended episodes to the cadence, which logs them.
+    Until `algo.learning_starts` the actions are random (`Policy.random`), when `random_warmup` is set. The memory of
+    the policy is reset (`Policy.reset_state`) for the environments that start a new episode: whose episode has ended
+    or which have been created again after a crash (`EnvStep.restarted`). Every step counts the policy steps of the
+    schedule and gives the ended episodes to the cadence, which logs them.
     """
 
     def __init__(
@@ -80,9 +81,9 @@ class Collector:
         self.random_warmup = random_warmup
 
     def reset(self) -> None:
-        """Reset the environments and the state of the policy."""
+        """Reset the environments and the memory of the policy."""
         self.env.reset()
-        self.policy.reset()
+        self.policy.reset_state()
 
     def step(self) -> EnvStep:
         """Play one step in every environment and write it."""
@@ -96,7 +97,7 @@ class Collector:
         new_episodes = np.logical_or(np.logical_or(step.terminated, step.truncated), step.restarted).nonzero()[0]
         self.writer.write(self.store, step, act)
         if len(new_episodes) > 0:
-            self.policy.reset(new_episodes.tolist())
+            self.policy.reset_state(new_episodes.tolist())
         schedule.policy_step += schedule.policy_steps_per_step
         self.cadence.accumulate_episodes(step.episodes, schedule.policy_step)
         return step

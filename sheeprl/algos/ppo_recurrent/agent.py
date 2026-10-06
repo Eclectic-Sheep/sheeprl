@@ -480,7 +480,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         self.prev_actions, self.prev_states = columns["actions"], states
         return Act(env_actions, columns, {"actions": torch_actions, "states": states})
 
-    def reset(self, env_idxes: Optional[Sequence[int]] = None) -> None:
+    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
         if env_idxes is None:
             # Created with zeros at the next step
             self.prev_states = self.prev_actions = None
