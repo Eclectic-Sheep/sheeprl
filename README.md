@@ -58,15 +58,15 @@
         <td>1-3080</td>
       </tr>
       <tr>
-        <td>DOA++(w/o optimizations)<sup>1</sup></td>
+        <td>DOA++</td>
         <td>7M</td>
         <td>18d 22h</td>
-        <td>2726/3328<sup>2</sup></td>
+        <td>2726/3328<sup>1</sup></td>
         <td>N.A.</td>
         <td>1-3080</td>
       </tr>
       <tr>
-        <td>Minecraft-Nav(w/o optimizations)</td>
+        <td>Minecraft-Nav</td>
         <td>8M</td>
         <td>16d 4h</td>
         <td>27% &gt;= 70<br>14% &gt;= 100</td>
@@ -77,116 +77,53 @@
   </table>
 </div>
 
-1. For comparison: 1M in 2d 7h vs 1M in 1d 5h (before and after optimizations resp.)
-2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
+1. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
 
 #### Benchmarks
-The training times of our implementations compared to the ones of Stable Baselines3 are shown below:
+The training times of SheepRL compared to the ones of [Stable Baselines3](https://github.com/DLR-RM/stable-baselines3) on the CPU, in seconds:
 
-<div align="center">
-  <table>
-    <thead>
-      <tr>
-        <th colspan="2"></th>
-        <th>SheepRL v0.4.0</th>
-        <th>SheepRL v0.4.9</th>
-        <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
-        <th>SheepRL v0.5.5<br />(Numpy Buffers)</th>
-        <th>StableBaselines3<sup>1</sup></th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td rowspan="2"><b>PPO</b></td>
-        <td><i>1 device</i></td>
-        <td>192.31s &plusmn; 1.11</td>
-        <td>138.3s &plusmn; 0.16</td>
-        <td>80.81s &plusmn; 0.68</td>
-        <td>81.27s &plusmn; 0.47</td>
-        <td>77.21s &plusmn; 0.36</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>85.42s &plusmn; 2.27</td>
-        <td>59.53s &plusmn; 0.78</td>
-        <td>46.09s &plusmn; 0.59</td>
-        <td>36.88s &plusmn; 0.30</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td rowspan="2"><b>A2C</b></td>
-        <td><i>1 device</i></td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>84.76s &plusmn; 0.37</td>
-        <td>84.22s &plusmn; 0.99</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>28.95s &plusmn; 0.75</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td rowspan="2"><b>SAC</b></td>
-        <td><i>1 device</i></td>
-        <td>421.37s &plusmn; 5.27</td>
-        <td>363.74s &plusmn; 3.44</td>
-        <td>318.06s &plusmn; 4.46</td>
-        <td>320.21 &plusmn; 6.29</td>
-        <td>336.06s &plusmn; 12.26</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>264.29s &plusmn; 1.81</td>
-        <td>238.88s &plusmn; 4.97</td>
-        <td>210.07s &plusmn; 27</td>
-        <td>225.95 &plusmn; 3.65</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V1</b></td>
-        <td><i>1 device</i></td>
-        <td>4201.23s</td>
-        <td>N.D.</td>
-        <td>2921.38s</td>
-        <td>2207.13s</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V2</b></td>
-        <td><i>1 device</i></td>
-        <td>1874.62s</td>
-        <td>N.D.</td>
-        <td>1148.1s</td>
-        <td>906.42s</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V3</b></td>
-        <td><i>1 device</i></td>
-        <td>2022.99s</td>
-        <td>N.D.</td>
-        <td>1378.01s</td>
-        <td>1589.30s</td>
-        <td>N.D.</td>
-      </tr>
-    </tbody>
-  </table>
-</div>
+| Algorithm | Devices | SheepRL 1.0 | Stable Baselines3 2.2.1 |
+| --------- | ------- | ----------- | ----------------------- |
+| PPO       | 1       | 23.9 ± 0.31 | 21.7 ± 0.11             |
+| PPO       | 2       | 31.8 ± 0.24 | N.D.                    |
+| A2C       | 1       | 31.6 ± 0.51 | 27.6 ± 0.09             |
+| A2C       | 2       | 36.0 ± 0.54 | N.D.                    |
+| SAC       | 1       | 136.3 ± 0.21 | 157.2 ± 1.53           |
+| SAC       | 2       | 137.6 ± 1.45 | N.D.                   |
 
-> [!NOTE]
->
-> All experiments have been run on 4 CPUs in [Lightning Studio](https://lightning.ai/).
-> All benchmarks, but the Dreamers' ones, have been run 5 times and we have taken the mean and the std of the runs. 
-> We have disabled the test function, the logging, and the checkpoints. Moreover, the models were not registered using MLFlow.
-> 
-> Dreamers' benchmarks have been run 1 time with logging and checkpoints, without running the test function.
->
-> 1. The StableBaselines3 version is `v2.2.1`, please install the package with `pip install stable-baselines3==2.2.1`
+The training times of the Dreamers on the GPU, without and with the compiled losses (`algo.compile.enabled=True`), in seconds:
+
+| Algorithm  | Eager | Compiled |
+| ---------- | ----- | -------- |
+| DreamerV1  | 98.9  | 52.9     |
+| DreamerV2  | 86.2  | 47.2     |
+| DreamerV3  | 116.2 | 43.2     |
+
+##### The setup of the benchmarks
+
+- **Hardware**: an Intel Core i7-14700KF (the CPU experiments are pinned to 4 of its efficiency cores, up to 4.3 GHz, with `taskset -c 20-23`), 32 GB of RAM and an NVIDIA GeForce RTX 5070 (12 GB, driver 580).
+- **Software**: Python 3.11, PyTorch 2.14.1 (CUDA 13.0), Lightning 2.6.6, Gymnasium 1.3.0 and NumPy 2.4.6. Stable Baselines3 2.2.1 runs in its own environment, with Gymnasium 0.29 and NumPy 1.26.
+- **SheepRL versions**: the CPU results on 1 device were measured with SheepRL 1.0.0rc2; the CPU results on 2 devices and the Dreamer results with SheepRL 1.0.0rc1, and haven't been measured again since.
+- **Runs**: the CPU experiments run 5 times each, and the tables report the mean and the standard deviation of the runs, the first one (cold start) excluded. The Dreamers run once each; the compiled ones after a first run that fills the cache of `torch.compile`.
+- **Timing**: the wall time of the whole run for SheepRL, including the start of Hydra and Fabric (about 0.6 s); from the creation of the environments to the end of the training for Stable Baselines3.
+
+The experiments are the `exp=<algorithm>_benchmarks` configs (`sheeprl/configs/exp`), without the test, the logging, the checkpoints and the registration of the models, except the logging and the checkpoints of the Dreamers:
+
+| Config | Environment | Envs per process | Policy steps | Main settings |
+| ------ | ----------- | ---------------- | ------------ | ------------- |
+| `ppo_benchmarks` | `CartPole-v1` | 1 | 65536 | rollouts of 128 steps, minibatches of 64, 10 epochs |
+| `a2c_benchmarks` | `CartPole-v1` | 1 | 65536 | rollouts of 5 steps |
+| `sac_benchmarks` | `LunarLanderContinuous-v3` (`-v2` in Stable Baselines3) | 4 | 65536 | batches of 256, one gradient step per iteration (`run_benchmarks: True`), learning starts after 100 steps |
+| `dreamer_v1_benchmarks`, `dreamer_v2_benchmarks`, `dreamer_v3_benchmarks` | `MsPacmanNoFrameskip-v4` | 1 | 16384 | tiny models (8 dense units, a recurrent state of 8, a stochastic state of 4, 4×4 discrete in V2 and V3, CNN channel multiplier 2), a buffer of 16384 steps, replay ratio 1/16 after 1024 steps, `32-true` precision |
+
+```bash
+# On the CPU (2 devices: fabric.devices=2 fabric.strategy=ddp)
+taskset -c 20-23 sheeprl exp=ppo_benchmarks
+# On the GPU (eager: algo.compile.enabled=False)
+sheeprl exp=dreamer_v3_benchmarks fabric.accelerator=cuda algo.compile.enabled=True
+```
+
+With these small models, 2 devices on 4 cores are not faster than 1: synchronizing the gradients costs more than splitting the work saves. `benchmarks/benchmark.py` and `benchmarks/benchmark_sb3.py` time a run of SheepRL and of Stable Baselines3.
 
 ## What
 
@@ -499,16 +436,22 @@ Every process has its own environments and its own copy of the agent, which inte
 
 Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
-1. **plays**: the player of the algorithm chooses the actions for the current observations and steps the environments (`EnvRunner`) `algo.steps_per_iteration` times, writing every step in the *store* of the collected data: the rollout of the on-policy algorithms, the replay buffer of the off-policy ones;
+1. **plays**: the player of the algorithm chooses the actions for the current observations and steps the environments `algo.steps_per_iteration` times, writing every step in the *store* of the collected data (the rollout of the on-policy algorithms, the replay buffer of the off-policy ones) and returning it: the loop counts the policy steps (`TrainSchedule`) and logs the episodes that have ended;
 2. **trains**: `algo.batches()` yields one batch per gradient step and `algo.train_step()` does the step, returning its metrics. The on-policy algorithms train on their rollout (epochs × minibatches); the off-policy ones start after `algo.learning_starts` policy steps (optionally with `algo.per_rank_pretrain_steps` gradient steps first) and then do `algo.replay_ratio` gradient steps per policy step (`TrainSchedule`);
 3. **logs and saves**: the metrics are aggregated on the device and read on the host once every `metric.log_every` policy steps, and a checkpoint is saved every `checkpoint.every` policy steps (`Cadence`).
+
+### The environments
+
+The players step the environments through an `Environment` (`sheeprl.core.Environment`): the `num_envs` environments of the process, with their current observations (`obs`), `step(actions)`, `random_actions()`, `reset()` and `close()`. Every step returns an `EnvStep`: the observations the actions were chosen from and the next ones, the rewards, `terminated` and `truncated`, the last observations of the episodes that have just ended (`final_obs`: an environment whose episode ends starts the next one in the same step), the environments created again after a crash (`restarted`), the episodes that have just ended (`episodes`) and the `info` of the environments, which neither the training loop nor the players read.
+
+`GymEnvironment` implements it with the gymnasium environments created by `make_env` from the `env` configs, seeded differently on every process. Another backend only has to return the same `EnvStep`s: the algorithms, the logging and the checkpoints don't change.
 
 ### The interface of an algorithm
 
 An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
 - `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore`: a `ReplayBuffer` and its sampler (for the on-policy algorithms, the `EpochSampler` of the minibatches of an update of their rollout: `sheeprl.core.rollout_store`).
-- `player()`: returns the object that plays the current policy in the environments and writes what happens in the store.
+- `player()`: returns the `Player`, whose `step(env, store)` plays the current policy for one step of the environments, writes what happened in the store and returns the `EnvStep`.
 - `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
 - `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.
 - `end_iteration()`: optional, updates what changes once per iteration (e.g. annealed coefficients).
