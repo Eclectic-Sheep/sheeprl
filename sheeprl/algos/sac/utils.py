@@ -10,13 +10,14 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+    from sheeprl.algos.sac.agent import SACPolicy
 
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",

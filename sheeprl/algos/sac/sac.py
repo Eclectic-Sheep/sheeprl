@@ -17,8 +17,8 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac.utils import prepare_obs, test
-from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
+from sheeprl.algos.sac.utils import test
+from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
@@ -60,41 +60,23 @@ class SACState(TrainState):
     alpha_optimizer: Optimizer
 
 
-class ReplayPlayer(Player):
-    """Plays in the environments and writes every step in the replay buffer: random actions until
-    `algo.learning_starts`, then actions sampled from the policy.
+class ReplayWriter(Writer):
+    """Writes every step in the replay buffer, with the actions played in the environments.
 
     With `dtype`, the observations, rewards and episode flags are written with that dtype; otherwise the observations
     and rewards keep the dtype of the environments and the flags are `uint8`.
     """
 
-    def __init__(
-        self,
-        fabric: Fabric,
-        cfg: Dict[str, Any],
-        policy: SACPolicy,
-        schedule: TrainSchedule,
-        dtype: Optional[np.dtype] = None,
-    ) -> None:
-        self.fabric = fabric
+    def __init__(self, cfg: Dict[str, Any], dtype: Optional[np.dtype] = None) -> None:
         self.cfg = cfg
-        self.policy = policy
-        self.schedule = schedule
         self.dtype = dtype
         self.mlp_keys = cfg.algo.mlp_keys.encoder
 
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
-        num_envs = env.num_envs
-        if self.schedule.warmup(self.schedule.policy_step):
-            actions = env.random_actions()
-        else:
-            obs = prepare_obs(self.fabric, env.obs, mlp_keys=self.mlp_keys, num_envs=num_envs)
-            actions = self.policy(obs).cpu().numpy()
-
-        step = env.step(actions)
+    def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
+        num_envs = len(step.rewards)
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation,
         # not the first one of the next episode
@@ -108,7 +90,7 @@ class ReplayPlayer(Player):
         data = {
             "terminated": step.terminated.reshape(1, num_envs, -1).astype(flags_dtype),
             "truncated": step.truncated.reshape(1, num_envs, -1).astype(flags_dtype),
-            "actions": actions.reshape(1, num_envs, -1),
+            "actions": act.env_actions.reshape(1, num_envs, -1),
             "observations": self.cast(np.concatenate([step.obs[k] for k in self.mlp_keys], axis=-1))[np.newaxis],
         }
         if not self.cfg.buffer.sample_next_obs:
@@ -116,7 +98,6 @@ class ReplayPlayer(Player):
             data["next_observations"] = next_obs[np.newaxis]
         data["rewards"] = self.cast(step.rewards.reshape(num_envs, -1))[np.newaxis]
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
-        return step
 
 
 def build_store(
@@ -193,7 +174,7 @@ class SAC(Algorithm):
     off_policy = True
     # The name of the algorithm in the error messages
     name = "SAC"
-    # The dtype of the values written in the replay buffer (`ReplayPlayer`)
+    # The dtype of the values written in the replay buffer (`ReplayWriter`)
     buffer_dtype: Optional[np.dtype] = None
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
@@ -264,8 +245,8 @@ class SAC(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: SACState) -> ReplayPlayer:
-        return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule, dtype=self.buffer_dtype)
+    def writer(self, state: SACState, policy: SACPolicy) -> ReplayWriter:
+        return ReplayWriter(self.cfg, dtype=self.buffer_dtype)
 
     def batches(
         self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int

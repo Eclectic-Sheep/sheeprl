@@ -36,8 +36,9 @@ class Policy(Protocol):
         raise NotImplementedError
 
     def random(self, env: Environment) -> Act:
-        """Uniformly random actions, played before the training starts (`TrainSchedule.warmup`)."""
-        raise NotImplementedError
+        """Uniformly random actions, played before the training starts (`TrainSchedule.warmup`); by default, the ones of
+        the environments, without columns."""
+        return Act(env.random_actions())
 
     def reset(self, env_idxes: Optional[Sequence[int]] = None) -> None:
         """Reset the state of the environments `env_idxes` (all of them if `None`), which start new episodes. A policy

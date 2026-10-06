@@ -245,12 +245,15 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup policy agent
+    fabric_player = get_single_device_fabric(fabric)
     policy = SACPolicy(
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
+        fabric=fabric_player,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
     )
 
     # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
@@ -263,7 +266,6 @@ def build_agent(
 
     # Wrap the target q-functions with a single-device fabric. This let the target q-functions
     # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     # Setup policy agent

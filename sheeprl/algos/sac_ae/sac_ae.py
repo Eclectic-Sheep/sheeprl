@@ -20,8 +20,8 @@ from sheeprl.algos.sac.loss import critic_loss, policy_loss
 from sheeprl.algos.sac.sac import build_store
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
-from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
-from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
+from sheeprl.algos.sac_ae.utils import images_as_channels, preprocess_obs, test
+from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -103,31 +103,17 @@ class SACAEState(TrainState):
         super().load_state_dict(state)
 
 
-class ReplayPlayer(Player):
-    """Plays in the environments and writes every step in the replay buffer: random actions until
-    `algo.learning_starts`, then actions sampled from the policy. The stacked frames of an image are stored as its
-    channels."""
+class ReplayWriter(Writer):
+    """Writes every step in the replay buffer, with the actions played in the environments. The stacked frames of an
+    image are stored as its channels."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: SACAEPolicy, schedule: TrainSchedule) -> None:
-        self.fabric = fabric
+    def __init__(self, cfg: Dict[str, Any]) -> None:
         self.cfg = cfg
-        self.policy = policy
-        self.schedule = schedule
         self.cnn_keys = cfg.algo.cnn_keys.encoder
 
-    def images_as_channels(self, obs: Dict[str, np.ndarray], num_envs: int) -> Dict[str, np.ndarray]:
-        return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in self.cnn_keys else v for k, v in obs.items()}
-
-    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
-        num_envs = env.num_envs
-        obs = self.images_as_channels(env.obs, num_envs)
-        if self.schedule.warmup(self.schedule.policy_step):
-            actions = env.random_actions()
-        else:
-            torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
-            actions = self.policy(torch_obs).cpu().numpy()
-
-        step = env.step(actions)
+    def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
+        num_envs = len(step.rewards)
+        obs = images_as_channels(step.obs, self.cnn_keys, num_envs)
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation,
         # not the first one of the next episode
@@ -136,7 +122,7 @@ class ReplayPlayer(Player):
         if len(ended_envs) > 0:
             for k, final_obs in step.stack_final_obs(ended_envs, list(next_obs)).items():
                 next_obs[k][ended_envs] = final_obs
-        next_obs = self.images_as_channels(next_obs, num_envs)
+        next_obs = images_as_channels(next_obs, self.cnn_keys, num_envs)
 
         data = {}
         for k in obs:
@@ -145,10 +131,9 @@ class ReplayPlayer(Player):
                 data[f"next_{k}"] = next_obs[k][np.newaxis]
         data["terminated"] = step.terminated.reshape(1, num_envs, -1).astype(np.float32)
         data["truncated"] = step.truncated.reshape(1, num_envs, -1).astype(np.float32)
-        data["actions"] = actions.reshape(1, num_envs, -1).astype(np.float32)
+        data["actions"] = act.env_actions.reshape(1, num_envs, -1).astype(np.float32)
         data["rewards"] = step.rewards.reshape(1, num_envs, -1).astype(np.float32)
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
-        return step
 
 
 def train(
@@ -317,8 +302,8 @@ class SACAE(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: SACAEState) -> ReplayPlayer:
-        return ReplayPlayer(self.fabric, self.cfg, self.policy(state), self.schedule)
+    def writer(self, state: SACAEState, policy: SACAEPolicy) -> ReplayWriter:
+        return ReplayWriter(self.cfg)
 
     def batches(
         self, state: SACAEState, buffer: ReplayStore, n_steps: int, iteration: int

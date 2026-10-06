@@ -14,7 +14,8 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
-from sheeprl.algos.sac_ae.utils import weight_init
+from sheeprl.algos.sac_ae.utils import images_as_channels, prepare_obs, weight_init
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -454,7 +455,11 @@ class SACAEAgent(nn.Module):
         ema_(self.critic_target.encoder, self.critic_unwrapped.encoder, self._encoder_tau)
 
 
-class SACAEPolicy(nn.Module):
+class SACAEPolicy(nn.Module, Policy):
+    """The policy of SAC-AE: `forward` samples the actions from the observations as tensors, `act` plays them in the
+    environments (`Policy`), from the observations moved to the device of `fabric` (the images `cnn_keys` with their
+    stacked frames as channels)."""
+
     def __init__(
         self,
         feature_extractor: MultiEncoder,
@@ -463,16 +468,25 @@ class SACAEPolicy(nn.Module):
         fc_logstd: nn.Module,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
+        fabric: Optional[Fabric] = None,
+        cnn_keys: Sequence[str] = (),
     ):
         super().__init__()
         self.encoder = feature_extractor
         self.model = fc
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
+        self.fabric = fabric
+        self.cnn_keys = cnn_keys
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
+
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        num_envs = len(next(iter(obs.values())))
+        obs = images_as_channels(obs, self.cnn_keys, num_envs)
+        return Act(self(prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)).cpu().numpy())
 
     def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
         """Given an observation, it returns a tanh-squashed
@@ -651,6 +665,7 @@ def build_agent(
         agent.load_state_dict(tie_actor_convolutions(agent_state))
 
     # Setup policy agent
+    fabric_player = get_single_device_fabric(fabric)
     policy = SACAEPolicy(
         copy.deepcopy(agent.actor.encoder),
         copy.deepcopy(agent.actor.model),
@@ -658,6 +673,8 @@ def build_agent(
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
+        fabric=fabric_player,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
     # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`): they are trained only
@@ -673,7 +690,6 @@ def build_agent(
 
     # Wrap the target critic with a single-device fabric. This lets the target critic
     # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
     agent.critic_target = fabric_player.setup_module(agent.critic_target)
 
     # Setup policy agent

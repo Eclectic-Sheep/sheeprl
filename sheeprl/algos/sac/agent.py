@@ -3,6 +3,7 @@ from math import prod
 from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -10,6 +11,8 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
 
+from sheeprl.algos.sac.utils import prepare_obs
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -266,7 +269,10 @@ class SACAgent(nn.Module):
         ema_(self.qfs_target, self.qfs_unwrapped, self._tau)
 
 
-class SACPolicy(nn.Module):
+class SACPolicy(nn.Module, Policy):
+    """The policy of SAC and DroQ: `forward` samples the actions from the observations as a tensor, `act` plays them in
+    the environments (`Policy`), from the observations `mlp_keys` concatenated on the device of `fabric`."""
+
     def __init__(
         self,
         feature_extractor: nn.Module,
@@ -274,11 +280,15 @@ class SACPolicy(nn.Module):
         fc_logstd: nn.Module,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
+        fabric: Optional[Fabric] = None,
+        mlp_keys: Sequence[str] = (),
     ):
         super().__init__()
         self.model = feature_extractor
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
+        self.fabric = fabric
+        self.mlp_keys = mlp_keys
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
@@ -308,6 +318,10 @@ class SACPolicy(nn.Module):
             y_t = torch.tanh(x_t)
             actions = y_t * self.action_scale + self.action_bias
             return actions
+
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        num_envs = len(obs[self.mlp_keys[0]])
+        return Act(self(prepare_obs(self.fabric, obs, mlp_keys=self.mlp_keys, num_envs=num_envs)).cpu().numpy())
 
     def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
         return self(obs, greedy=greedy)
@@ -340,12 +354,15 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup policy agent
+    fabric_player = get_single_device_fabric(fabric)
     policy = SACPolicy(
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
+        fabric=fabric_player,
+        mlp_keys=cfg.algo.mlp_keys.encoder,
     )
 
     # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
@@ -358,7 +375,6 @@ def build_agent(
 
     # Wrap the target q-functions with a single-device fabric. This let the target q-functions
     # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
     # Setup policy agent

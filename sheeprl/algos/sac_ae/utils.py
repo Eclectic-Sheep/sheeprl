@@ -25,6 +25,11 @@ AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
 
 
+def images_as_channels(obs: Dict[str, np.ndarray], cnn_keys: Sequence[str], num_envs: int) -> Dict[str, np.ndarray]:
+    """`obs` with the stacked frames of the images `cnn_keys` as their channels."""
+    return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in cnn_keys else v for k, v in obs.items()}
+
+
 def prepare_obs(
     fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
 ) -> Dict[str, Tensor]:
