@@ -3,6 +3,7 @@ import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import gymnasium as gym
 import numpy as np
 import pytest
 import torch
@@ -11,13 +12,14 @@ from torch import Tensor, nn
 
 # `setup_module` is not imported by name: pytest would run it as the setup of this test module
 from sheeprl import core
-from sheeprl.core import EnvStep, TrainSchedule, TrainState, load_replay_buffer, update
+from sheeprl.core import EnvStep, Episode, GymEnvironment, TrainSchedule, TrainState, load_replay_buffer, update
 from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.loop import phase_timer
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.utils.env import get_vector_env_cls
 from sheeprl.utils.timer import timer
 from sheeprl.utils.utils import dotdict
 
@@ -499,3 +501,36 @@ def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path
         assert sorted(torch.cat([b["state"] for b in epoch]).flatten().tolist()) == sorted(
             flat["state"].flatten().tolist()
         )
+
+
+class TwoStepEnv(gym.Env):
+    """Episodes of two steps, each with reward 1; the observation is the step of the episode."""
+
+    observation_space = gym.spaces.Dict({"state": gym.spaces.Box(0, 2, (1,), np.float32)})
+    action_space = gym.spaces.Discrete(2)
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.t = 0
+        return {"state": np.zeros(1, np.float32)}, {}
+
+    def step(self, action):
+        self.t += 1
+        return {"state": np.full(1, self.t, np.float32)}, 1.0, self.t == 2, False, {}
+
+
+def test_gym_environment_reports_the_ended_episodes_in_the_env_step_fields():
+    envs = get_vector_env_cls(True)([lambda: gym.wrappers.RecordEpisodeStatistics(TwoStepEnv())] * 2)
+    env = GymEnvironment(envs, seed=0)
+    env.reset()
+    first = env.step(np.zeros(2, dtype=np.int64))
+    assert list(first.final_obs) == [None, None] and first.episodes == () and not first.restarted.any()
+    second = env.step(np.zeros(2, dtype=np.int64))
+    # The episodes end and the environments start the next ones in the same step
+    assert np.array_equal(second.next_obs["state"], np.zeros((2, 1))) and np.array_equal(
+        env.obs["state"], np.zeros((2, 1))
+    )
+    assert np.array_equal(second.stack_final_obs([0, 1], ["state"])["state"], np.full((2, 1), 2.0))
+    assert second.episodes == (Episode(0, 2.0, 2), Episode(1, 2.0, 2))
+    assert not second.restarted.any()
+    env.close()

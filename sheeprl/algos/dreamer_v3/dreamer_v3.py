@@ -32,7 +32,7 @@ from sheeprl.algos.dreamer_v2.utils import (
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
-from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -106,7 +106,7 @@ class SequencePlayer(Player):
         # The row written at the next step; created from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: Environment, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -193,6 +193,7 @@ class SequencePlayer(Player):
             step_data["truncated"][:, dones_idxes] = np.zeros_like(step_data["truncated"][:, dones_idxes])
             step_data["is_first"][:, dones_idxes] = np.ones_like(step_data["is_first"][:, dones_idxes])
             self.policy.init_states(dones_idxes)
+        return step
 
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)

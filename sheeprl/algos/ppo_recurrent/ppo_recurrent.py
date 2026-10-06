@@ -23,6 +23,7 @@ from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import (
     Algorithm,
     Environment,
+    EnvStep,
     Player,
     ReplayStore,
     TrainSchedule,
@@ -59,7 +60,7 @@ class RecurrentRolloutPlayer(Player):
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
         self.prev_actions: Optional[np.ndarray] = None
 
-    def step(self, env: Environment, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
         cfg = self.cfg
         num_envs = env.num_envs
         device = self.fabric.device
@@ -130,6 +131,7 @@ class RecurrentRolloutPlayer(Player):
             self.prev_states = tuple((1 - torch.as_tensor(dones, device=device)) * s for s in states)
         else:
             self.prev_states = states
+        return step
 
 
 # Compiled, the minibatches are padded to a multiple of this number of sequences (`PPORecurrent.batches`)

@@ -7,7 +7,7 @@ from sheeprl.core.algorithm import Algorithm, Player, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.evaluation import evaluate, log_models_from_checkpoint
 from sheeprl.core.loop import load_trained_state, run
-from sheeprl.core.runner import Environment, EnvRunner, EnvStep
+from sheeprl.core.runner import Environment, EnvStep, Episode, GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import load_replay_buffer, rollout_store
 from sheeprl.core.update import all_reduce_gradients, autocast, setup_module, update
@@ -17,9 +17,10 @@ from sheeprl.utils.model import ema_
 __all__ = [
     "Algorithm",
     "Cadence",
-    "EnvRunner",
     "EnvStep",
     "Environment",
+    "Episode",
+    "GymEnvironment",
     "Player",
     "ReplayStore",
     "TrainSchedule",

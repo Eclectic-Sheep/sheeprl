@@ -1,11 +1,11 @@
 """The environments of one process: what the players step (`Environment`, `EnvStep`) and its gymnasium
-implementation (`EnvRunner`)."""
+implementation (`GymEnvironment`)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Sequence
+from typing import Any, Dict, Optional, Protocol, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -13,10 +13,16 @@ from lightning import Fabric
 
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.metric import MetricAggregator
 
-if TYPE_CHECKING:
-    from sheeprl.core.schedule import TrainSchedule
+
+@dataclass
+class Episode:
+    """An episode that has just ended."""
+
+    # The environment that played it
+    env_idx: int
+    reward: float
+    length: int
 
 
 @dataclass
@@ -41,6 +47,8 @@ class EnvStep:
     # its `next_obs` is the first observation of a new episode. If the episode it was playing hadn't ended
     # (`terminated` and `truncated` are false), the episode has been cut short, without a last observation
     restarted: np.ndarray
+    # The episodes that have just ended, logged by the training loop
+    episodes: Sequence[Episode] = ()
     info: Dict[str, Any] = field(default_factory=dict)
 
     def stack_final_obs(self, env_idxes: Sequence[int], keys: Sequence[str]) -> Dict[str, np.ndarray]:
@@ -50,7 +58,7 @@ class EnvStep:
 
 class Environment(Protocol):
     """The vectorized environments of one process, stepped by the players (`Player.step`): `num_envs` environments,
-    whose current observations are `obs`. `EnvRunner` implements it with gymnasium environments.
+    whose current observations are `obs`. `GymEnvironment` implements it with gymnasium environments.
     """
 
     num_envs: int
@@ -73,55 +81,53 @@ class Environment(Protocol):
         """Close the environments."""
 
 
-class EnvRunner(Environment):
-    """The `Environment` of gymnasium environments: creation, seeding, stepping and episode statistics.
+class GymEnvironment(Environment):
+    """The `Environment` of a gymnasium vectorized environment with same-step autoreset (`get_vector_env_cls`),
+    created by `from_config`: it seeds the resets with `seed` and translates the `info` of gymnasium into the fields of
+    `EnvStep`. The ended episodes are read from the statistics of `RecordEpisodeStatistics`."""
 
-    Every process has `cfg.env.num_envs` environments, seeded differently on every process. The ended episodes are
-    logged at the policy step of `schedule`.
+    def __init__(self, envs: gym.vector.VectorEnv, seed: Optional[int] = None) -> None:
+        self.envs = envs
+        self.seed = seed
+        self.num_envs = envs.num_envs
+        self.observation_space = envs.single_observation_space
+        self.action_space = envs.single_action_space
+        self.obs: Dict[str, np.ndarray] = {}
 
-    With `restart_on_exception`, an environment that raises an exception is created again (`RestartOnException`)
-    instead of stopping the run: its step then returns the first observation of a new episode, with `restarted` set.
-    """
+    @classmethod
+    def from_config(
+        cls, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, restart_on_exception: bool = False
+    ) -> GymEnvironment:
+        """The `cfg.env.num_envs` environments of the process (`make_env`), seeded differently on every process.
 
-    def __init__(
-        self,
-        fabric: Fabric,
-        cfg: Dict[str, Any],
-        log_dir: str,
-        schedule: TrainSchedule,
-        aggregator: Optional[MetricAggregator] = None,
-        restart_on_exception: bool = False,
-    ) -> None:
-        self.fabric = fabric
-        self.cfg = cfg
-        self.schedule = schedule
-        self.aggregator = aggregator
-        self.num_envs = cfg.env.num_envs
+        With `restart_on_exception`, an environment that raises an exception is created again (`RestartOnException`)
+        instead of stopping the run: its step then returns the first observation of a new episode, with `restarted`
+        set.
+        """
+        num_envs = cfg.env.num_envs
         rank = fabric.global_rank
-        self._first_seed = cfg.seed + rank * self.num_envs
+        first_seed = cfg.seed + rank * num_envs
         env_fns = [
             make_env(
                 cfg,
-                self._first_seed + i,
-                rank * self.num_envs,
+                first_seed + i,
+                rank * num_envs,
                 log_dir if rank == 0 else None,
                 "train",
                 vector_env_idx=i,
             )
-            for i in range(self.num_envs)
+            for i in range(num_envs)
         ]
         if restart_on_exception:
             env_fns = [partial(RestartOnException, env_fn) for env_fn in env_fns]
-        self.envs = get_vector_env_cls(cfg.env.sync_env)(env_fns)
+        envs = get_vector_env_cls(cfg.env.sync_env)(env_fns)
         # Seed the random actions (e.g. those played before the training starts)
-        self.envs.action_space.seed(cfg.seed + rank)
-        self.observation_space = self.envs.single_observation_space
-        self.action_space = self.envs.single_action_space
-        self.obs: Dict[str, np.ndarray] = {}
+        envs.action_space.seed(cfg.seed + rank)
+        return cls(envs, seed=first_seed)
 
     def reset(self) -> Dict[str, np.ndarray]:
         """Reset every environment with its own seed and return the first observations."""
-        self.obs = self.envs.reset(seed=self._first_seed)[0]
+        self.obs = self.envs.reset(seed=self.seed)[0]
         return self.obs
 
     def random_actions(self) -> np.ndarray:
@@ -129,18 +135,9 @@ class EnvRunner(Environment):
         return self.envs.action_space.sample()
 
     def step(self, actions: np.ndarray) -> EnvStep:
-        """Play `actions` (one row per environment) and return what happened. Ended episodes are logged."""
+        """Play `actions` (one row per environment) and return what happened."""
         next_obs, rewards, terminated, truncated, info = self.envs.step(actions.reshape(self.envs.action_space.shape))
-        if self.cfg.metric.log_level > 0:
-            # The training loop counts the step once it's played
-            policy_step = self.schedule.policy_step + self.schedule.policy_steps_per_step
-            for i, ep_rew, ep_len in get_episode_stats(info):
-                if self.aggregator and "Rewards/rew_avg" in self.aggregator:
-                    self.aggregator.update("Rewards/rew_avg", ep_rew)
-                if self.aggregator and "Game/ep_len_avg" in self.aggregator:
-                    self.aggregator.update("Game/ep_len_avg", ep_len)
-                self.fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
-        # The same-step autoreset (`get_vector_env_cls`) and `RestartOnException` report them in `info`
+        # The same-step autoreset, `RestartOnException` and `RecordEpisodeStatistics` report them in `info`
         step = EnvStep(
             self.obs,
             next_obs,
@@ -149,6 +146,7 @@ class EnvRunner(Environment):
             truncated,
             final_obs=info.get("final_obs", [None] * self.num_envs),
             restarted=info.get("restart_on_exception", np.zeros(self.num_envs, dtype=bool)),
+            episodes=tuple(Episode(*episode) for episode in get_episode_stats(info)),
             info=info,
         )
         self.obs = next_obs

@@ -64,6 +64,7 @@ from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.core import (
     Algorithm,
     Environment,
+    EnvStep,
     Player,
     ReplayStore,
     TrainSchedule,
@@ -94,7 +95,7 @@ class RolloutPlayer(Player):
         self.policy = policy
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: Environment, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
         num_envs = env.num_envs
         obs = {k: env.obs[k] for k in self.obs_keys}
         torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cfg.algo.cnn_keys.encoder, num_envs=num_envs)
@@ -112,6 +113,7 @@ class RolloutPlayer(Player):
         rollout.add(data)
         # The observations after the last step of the rollout bootstrap its returns
         rollout.context["next_obs"] = step.next_obs
+        return step
 
 
 class ExtSOTA(Algorithm):

@@ -34,7 +34,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     prepare_obs,
     test,
 )
-from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -99,7 +99,7 @@ class SequencePlayer(Player):
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: Environment, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -185,6 +185,7 @@ class SequencePlayer(Player):
                 step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
                 step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
             self.policy.init_states(dones_idxes)
+        return step
 
 
 def world_model_loss(

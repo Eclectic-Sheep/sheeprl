@@ -18,7 +18,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
-from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
@@ -86,7 +86,7 @@ class ReplayPlayer(Player):
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step(self, env: Environment, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
         num_envs = env.num_envs
         if self.schedule.warmup(self.schedule.policy_step):
             actions = env.random_actions()
@@ -116,6 +116,7 @@ class ReplayPlayer(Player):
             data["next_observations"] = next_obs[np.newaxis]
         data["rewards"] = self.cast(step.rewards.reshape(num_envs, -1))[np.newaxis]
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
+        return step
 
 
 def build_store(

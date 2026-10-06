@@ -17,7 +17,7 @@ import torch
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3
 from sheeprl.algos.sac.sac import SAC
-from sheeprl.core.runner import EnvRunner
+from sheeprl.core.runner import GymEnvironment
 
 # 2 envs, 1 process: 2 policy steps per iteration; `learning_starts=4` gives 2 iterations of random actions, and the
 # replay ratio 1 gives 2 gradient steps per iteration from the second one. The first run lasts 4 iterations, the
@@ -72,7 +72,7 @@ def train(name: str, args: List[str]) -> Tuple[int, int]:
         mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
         mock.patch.object(sys, "argv", argv),
         mock.patch.object(
-            EnvRunner, "random_actions", autospec=True, side_effect=EnvRunner.random_actions
+            GymEnvironment, "random_actions", autospec=True, side_effect=GymEnvironment.random_actions
         ) as random_actions,
         mock.patch.object(algo_cls, "train_step", autospec=True, side_effect=algo_cls.train_step) as train_step,
     ):

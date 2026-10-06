@@ -23,7 +23,7 @@ from lightning import Fabric
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
-    from sheeprl.core.runner import Environment
+    from sheeprl.core.runner import Environment, EnvStep
     from sheeprl.core.schedule import TrainSchedule
 
 
@@ -89,9 +89,9 @@ def load_module_state_dict(module: nn.Module, state: Dict[str, Tensor]) -> None:
 class Player(Protocol):
     """Plays in the environments. Built by `Algorithm.player` from the current training state."""
 
-    def step(self, env: Environment, store: Any) -> None:
-        """Choose the actions for `env.obs`, step the environments with `env.step(actions)` and write what happened
-        in `store`."""
+    def step(self, env: Environment, store: Any) -> EnvStep:
+        """Choose the actions for `env.obs`, step the environments once with `env.step(actions)`, write what happened
+        in `store` and return it (the training loop logs its ended episodes)."""
 
 
 class Algorithm:
@@ -104,8 +104,8 @@ class Algorithm:
     # `algo.learning_starts` policy steps, does `algo.replay_ratio` gradient steps per policy step, and the buffer
     # (the store returned by `build`) is saved in the checkpoints when `buffer.checkpoint` is set
     off_policy: bool = False
-    # Whether a crashed environment is created again instead of stopping the run (`EnvRunner`): the player must then
-    # handle `EnvStep.restarted`, which marks the first observation of the new environment
+    # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the player must
+    # then handle `EnvStep.restarted`, which marks the first observation of the new environment
     restart_crashed_envs: bool = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:

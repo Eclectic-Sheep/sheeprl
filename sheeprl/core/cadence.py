@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.core.algorithm import TrainState
+from sheeprl.core.runner import Episode
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.utils import fs
 from sheeprl.utils.metric import MetricAggregator
@@ -15,8 +16,9 @@ from sheeprl.utils.timer import timer
 
 
 class Cadence:
-    """Accumulates the metrics of the training steps, logs them every `metric.log_every` policy steps and saves a
-    checkpoint every `checkpoint.every` policy steps (and at the end of the run if `checkpoint.save_last`)."""
+    """Accumulates the metrics of the training steps and of the ended episodes, logs them every `metric.log_every`
+    policy steps and saves a checkpoint every `checkpoint.every` policy steps (and at the end of the run if
+    `checkpoint.save_last`)."""
 
     def __init__(
         self,
@@ -49,6 +51,18 @@ class Cadence:
             for name, value in metrics.items():
                 if name in self.aggregator:
                     self.aggregator.update(name, value)
+
+    def accumulate_episodes(self, episodes: Sequence[Episode], policy_step: int) -> None:
+        """Add the rewards and the lengths of the episodes that have just ended, and print their rewards with
+        `policy_step` (on the process of rank 0)."""
+        if self.cfg.metric.log_level == 0:
+            return
+        for episode in episodes:
+            if self.aggregator and "Rewards/rew_avg" in self.aggregator:
+                self.aggregator.update("Rewards/rew_avg", episode.reward)
+            if self.aggregator and "Game/ep_len_avg" in self.aggregator:
+                self.aggregator.update("Game/ep_len_avg", episode.length)
+            self.fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{episode.env_idx}={episode.reward}")
 
     def log(self, policy_step: int, iteration: int, schedule: TrainSchedule) -> None:
         """Log the accumulated metrics and the speed of the run, if it's time to."""

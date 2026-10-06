@@ -14,7 +14,7 @@ from lightning import Fabric
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
-from sheeprl.core.runner import EnvRunner
+from sheeprl.core.runner import GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import load_replay_buffer
 from sheeprl.utils import fs
@@ -51,7 +51,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
-    env = EnvRunner(fabric, cfg, log_dir, schedule, aggregator, restart_on_exception=algo.restart_crashed_envs)
+    env = GymEnvironment.from_config(fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs)
     state, store = algo.build(env.observation_space, env.action_space, schedule, log_dir)
     # The replay buffer of the off-policy algorithms is saved in the checkpoints
     save_buffer = algo.off_policy and cfg.buffer.checkpoint
@@ -69,8 +69,9 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         # Play: the time includes the forward pass of the player
         with torch.inference_mode(), phase_timer("Time/env_interaction_time"):
             for _ in range(algo.steps_per_iteration):
-                player.step(env, store)
+                step = player.step(env, store)
                 schedule.policy_step += schedule.policy_steps_per_step
+                cadence.accumulate_episodes(step.episodes, schedule.policy_step)
 
         # Train: `n_steps` is None for on-policy algorithms (they decide it from the rollout), and is 0 for
         # off-policy algorithms before `algo.learning_starts`

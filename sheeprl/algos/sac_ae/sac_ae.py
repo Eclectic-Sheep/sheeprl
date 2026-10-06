@@ -21,7 +21,7 @@ from sheeprl.algos.sac.sac import build_store
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
-from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -118,7 +118,7 @@ class ReplayPlayer(Player):
     def images_as_channels(self, obs: Dict[str, np.ndarray], num_envs: int) -> Dict[str, np.ndarray]:
         return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in self.cnn_keys else v for k, v in obs.items()}
 
-    def step(self, env: Environment, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
         num_envs = env.num_envs
         obs = self.images_as_channels(env.obs, num_envs)
         if self.schedule.warmup(self.schedule.policy_step):
@@ -148,6 +148,7 @@ class ReplayPlayer(Player):
         data["actions"] = actions.reshape(1, num_envs, -1).astype(np.float32)
         data["rewards"] = step.rewards.reshape(1, num_envs, -1).astype(np.float32)
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
+        return step
 
 
 def train(

@@ -21,6 +21,7 @@ from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, 
 from sheeprl.core import (
     Algorithm,
     Environment,
+    EnvStep,
     Player,
     ReplayStore,
     TrainSchedule,
@@ -52,7 +53,7 @@ class RolloutPlayer(Player):
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: Environment, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
         cfg = self.cfg
         num_envs = env.num_envs
 
@@ -95,6 +96,7 @@ class RolloutPlayer(Player):
         rollout.add(data, validate_args=cfg.buffer.validate_args)
         # The observations after the last step of the rollout bootstrap its returns
         rollout.context["next_obs"] = step.next_obs
+        return step
 
 
 def ppo_loss(
