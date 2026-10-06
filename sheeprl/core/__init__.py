@@ -3,7 +3,7 @@
 See `sheeprl/algos/ppo/ppo.py` for an algorithm written on it.
 """
 
-from sheeprl.core.algorithm import Algorithm, Player, TrainState
+from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.collector import Act, Collector, Policy, Writer
 from sheeprl.core.evaluation import evaluate, log_models_from_checkpoint
@@ -24,7 +24,6 @@ __all__ = [
     "Environment",
     "Episode",
     "GymEnvironment",
-    "Player",
     "Policy",
     "ReplayStore",
     "TrainSchedule",

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Tuple
 
 import gymnasium as gym
 import torch
@@ -26,7 +26,6 @@ from torch import Tensor, nn
 
 if TYPE_CHECKING:
     from sheeprl.core.collector import Policy, Writer
-    from sheeprl.core.runner import Environment, EnvStep
     from sheeprl.core.schedule import TrainSchedule
 
 
@@ -89,14 +88,6 @@ def load_module_state_dict(module: nn.Module, state: Dict[str, Tensor]) -> None:
             target.copy_(state[name])
 
 
-class Player(Protocol):
-    """Plays in the environments. Built by `Algorithm.player` from the current training state."""
-
-    def step(self, env: Environment, store: Any) -> EnvStep:
-        """Choose the actions for `env.obs`, step the environments once with `env.step(actions)`, write what happened
-        in `store` and return it (the training loop logs its ended episodes)."""
-
-
 class Algorithm:
     """Base class of the algorithms. See the module docstring for what each method does."""
 
@@ -134,10 +125,6 @@ class Algorithm:
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         """Play a test episode with the trained policy and log its return at `policy_step`: at the end of the training
         (with `algo.run_test`) and to evaluate a checkpoint (`sheeprl.core.evaluation.evaluate`)."""
-        raise NotImplementedError
-
-    def player(self, state: TrainState) -> Player:
-        """Return the object that plays the current policy in the environments."""
         raise NotImplementedError
 
     def policy(self, state: TrainState) -> Policy:

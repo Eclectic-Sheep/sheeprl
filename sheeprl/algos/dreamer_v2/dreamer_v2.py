@@ -2,7 +2,7 @@
 Adapted from the original implementation from https://github.com/danijar/dreamerv2
 
 Written on the shared training loop of `sheeprl.core`: `DreamerV2` says how to build, play and train;
-`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv2`) reuses the player (`SequencePlayer`) and,
+`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv2`) reuses the writer (`SequenceWriter`) and,
 to finetune, the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 

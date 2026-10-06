@@ -1,4 +1,4 @@
-"""The environments of one process: what the players step (`Environment`, `EnvStep`) and its gymnasium
+"""The environments of one process: what the collector steps (`Environment`, `EnvStep`) and its gymnasium
 implementation (`GymEnvironment`)."""
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class Episode:
 class EnvStep:
     """What happened in one step of the vectorized environments.
 
-    The core and the players read only its fields: `info` holds what the environments returned besides them (e.g. the
+    The core and the writers read only its fields: `info` holds what the environments returned besides them (e.g. the
     `info` of gymnasium), for the code written for those environments.
     """
 
@@ -57,8 +57,9 @@ class EnvStep:
 
 
 class Environment(Protocol):
-    """The vectorized environments of one process, stepped by the players (`Player.step`): `num_envs` environments,
-    whose current observations are `obs`. `GymEnvironment` implements it with gymnasium environments.
+    """The vectorized environments of one process, stepped by the collector (`sheeprl.core.collector.Collector`):
+    `num_envs` environments, whose current observations are `obs`. `GymEnvironment` implements it with gymnasium
+    environments.
     """
 
     num_envs: int
